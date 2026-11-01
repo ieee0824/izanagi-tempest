@@ -5,7 +5,7 @@
 [Izanagi](https://github.com/ieee0824/izanagi)(AI エージェント用サンドボックス)と
 [LWS](https://github.com/ieee0824/lws)(ローカル AWS シミュレータ)をつなぐオーケストレーション層です。
 
-> ⚠️ 設計段階です。実装は未着手。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
+> ⚠️ M0 の検証基盤を実装中です。本体ハーネスは未実装。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
 
 ## 何をするもの
 
@@ -51,3 +51,16 @@ Izanagi (攻撃VM: eBPF・PCAP・検知ルール) ◄──► LWS (模擬AWS: S
 
 - [設計ドキュメント](docs/DESIGN.md) — アーキテクチャ、シナリオフォーマット、実行フロー、評価メトリクス、制約事項
 - [実装設計 (Phase 1)](docs/IMPLEMENTATION.md) — Rust による実装構成、VM 内の記録・防御、判定ロジック、テスト計画、マイルストーン
+
+## 開発: M0 の前提確認
+
+Python 3.11 以降で、追加依存なしに実行できます。
+
+```bash
+python3 tools/m0/collect.py --output /private/tmp/tempest-m0-preflight-001
+python3 -m unittest discover -s tests -v
+```
+
+QEMU の起動・証跡収集の手順は [M0 収集ツール](tools/m0/README.md)、
+初回の実行結果と未確認事項は [M0 実測記録](docs/M0-RESULTS.md) を参照してください。
+本体の build / run コマンドはまだありません。

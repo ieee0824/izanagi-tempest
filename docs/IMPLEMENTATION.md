@@ -1,6 +1,7 @@
 # izanagi-tempest 実装設計 (Phase 1)
 
-ステータス: 設計段階(実装未着手)。本書のコマンド・ファイル名はすべて**予定**であり、まだ動作しない。
+ステータス: M0 の調査用ツールを実装中。本書の本体 CLI・workspace は**予定**であり、まだ動作しない。
+M0 の収集手順は [tools/m0/README.md](../tools/m0/README.md)、実測状況は [M0-RESULTS.md](M0-RESULTS.md) を参照。
 
 [DESIGN.md](DESIGN.md) が「何を・なぜ」を定めるのに対し、本書は Phase 1(同一 VM 内 PoC)を
 「どう作るか」に落とし込む。DESIGN.md と食い違う場合は DESIGN.md を正とし、本書を直す。

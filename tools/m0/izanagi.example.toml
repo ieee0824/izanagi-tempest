@@ -1,0 +1,23 @@
+[sandbox]
+backend = "qemu"
+tracer = "vm-agent"
+require_auth = true
+
+[sandbox.qemu]
+cpus = 2
+memory = "4G"
+# Replace with an absolute path to a pinned image; record its SHA-256 separately.
+image = "default"
+restrict_network = true
+
+[share]
+paths = ["."]
+mount_point = "/workspace"
+read_only = true
+
+[monitor]
+syscalls = ["file", "network", "process", "env"]
+
+[detect]
+suspicious_paths = ["/var/lib/lws", "/var/lib/tempest"]
+allowed_hosts = []
