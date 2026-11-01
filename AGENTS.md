@@ -5,6 +5,7 @@
 This repository is currently in the design phase; implementation has not started.
 - `README.md` summarizes the purpose, scope, and phased roadmap.
 - `docs/DESIGN.md` defines the architecture, YAML scenario format, execution lifecycle, evaluation metrics, and constraints.
+- `docs/IMPLEMENTATION.md` defines the planned Phase 1 implementation (Rust workspace layout, in-VM recording and isolation, evaluation logic, milestones).
 
 No source, test, or asset directories exist yet. Keep architecture details in `docs/` and update the README when scope or milestones change. The planned implementation is a thin orchestration layer connecting Izanagi and LWS through configuration and external interfaces.
 
@@ -18,7 +19,7 @@ For documentation changes, inspect both documents and verify relative links, fen
 
 Match the existing Japanese prose in project documentation. Use descriptive Markdown headings, fenced code blocks with language labels, and relative links such as `docs/DESIGN.md`.
 
-Use two-space indentation in YAML examples. Preserve documented scenario keys such as `setup`, `task`, `expect`, `expected_finding`, and `retest`; use descriptive scenario IDs such as `s3-overread-001`. No implementation language, formatter, or linter has been selected.
+Use two-space indentation in YAML examples. Preserve documented scenario keys such as `setup`, `task`, `expect`, `expected_finding`, and `retest`; use descriptive scenario IDs such as `s3-overread-001`. The implementation language is Rust (edition 2024, Cargo workspace); formatter and linter commands will be documented when tooling is introduced.
 
 ## Testing Guidelines
 
@@ -26,7 +27,7 @@ No testing framework or coverage threshold exists yet. Future harness tests shou
 
 ## Commit & Pull Request Guidelines
 
-This checkout has no Git metadata, so commit conventions cannot be inferred. Use concise, imperative commit subjects describing the change. Pull requests should explain purpose, affected design sections, validation performed, and any changes to assumptions or scope; link relevant issues when available.
+Use concise, imperative commit subjects describing the change. Pull requests should explain purpose, affected design sections, validation performed, and any changes to assumptions or scope; link relevant issues when available.
 
 ## Security & Configuration
 
