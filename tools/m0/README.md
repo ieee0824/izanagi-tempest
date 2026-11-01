@@ -37,5 +37,7 @@ QEMU / vm-agent・認証必須・ネットワーク制限・共有の読み取�
 ## 次の検証
 
 `docs/IMPLEMENTATION.md` 9.1 に従い、LWS の成功・403・501 と backend 拒否について
-API 結果・syscall・制御 PCAP・ゲスト loopback PCAP を比較する。
+API 結果・syscall・制御 PCAP・ゲスト loopback PCAP・ファイアウォール拒否記録を比較する。
+通常の syscall ログは connect の宛先・戻り値を持たない。backend への迂回は遮断と拒否記録を
+別々に検証し、PCAP や警告の不在を試行なしの根拠にしない。
 その後にアダプタのホスト操作遮断を検証する。これらは本ツールでは未実装。
