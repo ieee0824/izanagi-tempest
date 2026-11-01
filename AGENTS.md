@@ -2,16 +2,16 @@
 
 ## Project Structure & Module Organization
 
-This repository is currently in the design phase; implementation has not started.
+This repository is implementing M0 investigation tooling; the Rust harness is not implemented yet.
 - `README.md` summarizes the purpose, scope, and phased roadmap.
 - `docs/DESIGN.md` defines the architecture, YAML scenario format, execution lifecycle, evaluation metrics, and constraints.
 - `docs/IMPLEMENTATION.md` defines the planned Phase 1 implementation (Rust workspace layout, in-VM recording and isolation, evaluation logic, milestones).
 
-No source, test, or asset directories exist yet. Keep architecture details in `docs/` and update the README when scope or milestones change. The planned implementation is a thin orchestration layer connecting Izanagi and LWS through configuration and external interfaces.
+`tools/m0/` contains the Python evidence collector and QEMU example configuration; `tests/` contains its standard-library unittest checks. No Rust source or asset directories exist yet. Keep architecture details in `docs/` and update the README when scope or milestones change. The planned implementation is a thin orchestration layer connecting Izanagi and LWS through configuration and external interfaces.
 
 ## Build, Test, and Development Commands
 
-No build system, package manifest, local runner, or automated test commands are configured. Do not present planned commands as working interfaces.
+Use Python 3.11+ for M0 tooling: `python3 tools/m0/collect.py --output /private/tmp/tempest-m0-preflight-001`. Run `python3 -m unittest discover -s tests -v` for collector checks. No Rust workspace or harness commands exist yet; do not present planned commands as working interfaces.
 
 For documentation changes, inspect both documents and verify relative links, fenced examples, and consistency between the roadmap and detailed design. When introducing implementation tooling, document exact setup, build, run, and test commands in `README.md`.
 
@@ -23,7 +23,7 @@ Use two-space indentation in YAML examples. Preserve documented scenario keys su
 
 ## Testing Guidelines
 
-No testing framework or coverage threshold exists yet. Future harness tests should cover reset, seed, execution, observation, evaluation, and reporting. Distinguish authorization denial from unsupported operations, verify corrected policies through `retest`, and check that scenarios reset without cross-run contamination. Record reproducible experiment conditions and retain evidence supporting findings.
+M0 tooling uses Python unittest; no coverage threshold exists yet. Future harness tests should cover reset, seed, execution, observation, evaluation, and reporting. Distinguish authorization denial from unsupported operations, verify corrected policies through `retest`, and check that scenarios reset without cross-run contamination. Record reproducible experiment conditions and retain evidence supporting findings.
 
 ## Commit & Pull Request Guidelines
 

@@ -1,0 +1,5 @@
+# Local evidence may contain command output and packet captures.
+/runs/
+__pycache__/
+*.pyc
+/target/
