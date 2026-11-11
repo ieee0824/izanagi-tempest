@@ -1,7 +1,8 @@
 # izanagi-tempest 実装設計 (Phase 1)
 
-ステータス: M0 の実測と M1 の workspace・`tempest validate` を実装済み。
-実行オーケストレーションとゲスト操作（M2以降）は予定であり、まだ動作しない。
+ステータス: M0 の実測、M1 の workspace・`tempest validate`、M2 のゲストヘルパーを実装済み。
+VM イメージ整備とホストの実行オーケストレーション（M3以降）は予定。
+M2 の具体的な入力・状態・検証範囲は [M2-GUEST.md](M2-GUEST.md) を参照。
 M0 の収集手順は [tools/m0/README.md](../tools/m0/README.md)、実測状況は [M0-RESULTS.md](M0-RESULTS.md) を参照。
 
 [DESIGN.md](DESIGN.md) が「何を・なぜ」を定めるのに対し、本書は Phase 1(同一 VM 内 PoC)を
@@ -113,6 +114,12 @@ HTTP リバースプロキシ `tempest-guest recorder` を置く。
 
 あわせて root の `tcpdump -i lo` で `capture.pcap` を取る。HTTP 以外の通信や、
 recorder を経由しない接続の試行(4567 への接続拒否など)を後から確認するための補助証跡とする。
+M2 は seal で capture の準備を確認してから HTTP listener を開く。起動時には取得を開始しない。
+export で受付停止・有限drain・JSONL sync・capture停止待ちを完了してから書き出す。
+本文全量をメモリーへ溜めず、64 KiB の検査用prefixと転送中の長さ/hashだけを持つ。
+要求・応答それぞれのhash、complete、transport_error、欠損を記録する。
+Authorization がない場合は presigned query の Credential も抽出する選択とし、query 全体は保存しない。
+501でも抽出したAKIDは保持する。AKIDは観測した名乗りであり、署名検証の証拠ではない。
 
 ### 3.3 ハーネス専用操作をエージェントから守る
 
@@ -140,6 +147,16 @@ tempest-guest export  --token T DIR    → api.jsonl と capture.pcap を DIR �
 
 エージェントが `doas tempest-guest ...` を試みることはできるが、トークンがないので失敗する。
 試行自体は execve として記録されるので逸脱として計上する(6.3)。
+
+M2 の `recorder` は root の foreground 制御 supervisor として起動サービスから開始し、
+root専用 Unix socket だけを開く（claim前のbootstrap）。LWS と seal 後のHTTP処理は
+専用 service uid の子プロセスで動く。claim の digest と状態を root 私有領域へ原子的に保存し、
+応答消失やhelper再起動でもトークンを再発行しない。seed/probe は sealed 後に拒否する。
+上の `--token T` は引数へ露出するため、ローカル制御には `--token-stdin` も実装した。
+ただし固定 Izanagi exec は stdin を転送しない。VM 配送・argv露出と子孫停止確認は
+[#13](https://github.com/ieee0824/izanagi-tempest/issues/13) / #5 で扱い、この表を安全な配送の実証とはしない。
+seed/probe 入力は controller uid の私有ファイル・私有親ディレクトリを要求する。
+ホストの結合試験は同じ非root uid の development モードであり、実VMの権限分離は別途検証する。
 
 ### 3.4 reset は VM の作り直し
 
@@ -391,6 +408,11 @@ strict 未対応（501）と混同せず、input representation error とする�
 ゲスト側は AWS CLI(`--endpoint-url http://127.0.0.1:4567`、管理者キー)で投入する。
 投入順は IAM ユーザー → アクセスキー → ポリシー → バケット → オブジェクト → キュー。
 出力はユーザー名と AccessKeyId の対応表。
+M2 はこの対応表を `access_keys` に返す。管理者キー変更は strict health と、
+同一の IAM ListUsers による新キー200 / 旧キー403、投入済みユーザーの永続化まで確認する。
+probe は明示的な `access_key_id` / `api` / `resource` を受け、主体を推定しない。
+結果は allow / deny / unsupported / error と生status / error_code / complete / credential_known。
+未知資格情報の403や壊れた応答を policy denial にしない。
 
 ### 7.3 実験条件(`run.json`)
 
@@ -426,9 +448,9 @@ DESIGN.md 5.1「モデル比較の実験条件」を自動で記録する。
 
 ## 8. ソース構成
 
-以下は Phase 1 全体の構成予定。M1 で存在するのは各 crate、共有シナリオ型・静的検証、
-`tempest/src/scenario.rs` と validate CLI、正常シナリオ・回帰テストのみ。
-seed バンドル・記録型や残りのディレクトリは後続で追加する。
+以下は Phase 1 全体の構成。M1 の validate と、M2 の共有 seed/probe/記録型、
+`tempest-guest` の control / seed / mapping / proxy を実装済み。
+ホストの run / MCP proxy / agent / timeline / evaluate / report と VM イメージは後続で追加する。
 
 ```
 Cargo.toml                       workspace
@@ -468,8 +490,9 @@ Izanagi の packer テンプレートを基に、次を追加した派生イメ�
 
 - LWS(コミット固定でビルド)、AWS CLI、`tempest-guest`、`tcpdump`、`iptables`、`doas`
 - ユーザー `lws`、`/var/lib/lws` と `/var/lib/tempest`(0700)
-- 起動時の初期化:iptables のルール(3.2)、`tcpdump` の開始、`doas` の設定
+- 起動時の初期化:iptables のルール(3.2)、root の `tempest-guest recorder` 制御 supervisor、`doas` の設定
   (`izanagi` ユーザーに `tempest-guest` の root 実行だけを許可)
+- tcpdump と HTTP listener は M2 の seal が開始する。起動時には開始しない
 - `/etc/tempest/image.json`(LWS のコミット、tempest-guest のバージョン、ビルド日時)
 
 ベースは Debian テンプレートを第一候補にする。LWS は SQLCipher / OpenSSL をソースからビルドするため、
