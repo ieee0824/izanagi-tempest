@@ -26,7 +26,7 @@ use std::{
     task::{Context as TaskContext, Poll},
     time::Duration,
 };
-use tempest_model::guest::ApiRecord;
+use tempest_model::guest::{ApiRecord, RecorderStats};
 use tokio::{
     net::TcpListener,
     signal::unix::{SignalKind, signal},
@@ -68,6 +68,30 @@ struct Log {
     file: Mutex<File>,
     next: AtomicU64,
     failed: AtomicBool,
+}
+#[derive(Default)]
+struct Counters {
+    accepted: AtomicU64,
+    rejected: AtomicU64,
+    parse_errors: AtomicU64,
+    connection_errors: AtomicU64,
+    task_errors: AtomicU64,
+}
+impl Counters {
+    fn snapshot(&self) -> RecorderStats {
+        RecorderStats {
+            accepted_connections: self.accepted.load(Ordering::SeqCst),
+            admission_rejected: self.rejected.load(Ordering::SeqCst),
+            http_parse_errors: self.parse_errors.load(Ordering::SeqCst),
+            connection_errors: self.connection_errors.load(Ordering::SeqCst),
+            task_errors: self.task_errors.load(Ordering::SeqCst),
+        }
+    }
+    fn joined(&self, result: Result<(), tokio::task::JoinError>) {
+        if result.is_err() {
+            self.task_errors.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 }
 struct Event {
     log: Arc<Log>,
@@ -335,6 +359,7 @@ pub async fn serve(config: Config) -> Result<()> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let (closing, _) = watch::channel(false);
     let mut tasks = JoinSet::new();
+    let counters = Arc::new(Counters::default());
     println!("{{\"ready\":true}}");
     std::io::stdout().flush()?;
     loop {
@@ -343,35 +368,54 @@ pub async fn serve(config: Config) -> Result<()> {
             _=interrupt.recv()=>break,
             accepted=listener.accept()=>{
                 let (socket,_)=accepted?;
-                if tasks.len()>=256 {drop(socket);continue;}
+                counters.accepted.fetch_add(1,Ordering::SeqCst);
+                while let Some(result)=tasks.try_join_next(){counters.joined(result);}
+                if tasks.len()>=256 {counters.rejected.fetch_add(1,Ordering::SeqCst);drop(socket);continue;}
                 let config=config.clone();let client=client.clone();let log=log.clone();let mut closing=closing.subscribe();
+                let counters=counters.clone();
                 tasks.spawn(async move {
                     let connection=hyper::server::conn::http1::Builder::new().keep_alive(false).serve_connection(TokioIo::new(socket),service_fn(move |req|forward(req,config.clone(),client.clone(),log.clone())));
                     tokio::pin!(connection);
-                    tokio::select! {
-                        _=&mut connection=>{},
-                        _=closing.changed()=>{connection.as_mut().graceful_shutdown();let _=connection.await;}
+                    let result=tokio::select! {
+                        result=&mut connection=>result,
+                        _=closing.changed()=>{connection.as_mut().graceful_shutdown();connection.await}
+                    };
+                    if let Err(error)=result {
+                        if error.is_parse(){counters.parse_errors.fetch_add(1,Ordering::SeqCst);}
+                        else{counters.connection_errors.fetch_add(1,Ordering::SeqCst);}
                     }
                 });
             },
-            Some(_)=tasks.join_next(), if !tasks.is_empty()=>{},
+            Some(result)=tasks.join_next(), if !tasks.is_empty()=>{counters.joined(result);},
         }
     }
     drop(listener);
     let _ = closing.send(true);
     let drained = tokio::time::timeout(Duration::from_secs(timeout), async {
-        while tasks.join_next().await.is_some() {}
+        while let Some(result) = tasks.join_next().await {
+            counters.joined(result);
+        }
     })
     .await
     .is_ok();
     if !drained {
         tasks.abort_all();
-        while tasks.join_next().await.is_some() {}
+        while let Some(result) = tasks.join_next().await {
+            counters.joined(result);
+        }
     }
     log.file.lock().unwrap().sync_all()?;
+    let stats = counters.snapshot();
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(config.evidence_dir.join("recorder-stats.json"))?;
+    serde_json::to_writer(&mut file, &stats)?;
+    file.sync_all()?;
     ensure!(
-        drained && !log.failed.load(Ordering::SeqCst),
-        "recorder drain or evidence write failed"
+        drained && !log.failed.load(Ordering::SeqCst) && stats.lossless(),
+        "recorder drain, coverage or evidence write failed"
     );
     Ok(())
 }
@@ -419,4 +463,18 @@ pub async fn request(
     })
     .await
     .context("local HTTP request timeout")?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn task_panic_is_counted_as_coverage_loss() {
+        let task: tokio::task::JoinHandle<()> =
+            tokio::spawn(async { panic!("injected task failure") });
+        let counters = Counters::default();
+        counters.joined(task.await);
+        assert_eq!(counters.snapshot().task_errors, 1);
+        assert!(!counters.snapshot().lossless());
+    }
 }

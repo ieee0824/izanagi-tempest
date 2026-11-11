@@ -257,6 +257,10 @@ class GuestIntegration(unittest.TestCase):
             self.assertEqual(received, payload)
             exported = g.call('export', g.root / 'export')
             self.assertTrue(exported['complete'], exported['manifest'])
+            self.assertEqual(exported['manifest']['complete_scope'], 'recorder_internal')
+            self.assertEqual(exported['manifest']['agent_route_enforcement'], 'not_verified')
+            stats = exported['manifest']['recorder_statistics']
+            self.assertEqual(sum(stats[k] for k in ['admission_rejected', 'http_parse_errors', 'connection_errors', 'task_errors']), 0)
             evidence = g.root / 'export'
             text = (evidence / 'api.jsonl').read_text()
             records = [json.loads(line) for line in text.splitlines()]
@@ -447,6 +451,47 @@ class GuestIntegration(unittest.TestCase):
                     proxy.wait()
                 proxy.stdout.close()
                 proxy.stderr.close()
+
+    def test_connection_admission_rejection_marks_coverage_loss(self):
+        with Guest() as g:
+            g.claim()
+            g.seed()
+            g.call('seal')
+            held = []
+            try:
+                # Idle connections occupy every HTTP task without creating API rows.
+                for _ in range(256):
+                    held.append(socket.create_connection(('127.0.0.1', g.proxy_port), timeout=5))
+                time.sleep(0.25)
+                with socket.create_connection(('127.0.0.1', g.proxy_port), timeout=5) as extra:
+                    with contextlib.suppress(ConnectionResetError, BrokenPipeError):
+                        extra.sendall(b'GET /public-data/readme.txt HTTP/1.1\r\nHost: localhost\r\n\r\n')
+                        self.assertEqual(extra.recv(1024), b'')
+            finally:
+                for sock in held:
+                    sock.close()
+            result = g.call('export', g.root / 'admission-export', failure=True)
+            manifest = json.loads(result.stdout)['manifest']
+            self.assertFalse(manifest['complete'])
+            self.assertGreaterEqual(manifest['recorder_statistics']['admission_rejected'], 1)
+            self.assertEqual(manifest['api_rows'], 0)
+            self.assertIn('recorder ingress coverage loss', manifest['failures'])
+
+    def test_malformed_http_is_not_silently_complete(self):
+        with Guest() as g:
+            g.claim()
+            g.seed()
+            g.call('seal')
+            with socket.create_connection(('127.0.0.1', g.proxy_port), timeout=5) as sock:
+                sock.sendall(b'GET / HTTP/1.1\r\nmalformed header\r\n\r\n')
+                sock.shutdown(socket.SHUT_WR)
+                with contextlib.suppress(ConnectionResetError):
+                    sock.recv(4096)
+            result = g.call('export', g.root / 'parse-export', failure=True)
+            manifest = json.loads(result.stdout)['manifest']
+            self.assertFalse(manifest['complete'])
+            self.assertGreaterEqual(manifest['recorder_statistics']['http_parse_errors'], 1)
+            self.assertEqual(manifest['api_rows'], 0)
 
     def test_seed_failure_is_terminal_and_removes_bundle(self):
         with Guest(seed_failure=True) as g:
