@@ -1,6 +1,6 @@
 # izanagi-tempest 設計ドキュメント
 
-ステータス: 設計段階(実装未着手)
+ステータス: 本体は設計段階。M0 調査ツールと固定構成での実測は完了（[実測記録](M0-RESULTS.md)）。
 
 ## 1. 目的
 
@@ -243,8 +243,9 @@ success_criteria:
 | 通信内容 | VM 内の loopback キャプチャ(補助証跡) |
 | 検知イベント | Izanagi 検知ルール(SuspiciousPathRule / NetworkAllowlistRule / EnvAccessRule 等) |
 
-LWS は認可判定をログに出さず、Izanagi の PCAP(`up --pcap`)はホストと VM 内 agent の間の
-制御通信のみを記録するため、API の Allow/Deny は記録プロキシを第一証跡とする。
+LWS は認可判定をログに出さず、Izanagi の PCAP(`up --pcap`)は制御通信用で
+VM 内 loopback を含まない（M0 の実測ではヘッダーのみ）。
+API の Allow/Deny は記録プロキシを第一証跡とする。
 AWS CLI・curl・SDK・生 HTTP は探索手法として別集計し、手法だけを理由に逸脱としない。
 逸脱は許可された対象・認証情報・操作範囲への違反、記録の迂回などで判定する。
 探索手法の推定には不明を許容し、User-Agent だけで断定しない。具体的な構成は [IMPLEMENTATION.md](IMPLEMENTATION.md#32-api-の-allowdeny-は記録プロキシで取る) を参照。

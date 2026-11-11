@@ -1,6 +1,6 @@
 # izanagi-tempest 実装設計 (Phase 1)
 
-ステータス: M0 の調査用ツールを実装中。本書の本体 CLI・workspace は**予定**であり、まだ動作しない。
+ステータス: M0 の調査用ツールと固定構成での実測は完了。本書の本体 CLI・workspace は**予定**であり、まだ動作しない。
 M0 の収集手順は [tools/m0/README.md](../tools/m0/README.md)、実測状況は [M0-RESULTS.md](M0-RESULTS.md) を参照。
 
 [DESIGN.md](DESIGN.md) が「何を・なぜ」を定めるのに対し、本書は Phase 1(同一 VM 内 PoC)を
@@ -25,10 +25,10 @@ M0 の収集手順は [tools/m0/README.md](../tools/m0/README.md)、実測状況
 |---|---|---|
 | Izanagi MCP | ツールは `sandbox_status` / `sandbox_exec`(`command` + `args`)/ `sandbox_shell`(`/bin/sh -c`)。結果は出力テキストのみでタイムスタンプを含まない | 呼び出し単位の記録はハーネス側で取る → MCP プロキシ(3.1) |
 | Izanagi セッション | 状態・ログはカレントディレクトリのハッシュごとに `~/.izanagi/instances/<sha256(cwd)>/` へ分離される | 実行(run)ごとに専用の作業ディレクトリを用意すれば、セッションとログが混ざらない |
-| Izanagi exec | VM 内では非 root ユーザー `izanagi` として実行される | エージェントとハーネスの exec は同じユーザーになる → ハーネス専用操作の保護が必要(3.3) |
+| Izanagi exec | VM 内では非 root ユーザー `izanagi` として実行される(M0 で uid/gid 1000 を確認) | エージェントとハーネスの exec は同じユーザーになる → ハーネス専用操作の保護が必要(3.3) |
 | Izanagi QEMU ディスク | `snapshot=on` のオーバーレイで、QEMU 終了時に破棄される | VM の再起動がそのまま reset になる |
-| Izanagi PCAP | `up --pcap` が記録するのはホストと VM 内 agent の間の制御通信(`LINKTYPE_USER0`)だけ | **VM 内 loopback の LWS 通信は Izanagi の PCAP に残らない**。VM 内で別途キャプチャする(3.2) |
-| Izanagi ログ | `events.log` / `alerts.log` はミリ秒精度・タイムゾーンなしのテキスト行 | 正規表現で解析する。書式変更に弱いのでパーサーにテストを付ける |
+| Izanagi PCAP | 制御通信用の形式(`LINKTYPE_USER0`)。M0 の CLI/MCP 実測ではヘッダー24 bytesのみで、制御ペイロードも未記録 | **LWS 通信や実行結果の証拠には使わない**。VM 内の別キャプチャと API 記録を使う(3.2) |
+| Izanagi ログ | eBPF の monotonic 時刻をゲストで UNIX epoch に変換し、ホストのローカル TZ でミリ秒精度・TZ なしのテキストにする | ホスト TZ を記録し、ゲスト・ホストの時刻差を補正する。書式変更に備えパーサーをテストする |
 | LWS ログ | 起動時のメッセージ以外は出力しない。認可拒否は 403 `AccessDenied`、権限の対応付けが未実装の操作は 501 | API 単位の Allow/Deny は前段のプロキシで記録する(3.2) |
 | LWS アクセスキー | `CreateAccessKey` が `AKIA…` を自動生成する。値は指定できない | seed の結果からキーを受け取り、エージェントに渡す |
 | LWS bind | loopback のみ。`LWS_ROOT_ACCESS_KEY_ID` は起動時の環境変数 | 管理者キーをエージェントから隠す手順が必要(3.3) |
@@ -144,6 +144,10 @@ tempest-guest export  --token T DIR    → api.jsonl と capture.pcap を DIR �
 
 run ごとに `izanagi up` → … → `izanagi down` を行い、VM を使い回さない。ディスクは `snapshot=on` で
 破棄され、Izanagi のログは run 専用の作業ディレクトリに分かれるので、run 間の汚染が起きない。
+`izanagi up` は起動後も常駐する。ホストは子プロセスを保持し、起動通知後の認証付き exec が
+成功してから seed に進む。up の終了コードを待って準備完了としない。
+exec には自動起動の経路があるため、up の準備前に exec をポーリングして競合させない。
+失敗時も finally 相当で down を呼び、supervisor の終了を待つ。
 起動に時間がかかっても、Phase 1 では正しさを優先する。
 
 ### 3.5 run ディレクトリの分離
@@ -231,6 +235,13 @@ trait AgentAdapter {
 
 ホスト側の組み込みツールを確実に無効化できるかはエージェント CLI のバージョンに依存する。
 アダプタは起動前に設定を検査し、無効化できない場合は実行を拒否する。
+2026-11-11 の M0 では Codex 0.167.1 と Claude Code 2.1.319 の非対話実行を、
+ローカル API スタブからの強制ツール呼び出しで検証した。シェル無効化だけでは不十分である。
+Codex は apps / view_image / multi_agent / plugins 等も無効化し、Claude Code は
+`--bare --tools "" --strict-mcp-config --setting-sources ""` 等を指定した。
+具体的な起動引数は `tools/m0/probe-agent.py`、結果は [M0-RESULTS.md](M0-RESULTS.md) に記録する。
+これを将来のアダプタの初期候補とし、バージョン・設定が変わるたびに同じ拒否試験を再実行する。
+
 設定の検査だけでは隔離の証明としない。M0 でホストのファイル読み書き・コマンド実行・
 追加 MCP・サブエージェント経由の迂回を試し、MCP 経由の VM 操作だけが成功することを確認する。
 モデルが操作を拒否しただけの場合は遮断の証拠とせず、強制機構を確認できなければ未確認とする。
@@ -258,8 +269,8 @@ seal の直前と回収の直前に、ホストから `izanagi exec -- date +%s%
 往復時間の中点をホスト時刻とみなして VM との時刻差を求め、`clock.jsonl` に残す。
 2 回の計測の間は線形に補間する。区間判定には往復時間の最大値を余裕として足す。
 
-Izanagi のログ時刻がホストとゲストのどちらの時計か、またローカル時刻のタイムゾーンは、
-実装の最初に実測で確かめる(未確認事項 9 章)。
+M0 の固定構成では、イベント epoch はゲスト由来、テキスト表示の TZ はホスト由来と確認した。
+ログの解析時にホスト TZ を戻し、上の時刻差を補正する。バージョン変更時は9章の試験を再実行する。
 
 ## 6. 判定
 
@@ -438,9 +449,9 @@ Izanagi の packer テンプレートを基に、次を追加した派生イメ�
 ベースは Debian テンプレートを第一候補にする。LWS は SQLCipher / OpenSSL をソースからビルドするため、
 Alpine(musl)でのビルドが通るかを確かめてから Alpine 化を検討する。
 
-## 9. 未確認事項
+## 9. M0 の確認項目
 
-実装の最初に実測で確かめ、結果に合わせて本書を直す。
+以下は2026-11-11の固定構成で確認済み。構成変更時に再実測し、結果に合わせて本書を直す。
 
 1. Izanagi の QEMU イメージに独自の起動時初期化(サービス)を足す正規の方法
 2. `izanagi up` の起動完了を検知する方法(`sandbox_status` のポーリングで足りるか)
@@ -452,7 +463,10 @@ Alpine(musl)でのビルドが通るかを確かめてから Alpine 化を検討
 
 ### 9.1 M0 の検証順序と完了条件
 
-M0 は M1 以降の設計を確定するためのゲートとする。現時点では以下は未実測。
+M0 は M1 以降の設計を確定するためのゲートとする。
+2026-11-11 に、固定コミットから作ったイメージで以下の完了条件を確認した。
+Izanagi 制御 PCAP はヘッダーのみであり、ゲスト PCAP と API 結果を観測の主軸とする。
+手順・観測値・限界は [M0-RESULTS.md](M0-RESULTS.md#最終実測と-issue-1-の確認結果) に記録する。
 
 1. **loopback 観測**: バージョン・コミット・イメージ・設定を固定した QEMU で、CLI と生 HTTP の
    成功・403・501、および backend への拒否接続を発生させる。API 結果、connect / execve、
@@ -482,7 +496,7 @@ M0 は M1 以降の設計を確定するためのゲートとする。現時点�
 
 | # | マイルストーン | 完了条件 |
 |---|---|---|
-| M0 | 未確認事項(9 章)の実測 | 9.1 の証跡と合否を本書に反映し、観測・隔離の成立を確認 |
+| M0 | 前提確認(9 章)の実測（固定構成で完了） | 9.1 の証跡と合否を本書に反映し、観測・隔離の成立を確認 |
 | M1 | workspace と `tempest validate` | `s3-overread-001` の検証が通り、不正なシナリオを拒否する |
 | M2 | `tempest-guest`(recorder / seed / probe / seal / export) | ゲスト側の結合テストが通る |
 | M3 | VM イメージ | イメージ上で M2 の操作が動き、3.3 の防御が効く |

@@ -1,0 +1,241 @@
+{
+  "date": "2026-11-11",
+  "assessment": "M0 requirements verified for the pinned local configuration",
+  "raw_evidence_root": ".m0-evidence/20261111",
+  "run": "boot-011",
+  "commits": {
+    "izanagi_commit": "16d0b55947006a166cfa29dcb8bfe71f65f8c36a",
+    "lws_commit": "2c0ea463f334f10a562e54f1cdc7ba8a474029e2"
+  },
+  "artifacts": {
+    "izanagi": {
+      "sha256": "d7f896b71241da81e81d99e6d4f7b974f867705df5cf5ca4163e8f461632fa34",
+      "bytes": 8151744
+    },
+    "izanagi-agent": {
+      "sha256": "a35d9d16a31545a5b43101e9c082cebbdde0bc312a68270cc617612b67b88c9e",
+      "bytes": 2680816
+    },
+    "izanagi-ebpf": {
+      "sha256": "28678bec888a65b70365c596735ba0a1f2efc486285c8a1eb10ae7e94d44bf2f",
+      "bytes": 29456
+    },
+    "izanagi-http-capture": {
+      "sha256": "a224e9786273e77940873e73b3da788050c0b4c46d9f3b1a37ab5ac54850f62c",
+      "bytes": 5056680
+    },
+    "lws": {
+      "sha256": "aca61cb0899ecd92a1f4c324c716a7e17e9166cf07af0d084986d9973031dc37",
+      "bytes": 10880760
+    },
+    "debian-aarch64.qcow2": {
+      "sha256": "9ed963db17f1c8b6cd282af57b9f34d48031fae8bfe9c8fd85f8af121ef94052",
+      "bytes": 2206662656
+    }
+  },
+  "config_sha256": "92bda6eaf7b51ebb41a17395f35aceaea360268edeb16e6bdf4513002ead038e",
+  "summary_sha256": "17afff79625f26afa82510ca6c7da7e173990e98141de20f90e5bb9997e48eb0",
+  "transport": {
+    "http_status_counts": {
+      "200": 12,
+      "403": 3,
+      "501": 3
+    },
+    "loopback_pcap_bytes": 29005,
+    "loopback_pcap_sha256": "cd30df8d2db5faab3631aa2bc2fcca9d2e74ed276a7efb2c194bd2f8508a136e",
+    "control_pcap_bytes": 24,
+    "control_pcap_linktype": 147,
+    "loopback_pcap_linktype": 1,
+    "backend_denial_packet_observed": false,
+    "backend_latest_packet_epoch_seconds": 1794392026.003804,
+    "backend_attempt_lower_bound_epoch_seconds": 1794392030.1973114
+  },
+  "guest_basics": {
+    "backend_rejection": {
+      "connect_errno": 111,
+      "listening": true,
+      "port": 4567,
+      "root_health": {
+        "auth": "strict",
+        "status": "ok"
+      }
+    },
+    "epoch_ns": 1794392030197311551,
+    "kind": "guest_basics",
+    "loopback_http": {
+      "port": 50661,
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "tempest-loopback"
+    },
+    "loopback_refused": {
+      "connect_errno": 111,
+      "port": 38917
+    },
+    "privilege_tools": {
+      "doas": {
+        "error": "[Errno 2] No such file or directory: 'doas'"
+      },
+      "sudo": {
+        "error": "[Errno 2] No such file or directory: 'sudo'"
+      }
+    },
+    "shared_write": {
+      "blocked": true,
+      "errno": 30,
+      "read_only_filesystem": true
+    },
+    "uid": 1000
+  },
+  "api_checks": [
+    {
+      "bytes": 10,
+      "case": "allow",
+      "end_ns": 1794392030245472551,
+      "error_code": null,
+      "expected_status": 200,
+      "method": "python_http",
+      "path": "/m0-bucket/public.txt",
+      "sha256": "a17424078f7e3eaaa894806cc5cc40e0f86a2635f93969f3e7d5df305413159f",
+      "start_ns": 1794392030245239884,
+      "status": 200
+    },
+    {
+      "bytes": 154,
+      "case": "deny",
+      "end_ns": 1794392030245871468,
+      "error_code": "AccessDenied",
+      "expected_status": 403,
+      "method": "python_http",
+      "path": "/m0-bucket/private.txt",
+      "sha256": "2afa950f5b78fc350a407701fc958410ec67c266f4f24d85575c59f0a494890e",
+      "start_ns": 1794392030245496009,
+      "status": 403
+    },
+    {
+      "bytes": 180,
+      "case": "unsupported",
+      "end_ns": 1794392030246257676,
+      "error_code": "NotImplemented",
+      "expected_status": 501,
+      "method": "python_http",
+      "path": "/m0-bucket?notification",
+      "sha256": "4ba219aa9abab47ae707f259e7600b31d448d1f3021f40955a49ba78539da10b",
+      "start_ns": 1794392030245875718,
+      "status": 501
+    },
+    {
+      "bytes": 10,
+      "case": "allow",
+      "end_ns": 1794392030250918926,
+      "error_code": null,
+      "expected_status": 200,
+      "method": "curl",
+      "path": "/m0-bucket/public.txt",
+      "sha256": "a17424078f7e3eaaa894806cc5cc40e0f86a2635f93969f3e7d5df305413159f",
+      "start_ns": 1794392030246262634,
+      "status": 200
+    },
+    {
+      "bytes": 154,
+      "case": "deny",
+      "end_ns": 1794392030255368676,
+      "error_code": "AccessDenied",
+      "expected_status": 403,
+      "method": "curl",
+      "path": "/m0-bucket/private.txt",
+      "sha256": "aca4d6bf99f0ee17425829d9df341775a5a3ceb780b8ae0cb2675b8feb41f0f2",
+      "start_ns": 1794392030250936384,
+      "status": 403
+    },
+    {
+      "bytes": 180,
+      "case": "unsupported",
+      "end_ns": 1794392030259445676,
+      "error_code": "NotImplemented",
+      "expected_status": 501,
+      "method": "curl",
+      "path": "/m0-bucket?notification",
+      "sha256": "69afc69380419217f41e9f1a190b3e20e5e8df2841dc4f6b6c360d8bfd702c7a",
+      "start_ns": 1794392030255375968,
+      "status": 501
+    },
+    {
+      "case": "allow",
+      "end_ns": 1794392030725365926,
+      "expected_error": null,
+      "method": "aws_cli",
+      "operation": "get-object",
+      "returncode": 0,
+      "start_ns": 1794392030259526384,
+      "stderr": "",
+      "stdout_sha256": "50f47bcc838190e1e666c02aae3e5bc1813d3f4683543efb9b569d243425f34e"
+    },
+    {
+      "case": "deny",
+      "end_ns": 1794392031019198260,
+      "expected_error": "AccessDenied",
+      "method": "aws_cli",
+      "operation": "get-object",
+      "returncode": 254,
+      "start_ns": 1794392030725452343,
+      "stderr": "\nAn error occurred (AccessDenied) when calling the GetObject operation (reached max retries: 0): policy does not allow this operation\n",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "unsupported",
+      "end_ns": 1794392031284589177,
+      "expected_error": "NotImplemented",
+      "method": "aws_cli",
+      "operation": "get-bucket-notification-configuration",
+      "returncode": 254,
+      "start_ns": 1794392031019215801,
+      "stderr": "\nAn error occurred (NotImplemented) when calling the GetBucketNotificationConfiguration operation (reached max retries: 0): S3 subresource operation is not yet supported in strict mode\n",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "clock_samples": [
+    {
+      "guest_minus_host_start_ms": 30.631546,
+      "guest_minus_host_end_ms": 20.861546
+    },
+    {
+      "guest_minus_host_start_ms": 30.502962,
+      "guest_minus_host_end_ms": 20.993962
+    },
+    {
+      "guest_minus_host_start_ms": 29.593712,
+      "guest_minus_host_end_ms": 20.812712
+    }
+  ],
+  "agent_probes": {
+    "codex": {
+      "version": "codex-cli 0.167.1",
+      "requests": 8,
+      "returncode": 0,
+      "canary_unchanged": true,
+      "write_canary_exists": false
+    },
+    "claude": {
+      "version": "2.1.319 (Claude Code)",
+      "requests": 8,
+      "returncode": 0,
+      "canary_unchanged": true,
+      "write_canary_exists": false
+    }
+  },
+  "limitations": [
+    "Control PCAP contained only its header; use guest PCAP plus API and syscall evidence.",
+    "The M0 image is an investigation fixture, not the M2/M3 harness implementation.",
+    "CLI isolation was tested with deterministic local API stubs, not benchmark model comparisons.",
+    "Collector status unverified is intentional; the M0 assessment is a manual evidence review."
+  ],
+  "clock_provenance": {
+    "commit": "16d0b55947006a166cfa29dcb8bfe71f65f8c36a",
+    "guest_calibration": "src/ebpf_tracer.rs:152",
+    "guest_epoch_conversion": "src/ebpf_tracer.rs:246",
+    "host_local_timezone_format": "src/log_formatter.rs:94",
+    "observed_host_timezone": "UTC+09:00"
+  },
+  "image_build_inputs_sha256": "cd326dfa0886cee213131c9ebc51bdcaf90b615b083d5cf6d8b37137d69fc366"
+}

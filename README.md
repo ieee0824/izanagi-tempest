@@ -5,7 +5,7 @@
 [Izanagi](https://github.com/ieee0824/izanagi)(AI エージェント用サンドボックス)と
 [LWS](https://github.com/ieee0824/lws)(ローカル AWS シミュレータ)をつなぐオーケストレーション層です。
 
-> ⚠️ M0 の検証基盤を実装中です。本体ハーネスは未実装。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
+> ⚠️ M0 の調査ツールと固定構成での実測を完了しました。本体ハーネスは未実装。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
 
 ## 何をするもの
 
@@ -62,5 +62,16 @@ python3 -m unittest discover -s tests -v
 ```
 
 QEMU の起動・証跡収集の手順は [M0 収集ツール](tools/m0/README.md)、
-初回の実行結果と未確認事項は [M0 実測記録](docs/M0-RESULTS.md) を参照してください。
+最終実測結果と観測上の制約は [M0 実測記録](docs/M0-RESULTS.md) を参照してください。
 本体の build / run コマンドはまだありません。
+
+M0 の基礎プローブと、実モデルを使わない CLI ツール拒否の検証も実装しています。
+後者には対応する CLI とホスト loopback の listen 権限が必要です。
+
+```bash
+python3 tools/m0/probe-agent.py --agent codex --output /private/tmp/tempest-m0-codex-001
+python3 tools/m0/probe-agent.py --agent claude --output /private/tmp/tempest-m0-claude-001
+```
+
+VM の `--guest-probe`・`--guest-file`・`--agent-probe` と固定バイナリ指定 `--izanagi` の手順は
+[M0 収集ツール](tools/m0/README.md)を参照してください。
