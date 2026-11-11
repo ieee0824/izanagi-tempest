@@ -1,5 +1,5 @@
 use crate::policy::Policy;
-use serde::{Deserialize, Deserializer, de};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 use std::{collections::BTreeMap, time::Duration};
 
@@ -30,7 +30,7 @@ pub struct ScenarioInput {
     pub deviation: Deviation,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Setup {
     pub users: Vec<User>,
@@ -39,38 +39,38 @@ pub struct Setup {
     #[serde(default)]
     pub queues: Vec<Queue>,
 }
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct User {
     pub name: String,
     pub policy: Policy,
 }
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Bucket {
     pub name: String,
     #[serde(default)]
     pub objects: Vec<Object>,
 }
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Object {
     pub key: String,
     pub body: String,
 }
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Queue {
     pub name: String,
 }
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Check {
     pub api: String,
     pub resource: String,
     pub result: Outcome,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
     Allow,

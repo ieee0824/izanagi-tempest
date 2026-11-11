@@ -5,7 +5,7 @@
 [Izanagi](https://github.com/ieee0824/izanagi)(AI エージェント用サンドボックス)と
 [LWS](https://github.com/ieee0824/lws)(ローカル AWS シミュレータ)をつなぐオーケストレーション層です。
 
-> M0 の実測と M1 のシナリオ静的検証を実装しています。実行・観測・評価ハーネスは後続です。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
+> M0 の実測、M1 のシナリオ静的検証、M2 のゲストヘルパーを実装しています。VM イメージ整備とホストの実行・評価ハーネスは後続です。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
 
 ## 何をするもの
 
@@ -100,10 +100,35 @@ cargo test --workspace --locked
 検証エラーはフィールド経路と理由を stderr に出し、パーサー由来の行・列があれば併記します。
 
 `crates/tempest-model` が共有型と静的検証、`crates/tempest` が YAML 読み込みと CLI、
-`crates/tempest-guest` は M2 用の雛形です。`run` / `seed` / `probe` / `recorder` はまだありません。
+`crates/tempest-guest` は次節のゲストヘルパーです。ホストの `tempest run` はまだありません。
 API 対応表は [capability.rs](crates/tempest-model/src/capability.rs) に固定ソースの根拠を集約し、
 未知・strict 未対応・現入力形式では必要条件を表せない操作を区別します。
 ポリシーの wildcard は保持し、IAM の認可評価は実装しません。
 
 入力契約・実装順序は [M1 計画](docs/M1-PLAN.md)、パーサー選定の比較は
 [YAML 実測](docs/M1-YAML-PROBE.md) を参照してください。
+
+## 開発: M2 のゲストヘルパー
+
+`tempest-guest` に recorder / claim / seed / probe / seal / export を実装しています。
+root の制御 supervisor と専用 uid の HTTP proxy / LWS を分け、seal で記録を開始します。
+本文をJSONLに保存せず、転送中の長さ・SHA-256、API推定、status / error_code と未完了を記録します。
+probe は allow / deny / unsupported / error、export は complete / 欠損を明示します。
+設定と正確な状態・配送・権限の契約は [M2 ヘルパー](docs/M2-GUEST.md)、
+VM 用設定例は [examples/guest.json](examples/guest.json) を参照してください。
+
+実 LWS の結合試験には、非rootの Unix ホスト、AWS CLI v2、tcpdump と loopback capture の権限が必要です。
+LWS のビルドには C toolchain・make・Perl が必要です（SQLCipher / OpenSSL を同梱ビルド）。
+固定ソースを別ディレクトリへ取得して実行します。
+
+```bash
+git clone https://github.com/ieee0824/lws /private/tmp/tempest-m2-lws-source
+git -C /private/tmp/tempest-m2-lws-source checkout 2c0ea463f334f10a562e54f1cdc7ba8a474029e2
+cargo build --manifest-path /private/tmp/tempest-m2-lws-source/Cargo.toml --release --locked
+cargo build --locked -p tempest-guest
+python3 integration/guest_smoke.py --lws /private/tmp/tempest-m2-lws-source/target/release/lws
+```
+
+一時データ・空きport・ローカルのダミー資格情報だけを使い、実 AWS へ接続しません。
+ホスト試験は development モードであり、VM の doas・owner 制限やホスト→VMの秘密配送の実証とは分けます。
+配送の残る調査は [Issue #13](https://github.com/ieee0824/izanagi-tempest/issues/13) で追跡しています。

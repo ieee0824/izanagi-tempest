@@ -215,7 +215,7 @@ fn check(c: &Check, path: &str, setup: &Setup, errors: &mut Vec<Diagnostic>) {
         errors.push(Diagnostic::new(format!("{path}.resource"), reason));
     }
 }
-fn resource(arn: &str, kind: ResourceKind, setup: &Setup) -> Result<(), &'static str> {
+pub fn resource(arn: &str, kind: ResourceKind, setup: &Setup) -> Result<(), &'static str> {
     if kind == ResourceKind::Global {
         return if arn == "*" {
             Ok(())

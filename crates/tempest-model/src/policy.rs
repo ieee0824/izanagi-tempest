@@ -1,9 +1,10 @@
 use crate::validation::Diagnostic;
-use serde::{Deserialize, Deserializer, de};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use std::{fmt, marker::PhantomData};
 
 /// LWS accepts either one value or an array, without coercing scalar types.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
 pub struct OneOrMany<T>(pub Vec<T>);
 
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for OneOrMany<T> {
@@ -34,7 +35,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for OneOrMany<T> {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "PascalCase")]
 pub struct Policy {
     #[serde(default)]
@@ -42,7 +43,7 @@ pub struct Policy {
     pub statement: OneOrMany<Statement>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "PascalCase")]
 pub struct Statement {
     #[serde(default)]

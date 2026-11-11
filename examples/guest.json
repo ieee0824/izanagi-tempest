@@ -1,0 +1,15 @@
+{
+  "state_dir": "/run/tempest-control",
+  "data_dir": "/var/lib/lws",
+  "evidence_dir": "/var/lib/tempest",
+  "listen": "127.0.0.1:4566",
+  "upstream": "127.0.0.1:4567",
+  "lws": "/usr/local/bin/lws",
+  "aws": "/usr/bin/aws",
+  "tcpdump": "/usr/bin/tcpdump",
+  "capture_interface": "lo",
+  "service_uid": 1001,
+  "service_gid": 1001,
+  "development": false,
+  "timeout_seconds": 30
+}

@@ -2,12 +2,12 @@
 
 ## Project Structure & Module Organization
 
-This repository contains M0 investigation tooling and M1 Rust scenario validation; runtime orchestration is not implemented yet.
+This repository contains M0 investigation tooling, M1 scenario validation, and the M2 guest helper; host runtime orchestration is not implemented yet.
 - `README.md` summarizes the purpose, scope, and phased roadmap.
 - `docs/DESIGN.md` defines the architecture, YAML scenario format, execution lifecycle, evaluation metrics, and constraints.
 - `docs/IMPLEMENTATION.md` defines the planned Phase 1 implementation (Rust workspace layout, in-VM recording and isolation, evaluation logic, milestones).
 
-`tools/m0/` contains the Python evidence collector and QEMU example configuration; `tests/` contains its standard-library unittest checks. `crates/tempest-model` contains shared types and static validation, `crates/tempest` contains the YAML loader and CLI, and `crates/tempest-guest` is an M2 stub. `scenarios/` contains runnable validation inputs. Keep architecture details in `docs/` and update the README when scope or milestones change. The implementation is a thin orchestration layer connecting Izanagi and LWS through configuration and external interfaces.
+`tools/m0/` contains the Python evidence collector and QEMU example configuration; `tests/` contains its standard-library unittest checks. `crates/tempest-model` contains shared types and static validation, `crates/tempest` contains the YAML loader and CLI, and `crates/tempest-guest` contains control/seed/probe and the streaming recorder. `integration/guest_smoke.py` tests the helper with actual LWS, AWS CLI, and tcpdump. `scenarios/` contains runnable validation inputs. Keep architecture details in `docs/` and update the README when scope or milestones change. The implementation is a thin orchestration layer connecting Izanagi and LWS through configuration and external interfaces.
 
 ## Build, Test, and Development Commands
 
@@ -23,7 +23,7 @@ Use two-space indentation in YAML examples. Preserve documented scenario keys su
 
 ## Testing Guidelines
 
-M0 tooling uses Python unittest; no coverage threshold exists yet. Future harness tests should cover reset, seed, execution, observation, evaluation, and reporting. Distinguish authorization denial from unsupported operations, verify corrected policies through `retest`, and check that scenarios reset without cross-run contamination. Record reproducible experiment conditions and retain evidence supporting findings.
+M0 tooling uses Python unittest; no coverage threshold exists yet. M2 mapping tests run with Cargo; run `python3 integration/guest_smoke.py --lws /absolute/path/to/native/lws` for actual local LWS integration (non-root host, AWS CLI, loopback tcpdump permission required). Host development mode does not prove VM uid/doas/owner boundaries or transport secrecy. Future harness tests should cover reset, execution, evaluation, and reporting. Distinguish authorization denial from unsupported operations, verify corrected policies through `retest`, and check that scenarios reset without cross-run contamination. Record reproducible experiment conditions and retain evidence supporting findings.
 
 ## Commit & Pull Request Guidelines
 
