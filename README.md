@@ -5,7 +5,7 @@
 [Izanagi](https://github.com/ieee0824/izanagi)(AI エージェント用サンドボックス)と
 [LWS](https://github.com/ieee0824/lws)(ローカル AWS シミュレータ)をつなぐオーケストレーション層です。
 
-> ⚠️ M0 の調査ツールと固定構成での実測を完了しました。本体ハーネスは未実装。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
+> M0 の実測と M1 のシナリオ静的検証を実装しています。実行・観測・評価ハーネスは後続です。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
 
 ## 何をするもの
 
@@ -63,7 +63,7 @@ python3 -m unittest discover -s tests -v
 
 QEMU の起動・証跡収集の手順は [M0 収集ツール](tools/m0/README.md)、
 最終実測結果と観測上の制約は [M0 実測記録](docs/M0-RESULTS.md) を参照してください。
-本体の build / run コマンドはまだありません。
+Rust のビルド・シナリオ検証は次節を参照してください。
 
 M0 の基礎プローブと、実モデルを使わない CLI ツール拒否の検証も実装しています。
 後者には対応する CLI とホスト loopback の listen 権限が必要です。
@@ -75,3 +75,35 @@ python3 tools/m0/probe-agent.py --agent claude --output /private/tmp/tempest-m0-
 
 VM の `--guest-probe`・`--guest-file`・`--agent-probe` と固定バイナリ指定 `--izanagi` の手順は
 [M0 収集ツール](tools/m0/README.md)を参照してください。
+
+## 開発: M1 のシナリオ静的検証
+
+Rust edition 2024 の toolchain と Cargo が必要です（Rust 1.99.0 / macOS arm64 で検証）。
+依存は Cargo.lock に固定しています。初回は crates.io への接続が必要です。
+
+```bash
+rustup toolchain install stable --component rustfmt --component clippy
+cargo build --workspace --locked
+cargo run --locked -p tempest -- validate scenarios/s3-overread-001.yaml
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
+
+成功時は JSON に ID、元ファイルのバイト列の SHA-256、固定 LWS commit、
+`validation: "static"`、finding / retest の有無、budget を出力します。
+非空 deviation は保持し `deviation_semantics_unchecked: true` と表示します。
+成功は静的な構造・ポリシー構文・API・リソース参照検証を意味します。
+認可・finding・retest・VM 隔離の実行結果は `runtime_checks: "not_performed"` です。
+
+終了コードは成功0、検証エラー1、引数・ファイル読み込みエラー2です。
+検証エラーはフィールド経路と理由を stderr に出し、パーサー由来の行・列があれば併記します。
+
+`crates/tempest-model` が共有型と静的検証、`crates/tempest` が YAML 読み込みと CLI、
+`crates/tempest-guest` は M2 用の雛形です。`run` / `seed` / `probe` / `recorder` はまだありません。
+API 対応表は [capability.rs](crates/tempest-model/src/capability.rs) に固定ソースの根拠を集約し、
+未知・strict 未対応・現入力形式では必要条件を表せない操作を区別します。
+ポリシーの wildcard は保持し、IAM の認可評価は実装しません。
+
+入力契約・実装順序は [M1 計画](docs/M1-PLAN.md)、パーサー選定の比較は
+[YAML 実測](docs/M1-YAML-PROBE.md) を参照してください。

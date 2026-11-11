@@ -1,6 +1,7 @@
 # izanagi-tempest 実装設計 (Phase 1)
 
-ステータス: M0 の調査用ツールと固定構成での実測は完了。本書の本体 CLI・workspace は**予定**であり、まだ動作しない。
+ステータス: M0 の実測と M1 の workspace・`tempest validate` を実装済み。
+実行オーケストレーションとゲスト操作（M2以降）は予定であり、まだ動作しない。
 M0 の収集手順は [tools/m0/README.md](../tools/m0/README.md)、実測状況は [M0-RESULTS.md](M0-RESULTS.md) を参照。
 
 [DESIGN.md](DESIGN.md) が「何を・なぜ」を定めるのに対し、本書は Phase 1(同一 VM 内 PoC)を
@@ -336,7 +337,7 @@ evaluate では各項目について、実際に観測した結果を並べ、�
 
 ### 7.1 シナリオの追加フィールド
 
-DESIGN.md 5.1 の形式に、Phase 1 で次を足す。いずれも任意で、既定値を持つ。
+DESIGN.md 5.1 の形式に次を足す。親項目は任意で、省略時の扱いは下表のとおり。
 
 ```yaml
 expected_finding:
@@ -355,6 +356,27 @@ deviation:              # 6.3 の既定マッピングへの追加・除外
   allow: []             # 逸脱とみなさない検知(ルール名 + 対象パターン)
   deny: []              # 逸脱として追加で数える検知
 ```
+
+M1 の入力契約:
+
+| 項目 | 省略・指定時の扱い |
+|---|---|
+| expected_finding / retest | 親は任意。省略時は生成せず、実施・成功とも数えない。明示 null は拒否 |
+| expected_finding 指定時 | description と構造化 evidence(api/resource/result) が必要。result は allow |
+| retest 指定時 | policy / expect が必要。user は1ユーザーの場合のみ補完。複数なら明示必須、null・未知ユーザーは拒否 |
+| budget | 省略・{} は max_calls=50 / timeout=15m。部分指定は省略した子だけ補完。親・子の null は拒否 |
+| timeout | ms/s/m/h を付けた非負整数。overflow は拒否。max_calls=0 と timeout=0ms は静的には許容 |
+| success_criteria | 省略は[]。文字列または1ラベル→文字列の mapping |
+| deviation | 省略は allow/deny とも[]。非空項目はJSON互換値として保持し、意味論未検証と表示。M1では適用しない |
+
+複数 setup.users でも全ポリシー・API・リソースの静的検証はできる。
+expect / evidence の主体を自然文から推定せず、実行時の主体選択は後続で設計する。
+入力経路は yaml_serde=0.10.7 の native Value（重複拒否）→特殊値検査→JSON互換値→共有型→意味検証。
+非文字列キー、custom tag、merge key、非有限数、複数 document を拒否する。
+未知フィールド・型エラーも拒否し、失敗には経路と理由を付ける。
+API と ARN の共通照合は expect / evidence / retest.expect のすべてに適用する。
+versionId や SES identity setup など、入力形式で必要条件を表せない操作は
+strict 未対応（501）と混同せず、input representation error とする。
 
 シナリオの検証(`tempest validate`)では、YAML の形に加えて次も確かめる。
 
@@ -404,6 +426,10 @@ DESIGN.md 5.1「モデル比較の実験条件」を自動で記録する。
 
 ## 8. ソース構成
 
+以下は Phase 1 全体の構成予定。M1 で存在するのは各 crate、共有シナリオ型・静的検証、
+`tempest/src/scenario.rs` と validate CLI、正常シナリオ・回帰テストのみ。
+seed バンドル・記録型や残りのディレクトリは後続で追加する。
+
 ```
 Cargo.toml                       workspace
 crates/
@@ -424,10 +450,10 @@ scenarios/                       シナリオ定義(s3-overread-001.yaml など)
 tests/                           結合テスト
 ```
 
-主な依存の候補:`tokio`、`hyper`(recorder)、`clap`、`serde` / `serde_json`、YAML パーサー
-(`serde_yaml` はアーカイブ済みのため後継を選ぶ)、`sha2`、`regex`、`anyhow` / `thiserror`。
+M1 の依存は `serde` / `serde_json`、`serde_path_to_error`、`yaml_serde=0.10.7`、`sha2`。
+後続の依存候補は `tokio`、`hyper`(recorder)、`clap`、`regex`、`anyhow` / `thiserror`。
 
-予定している CLI(未実装):
+CLI（`validate` のみ実装済み。他は予定）:
 
 ```bash
 tempest validate scenarios/s3-overread-001.yaml
