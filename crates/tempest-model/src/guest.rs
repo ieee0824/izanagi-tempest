@@ -56,3 +56,21 @@ pub struct ApiRecord {
     pub mapping_diagnostic: Option<String>,
     pub transport_error: Option<String>,
 }
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecorderStats {
+    pub accepted_connections: u64,
+    pub admission_rejected: u64,
+    pub http_parse_errors: u64,
+    pub connection_errors: u64,
+    pub task_errors: u64,
+}
+impl RecorderStats {
+    pub fn lossless(&self) -> bool {
+        self.admission_rejected == 0
+            && self.http_parse_errors == 0
+            && self.connection_errors == 0
+            && self.task_errors == 0
+    }
+}

@@ -120,6 +120,9 @@ export で受付停止・有限drain・JSONL sync・capture停止待ちを完了
 要求・応答それぞれのhash、complete、transport_error、欠損を記録する。
 Authorization がない場合は presigned query の Credential も抽出する選択とし、query 全体は保存しない。
 501でも抽出したAKIDは保持する。AKIDは観測した名乗りであり、署名検証の証拠ではない。
+接続上限による拒否、HTTP解析・接続エラー、task異常、統計欠損は完全性へ反映する。
+manifestのcomplete_scopeはrecorder_internalで、agent経路強制はnot_verified。
+backend直通を拒否するVMのowner制限とrunの評価適格性は#4/#5/#6で別に確認する。
 
 ### 3.3 ハーネス専用操作をエージェントから守る
 

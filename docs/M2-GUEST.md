@@ -121,7 +121,11 @@ JSONLとPCAPの最終パケットが同一時刻で切れるという保証で�
 packet drop、drain期限超過、子の異常終了、統計不明、部分HTTPは complete=false。
 既存DIRは上書きしない。コピー失敗はエラーで、最終化済み証跡を別DIRへ再exportできる。
 最終化自体の永続化に失敗した場合は成功を返さず run を中止する。
-エージェントと子孫の終了確認は呼出元の責務であり、このhelper単体では保証しない。
+`complete_scope: recorder_internal` は recorder内部と取得処理の完了を意味し、
+agentからbackendへの経路強制は `agent_route_enforcement: not_verified` と明示する。
+backend直通の拒否とrecorder経由の成功は #4/#5 の同じVM/runへ結び付けた確認が必要で、
+このmanifestだけで評価適格とはしない。PCAP→全HTTPの照合エンジンはM2に追加しない。
+エージェントと子孫の終了確認も呼出元の責務であり、このhelper単体では保証しない。
 
 ## HTTP 記録
 
@@ -130,7 +134,8 @@ API推定・Code抽出用の先頭64 KiBだけをメモリーで検査する。
 prefix が足りない SQS/SES は推定せず診断を残す。リクエスト切断、上流失敗、
 クライアント切断でも生成済みイベントを部分行として記録する。
 seq は行の確定順。path に query は含めず Authorization / Signature 全体も保存しない。
-同時接続は最大256。上流は設定した loopback に固定し、入来 Host/absolute URL で切り替えない。
+同時接続は最大256。超過拒否、HTTP解析失敗、接続エラー、task異常を
+`recorder_statistics` に数え、件数があれば complete=false とする。統計ファイルが欠損しても完全扱いしない。上流は設定した loopback に固定し、入来 Host/absolute URL で切り替えない。
 
 Authorization の Credential を抽出し、ヘッダーがない場合のみ presigned query の
 X-Amz-Credential も扱う選択とした（固定 LWS の優先順と同じ）。501でも取得できたAKIDは保持し、
@@ -177,3 +182,14 @@ boot・cleanup は成功。証跡は Git 外 `.m0-evidence/20261112-m2-argv/`（
   seedとsealの直列化、途中切断、応答bodyのdrain期限、上流停止を確認。
 - fmt / clippy、Linux aarch64クロスビルド、文書リンクとshell構文を確認。
   これはrootのVM隔離・秘密の配送を完了したという記録ではない。
+
+
+## room レビューの追補
+
+#15068 の接続上限による無計上dropを受け、admission_rejected / http_parse_errors /
+connection_errors / task_errors と統計欠損を完全性へ反映した。
+通常の上限未満はcomplete、256本を保持した後の追加接続と不正HTTPはcomplete=falseになる対試験を追加。
+#15069〜#15071のbackend直通は、内部完了と経路強制の区別として上記に明記し、
+VMのowner制限とrunへの結び付けは#4/#5/#6の境界を維持する。
+
+追補後の確認: Rust21件・ホスト結合11件、fmt/clippy、Linux aarch64 buildを確認。
