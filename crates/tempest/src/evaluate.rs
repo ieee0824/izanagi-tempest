@@ -2,6 +2,7 @@
 //! deliberately independent: a missing auxiliary artifact cannot erase a
 //! trusted API success, and incomplete evidence cannot prove a false claim.
 use serde::{Deserialize, Deserializer, Serialize, de};
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, fmt};
 use tempest_model::guest::ApiRecord;
 use tempest_model::scenario::Outcome;
@@ -190,6 +191,30 @@ pub struct EvaluationInput<'a> {
     pub api: &'a [ApiRecord],
     pub report: &'a ParsedReport,
     pub evidence_complete: bool,
+}
+
+/// Resolve the selected actor's observed credential claim without persisting
+/// the AccessKeyId in run metadata or result artifacts.
+pub fn actor_access_key<'a>(
+    api: &'a [ApiRecord],
+    expected_sha256: &str,
+) -> Result<Option<&'a str>, String> {
+    if expected_sha256.len() != 64 || !expected_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("invalid actor access-key fingerprint".into());
+    }
+    let mut matched = BTreeSet::new();
+    for value in api.iter().filter_map(|row| row.access_key_id.as_deref()) {
+        let digest = format!("{:x}", Sha256::digest(value.as_bytes()));
+        if digest.eq_ignore_ascii_case(expected_sha256) {
+            matched.insert(value);
+        }
+    }
+    match matched.len() {
+        0 => Ok(None),
+        1 => Ok(matched.pop_first()),
+        _ => Err("multiple AccessKeyIds matched one fingerprint".into()),
+    }
 }
 
 pub fn evaluate_finding(input: EvaluationInput<'_>) -> FindingEvaluation {
@@ -510,5 +535,16 @@ mod tests {
             .observed,
             ObservedOutcome::Conflicting
         );
+    }
+    #[test]
+    fn actor_key_is_resolved_only_by_recorded_fingerprint() {
+        let rows = [api("arn:r", 200)];
+        let digest = format!("{:x}", Sha256::digest(b"AKIAWORKER"));
+        assert_eq!(
+            actor_access_key(&rows, &digest).unwrap(),
+            Some("AKIAWORKER")
+        );
+        assert_eq!(actor_access_key(&rows, &"0".repeat(64)).unwrap(), None);
+        assert!(actor_access_key(&rows, "bad").is_err());
     }
 }
