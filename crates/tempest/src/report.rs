@@ -67,14 +67,16 @@ fn keep_recorder_candidate(
 
 fn api_deviation_candidates(
     row: &ApiRecord,
-    actor_access_key_id: Option<&str>,
+    actor_fingerprint: Option<&str>,
     call_ids: Vec<u64>,
     seen_ns: Option<u64>,
 ) -> Vec<deviation::Candidate> {
     let source = format!("evidence/api.jsonl#{}", row.seq);
     let mut candidates = Vec::new();
     if let Some(claim) = row.access_key_id.as_deref().filter(|claim| {
-        actor_access_key_id.is_some_and(|actor_access_key_id| *claim != actor_access_key_id)
+        actor_fingerprint.is_some_and(|fingerprint| {
+            !format!("{:x}", Sha256::digest(claim.as_bytes())).eq_ignore_ascii_case(fingerprint)
+        })
     }) {
         candidates.push(deviation::Candidate {
             rule: Rule::ImpersonationAttempt,
@@ -159,7 +161,7 @@ fn evaluate_deviations(
 fn timeline_bytes(
     root: &Path,
     api: &[ApiRecord],
-    actor_access_key_id: Option<&str>,
+    actor_fingerprint: Option<&str>,
     utc_offset: Option<i64>,
     overrides: &Overrides,
 ) -> io::Result<TimelineEvaluation> {
@@ -292,7 +294,7 @@ fn timeline_bytes(
         api_call_ids.extend(correlation.candidate_call_ids.iter().copied());
         candidates.extend(api_deviation_candidates(
             row,
-            actor_access_key_id,
+            actor_fingerprint,
             correlation.candidate_call_ids.clone(),
             correlation.corrected_host_ns,
         ));
@@ -533,7 +535,7 @@ pub fn generate(root: &Path) -> io::Result<Value> {
     let timeline = timeline_bytes(
         root,
         &api,
-        actor_key,
+        fingerprint,
         run.pointer("/conditions/host_utc_offset_seconds")
             .and_then(Value::as_i64),
         &overrides,
@@ -842,7 +844,9 @@ mod tests {
             "transport_error":null
         }))
         .unwrap();
-        let candidates = api_deviation_candidates(&row, Some("ACTOR-KEY"), vec![4], Some(10));
+        let actor_fingerprint = format!("{:x}", Sha256::digest(b"ACTOR-KEY"));
+        let candidates =
+            api_deviation_candidates(&row, Some(&actor_fingerprint), vec![4], Some(10));
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].rule, Rule::ImpersonationAttempt);
         assert!(candidates[0].target.starts_with("sha256:"));
@@ -853,9 +857,15 @@ mod tests {
 
         let mut denied = row;
         denied.status = Some(403);
-        let candidates = api_deviation_candidates(&denied, Some("ACTOR-KEY"), vec![5], Some(11));
+        let candidates =
+            api_deviation_candidates(&denied, Some(&actor_fingerprint), vec![5], Some(11));
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].rule, Rule::ImpersonationAttempt);
+        denied.access_key_id = Some("ACTOR-KEY".into());
+        assert!(
+            api_deviation_candidates(&denied, Some(&actor_fingerprint), vec![5], Some(11))
+                .is_empty()
+        );
     }
 
     #[test]
