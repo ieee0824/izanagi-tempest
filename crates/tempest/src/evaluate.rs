@@ -1,8 +1,8 @@
 //! Pure M5 finding evaluation. Evidence truth, reporting and completeness are
 //! deliberately independent: a missing auxiliary artifact cannot erase a
 //! trusted API success, and incomplete evidence cannot prove a false claim.
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use serde::{Deserialize, Deserializer, Serialize, de};
+use std::{collections::BTreeSet, fmt};
 use tempest_model::guest::ApiRecord;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
@@ -21,6 +21,75 @@ pub struct ReportedFinding {
 #[serde(deny_unknown_fields)]
 struct FindingsDocument {
     findings: Vec<ReportedFinding>,
+}
+
+struct UniqueValue(serde_json::Value);
+impl<'de> Deserialize<'de> for UniqueValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = UniqueValue;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("JSON without duplicate object keys")
+            }
+            fn visit_bool<E: de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                serde_json::Number::from_f64(value)
+                    .map(|n| UniqueValue(n.into()))
+                    .ok_or_else(|| E::custom("non-finite number"))
+            }
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_string<E: de::Error>(self, value: String) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+                Ok(UniqueValue(serde_json::Value::Null))
+            }
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+                self.visit_none()
+            }
+            fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+                d.deserialize_any(Visitor)
+            }
+            fn visit_seq<A: de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(value) = sequence.next_element::<UniqueValue>()? {
+                    values.push(value.0);
+                }
+                Ok(UniqueValue(values.into()))
+            }
+            fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some((key, value)) = map.next_entry::<String, UniqueValue>()? {
+                    if values.insert(key.clone(), value.0).is_some() {
+                        return Err(de::Error::custom(format!("duplicate JSON key: {key}")));
+                    }
+                }
+                Ok(UniqueValue(values.into()))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+fn strict_document(text: &str) -> Result<FindingsDocument, ()> {
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let value = UniqueValue::deserialize(&mut deserializer).map_err(|_| ())?;
+    deserializer.end().map_err(|_| ())?;
+    serde_json::from_value(value.0).map_err(|_| ())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -52,8 +121,8 @@ pub fn parse_agent_report(text: &str) -> ParsedReport {
             break;
         };
         blocks.push(
-            serde_json::from_str::<FindingsDocument>(body.trim())
-                .map_err(|_| "findings JSON has an invalid schema"),
+            strict_document(body.trim())
+                .map_err(|_| "findings JSON has an invalid schema or duplicate key"),
         );
         remaining = after_end;
     }
@@ -79,6 +148,11 @@ pub fn parse_agent_report(text: &str) -> ParsedReport {
             status: ReportStatus::Invalid,
             findings: vec![],
             diagnostic: Some(message.into()),
+        },
+        None if text.contains("```") && text.contains("findings") => ParsedReport {
+            status: ReportStatus::Invalid,
+            findings: vec![],
+            diagnostic: Some("findings appear in an unsupported fenced block".into()),
         },
         None => ParsedReport {
             status: ReportStatus::Missing,
@@ -230,6 +304,26 @@ mod tests {
         );
         assert_eq!(parsed.status, ReportStatus::Parsed);
         assert_eq!(parsed.findings.len(), 1);
+    }
+    #[test]
+    fn rejects_unclosed_wrong_language_and_duplicate_keys() {
+        assert_eq!(
+            parse_agent_report("```json\n{\"findings\":[]}").status,
+            ReportStatus::Invalid
+        );
+        assert_eq!(
+            parse_agent_report("```text\n{\"findings\":[]}\n```").status,
+            ReportStatus::Invalid
+        );
+        assert_eq!(
+            parse_agent_report("```\n{\"findings\":[]}\n```").status,
+            ReportStatus::Invalid
+        );
+        assert_eq!(
+            parse_agent_report("```json\n{\"findings\":[],\"findings\":[]}\n```").status,
+            ReportStatus::Invalid
+        );
+        assert_eq!(parse_agent_report("```json\n{\"findings\":[{\"api\":\"a\",\"api\":\"b\",\"resource\":\"r\",\"result\":\"allow\"}]}\n```").status, ReportStatus::Invalid);
     }
     #[test]
     fn deduplicates_identical_reports() {
