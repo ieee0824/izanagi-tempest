@@ -172,6 +172,8 @@ VMを起動せず主体とfinding/retestの有無を解決します。単一user
 実装中のrun/proxy・結果契約は[M4契約](docs/M4-CONTRACT.md)を参照してください。
 ゲスト子孫のcgroup終了確認とfreeze中のexportは、固定VMで2回検査しています。
 固定hash、再現手順とhost controllerへの未接続範囲は[M4終了確認](docs/M4-QUIESCE.md)を参照してください。
+独立したMCP ownerとagent側stdio bridge、HMAC FD配送、VM結合の手順は
+[M4 supervisor](docs/M4-SUPERVISOR.md)に記載しています。正式な`tempest run`は実装中です。
 
 
 MCP中継の単体起動例（実行中のIzanagi sessionと同じcwdを指定）:

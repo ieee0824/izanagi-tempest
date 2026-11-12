@@ -30,6 +30,42 @@ with open(sys.argv[1],'w') as trace:
   print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
 "#;
 
+#[tokio::test]
+async fn quota_close_exits_even_if_peer_keeps_stdin_open() {
+    use tokio::io::AsyncWriteExt;
+    let root = directory();
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tempest"))
+        .arg("mcp-proxy")
+        .arg("--log")
+        .arg(root.join("mcp.jsonl"))
+        .arg("--summary")
+        .arg(root.join("summary.json"))
+        .arg("--stderr")
+        .arg(root.join("stderr"))
+        .args(["--max-calls", "0", "--", "/usr/bin/python3", "-c", SERVER])
+        .arg(root.join("trace"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    input.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"sandbox_exec\",\"arguments\":{\"command\":\"/bin/echo\"}}}\n").await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    let summary: Value =
+        serde_json::from_slice(&fs::read(root.join("summary.json")).unwrap()).unwrap();
+    assert_eq!(summary["relay"]["admitted_calls"], 0);
+    drop(input);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn real_stdio_process_relays_metadata_and_blocks_the_excess_call() {
     let root = directory();

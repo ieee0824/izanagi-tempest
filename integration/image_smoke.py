@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import select
+import secrets
 import signal
 import socket
 import subprocess
@@ -30,10 +32,25 @@ def main():
     parser.add_argument('--image', type=Path, required=True)
     parser.add_argument('--build-inputs', type=Path, help='prepare.py inputs.json; defaults to the standard build layout')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--tempest', type=Path, help='exercise the independent Rust MCP supervisor/bridge for measured GETs')
     args = parser.parse_args()
     os.umask(0o077)
     output = args.output.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
+    if args.tempest is not None:
+        snapshot = output / 'tempest-host'
+        shutil.copyfile(args.tempest.resolve(), snapshot)
+        snapshot.chmod(0o700)
+        args.tempest = snapshot
+    # Each run owns a dummy transport HMAC key; ambient transport credentials
+    # never decide which secret the VM and its MCP clients use.
+    transport_hmac = secrets.token_hex(32)
+    hmac_path = output / 'izanagi-hmac'
+    hmac_path.write_text(transport_hmac)
+    hmac_path.chmod(0o600)
+    environment = dict(os.environ)
+    environment.pop('IZANAGI_SHARED_SECRET', None)
+    environment['IZANAGI_SECRET_FILE'] = str(hmac_path)
     inputs_path = (args.build_inputs or args.image.resolve().parents[2] / 'inputs.json').resolve()
     build_inputs = json.loads(inputs_path.read_bytes())
     box = Mailbox(output / 'workspace')
@@ -54,7 +71,7 @@ def main():
         (output / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
     def execute(*command, timeout=30):
         return subprocess.run(base + ['exec', '--', *command], cwd=box.workspace,
-                              capture_output=True, text=True, timeout=timeout)
+                              capture_output=True, text=True, timeout=timeout, env=environment)
     def check(name, command, expected=0):
         result = execute('/bin/sh', '-c', command)
         report['checks'][name] = {'passed': result.returncode == expected,
@@ -110,11 +127,42 @@ def main():
             raise RuntimeError(operation + ': response lost; discard VM, do not repeat operation')
         finally:
             request.remove()
-    secret_markers = ['PRIVATE-DUMMY']
+    secret_markers = ['PRIVATE-DUMMY', transport_hmac]
     process = None
+    mcp_owner = None
+    mcp_bridge = None
+    mcp_directory = output / 'agent-evidence'
+    rpc_id = 0
+    def rpc(method, params):
+        nonlocal rpc_id
+        rpc_id += 1
+        request = {'jsonrpc': '2.0', 'id': rpc_id, 'method': method, 'params': params}
+        mcp_bridge.stdin.write((json.dumps(request) + '\n').encode())
+        mcp_bridge.stdin.flush()
+        frame = bytearray()
+        deadline = time.monotonic() + 40
+        while not frame.endswith(b'\n'):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([mcp_bridge.stdout], [], [], remaining)[0]:
+                raise RuntimeError('MCP bridge response deadline')
+            chunk = os.read(mcp_bridge.stdout.fileno(), 65536)
+            if not chunk:
+                raise RuntimeError('MCP bridge response lost')
+            frame.extend(chunk)
+            assert len(frame) <= 8 * 1024 * 1024
+        response = json.loads(frame)
+        assert response['id'] == rpc_id and response['jsonrpc'] == '2.0'
+        return response
+    def agent_check(name, command):
+        if args.tempest is None:
+            return check(name, command)
+        response = rpc('tools/call', {'name': 'sandbox_exec', 'arguments': {'command': '/bin/sh', 'args': ['-c', command]}})
+        assert not response.get('error') and not response['result'].get('isError'), name
+        report['checks'][name] = {'passed': True, 'route': 'mcp_session_bridge', 'response': response}
+        save()
     try:
         with (output / 'up.stdout').open('w') as stdout, (output / 'up.stderr').open('w') as stderr:
-            process = subprocess.Popen(base + ['up'], cwd=box.workspace, stdout=stdout, stderr=stderr, start_new_session=True)
+            process = subprocess.Popen(base + ['up'], cwd=box.workspace, stdout=stdout, stderr=stderr, start_new_session=True, env=environment)
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline and process.poll() is None:
             if 'サンドボックスを起動しました' in (output / 'up.stdout').read_text():
@@ -252,7 +300,6 @@ def main():
         # Exercise surviving descendants across three parent termination modes.
         # This measures these concrete cases; the M4 general lifecycle stays separate.
         for mode in ['normal', 'timeout', 'abnormal']:
-            import secrets
             result_path = '/tmp/tempest-actor-' + secrets.token_hex(16) + '.json'
             child_code = ("import os,time,json,errno\nfrom pathlib import Path\n"
                           "denied=0; unexpected=[]\n"
@@ -296,10 +343,43 @@ def main():
             assert stopped.returncode == 0, 'live descendant remains before export'
             save()
         call('seal', credential)
+        if args.tempest is not None:
+            mcp_directory.mkdir(mode=0o700)
+            socket_path = mcp_directory / 's'
+            with (mcp_directory / 'owner.stderr').open('wb') as stderr:
+                mcp_owner = subprocess.Popen([str(args.tempest.resolve()), 'mcp-session', str(socket_path),
+                    '--log', str(mcp_directory / 'mcp.jsonl'), '--summary', str(mcp_directory / 'summary.json'),
+                    '--stderr', str(mcp_directory / 'upstream.stderr'), '--cwd', str(box.workspace),
+                    '--secret-file', str(hmac_path),
+                    '--max-calls', '2', '--timeout-ms', '30000', '--', str(args.izanagi.resolve()), 'mcp'],
+                    stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True, env=environment)
+            deadline = time.monotonic() + 10
+            while not socket_path.exists():
+                assert mcp_owner.poll() is None and time.monotonic() < deadline
+                time.sleep(0.02)
+            mcp_bridge = subprocess.Popen([str(args.tempest.resolve()), 'mcp-connect', str(socket_path)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
+                env={key: environment[key] for key in ['HOME', 'PATH', 'TZ'] if key in environment})
+            assert 'result' in rpc('initialize', {})
+            tools = rpc('tools/list', {})['result']['tools']
+            assert [tool['name'] for tool in tools] == ['sandbox_status', 'sandbox_exec', 'sandbox_shell']
         header = 'AWS4-HMAC-SHA256 Credential=' + worker + '/local/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=LOCAL-DUMMY'
-        check('agent_proxy', 'curl -fsS -H ' + shlex.quote('Authorization: ' + header) + ' http://127.0.0.1:4566/public-data/readme.txt')
+        agent_check('agent_proxy', 'curl -fsS -H ' + shlex.quote('Authorization: ' + header) + ' http://127.0.0.1:4566/public-data/readme.txt')
         report['checks']['sealed_seed_rejected'] = call('seed', credential, expected_error=True, setup=bundle)
-        check('agent_proxy_final', 'curl -fsS -H ' + shlex.quote('Authorization: ' + header) + ' http://127.0.0.1:4566/public-data/end.txt')
+        agent_check('agent_proxy_final', 'curl -fsS -H ' + shlex.quote('Authorization: ' + header) + ' http://127.0.0.1:4566/public-data/end.txt')
+        if args.tempest is not None:
+            denied = rpc('tools/call', {'name': 'sandbox_exec', 'arguments': {'command': '/usr/bin/touch', 'args': ['/tmp/tempest-budget-should-not-exist']}})
+            assert denied['error']['code'] == -32001
+            # Leave bridge stdin open: supervisor EOF must still terminate it.
+            assert mcp_bridge.wait(timeout=10) == 0
+            assert mcp_owner.wait(timeout=10) == 0
+            receipt = json.loads((mcp_directory / 'summary.json').read_bytes())['supervisor']
+            assert receipt['relay']['admitted_calls'] == receipt['relay']['completed_calls'] == 2
+            assert receipt['relay']['drain'] and not receipt['relay']['uncertain']
+            assert receipt['upstream_exited_successfully']
+            check('budget_request_not_executed', 'test ! -e /tmp/tempest-budget-should-not-exist')
+            report['checks']['mcp_supervisor'] = {'passed': True, 'summary': receipt,
+                'tempest_sha256': sha(args.tempest), 'scope': 'rpc_transport_only'}
         wrong_identity = {**daemon_identity, 'start_ticks': '0'}
         report['checks']['wrong_daemon_export_rejected'] = call('export', credential, expected_error=True, daemon_identity=wrong_identity)
         # A detached UID1000 process outlives its parent and continues writing.
@@ -352,9 +432,17 @@ def main():
         save()
         raise
     finally:
+        for child in [mcp_bridge, mcp_owner]:
+            if child is not None and child.poll() is None:
+                child.terminate()
+                try:
+                    child.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=5)
         if process is not None:
             try:
-                subprocess.run(base + ['down'], cwd=box.workspace, capture_output=True, timeout=30)
+                subprocess.run(base + ['down'], cwd=box.workspace, capture_output=True, timeout=30, env=environment)
             finally:
                 # up can still be in startup retries without a registered session.
                 # Its private process group includes only this test's supervisor/VM.

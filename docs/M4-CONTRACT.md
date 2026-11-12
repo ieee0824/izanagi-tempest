@@ -149,7 +149,8 @@ agent入力のhalf-close時は既に受信したqueueを処理できるが、con
 実VMでの非0終了/外側timeout故障注入とcontrollerのexport禁止への接続はまだ行っていない。
 
 CLIのlog/summary/stderrは同一user所有0700の親に新規0600で作る。
-既存fileを上書きせず、上流へHOME/PATH/TZとTERM=dumb以外の環境を引き継がない。
+既存fileを上書きせず、上流へHOME/PATH/TZとTERM=dumb以外のambient環境を引き継がない。
+transport HMACはcontrollerの明示的な私有FDで渡す。[独立supervisor](M4-SUPERVISOR.md)を参照。
 summaryのscopeはrpc_transport_onlyで、CLI終了0も実験成功やguest子孫終了を意味しない。
 agent側書込み先が閉じても上流応答をdrainし、結果不明なら通常exportを禁止する扱いをcallerへ返す。
 
@@ -166,8 +167,8 @@ python3 integration/mcp_metadata.py --tempest target/debug/tempest --izanagi /ab
 `comparison.json`に両実行ファイルのSHA-256と確認範囲を記録する。VMは起動しない。
 
 測定対象agentをkillするgroupの中に、drainを担うsupervisorまで置いてはならない。
-Run controller所有の独立supervisor、agent側stdio bridge、VM cgroup回収、
-clock/run記録、mock E2Eは次の実装であり、#5/#13/#14/#15はまだ完了ではない。
+独立supervisorとagent側stdio bridgeを実装し、固定VMでRPC収束からcgroup exportを検査した。
+正式run controllerへの接続、clock/run記録、mock E2Eは後続であり、#5/#13/#14/#15はまだ完了ではない。
 
 ## one-shot seed状態の所有
 
