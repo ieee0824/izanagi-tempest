@@ -370,7 +370,37 @@ fn timeline_bytes(
     })
 }
 
+fn provenance(root: &Path) -> io::Result<Value> {
+    let mut inputs = serde_json::Map::new();
+    for name in [
+        "scenario.yaml",
+        "run.json",
+        "evidence/api.jsonl",
+        "evidence/mcp.jsonl",
+        "evidence/clock.jsonl",
+        "evidence/agent.stdout",
+        "evidence/izanagi/events.log",
+        "evidence/izanagi/alerts.log",
+    ] {
+        let entry = match read(&root.join(name)) {
+            Ok(bytes) => {
+                json!({"sha256":format!("{:x}", Sha256::digest(&bytes)),"bytes":bytes.len()})
+            }
+            Err(error) => json!({"unavailable":error.to_string()}),
+        };
+        inputs.insert(name.into(), entry);
+    }
+    Ok(json!({
+        "evaluation_id":host_io::random_hex()?,
+        "generated_ns":host_io::now_ns()?,
+        "evaluator_version":env!("CARGO_PKG_VERSION"),
+        "evaluator_sha256":host_io::digest(&std::env::current_exe()?)?,
+        "inputs":inputs
+    }))
+}
+
 pub fn generate(root: &Path) -> io::Result<Value> {
+    let provenance = provenance(root)?;
     let scenario = load(&read(&root.join("scenario.yaml"))?).map_err(|errors| {
         io::Error::other(
             errors
@@ -418,12 +448,13 @@ pub fn generate(root: &Path) -> io::Result<Value> {
     ) {
         Ok(overrides) => overrides,
         Err(reason) => {
-            let result = json!({
+            let mut result = json!({
                 "schema_version":1,"run_id":run["run_id"],"status":run["status"],
                 "scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},
                 "actor":actor,"evaluation":"unavailable","reason":reason,
                 "formal_metrics_eligible":false,"contaminated":false
             });
+            result["provenance"] = provenance;
             host_io::json_replace(&root.join("result.json"), &result)?;
             let markdown = format!(
                 "# Tempest report\n\n- Run: `{}`\n- Scenario: `{}`\n- Actor: `{actor}`\n- Evaluation: `unavailable`\n- Reason: `{}`\n- Formal metrics eligible: `false`\n",
@@ -508,6 +539,8 @@ pub fn generate(root: &Path) -> io::Result<Value> {
         && complete
         && run["status"] == "completed";
     let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"evidence":{"complete":complete,"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"evaluation":if complete{"performed"}else{"partial"}});
+    let mut result = result;
+    result["provenance"] = provenance;
     host_io::json_replace(&root.join("result.json"), &result)?;
     let finding_name = serde_json::to_value(finding.outcome)?
         .as_str()
