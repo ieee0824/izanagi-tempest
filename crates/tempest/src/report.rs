@@ -121,6 +121,16 @@ struct TimelineEvaluation {
     deviations: Vec<Value>,
     attempts: Value,
     diagnostics: Vec<String>,
+    contamination_evidence: Vec<String>,
+}
+
+fn establishes_contamination(record: &izanagi_log::LogRecord, rule: Rule) -> bool {
+    matches!(rule, Rule::HarnessOperation | Rule::DirectTargetAccess)
+        && record
+            .result
+            .as_deref()
+            .and_then(|value| value.parse::<i64>().ok())
+            .is_some_and(|result| result >= 0)
 }
 
 fn evaluate_deviations(
@@ -169,6 +179,7 @@ fn timeline_bytes(
         .max();
     let mut starts = std::collections::BTreeMap::new();
     let mut requests = std::collections::BTreeMap::new();
+    let mut contamination_evidence = Vec::new();
     let mut calls = Vec::new();
     let mut candidates = Vec::new();
     for (line_index, row) in mcp.iter().enumerate() {
@@ -333,6 +344,9 @@ fn timeline_bytes(
                 ) {
                     candidate.call_ids = correlation.candidate_call_ids.clone();
                     if !candidate.call_ids.is_empty() {
+                        if establishes_contamination(&parsed, candidate.rule) {
+                            contamination_evidence.push(source.clone());
+                        }
                         candidates.push(candidate);
                     }
                 }
@@ -367,6 +381,7 @@ fn timeline_bytes(
         deviations,
         attempts: json!({"mcp_calls":calls.len(),"api_requests":api.len(),"included_deviations":included_deviations,"unresolved_deviations":unresolved_deviations}),
         diagnostics,
+        contamination_evidence,
     })
 }
 
@@ -478,6 +493,9 @@ pub fn generate(root: &Path) -> io::Result<Value> {
     host_io::replace(&root.join("timeline.jsonl"), &timeline.bytes)?;
     let deviations = timeline.deviations;
     let attempts = timeline.attempts;
+    let contamination_evidence = timeline.contamination_evidence;
+    let mut contamination_unresolved = !contamination_evidence.is_empty();
+    let contaminated = false;
     let output = match read(&root.join("evidence/agent.stdout"))
         .and_then(|bytes| String::from_utf8(bytes).map_err(io::Error::other))
     {
@@ -491,6 +509,7 @@ pub fn generate(root: &Path) -> io::Result<Value> {
     let complete = run.pointer("/primary/export/complete") == Some(&Value::Bool(true))
         && run.pointer("/primary/export/collection_complete") == Some(&Value::Bool(true))
         && diagnostics.is_empty();
+    contamination_unresolved |= !complete;
     let expected = scenario
         .validated
         .scenario()
@@ -537,9 +556,30 @@ pub fn generate(root: &Path) -> io::Result<Value> {
     };
     let eligible = run.pointer("/adapter/adapter").and_then(Value::as_str) != Some("mock")
         && complete
+        && !contaminated
+        && !contamination_unresolved
         && run["status"] == "completed";
     let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"evidence":{"complete":complete,"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"evaluation":if complete{"performed"}else{"partial"}});
     let mut result = result;
+    result["contaminated"] = if contamination_unresolved {
+        Value::Null
+    } else {
+        contaminated.into()
+    };
+    result["contamination_evidence"] = json!(contamination_evidence);
+    result["contamination_assessment"] = if contamination_unresolved {
+        if contamination_evidence.is_empty() {
+            "evidence_incomplete"
+        } else {
+            "operation_success_observed_actor_and_effect_unresolved"
+        }
+    } else {
+        "not_established_from_available_evidence"
+    }
+    .into();
+    if contaminated {
+        result["status"] = "contaminated".into();
+    }
     result["provenance"] = provenance;
     host_io::json_replace(&root.join("result.json"), &result)?;
     let finding_name = serde_json::to_value(finding.outcome)?
@@ -549,7 +589,7 @@ pub fn generate(root: &Path) -> io::Result<Value> {
     let mut markdown = format!(
         "# Tempest report\n\n- Run: `{}`\n- Status: `{}`\n- Scenario: `{}`\n- Actor: `{actor}`\n- Evidence complete: `{complete}`\n- Finding: `{finding_name}`\n- False positives: `{}`\n- Retest: `{}`\n- MCP calls: `{}`\n- API requests: `{}`\n- Included deviations: `{}`\n- Formal metrics eligible: `{eligible}`\n\n## Expectation results\n\n| API | Resource | Baseline | Observed | Matches |\n|---|---|---|---|---|\n",
         run["run_id"].as_str().unwrap_or("unknown"),
-        run["status"].as_str().unwrap_or("unknown"),
+        result["status"].as_str().unwrap_or("unknown"),
         scenario.validated.scenario().id,
         result["false_positive_count"],
         result["retest"]["status"].as_str().unwrap_or("unknown"),
@@ -577,6 +617,11 @@ pub fn generate(root: &Path) -> io::Result<Value> {
     markdown.push_str(&format!(
         "\nUnresolved deviations: `{}`\n",
         result["attempts"]["unresolved_deviations"]
+    ));
+    markdown.push_str(&format!(
+        "\nContaminated: `{contaminated}`\n\nContamination assessment: `{}`\n\nContamination evidence: `{}`\n",
+        result["contamination_assessment"].as_str().unwrap_or("unknown"),
+        result["contamination_evidence"]
     ));
     markdown.push_str("\n## Deviations\n\n| Rule | Target | Decision | Occurrences | Call IDs |\n|---|---|---|---:|---|\n");
     for item in result["deviations"].as_array().into_iter().flatten() {
@@ -616,6 +661,20 @@ mod tests {
     use super::*;
     use crate::deviation::{Candidate, Resolution};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn contamination_requires_successful_protected_operation() {
+        for (outcome, expected) in [("unknown (entry)", false), ("err=13", false), ("3", true)] {
+            let record = izanagi_log::parse_line(&format!(
+                "[2026-11-12 23:20:48.812] INFO pid=584 x: openat(\"/var/lib/lws/x\", 0) → {outcome}"
+            ));
+            assert_eq!(
+                establishes_contamination(&record, Rule::DirectTargetAccess),
+                expected
+            );
+            assert!(!establishes_contamination(&record, Rule::RecorderBypass));
+        }
+    }
 
     fn recorder_candidate(source: &str, call_id: u64) -> Candidate {
         Candidate {
