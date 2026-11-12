@@ -101,3 +101,18 @@ planの8試験は4presence、複数userの明示解決、retestの限定置換�
 `DrainReceipt`はRPC収束だけの証拠であり、ゲストprocess終了の証明ではない。
 4試験で上限/0/期限/重複/未観測応答/接続喪失/期限後応答を確認する。
 実MCP relayの中継・ログ・通知/並列応答とHost/VM shutdownへの接続は未実装。
+
+
+### 固定MCPの外側timeoutに関する反例
+
+固定Izanagiの`src/commands/mcp/mod.rs`はJSON行ごとに応答を待つ逐次server。
+`src/commands/mcp/exec_capture.rs`も300秒で`exec_on_session_raw`をtimeoutする一方、
+guestの`izanagi-agent/src/exec.rs`の300秒はguest側でspawnした後から始まる。
+したがってMCP側timeout/exec transport errorの応答だけで、guest callbackの終了は証明できない。
+RPC収束receiptとguest終了確認を同一視しない。
+
+relayではtool呼出しを上流へ無制限に先送りせず、未転送queueと実inflightを区別する。
+上流のexec失敗・不明な応答/接続喪失等でguest完了を確認できなければ、受付閉鎖済みでも
+通常exportへ進めずVM破棄と証跡欠損理由を記録する。
+コマンドの非0終了（例:期待した認可拒否）をtransport失敗と混同しない判別は、
+固定serverの結果形式と実際のRPC/VM故障注入で検証してから使用する。
