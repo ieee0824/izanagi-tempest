@@ -635,7 +635,7 @@ fn finalize(root: &Path, report: &mut Value, success: &mut bool) -> io::Result<(
     report["execution_status"] = report["status"].clone();
     report["finished_ns"] = host_io::now_ns()?.into();
     host_io::json_replace(&root.join("run.json"), report)?;
-    if *success {
+    {
         match evaluation_report::generate(root) {
             Ok(result) => {
                 report["evaluation"] = result["evaluation"].clone();
@@ -991,6 +991,9 @@ mod tests {
         finalize(&root, &mut report, &mut success).unwrap();
         assert!(!success);
         assert_eq!(report["artifact_failure"], "unexpected_artifacts");
+        assert_eq!(report["execution_status"], "aborted");
+        assert_eq!(report["evaluation"], "unavailable");
+        assert!(root.join("evaluation-state.json").is_file());
         assert!(
             report["artifacts"]["unexpected"]
                 .as_array()
