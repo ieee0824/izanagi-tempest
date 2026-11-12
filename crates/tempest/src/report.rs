@@ -123,6 +123,29 @@ struct TimelineEvaluation {
     diagnostics: Vec<String>,
 }
 
+fn evaluate_deviations(
+    candidates: Vec<deviation::Candidate>,
+    api_call_ids: &std::collections::BTreeSet<u64>,
+    overrides: &Overrides,
+) -> Vec<Value> {
+    let (resolved, unresolved): (Vec<_>, Vec<_>) = candidates
+        .into_iter()
+        .partition(|candidate| keep_recorder_candidate(candidate, api_call_ids));
+    let mut results: Vec<_> = deviation::deduplicate(resolved)
+        .into_iter()
+        .map(|candidate| {
+            let decision = deviation::decide(&candidate, overrides, true);
+            json!({"candidate":candidate,"decision":decision})
+        })
+        .collect();
+    results.extend(
+        deviation::deduplicate(unresolved).into_iter().map(
+            |candidate| json!({"candidate":candidate,"decision":"unresolved_backend_or_bypass"}),
+        ),
+    );
+    results
+}
+
 fn timeline_bytes(
     root: &Path,
     api: &[ApiRecord],
@@ -328,27 +351,21 @@ fn timeline_bytes(
         serde_json::to_writer(&mut output, &row)?;
         output.push(b'\n');
     }
-    let deviations: Vec<Value> = deviation::deduplicate(candidates)
-        .into_iter()
-        .map(|candidate| {
-            if !keep_recorder_candidate(&candidate, &api_call_ids) {
-                json!({"candidate":candidate,"decision":"unresolved_backend_or_bypass"})
-            } else {
-                let decision = deviation::decide(&candidate, overrides, true);
-                json!({"candidate":candidate,"decision":decision})
-            }
-        })
-        .collect();
+    let deviations = evaluate_deviations(candidates, &api_call_ids, overrides);
     let included_deviations = deviations
         .iter()
         .filter(|item| {
             item["decision"] == "included_default" || item["decision"] == "included_deny"
         })
         .count();
+    let unresolved_deviations = deviations
+        .iter()
+        .filter(|item| item["decision"] == "unresolved_backend_or_bypass")
+        .count();
     Ok(TimelineEvaluation {
         bytes: output,
         deviations,
-        attempts: json!({"mcp_calls":calls.len(),"api_requests":api.len(),"included_deviations":included_deviations}),
+        attempts: json!({"mcp_calls":calls.len(),"api_requests":api.len(),"included_deviations":included_deviations,"unresolved_deviations":unresolved_deviations}),
         diagnostics,
     })
 }
@@ -524,6 +541,10 @@ pub fn generate(root: &Path) -> io::Result<Value> {
             cell(&item["matches_baseline"]),
         ));
     }
+    markdown.push_str(&format!(
+        "\nUnresolved deviations: `{}`\n",
+        result["attempts"]["unresolved_deviations"]
+    ));
     markdown.push_str("\n## Deviations\n\n| Rule | Target | Decision | Occurrences | Call IDs |\n|---|---|---|---:|---|\n");
     for item in result["deviations"].as_array().into_iter().flatten() {
         markdown.push_str(&format!(
@@ -601,6 +622,29 @@ mod tests {
             &recorder_candidate("evidence/izanagi/events.log#1", 8),
             &api_call_ids
         ));
+    }
+
+    #[test]
+    fn mixed_call_preserves_unresolved_logs_and_explicit_attempt_separately() {
+        let overrides = Overrides {
+            allow: vec![],
+            deny: vec![],
+        };
+        let results = evaluate_deviations(
+            vec![
+                recorder_candidate("evidence/izanagi/events.log#1", 7),
+                recorder_candidate("evidence/mcp.jsonl#2", 7),
+            ],
+            &BTreeSet::from([7]),
+            &overrides,
+        );
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["decision"], "included_default");
+        assert_eq!(results[1]["decision"], "unresolved_backend_or_bypass");
+        assert_eq!(
+            results[1]["candidate"]["evidence"],
+            json!(["evidence/izanagi/events.log#1"])
+        );
     }
 
     #[test]
