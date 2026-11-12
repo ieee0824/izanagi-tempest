@@ -34,6 +34,8 @@ pub enum Operation {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
+    #[serde(default)]
+    pub audit_id: Option<String>,
     pub token: Option<String>,
     pub operation: Operation,
 }
@@ -59,6 +61,8 @@ struct State {
     transitions: Vec<Phase>,
     #[serde(default)]
     failed_operations: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    operation_intents: Vec<Value>,
 }
 #[derive(Default, Serialize)]
 struct CaptureStats {
@@ -207,6 +211,8 @@ impl Controller {
             Operation::Export { .. } => "export",
         };
         let authorization_failed = self.authorize(&request).is_err();
+        self.state.operation_intents.push(json!({"operation":operation,"audit_id":request.audit_id,"authorized":!authorization_failed}));
+        self.persist()?;
         let result = self.execute_operation(request).await;
         if result.is_err() {
             let category = if authorization_failed {
@@ -595,6 +601,8 @@ impl Controller {
             serde_json::to_value(&self.state.transitions)?;
         self.manifest.as_mut().unwrap()["failed_control_operations"] =
             serde_json::to_value(&self.state.failed_operations)?;
+        self.manifest.as_mut().unwrap()["control_operation_intents"] =
+            json!(self.state.operation_intents);
         private_write(
             &self.config.evidence_dir.join("manifest.json"),
             &serde_json::to_vec_pretty(self.manifest.as_ref().unwrap())?,
@@ -668,6 +676,7 @@ pub async fn serve(config: Config) -> Result<()> {
             token_digest: None,
             transitions: Vec::new(),
             failed_operations: std::collections::BTreeMap::new(),
+            operation_intents: Vec::new(),
         }
     };
     let mut controller = Controller {

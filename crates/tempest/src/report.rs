@@ -487,6 +487,39 @@ fn provenance(root: &Path) -> io::Result<Value> {
     }))
 }
 
+fn control_request_integrity(manifest: &Value, controls: &[Value]) -> &'static str {
+    let Some(intents) = manifest["control_operation_intents"].as_array() else {
+        return "unavailable";
+    };
+    let mut expected = std::collections::BTreeMap::new();
+    for row in controls.iter().filter(|row| row["state"] == "started") {
+        if let (Some(id), Some(operation)) = (row["id"].as_str(), row["operation"].as_str()) {
+            if matches!(operation, "claim" | "seed" | "probe" | "seal" | "export") {
+                expected.insert(id, operation);
+            }
+        }
+    }
+    if expected.is_empty() {
+        return "unavailable";
+    }
+    for intent in intents {
+        let Some(id) = intent["audit_id"].as_str() else {
+            return "unidentified_request";
+        };
+        let Some(operation) = intent["operation"].as_str() else {
+            return "unavailable";
+        };
+        if expected.remove(id) != Some(operation) {
+            return "unexpected_request";
+        }
+    }
+    if expected.is_empty() {
+        "matched"
+    } else {
+        "incomplete"
+    }
+}
+
 fn control_integrity(manifest: &Value) -> &'static str {
     match manifest.get("control_transitions") {
         None => "unavailable",
@@ -734,7 +767,22 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or(Value::Null);
     let control_integrity = control_integrity(&manifest);
-    let contaminated = control_integrity == "unexpected_transitions";
+    let controls: Vec<Value> = read(&root.join("evidence/control.jsonl"))
+        .ok()
+        .map(|bytes| {
+            bytes
+                .split(|byte| *byte == b'\n')
+                .filter_map(|line| serde_json::from_slice(line).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let request_integrity = control_request_integrity(&manifest, &controls);
+    let contaminated = control_integrity == "unexpected_transitions"
+        || matches!(
+            request_integrity,
+            "unexpected_request" | "unidentified_request"
+        );
+    contamination_unresolved |= matches!(request_integrity, "unavailable" | "incomplete");
     contamination_unresolved |= matches!(control_integrity, "unavailable" | "incomplete");
     let output = match read(&root.join("evidence/agent.stdout"))
         .and_then(|bytes| String::from_utf8(bytes).map_err(io::Error::other))
@@ -802,6 +850,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"evidence":{"complete":complete,"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"evaluation":if complete{"performed"}else{"partial"}});
     let mut result = result;
     result["control_integrity"] = control_integrity.into();
+    result["control_request_integrity"] = request_integrity.into();
     result["deviation_observation_scope"] = json!({
         "start":"pre_seal_clock","end":"post_agent_clock",
         "seal_to_quiesce_complete":false,
@@ -922,6 +971,41 @@ mod tests {
     use super::*;
     use crate::deviation::{Candidate, Resolution};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn request_audit_requires_unique_host_bound_intents() {
+        let controls = [json!({"id":"a","operation":"seal","state":"started"})];
+        let intent = json!({"audit_id":"a","operation":"seal"});
+        assert_eq!(
+            control_request_integrity(
+                &json!({"control_operation_intents":[intent.clone()]}),
+                &controls
+            ),
+            "matched"
+        );
+        assert_eq!(
+            control_request_integrity(
+                &json!({"control_operation_intents":[intent.clone(),intent]}),
+                &controls
+            ),
+            "unexpected_request"
+        );
+        assert_eq!(
+            control_request_integrity(
+                &json!({"control_operation_intents":[{"operation":"seal"}]}),
+                &controls
+            ),
+            "unidentified_request"
+        );
+        assert_eq!(
+            control_request_integrity(&json!({"control_operation_intents":[]}), &controls),
+            "incomplete"
+        );
+        assert_eq!(
+            control_request_integrity(&json!({}), &controls),
+            "unavailable"
+        );
+    }
 
     #[test]
     fn markdown_evidence_is_literal_text() {

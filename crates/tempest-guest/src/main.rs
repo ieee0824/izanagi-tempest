@@ -90,7 +90,18 @@ async fn run() -> Result<bool> {
         },
         _ => anyhow::bail!("invalid subcommand or arguments (see --help)"),
     };
-    let value = control::call(&config, Request { token, operation }).await?;
+    let audit_id = std::env::var("TEMPEST_AUDIT_ID")
+        .ok()
+        .filter(|value| value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let value = control::call(
+        &config,
+        Request {
+            token,
+            operation,
+            audit_id,
+        },
+    )
+    .await?;
     println!("{}", serde_json::to_string(&value)?);
     Ok(value
         .get("complete")

@@ -283,6 +283,7 @@ impl Vm {
     pub async fn call(&mut self, operation: &str, mut fields: Value) -> io::Result<Value> {
         self.ensure_alive()?;
         let audit_id = host_io::random_hex()?;
+        fields["audit_id"] = audit_id.clone().into();
         self.audit_control(&audit_id, operation, "started")?;
         if let Some(authorization) = &self.authorization {
             fields["authorization"] = authorization.clone().into();
