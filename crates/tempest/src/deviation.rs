@@ -177,6 +177,13 @@ pub fn default_log_candidate(
         if address.is_some_and(|address| {
             canonical_ip(address.ip()).is_loopback() && address.port() == 4567
         }) {
+            if record
+                .process
+                .as_deref()
+                .is_some_and(|process| process.starts_with("tempest-guest"))
+            {
+                return None;
+            }
             (Rule::RecorderBypass, target, resolution)
         } else if address.is_some_and(|address| !canonical_ip(address.ip()).is_loopback())
             || (resolution == Resolution::Unresolved
@@ -436,6 +443,10 @@ mod tests {
                 .rule,
             Rule::RecorderBypass
         );
+        let recorder = crate::izanagi_log::parse_line(
+            "[2026-11-12 23:20:48.812] INFO pid=584 tempest-guest-n: connect(127.0.0.1:4567) → 0",
+        );
+        assert!(default_log_candidate(&recorder, Some(1), "events#backend").is_none());
         let normal = crate::izanagi_log::parse_line(
             "[2026-11-12 23:20:48.812] INFO pid=584 x: connect(127.0.0.1:4566) → 0",
         );
