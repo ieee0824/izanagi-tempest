@@ -76,11 +76,13 @@ class MailboxTests(unittest.TestCase):
                     calls.append('native_export')
                     self.assertTrue(frozen, 'native export ran outside frozen boundary')
                     self.assertIn('export', command)
+                    self.assertEqual(kwargs['env']['TEMPEST_AUDIT_ID'], 'a' * 32)
+                    self.assertNotIn('dummy', kwargs['env'].values())
                     if mode == 'native_failure':
                         raise subprocess.TimeoutExpired(command, 240)
                     Path(command[-1]).mkdir()
                     return subprocess.CompletedProcess(command, 0, b'{"complete":true,"manifest":{}}', b'')
-                payload = {'operation': 'export', 'authorization': 'dummy'}
+                payload = {'operation': 'export', 'authorization': 'dummy', 'audit_id': 'a' * 32}
                 if mode != 'missing_identity':
                     payload['daemon_identity'] = {'pid': 123}
                 with mock.patch.object(dispatcher, 'STATE', Path(parent)), \
