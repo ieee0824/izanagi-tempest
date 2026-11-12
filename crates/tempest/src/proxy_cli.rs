@@ -6,28 +6,81 @@ use std::{
     env,
     ffi::OsString,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    io::{self, Seek, SeekFrom, Write},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    },
     path::{Path, PathBuf},
+    pin::Pin,
     process::{ExitCode, Stdio},
+    task::{Context, Poll},
     time::Duration,
 };
-use tokio::{process::Command, sync::watch};
+use tokio::{io::AsyncWrite, process::Command, sync::watch};
 
-const USAGE: &str = "Usage: tempest mcp-proxy --log FILE --summary FILE --stderr FILE [--cwd DIR] [--max-calls N] [--timeout-ms N] [--drain-ms N] -- UPSTREAM [ARGS...]";
-struct Options {
-    log: PathBuf,
-    summary: PathBuf,
-    stderr: PathBuf,
-    cwd: PathBuf,
-    config: RelayConfig,
-    command: Vec<OsString>,
+/// Darwin /dev/fd duplicates the shared file offset. The pinned MCP server
+/// reads its HMAC once per request, so rewind before each serialized frame.
+pub(crate) struct SecretWriter<W> {
+    inner: W,
+    cursor: Option<File>,
+    start: bool,
 }
-fn options(args: &[OsString]) -> Result<Options, &'static str> {
+impl<W> SecretWriter<W> {
+    pub(crate) fn new(inner: W, cursor: Option<File>) -> Self {
+        Self {
+            inner,
+            cursor,
+            start: true,
+        }
+    }
+}
+impl<W: AsyncWrite + Unpin> AsyncWrite for SecretWriter<W> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        if this.start && !bytes.is_empty() {
+            if let Some(file) = &mut this.cursor {
+                if let Err(error) = file.seek(SeekFrom::Start(0)) {
+                    return Poll::Ready(Err(error));
+                }
+            }
+            this.start = false;
+        }
+        Pin::new(&mut this.inner).poll_write(cx, bytes)
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_flush(cx);
+        if matches!(result, Poll::Ready(Ok(()))) {
+            this.start = true;
+        }
+        result
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+const USAGE: &str = "Usage: tempest mcp-proxy --log FILE --summary FILE --stderr FILE [--cwd DIR] [--secret-file FILE] [--max-calls N] [--timeout-ms N] [--drain-ms N] -- UPSTREAM [ARGS...]";
+pub(crate) struct Options {
+    pub log: PathBuf,
+    pub summary: PathBuf,
+    pub stderr: PathBuf,
+    pub cwd: PathBuf,
+    pub config: RelayConfig,
+    pub command: Vec<OsString>,
+    pub secret_file: Option<PathBuf>,
+}
+pub(crate) fn options(args: &[OsString]) -> Result<Options, &'static str> {
     let mut log = None;
     let mut summary = None;
     let mut stderr = None;
     let mut cwd = None;
+    let mut secret_file = None;
     let mut config = RelayConfig::default();
     let mut i = 0;
     let mut seen = HashSet::new();
@@ -58,6 +111,7 @@ fn options(args: &[OsString]) -> Result<Options, &'static str> {
                     return Err("duplicate --cwd");
                 }
             }
+            "--secret-file" => secret_file = Some(PathBuf::from(value)),
             "--max-calls" | "--timeout-ms" | "--drain-ms" => {
                 let n = value
                     .to_str()
@@ -84,9 +138,10 @@ fn options(args: &[OsString]) -> Result<Options, &'static str> {
         cwd,
         config,
         command: args[i + 1..].to_vec(),
+        secret_file,
     })
 }
-fn private_new(path: &Path) -> io::Result<File> {
+pub(crate) fn private_new(path: &Path) -> io::Result<File> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -113,7 +168,63 @@ fn private_new(path: &Path) -> io::Result<File> {
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
     Ok(file)
 }
+
+pub(crate) fn secret_reference(path: &Path) -> io::Result<File> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+        .canonicalize()?;
+    let parent_metadata = parent.metadata()?;
+    if parent_metadata.uid() != unsafe { libc::geteuid() }
+        || parent_metadata.permissions().mode() & 0o022 != 0
+    {
+        return Err(io::Error::other("unsafe transport secret parent"));
+    }
+    let path = parent.join(
+        path.file_name()
+            .ok_or_else(|| io::Error::other("invalid secret reference"))?,
+    );
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o600
+        || metadata.len() == 0
+        || metadata.len() > 4096
+    {
+        return Err(io::Error::other(
+            "transport secret must be a nonempty private regular file",
+        ));
+    }
+    Ok(file)
+}
+pub(crate) fn inherit_secret(command: &mut Command, file: File) {
+    let descriptor = file.as_raw_fd();
+    command.env("IZANAGI_SECRET_FILE", format!("/dev/fd/{descriptor}"));
+    // Only this fork clears CLOEXEC, on the exact O_NOFOLLOW/fstat-verified FD.
+    // The parent's FD remains CLOEXEC for independently launched agent children.
+    unsafe {
+        command.pre_exec(move || {
+            let _keep_open = &file;
+            let flags = libc::fcntl(descriptor, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
 async fn execute(options: Options) -> io::Result<bool> {
+    let key_handle = options
+        .secret_file
+        .as_deref()
+        .map(secret_reference)
+        .transpose()?;
+    let cursor = key_handle.as_ref().map(File::try_clone).transpose()?;
     // Reserve all evidence paths before creating an external process.
     let log = private_new(&options.log)?;
     let log_sync = log.try_clone()?;
@@ -128,6 +239,9 @@ async fn execute(options: Options) -> io::Result<bool> {
         if let Some(value) = env::var_os(name) {
             command.env(name, value);
         }
+    }
+    if let Some(file) = key_handle {
+        inherit_secret(&mut command, file);
     }
     command
         .env("TERM", "dumb")
@@ -148,7 +262,8 @@ async fn execute(options: Options) -> io::Result<bool> {
         }
     };
     let upstream_read = child.stdout.take().expect("configured piped stdout");
-    let upstream_write = child.stdin.take().expect("configured piped stdin");
+    let upstream_write =
+        SecretWriter::new(child.stdin.take().expect("configured piped stdin"), cursor);
     let (_close, rx) = watch::channel(None);
     let result = relay(
         tokio::io::stdin(),
@@ -212,7 +327,10 @@ pub fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(execute(options)) {
+    let result = runtime.block_on(execute(options));
+    // A quota/timeout can close the server while the peer still holds stdin.
+    runtime.shutdown_background();
+    match result {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(error) => {

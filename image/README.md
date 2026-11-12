@@ -112,3 +112,7 @@ agent の子孫終了と export 順序を含む M4 の lifecycle 全体は別途
 M4用派生イメージは `attest` とidentity付き `export` により、daemonをfreezeしたまま
 子孫終了確認・native exportを行う。旧M3イメージとはexport要求が異なるため、同じ版のscriptを使う。
 実装順序、固定hash、2回のVM検査と未確認範囲は [M4終了確認](../docs/M4-QUIESCE.md)を参照。
+`integration/image_smoke.py` に `--tempest /absolute/path/to/tempest` を加えると、
+測定GETを独立MCP supervisor/bridgeへ流し、予算未転送とRPC drainからexportまでを確認する。
+専用dummy HMACとbinary snapshotをrun内に保持する。成功・失敗例と制約は
+[M4 supervisor](../docs/M4-SUPERVISOR.md)を参照。
