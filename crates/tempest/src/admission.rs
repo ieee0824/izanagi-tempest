@@ -23,6 +23,7 @@ pub enum CloseReason {
     AgentFinished,
     Cancelled,
     UpstreamLost,
+    UnverifiedExecution,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rejection {
@@ -122,6 +123,10 @@ impl Admission {
         self.uncertain = true;
         self.close(CloseReason::UpstreamLost, now);
         // Never discard pending entries to manufacture a successful barrier.
+    }
+    pub fn unverified_execution(&mut self, now: Instant) {
+        self.uncertain = true;
+        self.close(CloseReason::UnverifiedExecution, now);
     }
     pub fn enforce_drain_deadline(&mut self, now: Instant, limit: Duration) -> bool {
         if let Some((_, closed_at)) = self.closed

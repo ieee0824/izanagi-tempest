@@ -170,3 +170,20 @@ cargo run --locked -p tempest -- plan scenarios/s3-overread-001.yaml --actor wor
 VMを起動せず主体とfinding/retestの有無を解決します。単一userは`--actor`を省略可能、
 複数userは明示指定が必要です。`runtime_checks=not_performed`であり実行成功を示しません。
 実装中のrun/proxy・結果契約は[M4契約](docs/M4-CONTRACT.md)を参照してください。
+
+
+MCP中継の単体起動例（実行中のIzanagi sessionと同じcwdを指定）:
+
+```bash
+mkdir -m 700 /private/tmp/tempest-proxy-001
+cargo run --locked -p tempest -- mcp-proxy \
+  --log /private/tmp/tempest-proxy-001/mcp.jsonl \
+  --summary /private/tmp/tempest-proxy-001/proxy.json \
+  --stderr /private/tmp/tempest-proxy-001/upstream.stderr \
+  --cwd /absolute/path/to/private/sandbox \
+  --max-calls 50 --timeout-ms 900000 --drain-ms 330000 \
+  -- /absolute/path/to/izanagi mcp
+```
+
+stdin/stdoutはMCP JSON-lines専用です。上限超過は中継せず、応答不明の要求を成功扱いしません。
+summaryは`rpc_transport_only`であり、VM終了や`tempest run`全体の完了を示しません。

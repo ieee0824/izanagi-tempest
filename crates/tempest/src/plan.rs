@@ -154,6 +154,8 @@ impl ExecutionPlan {
         bind(run_id, Stage::Primary, &self.actor, &self.setup, keys)
     }
     /// Only task, one selected worker credential and public protocol instructions.
+    /// The runtime must own a one-shot seed registry per run/stage: this stateless
+    /// plan does not establish freshness after a same-stage re-seed.
     pub fn agent_prompt(
         &self,
         run_id: &str,

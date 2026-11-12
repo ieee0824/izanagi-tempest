@@ -685,11 +685,13 @@ dependencies = [
 name = "tempest"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "serde_path_to_error",
  "sha2",
  "tempest-model",
+ "tokio",
  "yaml_serde",
 ]
 
