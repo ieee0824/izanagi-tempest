@@ -501,7 +501,9 @@ fn control_request_integrity(manifest: &Value, controls: &[Value]) -> &'static s
     for row in controls.iter().filter(|row| row["state"] == "started") {
         if let (Some(id), Some(operation)) = (row["id"].as_str(), row["operation"].as_str()) {
             if matches!(operation, "claim" | "seed" | "probe" | "seal" | "export") {
-                expected.insert(id, operation);
+                if expected.insert(id, operation).is_some() {
+                    return "unavailable";
+                }
             }
         }
     }
@@ -509,6 +511,9 @@ fn control_request_integrity(manifest: &Value, controls: &[Value]) -> &'static s
         return "unavailable";
     }
     for intent in intents {
+        if intent["authorized"] == false {
+            return "authorization_rejected";
+        }
         let Some(id) = intent["audit_id"].as_str() else {
             return "unidentified_request";
         };
@@ -788,7 +793,10 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
             request_integrity,
             "unexpected_request" | "unidentified_request"
         );
-    contamination_unresolved |= matches!(request_integrity, "unavailable" | "incomplete");
+    contamination_unresolved |= matches!(
+        request_integrity,
+        "unavailable" | "incomplete" | "authorization_rejected"
+    );
     contamination_unresolved |= matches!(control_integrity, "unavailable" | "incomplete");
     let output = match read(&root.join("evidence/agent.stdout"))
         .and_then(|bytes| String::from_utf8(bytes).map_err(io::Error::other))
@@ -857,6 +865,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     let mut result = result;
     result["control_integrity"] = control_integrity.into();
     result["control_request_integrity"] = request_integrity.into();
+    result["failed_control_operations"] = manifest["failed_control_operations"].clone();
     result["deviation_observation_scope"] = json!({
         "start":"pre_seal_clock","end":"post_agent_clock",
         "seal_to_quiesce_complete":false,
