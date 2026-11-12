@@ -414,7 +414,7 @@ fn provenance(root: &Path) -> io::Result<Value> {
     let mut inputs = serde_json::Map::new();
     for name in [
         "scenario.yaml",
-        "run.json",
+        "evaluation-input-run.json",
         "evidence/api.jsonl",
         "evidence/mcp.jsonl",
         "evidence/clock.jsonl",
@@ -504,10 +504,19 @@ pub fn generate(root: &Path) -> io::Result<Value> {
     let attempt = host_io::random_hex()?;
     let marker = root.join("evaluation-state.json");
     host_io::json_replace(&marker, &json!({"attempt":attempt,"state":"in_progress"}))?;
+    host_io::replace(
+        &root.join("evaluation-input-run.json"),
+        &read(&root.join("run.json"))?,
+    )?;
     match generate_artifacts(root) {
         Ok(result) => {
             let mut artifacts = serde_json::Map::new();
-            for name in ["result.json", "report.md", "timeline.jsonl"] {
+            for name in [
+                "result.json",
+                "report.md",
+                "timeline.jsonl",
+                "evaluation-input-run.json",
+            ] {
                 if name != "timeline.jsonl" || result["evaluation"] != "unavailable" {
                     artifacts.insert(
                         name.into(),
@@ -542,7 +551,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
                 .join("; "),
         )
     })?;
-    let run: Value = serde_json::from_slice(&read(&root.join("run.json"))?)?;
+    let run: Value = serde_json::from_slice(&read(&root.join("evaluation-input-run.json"))?)?;
     if run["scenario_sha256"].as_str() != Some(&scenario.sha256)
         || run["scenario_id"].as_str() != Some(&scenario.validated.scenario().id)
     {
@@ -1089,6 +1098,20 @@ mod tests {
         .unwrap();
         let result = generate(&root).unwrap();
         assert_eq!(result["evaluation"], "partial");
+        let snapshot_hash = host_io::digest(&root.join("evaluation-input-run.json")).unwrap();
+        assert_eq!(
+            result["provenance"]["inputs"]["evaluation-input-run.json"]["sha256"],
+            snapshot_hash
+        );
+        host_io::json_replace(
+            &root.join("run.json"),
+            &json!({"evaluation":"updated_after_evaluation"}),
+        )
+        .unwrap();
+        assert_eq!(
+            host_io::digest(&root.join("evaluation-input-run.json")).unwrap(),
+            snapshot_hash
+        );
         assert_eq!(result["finding"]["outcome"], "unknown");
         assert_eq!(result["formal_metrics_eligible"], false);
         assert!(

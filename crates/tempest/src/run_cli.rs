@@ -622,6 +622,7 @@ fn allowed_artifact(path: &str) -> bool {
             | "report.md"
             | "evaluation-state.json"
             | "evaluation.lock"
+            | "evaluation-input-run.json"
             | "result.json"
             | "run.json"
             | "scenario.yaml"
