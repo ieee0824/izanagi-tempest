@@ -159,3 +159,13 @@ packer build -var-file=tempest.pkrvars.json debian.pkr.hcl
 実VMでの確認範囲、digest、既知の限界は [M3 検証記録](docs/M3-IMAGE.md) を参照してください。
 `restrict_network=true` のまま、M2操作、owner/doas分離、私有入力・応答、短時間PCAPを検証しています。
 一般のエージェント終了・回収フローは未実装です。
+
+## 開発: M4 の実行計画（実装中）
+
+```bash
+cargo run --locked -p tempest -- plan scenarios/s3-overread-001.yaml --actor worker
+```
+
+VMを起動せず主体とfinding/retestの有無を解決します。単一userは`--actor`を省略可能、
+複数userは明示指定が必要です。`runtime_checks=not_performed`であり実行成功を示しません。
+実装中のrun/proxy・結果契約は[M4契約](docs/M4-CONTRACT.md)を参照してください。

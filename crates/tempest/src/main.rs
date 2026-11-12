@@ -1,15 +1,19 @@
 use std::{env, fs, process::ExitCode};
-use tempest::scenario::load;
+use tempest::{plan::ExecutionPlan, scenario::load};
 use tempest_model::capability::LWS_COMMIT;
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
+    const USAGE: &str = "Usage: tempest validate <scenario.yaml>\n       tempest plan <scenario.yaml> [--actor NAME]";
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
-        println!("Usage: tempest validate <scenario.yaml>");
+        println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    if args.len() != 2 || args[0] != "validate" {
-        eprintln!("Usage: tempest validate <scenario.yaml>");
+    let is_plan = args.first().is_some_and(|a| a == "plan");
+    let valid_args = (args.len() == 2 && (args[0] == "validate" || is_plan))
+        || (is_plan && args.len() == 4 && args[2] == "--actor" && args[3].to_str().is_some());
+    if !valid_args {
+        eprintln!("{USAGE}");
         return ExitCode::from(2);
     }
     let raw = match fs::read(&args[1]) {
@@ -22,6 +26,24 @@ fn main() -> ExitCode {
     match load(&raw) {
         Ok(loaded) => {
             let valid = &loaded.validated;
+            if is_plan {
+                let selected = args.get(3).and_then(|a| a.to_str());
+                match ExecutionPlan::resolve(valid, selected) {
+                    Ok(plan) => {
+                        let mut summary = plan.summary();
+                        summary["id"] = valid.scenario().id.clone().into();
+                        summary["sha256"] = loaded.sha256.into();
+                        summary["validation"] = "runtime_resolution".into();
+                        println!("{summary}");
+                        return ExitCode::SUCCESS;
+                    }
+                    Err(error) => {
+                        eprintln!("{error}");
+                        return ExitCode::from(1);
+                    }
+                }
+            }
+
             println!(
                 "{}",
                 serde_json::json!({
