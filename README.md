@@ -58,7 +58,7 @@ Python 3.11 以降で、追加依存なしに実行できます。
 
 ```bash
 python3 tools/m0/collect.py --output /private/tmp/tempest-m0-preflight-001
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -p test_m0_collect.py -v
 ```
 
 QEMU の起動・証跡収集の手順は [M0 収集ツール](tools/m0/README.md)、
@@ -132,3 +132,8 @@ python3 integration/guest_smoke.py --lws /private/tmp/tempest-m2-lws-source/targ
 一時データ・空きport・ローカルのダミー資格情報だけを使い、実 AWS へ接続しません。
 ホスト試験は development モードであり、VM の doas・owner 制限やホスト→VMの秘密配送の実証とは分けます。
 配送の残る調査は [Issue #13](https://github.com/ieee0824/izanagi-tempest/issues/13) で追跡しています。
+
+## 開発: M3 の VM イメージ
+
+固定 Debian テンプレートからの派生イメージと root 専用 mailbox を実装中です。
+ビルド・実VM検証のコマンドと配送契約は [image/README.md](image/README.md) を参照してください。
