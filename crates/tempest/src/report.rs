@@ -488,6 +488,12 @@ fn provenance(root: &Path) -> io::Result<Value> {
 }
 
 fn control_request_integrity(manifest: &Value, controls: &[Value]) -> &'static str {
+    if manifest["control_operation_intents_overflow"]
+        .as_u64()
+        .is_some_and(|count| count > 0)
+    {
+        return "unavailable";
+    }
     let Some(intents) = manifest["control_operation_intents"].as_array() else {
         return "unavailable";
     };

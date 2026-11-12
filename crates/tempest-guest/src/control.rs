@@ -63,6 +63,8 @@ struct State {
     failed_operations: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
     operation_intents: Vec<Value>,
+    #[serde(default)]
+    operation_intents_overflow: u64,
 }
 #[derive(Default, Serialize)]
 struct CaptureStats {
@@ -211,7 +213,12 @@ impl Controller {
             Operation::Export { .. } => "export",
         };
         let authorization_failed = self.authorize(&request).is_err();
-        self.state.operation_intents.push(json!({"operation":operation,"audit_id":request.audit_id,"authorized":!authorization_failed}));
+        if self.state.operation_intents.len() < 4096 {
+            self.state.operation_intents.push(json!({"operation":operation,"audit_id":request.audit_id,"authorized":!authorization_failed}));
+        } else {
+            self.state.operation_intents_overflow =
+                self.state.operation_intents_overflow.saturating_add(1);
+        }
         self.persist()?;
         let result = self.execute_operation(request).await;
         if result.is_err() {
@@ -603,6 +610,8 @@ impl Controller {
             serde_json::to_value(&self.state.failed_operations)?;
         self.manifest.as_mut().unwrap()["control_operation_intents"] =
             json!(self.state.operation_intents);
+        self.manifest.as_mut().unwrap()["control_operation_intents_overflow"] =
+            json!(self.state.operation_intents_overflow);
         private_write(
             &self.config.evidence_dir.join("manifest.json"),
             &serde_json::to_vec_pretty(self.manifest.as_ref().unwrap())?,
@@ -677,6 +686,7 @@ pub async fn serve(config: Config) -> Result<()> {
             transitions: Vec::new(),
             failed_operations: std::collections::BTreeMap::new(),
             operation_intents: Vec::new(),
+            operation_intents_overflow: 0,
         }
     };
     let mut controller = Controller {
