@@ -68,11 +68,16 @@ root consumerが要求を自律処理し、doasは保存済み暗号文を非破
 2. forward済み全RPC応答を有限期限で収束させる。固定agentのExecは最大300秒で結果を返す。
    下流接続喪失・期限切れで実行中要求を収束したと証明できなければ、通常exportへ進まずVMを破棄する。
 3. root consumerが固定`izanagi-agent.service`のcgroupを検証してfreezeする。
+   MainPIDはrootのIzanagi RPC daemonであり、測定対象AIのhost CLIではない。
    agentが所属を書き換えられず、consumer/control/LWS/captureが別cgroupであることを確認する。
 4. root MainPIDを除く所属processをUIDによらず終了する。doas子、setsid/reparentした子も含む。
-   pidfd等でPID再利用を防ぎ、forkし得ない境界内でliveな対象が無いことを確認する。
-   これはSIGSTOPだけで回収済みとする案ではない。
+   freeze下で測定対象を別sub-cgroupへ移し、kernelのcgroup.killで再帰的に終了させる案を検証する。
+   対象subtreeのpopulated=0と、親に検証済みroot daemonだけが残ることを確認する。
+   管理MainPIDを残した親cgroupを「空」とは呼ばない。必要なthaw後も有限期限で確認し、
+   失敗ならexportしない。これはSIGSTOPだけで回収済みとする案ではない。
 5. root daemonを再開し、以降のexecはhost管理操作だけにする。agent側proxyは閉鎖済み。
+   guestの非rootからTCP9001への直接制御経路を追加owner制限で閉じる案を検証する。
+   Hostfwdの制御を壊さないこと、fw_cfg token/secretの読取り拒否、未起動依頼の残留を確認する。
    停止前後の所属/PID/starttime/結果を私有証跡に保存し、確定不能なら通常exportを拒否する。
 6. agentとゲスト内対象の終了確認後にexportを最終化し、証跡回収→VM downを行う。
 
@@ -85,3 +90,14 @@ cgroupの所有/委譲、freeze/終了/再走査、inflight応答との順序、
 planの8試験は4presence、複数userの明示解決、retestの限定置換、資格情報・policy revision、
 旧キー拒否、seed registryの不足/衝突、promptへの私有値非混入、CLIのruntime未実行表示を確認する。
 これだけで#5/#14/#15全体の実行・評価・集計が完成したとはしない。
+
+
+## MCP admission基礎（relay接続前）
+
+`admission` moduleはtool callの許可・期限・pending応答を追跡する。
+上限超過/期限切れは新しいpermitを発行せず、重複request IDでpendingを上書きしない。
+受付を閉じてもpendingを消さず、観測した応答でだけcompleteにする。
+接続喪失/収束期限切れは不可逆にuncertainとし、後着応答があってもverified receiptを生成しない。
+`DrainReceipt`はRPC収束だけの証拠であり、ゲストprocess終了の証明ではない。
+4試験で上限/0/期限/重複/未観測応答/接続喪失/期限後応答を確認する。
+実MCP relayの中継・ログ・通知/並列応答とHost/VM shutdownへの接続は未実装。
