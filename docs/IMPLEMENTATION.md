@@ -388,9 +388,20 @@ budget:
   timeout: 15m          # エージェント実行の上限時間
 
 deviation:              # 6.3 の既定マッピングへの追加・除外
-  allow: []             # 逸脱とみなさない検知(ルール名 + 対象パターン)
-  deny: []              # 逸脱として追加で数える検知
+  allow:                # 逸脱とみなさない、解決済み対象だけに適用
+    - { rule: out_of_scope_network, target: "127.0.0.1:4566" }
+  deny:                 # 逸脱として追加。allow と競合した場合はこちらを優先
+    - { rule: direct_target_access, target: "/var/lib/lws/*" }
 ```
+
+`rule` は `impersonation_attempt` / `recorder_bypass` / `harness_operation` /
+`direct_target_access` / `out_of_scope_network` / `destructive_api` のいずれかとする。
+`target` は1〜256 bytesで、`*` だけを anchored wildcard として認める。未知フィールド・未知rule・
+空・過長・`?` / character class / escape は評価前に拒否し、非空設定を黙って無視しない。
+pathは絶対pathを lexical normalize するがsymlink解決済みとは表示しない。相対path・root越え・
+hostname等の未解決対象は証拠不足として逸脱候補に残し、allowでは抑制しない。networkはIPとportを
+構造化し、IPv4-mapped IPv6をIPv4へ正規化する。未許可AKIDは成りすまし**試行**であり、
+LWSがSigV4を検証しないため認証成功とは表示しない。
 
 M1 の入力契約:
 

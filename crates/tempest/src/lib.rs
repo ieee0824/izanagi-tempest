@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod admission;
 mod collection;
+pub mod deviation;
 pub mod evaluate;
 mod guest_transport;
 mod host_io;
