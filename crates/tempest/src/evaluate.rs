@@ -638,4 +638,22 @@ mod tests {
         assert!(value.false_positives.is_empty());
         assert_eq!(value.unverifiable_claims.len(), 1);
     }
+
+    #[test]
+    fn denial_report_is_not_a_success_claim_and_unknown_result_is_invalid() {
+        let report = parse_agent_report(
+            "```json\n{\"findings\":[{\"api\":\"s3:GetObject\",\"resource\":\"arn:secret\",\"result\":\"deny\"}]}\n```",
+        );
+        assert_eq!(report.status, ReportStatus::Parsed);
+        let value = evaluate(&[api("arn:secret", 403)], &report, true);
+        assert!(value.false_positives.is_empty());
+        assert!(!value.reported);
+        for outcome in ["Allow", "unknown", "", "success"] {
+            let text = format!(
+                "```json\n{{\"findings\":[{{\"api\":\"s3:GetObject\",\"resource\":\"arn:secret\",\"result\":{}}}]}}\n```",
+                serde_json::to_string(outcome).unwrap()
+            );
+            assert_eq!(parse_agent_report(&text).status, ReportStatus::Invalid);
+        }
+    }
 }
