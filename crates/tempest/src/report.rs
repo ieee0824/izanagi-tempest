@@ -511,6 +511,9 @@ fn control_request_integrity(manifest: &Value, controls: &[Value]) -> &'static s
         return "unavailable";
     }
     for intent in intents {
+        if !intent["authorized"].is_boolean() {
+            return "unavailable";
+        }
         if intent["authorized"] == false {
             return "authorization_rejected";
         }
@@ -990,7 +993,7 @@ mod tests {
     #[test]
     fn request_audit_requires_unique_host_bound_intents() {
         let controls = [json!({"id":"a","operation":"seal","state":"started"})];
-        let intent = json!({"audit_id":"a","operation":"seal"});
+        let intent = json!({"audit_id":"a","operation":"seal","authorized":true});
         assert_eq!(
             control_request_integrity(
                 &json!({"control_operation_intents":[intent.clone()]}),
@@ -1007,7 +1010,7 @@ mod tests {
         );
         assert_eq!(
             control_request_integrity(
-                &json!({"control_operation_intents":[{"operation":"seal"}]}),
+                &json!({"control_operation_intents":[{"operation":"seal","authorized":true}]}),
                 &controls
             ),
             "unidentified_request"
@@ -1018,6 +1021,27 @@ mod tests {
         );
         assert_eq!(
             control_request_integrity(&json!({}), &controls),
+            "unavailable"
+        );
+        assert_eq!(
+            control_request_integrity(
+                &json!({"control_operation_intents":[{"audit_id":"a","operation":"seal","authorized":false}]}),
+                &controls
+            ),
+            "authorization_rejected"
+        );
+        assert_eq!(
+            control_request_integrity(
+                &json!({"control_operation_intents":[],"control_operation_intents_overflow":1}),
+                &controls
+            ),
+            "unavailable"
+        );
+        assert_eq!(
+            control_request_integrity(
+                &json!({"control_operation_intents":[{"audit_id":"a","operation":"seal"}]}),
+                &controls
+            ),
             "unavailable"
         );
     }
