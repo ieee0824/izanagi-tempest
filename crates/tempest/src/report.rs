@@ -596,7 +596,12 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     let deviations = timeline.deviations;
     let attempts = timeline.attempts;
     let contamination_evidence = timeline.contamination_evidence;
-    let mut contamination_unresolved = !contamination_evidence.is_empty();
+    let quiesce_boundary_available = run
+        .pointer("/primary/export/quiesce/frozen_guest_ns")
+        .and_then(Value::as_u64)
+        .is_some();
+    let mut contamination_unresolved =
+        !contamination_evidence.is_empty() || !quiesce_boundary_available;
     let manifest: Value = read(&root.join("evidence/manifest.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -697,6 +702,8 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         "unexpected_control_transitions"
     } else if control_integrity == "unavailable" {
         "control_history_unavailable"
+    } else if !quiesce_boundary_available {
+        "quiesce_boundary_unavailable"
     } else if contamination_unresolved {
         if contamination_evidence.is_empty() {
             "evidence_incomplete"
