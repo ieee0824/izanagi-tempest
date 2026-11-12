@@ -13,20 +13,20 @@ Issue #6 / PR #31。以下は完了宣言ではなく、現行実装と確認済
 | 4567・doas seed・LWS状態アクセス拒否 | 同上boundary run | freeze対応イメージで成功、4種候補を計上 |
 | 評価成果物の確定と読取整合性 | 排他・hash・必須集合・改変fixture | 確認済み。readerは共有lock下で検証したbytesを使用 |
 | 評価時run入力の保存 | snapshot不変fixture | 確認済み。最終化後のrun.json変更と独立 |
-| guest要求ID・失敗監査 | ID重複/欠損/拒否/overflow/順序反転fixture | 単体確認済み。更新イメージE2Eは進行中 |
+| guest要求ID・失敗監査 | ID重複/欠損/拒否/overflow/順序反転fixture | 更新イメージの正常2回・防御1回も成功 |
 
 ## 実VM証拠
 
 - `/private/tmp/tempest-m5-freeze-e2e-001/`: 通常2回・境界拒否1回の実行成功。
 - `/private/tmp/tempest-m5-host-audit-runs-001/normal-audit/`: host管理要求監査の実行成功。
-- `/private/tmp/tempest-m5-request-audit-e2e-001/`: 要求ID監査入りイメージの検証先。終了結果は別途確認する。
+- `/private/tmp/tempest-m5-request-audit-e2e-001/`: 要求ID監査入りイメージで正常2回・防御1回成功。正常結果の要求ID一致と失敗操作記録なしを確認。
 
 私有run directoryにはcredential claimを含む証跡があり、リポジトリへ複製しない。
 上記パスはこの検証環境の所在であり、他環境で存在するとは限らない。
 
 ## 未完了の照合
 
-- 要求ID監査入りイメージで正常2回・防御1回の完了確認。
+- 最新評価器による確定成果物の再検証。
 - optional finding/retestの4通りと、aborted/部分証跡に対する最終結果の接続試験。
 - 未確定背景候補と正式適格性の契約。時刻相関だけで主体を確定しない。
 - 最新headの全検証とPRレビュー所見の最終照合。

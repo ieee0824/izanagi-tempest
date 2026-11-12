@@ -422,9 +422,12 @@ def main():
     parser.add_argument('--image-inputs', type=Path, required=True)
     parser.add_argument('--python', type=Path, required=True)
     parser.add_argument('--runs', type=Path, required=True)
-    parser.add_argument('--case', choices=['all', 'core', 'crash-recovery', 'seed-sigterm', 'fetch-sigterm', 'retest-recovery'], default='all')
+    parser.add_argument('--case', choices=['all', 'core', 'evaluation', 'crash-recovery', 'seed-sigterm', 'fetch-sigterm', 'retest-recovery'], default='all')
     args = parser.parse_args()
     args.runs.mkdir(mode=0o700, parents=True, exist_ok=False)
+    if args.case == 'evaluation':
+        seed_reply_loss(args)
+        fetch_chunk_corruption(args)
     if args.case in ('all', 'core'):
         seed_reply_loss(args)
         fetch_chunk_corruption(args)
