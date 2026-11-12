@@ -80,14 +80,14 @@ def main():
                 'tempest_guest_source_commit': subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
                 'built_at': datetime.now(timezone.utc).isoformat(),
                 'iso_sha256': iso_hash, 'input_sha256': {name: sha(path) for name, path in assets.items()},
-                'derivation_sha256': {name: sha(own / name) for name in ['prepare.py', 'provision.sh', 'dispatcher.py']}}
+                'derivation_sha256': {name: sha(own / name) for name in ['prepare.py', 'provision.sh', 'dispatcher.py', 'quiesce.py']}}
     (output / 'packer/image.json').write_text(json.dumps(metadata, indent=2) + '\n')
-    for name in ['provision.sh', 'dispatcher.py']:
+    for name in ['provision.sh', 'dispatcher.py', 'quiesce.py']:
         shutil.copyfile(own / name, output / 'packer' / name)
     extra = '\n  provisioner "shell" { inline = ["install -d -m 0700 /tmp/tempest-m3"] }\n'
     for path, destination in [(assets['lws'], 'lws'), (assets['guest'], 'tempest-guest'),
                               ('${path.root}/dispatcher.py', 'dispatcher.py'), ('${path.root}/image.json', 'image.json'),
-                              ('${path.root}/provision.sh', 'provision.sh')]:
+                              ('${path.root}/provision.sh', 'provision.sh'), ('${path.root}/quiesce.py', 'quiesce.py')]:
         extra += '  provisioner "file" {\n    source = ' + json.dumps(str(path)) + '\n    destination = ' + json.dumps('/tmp/tempest-m3/' + destination) + '\n  }\n'
     extra += '  provisioner "shell" { inline = ["sh /tmp/tempest-m3/provision.sh"] }\n'
     position = template.rfind('\n}')

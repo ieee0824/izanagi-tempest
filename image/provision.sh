@@ -16,6 +16,7 @@ install -o root -g root -m 0755 "$stage/lws" /usr/local/bin/lws
 install -o root -g root -m 0755 "$stage/tempest-guest" /usr/local/libexec/tempest-guest-native
 install -o root -g root -m 0755 "$stage/dispatcher.py" /usr/local/bin/tempest-guest
 install -o root -g root -m 0755 "$stage/dispatcher.py" /usr/local/libexec/tempest-mailbox
+install -o root -g root -m 0755 "$stage/quiesce.py" /usr/local/libexec/tempest-quiesce
 install -d -o lws -g lws -m 0700 /var/lib/lws /var/lib/tempest
 python3 - "$stage/image.json" "$lws_uid" "$lws_gid" <<'PY'
 import json,sys,subprocess,hashlib
@@ -32,7 +33,7 @@ metadata['service_uid']=uid;metadata['service_gid']=gid
 metadata['packages']={name:subprocess.check_output(['dpkg-query','-W','-f=${Version}',name],text=True).strip()
                       for name in ['awscli','tcpdump','iptables','opendoas','python3','python3-cryptography']}
 metadata['installed_sha256']={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in
-                            map(Path,['/usr/local/bin/lws','/usr/local/libexec/tempest-guest-native','/usr/local/bin/tempest-guest','/usr/local/libexec/tempest-mailbox'])}
+                            map(Path,['/usr/local/bin/lws','/usr/local/libexec/tempest-guest-native','/usr/local/bin/tempest-guest','/usr/local/libexec/tempest-mailbox','/usr/local/libexec/tempest-quiesce'])}
 p=Path('/etc/tempest/image.json');p.write_text(json.dumps(metadata,indent=2)+'\n');p.chmod(0o644)
 PY
 cat > /etc/doas.conf <<'DOAS'
@@ -54,6 +55,20 @@ iptables -w -F TEMPEST_BACKEND
 iptables -w -A TEMPEST_BACKEND -m owner --uid-owner 0 -j ACCEPT
 iptables -w -A TEMPEST_BACKEND -m owner --uid-owner lws -j ACCEPT
 iptables -w -A TEMPEST_BACKEND -p tcp -j REJECT --reject-with tcp-reset
+# Guest processes must not bypass MCP and contact the privileged RPC daemon.
+# Incoming hostfwd packets traverse INPUT, not this OUTPUT restriction.
+iptables -w -N TEMPEST_RPC 2>/dev/null || iptables -w -L TEMPEST_RPC >/dev/null
+iptables -w -C OUTPUT -p tcp --dport 9001 -j TEMPEST_RPC 2>/dev/null || \
+  iptables -w -I OUTPUT 1 -p tcp --dport 9001 -j TEMPEST_RPC
+iptables -w -F TEMPEST_RPC
+iptables -w -A TEMPEST_RPC -m owner --uid-owner 0 -j ACCEPT
+iptables -w -A TEMPEST_RPC -p tcp -j REJECT --reject-with tcp-reset
+ip6tables -w -N TEMPEST_RPC 2>/dev/null || ip6tables -w -L TEMPEST_RPC >/dev/null
+ip6tables -w -C OUTPUT -p tcp --dport 9001 -j TEMPEST_RPC 2>/dev/null || \
+  ip6tables -w -I OUTPUT 1 -p tcp --dport 9001 -j TEMPEST_RPC
+ip6tables -w -F TEMPEST_RPC
+ip6tables -w -A TEMPEST_RPC -m owner --uid-owner 0 -j ACCEPT
+ip6tables -w -A TEMPEST_RPC -p tcp -j REJECT --reject-with tcp-reset
 FIREWALL
 chmod 0755 /usr/local/libexec/tempest-firewall
 cat > /etc/systemd/system/tempest-firewall.service <<'SERVICE'
@@ -108,7 +123,7 @@ Requires=tempest-mailbox.service
 After=tempest-mailbox.service
 SERVICE
 # Build assets contain executables/metadata only; no scenario or run credential.
-rm -f "$stage/lws" "$stage/tempest-guest" "$stage/dispatcher.py" "$stage/image.json"
+rm -f "$stage/lws" "$stage/tempest-guest" "$stage/dispatcher.py" "$stage/quiesce.py" "$stage/image.json"
 systemctl daemon-reload
 systemctl enable tempest-firewall.service tempest-control.service tempest-mailbox.service
 # Fail the build with the exact firewall diagnostic, before removing SSH access.

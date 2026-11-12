@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 import contextlib
 import io
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,6 +25,50 @@ transport = load('transport')
 
 
 class MailboxTests(unittest.TestCase):
+    def test_export_requires_barrier_and_finalizes_while_frozen(self):
+        for mode in ['success', 'native_failure', 'barrier_failure', 'missing_identity']:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as parent:
+                calls = []
+                frozen = False
+                def daemon(operation, expected=None):
+                    nonlocal frozen
+                    calls.append(operation)
+                    if operation == 'quiesce':
+                        if mode == 'barrier_failure':
+                            raise dispatcher.Rejected('barrier_failed')
+                        frozen = True
+                        return {'descendants_empty': True, 'service_frozen': True}
+                    self.assertEqual(operation, 'thaw')
+                    frozen = False
+                    return {'thawed': True}
+                def native(command, **kwargs):
+                    calls.append('native_export')
+                    self.assertTrue(frozen, 'native export ran outside frozen boundary')
+                    self.assertIn('export', command)
+                    if mode == 'native_failure':
+                        raise subprocess.TimeoutExpired(command, 240)
+                    Path(command[-1]).mkdir()
+                    return subprocess.CompletedProcess(command, 0, b'{"complete":true,"manifest":{}}', b'')
+                payload = {'operation': 'export', 'authorization': 'dummy'}
+                if mode != 'missing_identity':
+                    payload['daemon_identity'] = {'pid': 123}
+                with mock.patch.object(dispatcher, 'STATE', Path(parent)), \
+                     mock.patch.object(dispatcher, 'authenticate'), \
+                     mock.patch.object(dispatcher, 'consume'), \
+                     mock.patch.object(dispatcher, 'private_directory', side_effect=lambda path, **kwargs: path.mkdir(mode=0o700, parents=True, exist_ok=True)), \
+                     mock.patch.object(dispatcher, 'daemon_control', side_effect=daemon), \
+                     mock.patch.object(dispatcher.subprocess, 'run', side_effect=native):
+                    if mode == 'success':
+                        result = dispatcher.dispatch('d' * 32, payload)
+                        self.assertTrue(result['quiesce']['descendants_empty'])
+                    else:
+                        with self.assertRaises((dispatcher.Rejected, subprocess.TimeoutExpired)):
+                            dispatcher.dispatch('d' * 32, payload)
+                self.assertFalse(frozen)
+                self.assertEqual(calls, {'success': ['quiesce', 'native_export', 'thaw'],
+                                         'native_failure': ['quiesce', 'native_export', 'thaw'],
+                                         'barrier_failure': ['quiesce'], 'missing_identity': []}[mode])
+
     def test_mapping_private_input_and_response_confidentiality(self):
         with tempfile.TemporaryDirectory() as parent:
             box = transport.Mailbox(Path(parent) / 'workspace')
