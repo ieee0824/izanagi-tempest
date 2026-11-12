@@ -386,7 +386,11 @@ finalizing）と照合する。正常な途中停止・失敗は未完了、欠�
 制御経路を通さない直接DB変更を検出する保証はない。履歴一致は安全証明ではない。
 操作のentryログだけでは成功を確定せず、成功openもそのopenの観測に留める。
 帰属・効果が未解決、または証跡不完全なら`contaminated: null`と理由を保存する。
-制御要求IDとのguest側結合は現在の状態遷移履歴には含まれない。
+hostの監査IDをmailbox経由でnative helperの操作受付記録へ結び付け、
+manifestの`control_operation_intents`とhostの開始済み要求を一対一照合する。
+この記録は受付時点のintentであり、各操作の完了は状態遷移・hostの応答記録で区別する。
+ID欠損・重複・予定外要求を診断し、履歴未対応・欠損は判定不能とする。
+最大4096件を保持し、上限超過件数を保存して完全な照合とは扱わない。
 native helperは失敗を`failed_control_operations`へ操作別件数として記録し、
 認可拒否と、認可後の操作失敗を区別する。操作失敗には状態による拒否と内部エラーが含まれる。
 hostは秘密payloadを含めず操作名・監査ID・開始終了epoch・成否を`evidence/control.jsonl`へ保存する。

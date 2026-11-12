@@ -44,6 +44,10 @@ def run_once(args, run_id):
         raise AssertionError('mock result has the wrong evaluation eligibility')
     if result['control_integrity'] != 'matched' or result['contaminated'] is not False:
         raise AssertionError('normal run control history was not established')
+    if result['control_request_integrity'] != 'matched':
+        raise AssertionError('guest intents were not bound to host requests')
+    if result['failed_control_operations'] != {}:
+        raise AssertionError('normal run has failed native control operations')
     if not result['provenance']['inputs']['evidence/manifest.json'].get('sha256'):
         raise AssertionError('evaluation did not bind the control manifest')
     for name in ('timeline.jsonl', 'report.md'):
