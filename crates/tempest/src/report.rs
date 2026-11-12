@@ -335,6 +335,11 @@ fn timeline_bytes(
                 |timestamp| timeline::correlate(&samples, &calls, timestamp),
             );
             let source = format!("evidence/izanagi/{name}#{}", index + 1);
+            if let Some(diagnostic) = &parsed.diagnostic {
+                diagnostics.push(format!("{source}: {diagnostic}"));
+            } else if guest_ns.is_none() {
+                diagnostics.push(format!("{source}: timestamp unavailable"));
+            }
             let in_agent_evidence_window = guest_ns
                 .zip(evidence_start.zip(evidence_end))
                 .is_some_and(|(timestamp, (start, end))| start <= timestamp && timestamp <= end);
@@ -345,12 +350,10 @@ fn timeline_bytes(
                     &source,
                 ) {
                     candidate.call_ids = correlation.candidate_call_ids.clone();
-                    if !candidate.call_ids.is_empty() {
-                        if establishes_contamination(&parsed, candidate.rule) {
-                            contamination_evidence.push(source.clone());
-                        }
-                        candidates.push(candidate);
+                    if establishes_contamination(&parsed, candidate.rule) {
+                        contamination_evidence.push(source.clone());
                     }
+                    candidates.push(candidate);
                 }
             }
             rows.push(json!({"kind":"izanagi","source":{"file":format!("evidence/izanagi/{name}"),"line":index+1},"guest_ns":guest_ns,"correlation":correlation,"level":parsed.level,"process":parsed.process,"operation":parsed.operation,"alert":parsed.alert,"diagnostic":parsed.diagnostic}));
@@ -662,6 +665,12 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"evidence":{"complete":complete,"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"evaluation":if complete{"performed"}else{"partial"}});
     let mut result = result;
     result["control_integrity"] = control_integrity.into();
+    result["deviation_observation_scope"] = json!({
+        "start":"pre_seal_clock","end":"post_agent_clock",
+        "seal_to_quiesce_complete":false,
+        "uncovered":"post_agent clock through quiesce boundary",
+        "background_candidates_retained":true
+    });
     result["contaminated"] = if contaminated {
         Value::Bool(true)
     } else if contamination_unresolved {
