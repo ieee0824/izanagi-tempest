@@ -466,6 +466,49 @@ fn control_integrity(manifest: &Value) -> &'static str {
 }
 
 pub fn generate(root: &Path) -> io::Result<Value> {
+    use std::os::unix::{fs::OpenOptionsExt, io::AsRawFd};
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(root.join("evaluation.lock"))?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(io::Error::other("another evaluation owns this run"));
+    }
+    let attempt = host_io::random_hex()?;
+    let marker = root.join("evaluation-state.json");
+    host_io::json_replace(&marker, &json!({"attempt":attempt,"state":"in_progress"}))?;
+    match generate_artifacts(root) {
+        Ok(result) => {
+            let mut artifacts = serde_json::Map::new();
+            for name in ["result.json", "report.md", "timeline.jsonl"] {
+                if name != "timeline.jsonl" || result["evaluation"] != "unavailable" {
+                    artifacts.insert(
+                        name.into(),
+                        json!({"sha256":host_io::digest(&root.join(name))?}),
+                    );
+                }
+            }
+            host_io::json_replace(
+                &marker,
+                &json!({"attempt":attempt,"state":"committed","evaluation_id":result.pointer("/provenance/evaluation_id"),"artifacts":artifacts}),
+            )?;
+            Ok(result)
+        }
+        Err(error) => {
+            host_io::json_replace(
+                &marker,
+                &json!({"attempt":attempt,"state":"failed","reason":error.to_string()}),
+            )?;
+            Err(error)
+        }
+    }
+}
+
+fn generate_artifacts(root: &Path) -> io::Result<Value> {
     let provenance = provenance(root)?;
     let scenario = load(&read(&root.join("scenario.yaml"))?).map_err(|errors| {
         io::Error::other(
@@ -730,6 +773,38 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
+    fn concurrent_evaluation_cannot_replace_current_marker() {
+        use std::os::unix::io::AsRawFd;
+        let root = std::env::temp_dir().join(format!(
+            "tempest-evaluation-lock-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        host_io::write_new(&root.join("evaluation.lock"), b"").unwrap();
+        let lock = fs::File::open(root.join("evaluation.lock")).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        host_io::json_new(
+            &root.join("evaluation-state.json"),
+            &json!({"state":"in_progress","attempt":"owner"}),
+        )
+        .unwrap();
+        assert!(
+            generate(&root)
+                .unwrap_err()
+                .to_string()
+                .contains("another evaluation")
+        );
+        let marker: Value =
+            serde_json::from_slice(&fs::read(root.join("evaluation-state.json")).unwrap()).unwrap();
+        assert_eq!(marker["attempt"], "owner");
+        drop(lock);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn control_history_distinguishes_missing_expected_and_extra_transition() {
         assert_eq!(control_integrity(&json!({})), "unavailable");
         let mut manifest = json!({"control_transitions":["claimed","seeding","seeded","sealing","sealed","finalizing"]});
@@ -902,6 +977,13 @@ mod tests {
         assert!(root.join("timeline.jsonl").is_file());
         assert!(root.join("result.json").is_file());
         assert!(root.join("report.md").is_file());
+        let state: Value =
+            serde_json::from_slice(&fs::read(root.join("evaluation-state.json")).unwrap()).unwrap();
+        assert_eq!(state["state"], "committed");
+        assert_eq!(
+            state["artifacts"]["result.json"]["sha256"],
+            host_io::digest(&root.join("result.json")).unwrap()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

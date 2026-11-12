@@ -620,6 +620,8 @@ fn allowed_artifact(path: &str) -> bool {
             | "recovery-down.stdout"
             | "recovery.json"
             | "report.md"
+            | "evaluation-state.json"
+            | "evaluation.lock"
             | "result.json"
             | "run.json"
             | "scenario.yaml"

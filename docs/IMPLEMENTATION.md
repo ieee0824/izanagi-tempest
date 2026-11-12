@@ -486,6 +486,10 @@ M5の現在の結果には`evaluation`（`performed` / `partial` / `unavailable`
 証跡ごとの診断、`attempts`、確定・未確定の逸脱を保存する。
 `provenance`に評価ID・生成時刻・評価器versionと実行ファイルhash、入力ごとのhash・サイズ・
 欠損理由を記録する。再評価は現在の入力から生成物を置換する。
+同一runへの評価は`evaluation.lock`で排他し、`evaluation-state.json`を最初に
+`in_progress`、全出力完了後に生成物hash付き`committed`へ置換する。
+エラーは`failed`を記録する。中断後に残った古い成果物を現在の評価とみなすには、
+マーカーが`committed`で、記録された出力hashが一致することを確認する。
 実行完了は`run.json.execution_status`、評価を含む最終化は`finalization`で区別する。
 以下は設計上の概要例であり、findingの詳細は現在の実装ではオブジェクトとして出力する。
 
