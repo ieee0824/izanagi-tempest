@@ -523,6 +523,19 @@ pub fn read_committed(root: &Path) -> io::Result<Value> {
         }
     }
     let result = result.ok_or_else(|| io::Error::other("result missing from artifact manifest"))?;
+    if marker["evaluation_id"].as_str().is_none_or(str::is_empty) {
+        return Err(io::Error::other("evaluation ID missing"));
+    }
+    for required in ["result.json", "report.md", "evaluation-input-run.json"] {
+        if !artifacts.contains_key(required) {
+            return Err(io::Error::other("required evaluation artifact missing"));
+        }
+    }
+    if result["evaluation"] != "unavailable" && !artifacts.contains_key("timeline.jsonl") {
+        return Err(io::Error::other(
+            "timeline missing from committed evaluation",
+        ));
+    }
     if marker["evaluation_id"] != result["provenance"]["evaluation_id"] {
         return Err(io::Error::other("evaluation generation mismatch"));
     }
@@ -1167,6 +1180,20 @@ mod tests {
             serde_json::from_slice(&fs::read(root.join("evaluation-state.json")).unwrap()).unwrap();
         assert_eq!(state["state"], "committed");
         assert_eq!(read_committed(&root).unwrap()["evaluation"], "partial");
+        for missing in ["report.md", "evaluation-input-run.json", "timeline.jsonl"] {
+            let mut incomplete = state.clone();
+            incomplete["artifacts"]
+                .as_object_mut()
+                .unwrap()
+                .remove(missing);
+            host_io::json_replace(&root.join("evaluation-state.json"), &incomplete).unwrap();
+            assert!(read_committed(&root).is_err(), "accepted missing {missing}");
+        }
+        let mut missing_id = state.clone();
+        missing_id["evaluation_id"] = Value::Null;
+        host_io::json_replace(&root.join("evaluation-state.json"), &missing_id).unwrap();
+        assert!(read_committed(&root).is_err());
+        host_io::json_replace(&root.join("evaluation-state.json"), &state).unwrap();
         host_io::replace(&root.join("report.md"), b"tampered report").unwrap();
         assert!(
             read_committed(&root)
