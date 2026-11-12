@@ -628,6 +628,7 @@ fn allowed_artifact(path: &str) -> bool {
 }
 fn finalize(root: &Path, report: &mut Value, success: &mut bool) -> io::Result<()> {
     report["status"] = if *success { "completed" } else { "aborted" }.into();
+    report["execution_status"] = report["status"].clone();
     report["finished_ns"] = host_io::now_ns()?.into();
     host_io::json_replace(&root.join("run.json"), report)?;
     if *success {
@@ -635,10 +636,16 @@ fn finalize(root: &Path, report: &mut Value, success: &mut bool) -> io::Result<(
             Ok(result) => {
                 report["evaluation"] = result["evaluation"].clone();
                 report["result"] = json!({"path":"result.json","formal_metrics_eligible":result["formal_metrics_eligible"]});
+                if result["evaluation"] != "performed" {
+                    *success = false;
+                    report["finalization"] = "incomplete".into();
+                } else {
+                    report["finalization"] = "completed".into();
+                }
             }
             Err(error) => {
                 *success = false;
-                report["status"] = "aborted".into();
+                report["finalization"] = "incomplete".into();
                 report["evaluation"] = "unavailable".into();
                 report["evaluation_failure"] = error.to_string().into();
             }
@@ -914,9 +921,13 @@ pub fn run(args: &[OsString]) -> ExitCode {
     runtime.shutdown_background();
     match result {
         Ok((path, success)) => {
+            let metadata: Value = fs::read(path.join("run.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or(Value::Null);
             println!(
                 "{}",
-                json!({"run_directory":path,"status":if success{"completed"}else{"aborted"},"scope":"m5_evaluation","evaluation":if success{"performed"}else{"unavailable"}})
+                json!({"run_directory":path,"status":metadata["status"],"scope":"m5_evaluation","evaluation":metadata["evaluation"],"finalization":metadata["finalization"]})
             );
             if success {
                 ExitCode::SUCCESS
@@ -935,6 +946,27 @@ pub fn run(args: &[OsString]) -> ExitCode {
 mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
+
+    #[test]
+    fn evaluation_failure_preserves_completed_execution() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-finalize-evaluation-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        host_io::write_new(&root.join("scenario.yaml"), b"invalid scenario").unwrap();
+        let mut report = json!({"evaluation":"not_performed"});
+        let mut success = true;
+        finalize(&root, &mut report, &mut success).unwrap();
+        assert!(!success);
+        assert_eq!(report["status"], "completed");
+        assert_eq!(report["execution_status"], "completed");
+        assert_eq!(report["evaluation"], "unavailable");
+        assert_eq!(report["finalization"], "incomplete");
+        assert!(report["evaluation_failure"].is_string());
+        assert_eq!(report["artifacts"]["unexpected"], json!([]));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn artifact_allowlist_rejects_runtime_material_and_non_regular_entries() {
