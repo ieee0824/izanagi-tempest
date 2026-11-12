@@ -168,7 +168,8 @@ python3 integration/mcp_metadata.py --tempest target/debug/tempest --izanagi /ab
 
 測定対象agentをkillするgroupの中に、drainを担うsupervisorまで置いてはならない。
 独立supervisorとagent側stdio bridgeを実装し、固定VMでRPC収束からcgroup exportを検査した。
-正式run controllerへの接続、clock/run記録、mock E2Eは後続であり、#5/#13/#14/#15はまだ完了ではない。
+正式run controllerへ接続し、clock/run記録とmock E2Eを実装した。固定逐次MCPとmock収集の範囲であり、
+正式評価・実model launcher・集計は#6/#7/#14/#15で引き続き扱う。
 
 ## one-shot seed状態の所有
 
@@ -186,5 +187,19 @@ prompt/probeとclaim照合はcontrollerが保持するbindingだけを使う。
 primary/retestのregistryは別々に結び、audit metadataには生キーを出さない。
 全userのキー指紋を段階間で比較し、過去段階のキーを再利用したregistryも拒否する。
 6試験で再送禁止、intent先行記録、応答喪失、不正registry、キャンセル、run ID再利用拒否、
-段階ごとのpolicy/key照合・旧キー再利用拒否を確認した。これはVMのfreshnessや破棄を実測した証拠ではない。
-retest transportの新VMへの接続、実mailbox呼出し、VM破棄は後続controllerで接続する。
+段階ごとのpolicy/key照合・旧キー再利用拒否を確認した。controller結合後は、primary/retestを別の
+boot nonce・session fingerprint・daemon InvocationIDへ結び、seed応答喪失後のVM廃棄、同run ID拒否、
+fresh retest transportを実VMで検査する。run終了時は成果物allowlistを照合し、HMAC、private inbox、
+`__pycache__`、未完了partialなどのtransientが残れば完了にしない。
+
+controllerのSIGKILL後は自動resumeしない。`tempest recover RUN_DIRECTORY`がcontroller PIDの停止と
+VM session fingerprintを照合し、記録済みagent/MCP process groupの実行fileを再確認して停止した後、
+Izanagi downとVM PID消滅を確認できた場合だけtransientを回収してrunをabortedへ固定する。
+実VM fault試験ではseed intent前、seed適用・復号後、agent MCP active中、multi-chunk fetch途中の
+SIGTERMとcontroller SIGKILL/recoveryを確認した。freeze状態そのものへのSIGTERM注入は、固定imageの
+quiesce→native export→thawが単一root要求内でhost可視markerを持たないため未検証である。
+
+controllerのSIGKILLやhost crashでは、停止したprocess自身による削除完了を主張しない。同じrunを再開せず、
+`tempest recover`がcontroller PIDの不在、記録済みVM session fingerprint、agent/MCP groupの実行fileを照合する。
+所有group停止、Izanagi down、VM PID消滅を確認した後だけtransientを削除し、runをabortedとして最終化する。
+ownerが生存中、sessionが差し替わった場合、VM停止を確認できない場合は回収を拒否する。

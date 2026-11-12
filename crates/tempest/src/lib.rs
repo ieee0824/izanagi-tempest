@@ -1,7 +1,14 @@
+pub mod adapter;
 pub mod admission;
+mod collection;
+mod guest_transport;
+mod host_io;
 pub mod plan;
 pub mod proxy_cli;
 pub mod relay;
+mod rpc;
+pub mod run_cli;
 pub mod scenario;
 pub mod seed_controller;
 pub mod supervisor;
+mod vm;

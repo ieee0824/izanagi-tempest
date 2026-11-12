@@ -9,6 +9,7 @@ from unittest import mock
 import contextlib
 import io
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,6 +26,36 @@ transport = load('transport')
 
 
 class MailboxTests(unittest.TestCase):
+    def test_host_companion_authenticates_one_reply_and_fails_closed(self):
+        with tempfile.TemporaryDirectory() as parent:
+            workspace = Path(parent) / 'workspace'
+            process = subprocess.Popen(
+                [sys.executable, '-B', '-I', str(ROOT / 'image' / 'host_bridge.py'), str(workspace)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+            )
+            ready = json.loads(process.stdout.readline())
+            self.assertTrue(ready['result']['ready'])
+            process.stdin.write(json.dumps({'command': 'prepare', 'operation': 'claim', 'fields': {}}) + '\n')
+            process.stdin.flush()
+            prepared = json.loads(process.stdout.readline())
+            request = workspace / prepared['result']['guest_path'].removeprefix('/workspace/')
+            request_id, payload = dispatcher.read_request(request, request.parent, os.getuid())
+            frame = dispatcher.encrypt_reply(request_id, payload, {'ok': True, 'result': {'token': 'pipe-only'}})
+            frame['id'] = 'f' * 32
+            process.stdin.write(json.dumps({'command': 'decode', 'frame': json.dumps(frame)}) + '\n')
+            process.stdin.flush()
+            failure = process.stdout.readline()
+            self.assertEqual(json.loads(failure), {'ok': False, 'error': 'mailbox_companion_failed'})
+            self.assertNotIn(request_id, failure)
+            self.assertNotIn('pipe-only', failure)
+            self.assertEqual(process.wait(timeout=5), 1)
+            process.stdin.close()
+            process.stdout.close()
+            process.stderr.close()
+            self.assertFalse(request.exists())
+            self.assertFalse((workspace / '.tempest-readonly-probe').exists())
+
     def test_export_requires_barrier_and_finalizes_while_frozen(self):
         for mode in ['success', 'native_failure', 'barrier_failure', 'missing_identity']:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as parent:

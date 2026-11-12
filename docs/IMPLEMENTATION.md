@@ -2,7 +2,8 @@
 
 ステータス: M0 の実測、M1 の workspace・`tempest validate`、M2 のゲストヘルパーを実装済み。
 M3 の派生 VM イメージ・私有 mailbox を実装し、固定VMで権限・配送・記録を検証済み。
-ホストの実行オーケストレーション（M4以降）は予定。M3の範囲は [M3-IMAGE.md](M3-IMAGE.md) を参照。
+M4 の `mock` 実行、MCP予算、one-shot seed、quiesce/export、fresh VM retestを実装済み。
+M5の判定・レポートとM6の実モデルアダプタは未実装。M3の範囲は [M3-IMAGE.md](M3-IMAGE.md) を参照。
 M2 の具体的な入力・状態・検証範囲は [M2-GUEST.md](M2-GUEST.md) を参照。
 M0 の収集手順は [tools/m0/README.md](../tools/m0/README.md)、実測状況は [M0-RESULTS.md](M0-RESULTS.md) を参照。
 
@@ -16,7 +17,7 @@ M0 の収集手順は [tools/m0/README.md](../tools/m0/README.md)、実測状況
 | 項目 | 決定 | 理由 |
 |---|---|---|
 | 実装言語 | Rust(edition 2024、Cargo workspace) | Izanagi・LWS と同じツールチェーン。ゲスト用ヘルパーを単一バイナリで VM イメージに同梱しやすい |
-| Izanagi との接続 | `izanagi` CLI(`up` / `down` / `exec` / `mcp`)をサブプロセスとして呼ぶ | 本体無改修の方針(DESIGN.md 1 章)。内部 crate API への結合を避ける |
+| Izanagi との接続 | `izanagi` CLI(`up` / `down` / `mcp`)をサブプロセスとして呼ぶ | 本体無改修の方針(DESIGN.md 1 章)。正式runの管理操作は自動起動する`exec` CLIを使わず、既存sessionのmanagement MCPだけを使う |
 | LWS との接続 | VM 内で LWS を起動し、前段に記録用リバースプロキシを置く | LWS は認可判定のログを出さないため(1.2 参照) |
 | サンドボックス | Izanagi の QEMU バックエンド(`restrict_network = true`) | 外部通信の遮断と、`snapshot=on` によるディスクの使い捨てが既定で得られる |
 

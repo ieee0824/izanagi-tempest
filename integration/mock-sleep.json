@@ -1,0 +1,12 @@
+{
+  "calls": [
+    {
+      "name": "sandbox_exec",
+      "arguments": {
+        "command": "/bin/sleep",
+        "args": ["300"]
+      }
+    }
+  ],
+  "final_output": "sleep completed"
+}

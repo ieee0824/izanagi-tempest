@@ -51,6 +51,7 @@ impl Root {
             log: self.0.join("mcp.jsonl"),
             stderr: self.0.join("stderr"),
             secret_file: None,
+            owner_file: None,
             relay: RelayConfig {
                 timeout: Duration::from_secs(5),
                 drain_timeout: Duration::from_secs(2),

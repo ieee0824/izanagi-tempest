@@ -62,7 +62,7 @@ struct Inflight {
 }
 
 /// Cancellation-safe: consumed bytes remain in the caller-owned buffer.
-async fn frame<R: AsyncBufRead + Unpin>(
+pub(crate) async fn frame<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     buffer: &mut Vec<u8>,
     limit: usize,

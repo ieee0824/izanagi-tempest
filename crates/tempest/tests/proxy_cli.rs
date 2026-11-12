@@ -5,16 +5,19 @@ use std::{
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::PathBuf,
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+static DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 fn directory() -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "tempest-proxy-test-{}-{}",
+        "tempest-proxy-test-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
     fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
     path

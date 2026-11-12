@@ -42,6 +42,7 @@ pub struct SupervisorConfig {
     pub log: PathBuf,
     pub stderr: PathBuf,
     pub secret_file: Option<PathBuf>,
+    pub owner_file: Option<PathBuf>,
     pub relay: RelayConfig,
 }
 
@@ -166,6 +167,12 @@ impl Supervisor {
                 return Err(error);
             }
         };
+        if let Some(path) = &config.owner_file {
+            crate::host_io::json_new(
+                path,
+                &serde_json::json!({"process_group":child.id(),"role":"mcp_upstream"}),
+            )?;
+        }
         let upstream_read = child.stdout.take().expect("piped");
         let upstream_write =
             crate::proxy_cli::SecretWriter::new(child.stdin.take().expect("piped"), cursor);
@@ -334,6 +341,7 @@ pub fn session_cli(args: &[OsString]) -> ExitCode {
             stderr: options.stderr,
             relay: options.config,
             secret_file: options.secret_file,
+            owner_file: None,
         })?;
         let close = owner.close.clone();
         let mut termination =
