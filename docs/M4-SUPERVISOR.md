@@ -89,7 +89,9 @@ guestのcgroup exportへ進む。予算拒否されたfileがguestに存在し�
 
 image SHA-256は`1d8e564d72c68a39ab7e78551e73e0d6e61190fa9101596e01c53e0e00eb9e7c`。
 Izanagi/LWS本体、snapshot/read-only/network制限は[M4終了確認](M4-QUIESCE.md)と同一。
-host binaryは`c0e3030`へ本差分を加えたtreeからビルドした。
+host binaryは`c0e3030`に本機能を実装した作業treeからビルドした。
+run005後はFile/PathとHMAC値の変数名だけを整理した（挙動変更なし）。
+記録したhashは保存済みsnapshot binaryの値であり、別ビルドの同一性を主張しない。
 
 | run | 条件・結果 |
 |---|---|
