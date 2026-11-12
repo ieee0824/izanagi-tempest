@@ -24,6 +24,12 @@ pub(crate) fn json_replace(path: &Path, value: &impl serde::Serialize) -> io::Re
     fs::rename(temporary, path)?;
     File::open(path.parent().unwrap())?.sync_all()
 }
+pub(crate) fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temporary = path.with_extension(format!("{}.tmp", random_hex()?));
+    write_new(&temporary, bytes)?;
+    fs::rename(temporary, path)?;
+    File::open(path.parent().unwrap())?.sync_all()
+}
 pub(crate) fn digest(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut buffer = [0; 65536];

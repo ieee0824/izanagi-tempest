@@ -108,6 +108,8 @@ HTTP リバースプロキシ `tempest-guest recorder` を置く。
 ```
 
 - `access_key_id` は `Authorization` ヘッダーの `Credential=<AKID>/...` から取る(署名は検証しない)
+- `api.jsonl` はcredential claimのAccessKeyIdを平文で含む私有証跡である。`run.json` / `result.json` /
+  `report.md` には再複製せずfingerprintで主体を照合するが、run directory全体が秘密でないとは主張しない
 - `action` / `resource` はリクエストから推定する。LWS の strict モードの対応範囲
   (S3 は path-style のメソッドとパス、SQS は `Action` パラメータまたは `X-Amz-Target`、
   SES は `Action` パラメータ)に限って変換表を持つ。変換できないものは `action: null` として残す

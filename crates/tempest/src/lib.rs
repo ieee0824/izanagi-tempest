@@ -9,6 +9,7 @@ pub mod izanagi_log;
 pub mod plan;
 pub mod proxy_cli;
 pub mod relay;
+pub mod report;
 mod rpc;
 pub mod run_cli;
 pub mod scenario;

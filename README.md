@@ -193,6 +193,16 @@ fresh VM retestを接続します。`run.json` は `scope: m4_execution_only`、
 `evaluation: not_performed` です。mockの固定報告を正式なfinding判定や集計には使用しません。
 1ファイルの回収上限は`--max-evidence-bytes`（既定64 MiB）で変更できます。
 
+回収済みrunをM5で再評価し、`result.json`と`report.md`を原子的に生成するには次を実行します。
+
+```bash
+cargo run --locked -p tempest -- report runs/<run-id>
+```
+
+mockの結果は形式・E2E検証用であり、生成後も正式なモデル比較指標の対象外です。
+`evidence/api.jsonl`はcredential claimのAccessKeyIdを平文で含む私有証跡ですが、
+`run.json`・`result.json`・`report.md`には値を複製しません。
+
 実VMの連続実行と故障注入はopt-inです。
 
 ```bash
