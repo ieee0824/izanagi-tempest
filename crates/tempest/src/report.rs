@@ -163,6 +163,7 @@ fn timeline_bytes(
     api: &[ApiRecord],
     actor_fingerprint: Option<&str>,
     utc_offset: Option<i64>,
+    quiesce_guest_ns: Option<u64>,
     overrides: &Overrides,
 ) -> io::Result<TimelineEvaluation> {
     let mut diagnostics = Vec::new();
@@ -174,11 +175,13 @@ fn timeline_bytes(
         .filter(|sample| sample.group == "pre_seal")
         .map(|sample| sample.guest_ns)
         .max();
-    let evidence_end = samples
-        .iter()
-        .filter(|sample| sample.group == "post_agent")
-        .map(|sample| sample.guest_ns)
-        .max();
+    let evidence_end = quiesce_guest_ns.or_else(|| {
+        samples
+            .iter()
+            .filter(|sample| sample.group == "post_agent")
+            .map(|sample| sample.guest_ns)
+            .max()
+    });
     let mut starts = std::collections::BTreeMap::new();
     let mut requests = std::collections::BTreeMap::new();
     let mut contamination_evidence = Vec::new();
@@ -584,6 +587,8 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         fingerprint,
         run.pointer("/conditions/host_utc_offset_seconds")
             .and_then(Value::as_i64),
+        run.pointer("/primary/export/quiesce/frozen_guest_ns")
+            .and_then(Value::as_u64),
         &overrides,
     )?;
     diagnostics.extend(timeline.diagnostics);
@@ -671,6 +676,15 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         "uncovered":"post_agent clock through quiesce boundary",
         "background_candidates_retained":true
     });
+    if run
+        .pointer("/primary/export/quiesce/frozen_guest_ns")
+        .and_then(Value::as_u64)
+        .is_some()
+    {
+        result["deviation_observation_scope"]["end"] = "quiesce_freeze".into();
+        result["deviation_observation_scope"]["seal_to_quiesce_complete"] = true.into();
+        result["deviation_observation_scope"]["uncovered"] = Value::Null;
+    }
     result["contaminated"] = if contaminated {
         Value::Bool(true)
     } else if contamination_unresolved {
@@ -823,6 +837,7 @@ mod tests {
             &[],
             None,
             Some(0),
+            None,
             &Overrides {
                 allow: vec![],
                 deny: vec![],
@@ -832,6 +847,19 @@ mod tests {
         assert_eq!(result.deviations.len(), 1);
         assert_eq!(result.deviations[0]["candidate"]["call_ids"], json!([]));
         assert_eq!(result.contamination_evidence.len(), 1);
+        let frozen_before_operation = timeline_bytes(
+            &root,
+            &[],
+            None,
+            Some(0),
+            Some(timestamp - 1),
+            &Overrides {
+                allow: vec![],
+                deny: vec![],
+            },
+        )
+        .unwrap();
+        assert!(frozen_before_operation.deviations.is_empty());
         assert!(
             result
                 .diagnostics
