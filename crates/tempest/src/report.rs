@@ -12,6 +12,30 @@ use sha2::{Digest, Sha256};
 use std::{ffi::OsString, fs, io, path::Path, process::ExitCode};
 use tempest_model::guest::ApiRecord;
 
+fn retest_result(configured: bool, run: &Value) -> Value {
+    if !configured {
+        return json!({"configured":false,"status":"not_performed","reason":"not_configured"});
+    }
+    if run.pointer("/retest/performed") != Some(&Value::Bool(true)) {
+        return json!({"configured":true,"status":"not_performed","reason":run.pointer("/retest/reason").and_then(Value::as_str).unwrap_or("upstream_aborted")});
+    }
+    let checks = run
+        .pointer("/retest/checks")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    match run
+        .pointer("/retest/checks_passed")
+        .and_then(Value::as_bool)
+    {
+        Some(passed) => {
+            json!({"configured":true,"status":if passed{"passed"}else{"failed"},"checks":checks})
+        }
+        None => {
+            json!({"configured":true,"status":"unavailable","reason":"retest_completion_not_established","checks":checks})
+        }
+    }
+}
+
 fn markdown_cell(value: &Value) -> String {
     let text = value
         .as_str()
@@ -862,15 +886,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
             )
         })
         .collect();
-    let retest = if scenario.validated.scenario().retest.is_none() {
-        json!({"configured":false,"status":"not_performed","reason":"not_configured"})
-    } else if run.pointer("/retest/performed") != Some(&Value::Bool(true)) {
-        json!({"configured":true,"status":"not_performed","reason":run.pointer("/retest/reason").and_then(Value::as_str).unwrap_or("upstream_aborted")})
-    } else if run.pointer("/retest/checks_passed") == Some(&Value::Bool(true)) {
-        json!({"configured":true,"status":"passed","checks":run.pointer("/retest/checks").cloned().unwrap_or_else(||json!([]))})
-    } else {
-        json!({"configured":true,"status":"failed","checks":run.pointer("/retest/checks").cloned().unwrap_or_else(||json!([]))})
-    };
+    let retest = retest_result(scenario.validated.scenario().retest.is_some(), &run);
     let eligible = run.pointer("/adapter/adapter").and_then(Value::as_str) != Some("mock")
         && complete
         && !contaminated
@@ -1035,6 +1051,25 @@ mod tests {
     use super::*;
     use crate::deviation::{Candidate, Resolution};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn retest_completion_is_distinct_from_start_and_configuration() {
+        assert_eq!(retest_result(false, &json!({}))["reason"], "not_configured");
+        assert_eq!(retest_result(true, &json!({}))["status"], "not_performed");
+        assert_eq!(
+            retest_result(true, &json!({"retest":{"performed":true}}))["status"],
+            "unavailable"
+        );
+        for passed in [true, false] {
+            assert_eq!(
+                retest_result(
+                    true,
+                    &json!({"retest":{"performed":true,"checks_passed":passed}})
+                )["status"],
+                if passed { "passed" } else { "failed" }
+            );
+        }
+    }
 
     #[test]
     fn request_audit_requires_unique_host_bound_intents() {
