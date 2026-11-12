@@ -26,6 +26,13 @@ retestではprimary setupを変更せずcloneし、既存のretest.userのpolicy
 元シナリオ・primaryのseed結果と、retest側のsetup/seed結果を私有run証跡で別々に保持する。
 再seedのキーは新しいため段階間のキー一致を要求しない。段階ごとのregistryで照合し、旧キーを流用しない。
 
+plan/binding factoryはstatelessであり、同run・同primary policyの再seed後の現在性を単独では保証しない。
+既存の旧キー負例はprimary/retestの段階間についての試験である。
+M4 controllerは同一run/段階のseedを1回だけにし、seed応答喪失/失敗後はVMとrunを破棄する。
+再試行には新run IDを発行する。retestは同runの別段階として1回だけ新VMを作る。
+controllerのone-shot所有状態と正負試験を実装してからこの不変条件を確認済みにする。
+
+
 retestがprimaryと別actorなら独立したpolicy検証として扱う。
 同一actorかつfindingと同じAPI/resourceへのdeny checkがある場合のみ、修正確認の対象になり得る。
 `repair_intent=targeted_repair_check`は必要条件の計画であり、成功判定ではない。
@@ -100,7 +107,7 @@ planの8試験は4presence、複数userの明示解決、retestの限定置換�
 接続喪失/収束期限切れは不可逆にuncertainとし、後着応答があってもverified receiptを生成しない。
 `DrainReceipt`はRPC収束だけの証拠であり、ゲストprocess終了の証明ではない。
 4試験で上限/0/期限/重複/未観測応答/接続喪失/期限後応答を確認する。
-実MCP relayの中継・ログ・通知/並列応答とHost/VM shutdownへの接続は未実装。
+実MCP relayの中継・ログは下記のstdio実装で接続した。Host/VM shutdownへの接続は未実装。
 
 
 ### 固定MCPの外側timeoutに関する反例
@@ -116,3 +123,45 @@ relayではtool呼出しを上流へ無制限に先送りせず、未転送queue
 通常exportへ進めずVM破棄と証跡欠損理由を記録する。
 コマンドの非0終了（例:期待した認可拒否）をtransport失敗と混同しない判別は、
 固定serverの結果形式と実際のRPC/VM故障注入で検証してから使用する。
+
+
+## stdio MCP relay（VM controller接続前）
+
+`tempest mcp-proxy`は固定Izanagiの逐次JSON-lines serverを対象とする。
+1つだけを実inflightとし、未転送queueは32frames/合計8MiBに制限する。
+agent入力は4MiB/行、上流応答はescaped stdout/stderrを考慮して8MiB/行。
+initialize/tools/listの内容・tool説明・schemaを変更せず中継し、tools/callの転送permitだけを予算に数える。
+重複ID/queue上限/不正frameは転送しない。断片frameはtimer/control待ちのキャンセルで失わない。
+
+queued→dispatch_ready→forwarded/forward_uncertain→responseをmcp.jsonlに記録する。
+dispatch_readyは転送候補であり、転送済みの証明ではない。監査I/Oの後でもう一度
+受付/期限を検査してからpermitを出す。途中切断時にforward済みのpendingを消さない。
+agent入力のhalf-close時は既に受信したqueueを処理できるが、controllerから明示closeされたら
+未転送要求は拒否する。Host runtimeは測定対象終了時に明示closeを送る。
+
+上流切断・ID不一致・不正応答・drain期限切れ・exec failed等の完了不明な応答では
+不可逆uncertainとし、verified drain receiptを出さない。
+固定tools.rsの通常非0exitは末尾のexit-code形式と区別する。guest出力がexec failedを模倣する等の
+曖昧さは保守的にuncertainのままにする。この判別は固定形式fixtureで検査したもので、
+実VMでの非0終了/外側timeout故障注入とcontrollerのexport禁止への接続はまだ行っていない。
+
+CLIのlog/summary/stderrは同一user所有0700の親に新規0600で作る。
+既存fileを上書きせず、上流へHOME/PATH/TZとTERM=dumb以外の環境を引き継がない。
+summaryのscopeはrpc_transport_onlyで、CLI終了0も実験成功やguest子孫終了を意味しない。
+agent側書込み先が閉じても上流応答をdrainし、結果不明なら通常exportを禁止する扱いをcallerへ返す。
+
+12件のstream試験と2件の実process CLI試験で、metadata透過、quota/0/close、queue上限、
+切断後drain、外側exec失敗、通常非0/模倣出力、frame断片/上限、ID不一致、監査遅延中の期限切れを確認。
+固定Izanagi CLIの実processでもinitialize/tool定義が直接実行と一致し、予算0の要求を拒否した（VMなし）。
+比較証跡はGit外の`.m0-evidence/20261112-mcp-relay-current/`。
+再現時はビルド後、固定Izanagi実行ファイルと新規出力先を指定する。
+
+```bash
+python3 integration/mcp_metadata.py --tempest target/debug/tempest --izanagi /absolute/path/to/izanagi --output /private/tmp/tempest-mcp-metadata-001
+```
+
+`comparison.json`に両実行ファイルのSHA-256と確認範囲を記録する。VMは起動しない。
+
+測定対象agentをkillするgroupの中に、drainを担うsupervisorまで置いてはならない。
+Run controller所有の独立supervisor、agent側stdio bridge、one-shot seed状態、VM cgroup回収、
+clock/run記録、mock E2Eは次の実装であり、#5/#13/#14/#15はまだ完了ではない。

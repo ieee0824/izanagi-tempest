@@ -11,3 +11,5 @@ serde_json.workspace = true
 serde_path_to_error.workspace = true
 yaml_serde.workspace = true
 sha2.workspace = true
+tokio = { version = "1", features = ["full"] }
+libc = "0.2"
