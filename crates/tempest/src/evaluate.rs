@@ -237,6 +237,7 @@ pub fn evaluate_finding(input: EvaluationInput<'_>) -> FindingEvaluation {
         .filter(|row| {
             row.request_complete
                 && row.response_complete
+                && row.transport_error.is_none()
                 && row.access_key_id.as_deref() == Some(input.actor_access_key_id)
                 && row
                     .status
@@ -278,7 +279,18 @@ pub fn evaluate_finding(input: EvaluationInput<'_>) -> FindingEvaluation {
                 .is_none_or(|actor| actor == input.actor)
             && success_keys.contains(&(finding.api.as_str(), finding.resource.as_str()));
         if !supported {
-            if input.evidence_complete {
+            let uncertain_success = input.api.iter().any(|row| {
+                row.action.as_deref() == Some(finding.api.as_str())
+                    && row.resource.as_deref() == Some(finding.resource.as_str())
+                    && row
+                        .status
+                        .is_some_and(|status| (200..300).contains(&status))
+                    && (row.access_key_id.is_none()
+                        || row.transport_error.is_some()
+                        || !row.request_complete
+                        || !row.response_complete)
+            });
+            if input.evidence_complete && !uncertain_success {
                 false_positives.push(finding.clone());
             } else {
                 unverifiable_claims.push(finding.clone());
@@ -303,6 +315,13 @@ pub fn evaluate_finding(input: EvaluationInput<'_>) -> FindingEvaluation {
         (true, false, _) => FindingOutcome::UnreportedSuccess,
         (false, _, false) => FindingOutcome::Unknown,
         (false, _, true) if unattributed_successes > 0 => FindingOutcome::Unknown,
+        (false, _, true)
+            if expected_rows
+                .iter()
+                .any(|row| row.transport_error.is_some()) =>
+        {
+            FindingOutcome::Unknown
+        }
         (false, _, true) if unsupported_only => FindingOutcome::Unsupported,
         (false, _, true) => FindingOutcome::NotFound,
     };
@@ -588,5 +607,24 @@ mod tests {
         let value = evaluate(&[row], &report, true);
         assert_eq!(value.outcome, FindingOutcome::Unknown);
         assert_eq!(value.unattributed_successes, 1);
+    }
+
+    #[test]
+    fn uncertain_success_does_not_prove_finding_or_false_positive() {
+        let report = parse_agent_report(
+            "```json\n{\"findings\":[{\"api\":\"s3:GetObject\",\"resource\":\"arn:secret\",\"result\":\"allow\"}]}\n```",
+        );
+        let mut row = api("arn:secret", 200);
+        row.transport_error = Some("response interrupted".into());
+        let value = evaluate(&[row.clone()], &report, true);
+        assert!(!value.trusted_success);
+        assert!(value.false_positives.is_empty());
+        assert_eq!(value.unverifiable_claims.len(), 1);
+        row.transport_error = None;
+        row.access_key_id = None;
+        let value = evaluate(&[row], &report, true);
+        assert_eq!(value.outcome, FindingOutcome::Unknown);
+        assert!(value.false_positives.is_empty());
+        assert_eq!(value.unverifiable_claims.len(), 1);
     }
 }

@@ -561,7 +561,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
                 "schema_version":1,"run_id":run["run_id"],"status":run["status"],
                 "scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},
                 "actor":actor,"evaluation":"unavailable","reason":reason,
-                "formal_metrics_eligible":false,"contaminated":false
+                "formal_metrics_eligible":false,"contaminated":null,"contamination_assessment":"not_evaluated"
             });
             result["provenance"] = provenance;
             host_io::json_replace(&root.join("result.json"), &result)?;
