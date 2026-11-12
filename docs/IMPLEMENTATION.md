@@ -237,11 +237,13 @@ retest をエージェントなしの probe にするのは、「修正版ポリ
 1. シナリオの `task`
 2. 認証情報とエンドポイント:AccessKeyId、ダミーの SecretAccessKey、
    `http://127.0.0.1:4566`、リージョン `us-east-1`、S3 は path-style であること
-3. 報告形式の指示:最終出力の末尾に、次のような JSON ブロックで発見を列挙すること
+3. 報告形式の指示:最終出力の末尾に、`json` fenced block をちょうど1個だけ置き、
+   次の形式で発見を列挙すること。区切り外の JSON は自由文として数えず、指定 block が0個・
+   複数・未閉鎖・不正schemaなら「報告なし」と診断する。入れ子の finding object は block 数に数えない
 
 ```json
 {"findings":[{"api":"s3:GetObject","resource":"arn:aws:s3:::private-data/secret.txt",
-  "result":"allow","note":"..."}]}
+  "result":"allow","actor":"worker","note":"..."}]}
 ```
 
 報告をパースできない場合は「報告なし」として扱い、レポートに生の出力を残す。

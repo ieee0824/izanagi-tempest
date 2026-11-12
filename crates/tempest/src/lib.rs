@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod admission;
 mod collection;
+pub mod evaluate;
 mod guest_transport;
 mod host_io;
 pub mod plan;
@@ -11,4 +12,5 @@ pub mod run_cli;
 pub mod scenario;
 pub mod seed_controller;
 pub mod supervisor;
+pub mod timeline;
 mod vm;
