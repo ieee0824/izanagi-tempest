@@ -52,8 +52,8 @@ def main():
             report = json.loads((run / 'run.json').read_text())
             if report['self_check']['configured'] is not finding:
                 raise AssertionError(f'{label}: self-check presence changed')
-            if report['finding']['configured'] is not finding or report['finding']['performed']:
-                raise AssertionError(f'{label}: finding was generated or evaluated')
+            if report['finding']['configured'] is not finding or report['finding']['performed'] is not finding:
+                raise AssertionError(f'{label}: finding evaluation presence changed')
             if report['retest']['configured'] is not retest \
                     or report['retest']['performed'] is not retest:
                 raise AssertionError(f'{label}: retest presence changed')
@@ -61,8 +61,19 @@ def main():
                 raise AssertionError(f'{label}: configured retest failed')
             if not retest and (run / 'retest').exists():
                 raise AssertionError(f'{label}: unconfigured retest directory was generated')
-            if report['evaluation'] != 'not_performed':
-                raise AssertionError(f'{label}: M5 evaluation was fabricated')
+            if report['evaluation'] != 'performed':
+                raise AssertionError(f'{label}: M5 evaluation missing')
+            evaluated = json.loads((run / 'result.json').read_text())
+            expected_finding = 'found' if finding else 'not_configured'
+            if evaluated['finding']['outcome'] != expected_finding:
+                raise AssertionError(f'{label}: wrong finding outcome')
+            expected_retest = 'passed' if retest else 'not_performed'
+            if evaluated['retest']['status'] != expected_retest:
+                raise AssertionError(f'{label}: wrong retest outcome')
+            if evaluated['formal_metrics_eligible']:
+                raise AssertionError(f'{label}: mock eligible for formal metrics')
+            if not (run / 'report.md').is_file():
+                raise AssertionError(f'{label}: report missing')
             completed.append(str(run))
     print(json.dumps({'runtime_presence': 'passed', 'runs': completed}))
 

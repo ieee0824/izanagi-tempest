@@ -639,6 +639,10 @@ fn finalize(root: &Path, report: &mut Value, success: &mut bool) -> io::Result<(
         match evaluation_report::generate(root) {
             Ok(result) => {
                 report["evaluation"] = result["evaluation"].clone();
+                if result["finding"].is_object() {
+                    let configured = result["finding"]["outcome"] != "not_configured";
+                    report["finding"] = json!({"configured":configured,"performed":configured,"outcome":result["finding"]["outcome"]});
+                }
                 report["result"] = json!({"path":"result.json","formal_metrics_eligible":result["formal_metrics_eligible"]});
                 if result["evaluation"] != "performed" {
                     *success = false;
