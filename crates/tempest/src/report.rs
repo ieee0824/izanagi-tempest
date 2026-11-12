@@ -488,12 +488,9 @@ fn provenance(root: &Path) -> io::Result<Value> {
 }
 
 fn control_request_integrity(manifest: &Value, controls: &[Value]) -> &'static str {
-    if manifest["control_operation_intents_overflow"]
+    let mut unavailable = manifest["control_operation_intents_overflow"]
         .as_u64()
-        .is_some_and(|count| count > 0)
-    {
-        return "unavailable";
-    }
+        .is_some_and(|count| count > 0);
     let Some(intents) = manifest["control_operation_intents"].as_array() else {
         return "unavailable";
     };
@@ -510,24 +507,39 @@ fn control_request_integrity(manifest: &Value, controls: &[Value]) -> &'static s
     if expected.is_empty() {
         return "unavailable";
     }
+    let mut rejected = false;
+    let mut unidentified = false;
+    let mut unexpected = false;
     for intent in intents {
         if !intent["authorized"].is_boolean() {
-            return "unavailable";
+            unavailable = true;
+            continue;
         }
         if intent["authorized"] == false {
-            return "authorization_rejected";
+            rejected = true;
+            continue;
         }
         let Some(id) = intent["audit_id"].as_str() else {
-            return "unidentified_request";
+            unidentified = true;
+            continue;
         };
         let Some(operation) = intent["operation"].as_str() else {
-            return "unavailable";
+            unavailable = true;
+            continue;
         };
         if expected.remove(id) != Some(operation) {
-            return "unexpected_request";
+            unexpected = true;
         }
     }
-    if expected.is_empty() {
+    if unexpected {
+        "unexpected_request"
+    } else if unidentified {
+        "unidentified_request"
+    } else if unavailable {
+        "unavailable"
+    } else if rejected {
+        "authorization_rejected"
+    } else if expected.is_empty() {
         "matched"
     } else {
         "incomplete"
@@ -993,6 +1005,19 @@ mod tests {
     #[test]
     fn request_audit_requires_unique_host_bound_intents() {
         let controls = [json!({"id":"a","operation":"seal","state":"started"})];
+        let denied = json!({"audit_id":"a","operation":"seal","authorized":false});
+        let foreign = json!({"audit_id":"foreign","operation":"seal","authorized":true});
+        for intents in [vec![denied.clone(), foreign.clone()], vec![foreign, denied]] {
+            for overflow in [0, 1] {
+                assert_eq!(
+                    control_request_integrity(
+                        &json!({"control_operation_intents":intents,"control_operation_intents_overflow":overflow}),
+                        &controls
+                    ),
+                    "unexpected_request"
+                );
+            }
+        }
         let intent = json!({"audit_id":"a","operation":"seal","authorized":true});
         assert_eq!(
             control_request_integrity(
