@@ -490,6 +490,11 @@ M5の現在の結果には`evaluation`（`performed` / `partial` / `unavailable`
 `in_progress`、全出力完了後に生成物hash付き`committed`へ置換する。
 エラーは`failed`を記録する。中断後に残った古い成果物を現在の評価とみなすには、
 マーカーが`committed`で、記録された出力hashが一致することを確認する。
+readerは`read_committed`と同様に共有flockを保持してmarkerと全成果物を読み、
+hashとevaluation IDを照合したbytesを利用する。writerとの競合中は読み取りを拒否する。
+`run.json`は最終化時に更新されるため、評価開始時の内容を
+`evaluation-input-run.json`へ固定し、そのsnapshotを実際の入力とprovenance hashの対象とする。
+snapshot自体も確定markerの成果物hashに含め、現在の評価世代に結び付ける。
 実行完了は`run.json.execution_status`、評価を含む最終化は`finalization`で区別する。
 以下は設計上の概要例であり、findingの詳細は現在の実装ではオブジェクトとして出力する。
 
