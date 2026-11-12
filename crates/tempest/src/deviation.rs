@@ -258,18 +258,30 @@ pub fn decide(candidate: &Candidate, overrides: &Overrides, default_included: bo
 }
 
 pub fn deduplicate(candidates: impl IntoIterator<Item = Candidate>) -> Vec<Candidate> {
-    let mut groups = std::collections::BTreeMap::<(Rule, String, Resolution), Candidate>::new();
+    let mut groups = std::collections::BTreeMap::<
+        (Rule, String, Resolution, Vec<u64>, Option<u64>),
+        Candidate,
+    >::new();
     for mut candidate in candidates {
+        candidate.call_ids.sort_unstable();
+        candidate.call_ids.dedup();
+        let background_time = candidate
+            .call_ids
+            .is_empty()
+            .then_some(candidate.first_seen_ns)
+            .flatten();
         let key = (
             candidate.rule,
             candidate.target.clone(),
             candidate.resolution,
+            candidate.call_ids.clone(),
+            background_time,
         );
         let entry = groups.entry(key).or_insert_with(|| Candidate {
             rule: candidate.rule,
             target: candidate.target.clone(),
             resolution: candidate.resolution,
-            call_ids: vec![],
+            call_ids: candidate.call_ids.clone(),
             evidence: vec![],
             occurrence_count: 0,
             first_seen_ns: None,
@@ -286,18 +298,11 @@ pub fn deduplicate(candidates: impl IntoIterator<Item = Candidate>) -> Vec<Candi
             .into_iter()
             .flatten()
             .max();
-        entry.call_ids.append(&mut candidate.call_ids);
         entry.evidence.append(&mut candidate.evidence);
     }
     groups
         .into_values()
         .map(|mut item| {
-            item.call_ids = item
-                .call_ids
-                .into_iter()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
             item.evidence = item
                 .evidence
                 .into_iter()
@@ -394,7 +399,7 @@ mod tests {
         );
     }
     #[test]
-    fn invalid_configuration_is_rejected_and_dedup_merges_evidence() {
+    fn invalid_configuration_is_rejected_and_dedup_is_scoped_to_one_call() {
         assert!(
             parse_overrides(&[serde_json::json!({"rule":"unknown","target":"*"})], &[]).is_err()
         );
@@ -418,7 +423,7 @@ mod tests {
         let merged = deduplicate([
             base.clone(),
             Candidate {
-                call_ids: vec![1, 2],
+                call_ids: vec![2],
                 evidence: vec!["a".into()],
                 occurrence_count: 2,
                 first_seen_ns: Some(5),
@@ -426,11 +431,26 @@ mod tests {
                 ..base
             },
         ]);
-        assert_eq!(merged[0].call_ids, vec![1, 2]);
+        assert_eq!(merged[0].call_ids, vec![2]);
         assert_eq!(merged[0].evidence, vec!["a", "b"]);
         assert_eq!(merged[0].occurrence_count, 3);
         assert_eq!(merged[0].first_seen_ns, Some(5));
         assert_eq!(merged[0].last_seen_ns, Some(30));
+
+        let separate = deduplicate([
+            merged[0].clone(),
+            Candidate {
+                call_ids: vec![3],
+                evidence: vec!["c".into()],
+                occurrence_count: 1,
+                first_seen_ns: Some(40),
+                last_seen_ns: Some(40),
+                ..merged[0].clone()
+            },
+        ]);
+        assert_eq!(separate.len(), 2);
+        assert_eq!(separate[0].call_ids, vec![2]);
+        assert_eq!(separate[1].call_ids, vec![3]);
     }
     #[test]
     fn maps_measured_log_operations_without_treating_normal_loopback_as_deviation() {

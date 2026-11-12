@@ -189,8 +189,10 @@ target/release/tempest run scenarios/s3-overread-001.yaml \
 ```
 
 controllerはMCP管理経路だけでone-shot seed、self-check、agent admission、quiesce/export、
-fresh VM retestを接続します。`run.json` は `scope: m4_execution_only`、`purpose: collection`、
-`evaluation: not_performed` です。mockの固定報告を正式なfinding判定や集計には使用しません。
+fresh VM retestを接続します。成功した実行ではM5評価を自動実行し、`timeline.jsonl`・
+`result.json`・`report.md`を生成します。`run.json` は `scope: m5_evaluation`、
+`purpose: collection_and_evaluation`、`evaluation: performed` です。
+mockの固定報告は形式検証用で、正式なモデル比較の集計対象には含めません。
 1ファイルの回収上限は`--max-evidence-bytes`（既定64 MiB）で変更できます。
 
 回収済みrunをM5で再評価し、`result.json`と`report.md`を原子的に生成するには次を実行します。
@@ -200,6 +202,9 @@ cargo run --locked -p tempest -- report runs/<run-id>
 ```
 
 mockの結果は形式・E2E検証用であり、生成後も正式なモデル比較指標の対象外です。
+証跡の欠損・不正行は診断付きの`partial`として保存し、不正な`deviation`設定は
+理由付きの`unavailable`結果を保存します。同じMCP呼び出しに通常APIと4567接続が混在し、
+接続元を確定できないログ候補は`unresolved_backend_or_bypass`として保持します。
 `evidence/api.jsonl`はcredential claimのAccessKeyIdを平文で含む私有証跡ですが、
 `run.json`・`result.json`・`report.md`には値を複製しません。
 
