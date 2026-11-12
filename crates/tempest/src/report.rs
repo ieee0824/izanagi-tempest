@@ -782,6 +782,66 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
+    fn background_operation_and_malformed_log_remain_evaluation_evidence() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-background-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        host_io::directory(&root.join("evidence")).unwrap();
+        host_io::directory(&root.join("evidence/izanagi")).unwrap();
+        host_io::write_new(&root.join("evidence/mcp.jsonl"), b"").unwrap();
+        let timestamp = DateTime::parse_from_rfc3339("2026-11-12T23:20:48.812Z")
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap() as u64;
+        let mut clock = Vec::new();
+        for (group, guest_ns) in [
+            ("pre_seal", timestamp - 1_000_000),
+            ("post_agent", timestamp + 1_000_000),
+        ] {
+            serde_json::to_writer(
+                &mut clock,
+                &ClockSample {
+                    group: group.into(),
+                    sample: 0,
+                    host_before_ns: guest_ns,
+                    host_after_ns: guest_ns,
+                    guest_ns,
+                    offset_ns: 0,
+                    rtt_ns: 0,
+                },
+            )
+            .unwrap();
+            clock.push(b'\n');
+        }
+        host_io::write_new(&root.join("evidence/clock.jsonl"), &clock).unwrap();
+        host_io::write_new(&root.join("evidence/izanagi/events.log"), b"[2026-11-12 23:20:48.812] INFO pid=584 x: openat(\"/var/lib/lws/x\", 0) \xe2\x86\x92 3\nbroken operation line\n").unwrap();
+        host_io::write_new(&root.join("evidence/izanagi/alerts.log"), b"").unwrap();
+        let result = timeline_bytes(
+            &root,
+            &[],
+            None,
+            Some(0),
+            &Overrides {
+                allow: vec![],
+                deny: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(result.deviations.len(), 1);
+        assert_eq!(result.deviations[0]["candidate"]["call_ids"], json!([]));
+        assert_eq!(result.contamination_evidence.len(), 1);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|message| message.contains("unrecognized"))
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn concurrent_evaluation_cannot_replace_current_marker() {
         use std::os::unix::io::AsRawFd;
         let root = std::env::temp_dir().join(format!(
