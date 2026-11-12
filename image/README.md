@@ -74,7 +74,10 @@ SHA-256、helper version、作成日時、Rust source tree digest/dirty flag、�
 固定 Izanagi CLI の exec は stdin を転送しない。
 `transport.py` は read-only 9p の `.tempest-control` に host が要求を発行する。
 QEMU mapped-xattr により guest root 所有の directory 0700 / file 0600 にする。
-host 実ファイルも 0700 / 0600 とする。guest の実測でこの mapping が成立しない構成は採用しない。
+host 実ファイルも 0700 / 0600 とする。Mailbox は VM 起動前に作成し、
+親ディレクトリの root mapping が確定してから要求を発行する。
+一時ファイルも最初から root0700 の inbox 内に `.tmp` として作り、root owner/mode の設定後に
+`.json` へ rename する。ホスト UID が guest agent と一致しても、所有者変換前の本文を公開しない。guest の実測でこの mapping が成立しない構成は採用しない。
 共有ルート以外へ scenario や期待値を公開しない。従来の空 sandbox 方針に対する
 **root 専用 mailbox だけの例外**であり、agent へ共有する入力置き場にはしない。
 

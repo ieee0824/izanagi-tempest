@@ -103,3 +103,26 @@ VMでの検査は上記の固定構成・操作・観測対象についての結
 一般のエージェント子孫の検出/強制停止・回収順序は #5 で実装する。
 M2 manifest の `complete_scope=recorder_internal` と `agent_route_enforcement=not_verified` は維持し、
 この限定された試験を任意エージェントの迂回不能や評価結果の証明へ広げない。
+
+
+## 一時ファイル発行の追補
+
+room投稿15116で、旧host側transportがworkspace直下に`.tmp`を書いてからrootへmappingする間、
+Linux host UIDとguest agent UIDが同じ1000なら読める窓があると指摘された。
+一時ファイルも最初からroot0700のinbox内に作成し、owner/mode設定後に`.json`へrenameする。
+consumerは`*.json`だけを監視するため、不完全な一時ファイルは処理しない。
+Mailbox自体はVM起動前に作り、親のroot mappingを確定する。
+
+同じ最終イメージを新しいsnapshotで起動したrun-007で、次を確認した。
+
+- 公開ディレクトリに置いたguest UID1000/0600のファイルは、UID1000から読める（positive control）。
+- 同じUID1000/0600の一時ファイルをroot0700のinbox内に置くと、rootへのowner変換前もEACCES。
+- rootへowner変換後もEACCES。修正したtransportで全M2操作・境界・PCAP/ログ検査が再通過。
+- これはmacOS host上で同UIDのguest metadataを意図的に作った試験であり、Linux host全体を実行した結果ではない。
+
+Pythonは新たなpublication回帰を含め17件。Rust/guestイメージ内のコードは変更していない。
+run-007は36 packets/drop0、PCAP5384bytes、対象2要求/応答本文を確認。
+私有証跡は`.m0-evidence/20261112-m3-publication/`。
+summary SHA-256 `092d2bfac6bdbd4f161063aa2239601963c217cb0ae7326b77e3e828dce0bd32`、
+PCAP `ece241378358f77ffb4d7cc7e408128ac37bc2127b93267cbdba4af678f284f9`、
+manifest `e85a7abbbd09a4a7f68c5d072e4ba06ba1cef2ad9e712c3754d79fe0ee056430`。

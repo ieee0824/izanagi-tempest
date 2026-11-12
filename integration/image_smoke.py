@@ -141,6 +141,37 @@ def main():
                          "assert stat.S_IMODE(os.stat('/workspace/.tempest-control').st_mode)==0o700; "
                          "assert m['service_uid'] not in (0,os.getuid()); print('metadata-and-mapping-verified')")
         check('metadata_and_mapping', 'python3 -c ' + shlex.quote(metadata_code))
+        # Model a Linux-host UID1000 collision before ownership conversion.
+        # The public positive control proves that guest UID1000 can read a 0600
+        # file mapped to itself; the same file inside root0700 must stay private.
+        def actor_owner(path):
+            import struct
+            value = struct.pack('<I', 1000)
+            if sys.platform == 'darwin':
+                subprocess.run(['/usr/bin/xattr', '-wx', 'user.virtfs.uid', value.hex(), str(path)], check=True)
+            else:
+                os.setxattr(path, 'user.virtfs.uid', value)
+        positive = public / 'uid-collision'
+        positive.write_bytes(b'PUBLIC-MAPPING')
+        positive.chmod(0o600)
+        mapped_metadata(positive, stat.S_IFREG | 0o600)
+        actor_owner(positive)
+        positive_code = ("import os; p='/workspace/readonly-check/uid-collision'; "
+                         "assert os.stat(p).st_uid==1000; assert open(p,'rb').read()==b'PUBLIC-MAPPING'")
+        check('uid_collision_positive', 'python3 -c ' + shlex.quote(positive_code))
+        temporary = box.inbox / ('c' * 32 + '.tmp')
+        temporary.write_bytes(b'PRIVATE-TEMP-CANARY')
+        temporary.chmod(0o600)
+        mapped_metadata(temporary, stat.S_IFREG | 0o600)
+        actor_owner(temporary)
+        private_code = ("import os,errno\ntry:\n os.open('/workspace/.tempest-control/" + temporary.name
+                        + "',os.O_RDONLY)\nexcept OSError as e:\n assert e.errno==errno.EACCES"
+                        + "\nelse:\n raise AssertionError('temporary input readable')")
+        check('uid_collision_before_mapping', 'python3 -c ' + shlex.quote(private_code))
+        mapped_metadata(temporary, stat.S_IFREG | 0o600)
+        check('uid_collision_after_mapping', 'python3 -c ' + shlex.quote(private_code))
+        temporary.unlink()
+        positive.unlink()
         check('private_directories', 'test ! -r /var/lib/lws && test ! -r /var/lib/tempest && test ! -r /run/tempest-control/state.json && test ! -w /run/tempest-control')
         readonly_code = ("import os,errno\ntry:\n os.open('/workspace/readonly-check/x',os.O_WRONLY|os.O_CREAT,0o600)"
                          "\nexcept OSError as e:\n assert e.errno==errno.EROFS\nelse:\n raise AssertionError('write succeeded')")
