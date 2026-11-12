@@ -370,7 +370,9 @@ async fn replacing_the_secret_path_after_validation_cannot_change_the_inherited_
             r#"
 import os,stat
 assert 'IZANAGI_SECRET_FILE' not in os.environ
-for fd in range(3,256):
+for name in os.listdir('/dev/fd'):
+ if not name.isdigit() or int(name)<3: continue
+ fd=int(name)
  try:
   if stat.S_ISREG(os.fstat(fd).st_mode): assert os.pread(fd,4096,0)!=b'DUMMY-TRANSPORT-CANARY'
  except OSError: pass

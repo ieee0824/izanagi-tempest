@@ -5,6 +5,7 @@
 `Supervisor`が上流Izanagiと監査fileを所有し、agent側は`mcp-connect`でUnix socketへ接続する。
 上流は独立process groupで起動する。agent/bridgeのgroup終了で上流をkillせず、転送済み応答を回収する。
 同一socketへ接続できるbridgeは1つだけ。親directoryは同一user所有0700、socketは0600。
+これは同UIDのagent本体からHMAC fileやhostfwdを隔離する仕組みではなく、実launcherでの到達拒否は#7の必須検査である。
 
 この境界ではbridge入力EOFをagent終了として明示closeへ接続する。
 汎用relayのhalf-closeとは異なり、EOF観測後の未転送queueは配送しない。
@@ -116,3 +117,5 @@ export fileの長さ/hashを再照合した。run001は初期診断であり、b
 固定CLI execはsession喪失時に単発起動する経路があるため、正式controllerでは自動起動しない
 固定MCPの管理経路へ置き換え、upの寿命・daemon identityを検査してから採用する。
 実model CLIの隔離・環境検査は#7、結果と集計は#6/#14、配送の全体表は#13で継続する。
+上流の5秒後強制停止は直接の子だけが対象であり、上流host子孫全体の終了は未確認。
+強制停止時にverified receiptは出さず、通常exportへ進めない。
