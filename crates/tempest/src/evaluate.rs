@@ -4,6 +4,7 @@
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::{collections::BTreeSet, fmt};
 use tempest_model::guest::ApiRecord;
+use tempest_model::scenario::Outcome;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -258,6 +259,80 @@ pub fn evaluate_finding(input: EvaluationInput<'_>) -> FindingEvaluation {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedOutcome {
+    Allow,
+    Deny,
+    Unsupported,
+    Error,
+    NotAttempted,
+    Unknown,
+    Conflicting,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExpectEvaluation {
+    pub api: String,
+    pub resource: String,
+    pub baseline: Outcome,
+    pub observed: ObservedOutcome,
+    pub matches_baseline: Option<bool>,
+}
+
+pub fn evaluate_expect(
+    api: &[ApiRecord],
+    actor_access_key_id: &str,
+    expected_api: &str,
+    expected_resource: &str,
+    baseline: Outcome,
+    evidence_complete: bool,
+) -> ExpectEvaluation {
+    let mut observed = BTreeSet::new();
+    for row in api.iter().filter(|row| {
+        row.access_key_id.as_deref() == Some(actor_access_key_id)
+            && row.action.as_deref() == Some(expected_api)
+            && row.resource.as_deref() == Some(expected_resource)
+    }) {
+        let outcome =
+            if !row.request_complete || !row.response_complete || row.transport_error.is_some() {
+                ObservedOutcome::Unknown
+            } else {
+                match row.status {
+                    Some(200..=299) => ObservedOutcome::Allow,
+                    Some(403) => ObservedOutcome::Deny,
+                    Some(501) => ObservedOutcome::Unsupported,
+                    Some(_) => ObservedOutcome::Error,
+                    None => ObservedOutcome::Unknown,
+                }
+            };
+        observed.insert(outcome);
+    }
+    let observed = if observed.len() > 1 {
+        ObservedOutcome::Conflicting
+    } else if let Some(value) = observed.pop_first() {
+        value
+    } else if evidence_complete {
+        ObservedOutcome::NotAttempted
+    } else {
+        ObservedOutcome::Unknown
+    };
+    let matches_baseline = match (baseline, observed) {
+        (Outcome::Allow, ObservedOutcome::Allow) | (Outcome::Deny, ObservedOutcome::Deny) => {
+            Some(true)
+        }
+        (_, ObservedOutcome::Allow | ObservedOutcome::Deny) => Some(false),
+        _ => None,
+    };
+    ExpectEvaluation {
+        api: expected_api.into(),
+        resource: expected_resource.into(),
+        baseline,
+        observed,
+        matches_baseline,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +450,65 @@ mod tests {
         assert_eq!(
             evaluate(&[api("arn:secret", 501)], &claim, true).outcome,
             FindingOutcome::NotFound
+        );
+    }
+    #[test]
+    fn expect_table_distinguishes_deny_unsupported_absence_and_conflict() {
+        let deny = evaluate_expect(
+            &[api("arn:r", 403)],
+            "AKIAWORKER",
+            "s3:GetObject",
+            "arn:r",
+            Outcome::Deny,
+            true,
+        );
+        assert_eq!(deny.observed, ObservedOutcome::Deny);
+        assert_eq!(deny.matches_baseline, Some(true));
+        let unsupported = evaluate_expect(
+            &[api("arn:r", 501)],
+            "AKIAWORKER",
+            "s3:GetObject",
+            "arn:r",
+            Outcome::Deny,
+            true,
+        );
+        assert_eq!(unsupported.observed, ObservedOutcome::Unsupported);
+        assert_eq!(unsupported.matches_baseline, None);
+        assert_eq!(
+            evaluate_expect(
+                &[],
+                "AKIAWORKER",
+                "s3:GetObject",
+                "arn:r",
+                Outcome::Deny,
+                true
+            )
+            .observed,
+            ObservedOutcome::NotAttempted
+        );
+        assert_eq!(
+            evaluate_expect(
+                &[],
+                "AKIAWORKER",
+                "s3:GetObject",
+                "arn:r",
+                Outcome::Deny,
+                false
+            )
+            .observed,
+            ObservedOutcome::Unknown
+        );
+        assert_eq!(
+            evaluate_expect(
+                &[api("arn:r", 200), api("arn:r", 403)],
+                "AKIAWORKER",
+                "s3:GetObject",
+                "arn:r",
+                Outcome::Deny,
+                true
+            )
+            .observed,
+            ObservedOutcome::Conflicting
         );
     }
 }

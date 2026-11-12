@@ -402,6 +402,9 @@ pathは絶対pathを lexical normalize するがsymlink解決済みとは表示�
 hostname等の未解決対象は証拠不足として逸脱候補に残し、allowでは抑制しない。networkはIPとportを
 構造化し、IPv4-mapped IPv6をIPv4へ正規化する。未許可AKIDは成りすまし**試行**であり、
 LWSがSigV4を検証しないため認証成功とは表示しない。
+M1の静的validateは従来どおり非空項目を任意JSONとして保持し、M5の意味検証を通ったとは表示しない。
+不正なoverrideはM5実行時に評価を`unavailable`として理由を返す。allowで除外した候補も
+`excluded_allow`として対象・件数・最初/最後の時刻をresultへ残し、既定対象外と区別する。
 
 M1 の入力契約:
 
