@@ -126,6 +126,11 @@ impl Vm {
         )
         .await?;
         let boot_nonce = host_io::random_hex()?;
+        let launch = directory.join("vm-launch.json");
+        host_io::json_new(
+            &launch,
+            &json!({"state":"launching","boot_nonce":boot_nonce.clone()}),
+        )?;
         let up = command(inputs.izanagi)
             .arg("--config")
             .arg(&config)
@@ -142,6 +147,10 @@ impl Vm {
             .kill_on_drop(true)
             .spawn()?;
         let group = up.id().unwrap();
+        host_io::json_replace(
+            &launch,
+            &json!({"state":"spawned","boot_nonce":boot_nonce.clone(),"supervisor_pid":group}),
+        )?;
         let mut vm = Self {
             directory: directory.to_owned(),
             workspace,
@@ -192,6 +201,10 @@ impl Vm {
         }
         vm.session_fingerprint = Some(host_io::digest(&session_path)?);
         host_io::json_replace(&directory.join("vm-owner.json"), &vm.binding_metadata())?;
+        host_io::json_replace(
+            &launch,
+            &json!({"state":"running","boot_nonce":vm.boot_nonce.clone(),"supervisor_pid":group,"session_fingerprint":vm.session_fingerprint.clone()}),
+        )?;
         let (ready, error) = vm
             .management
             .as_mut()

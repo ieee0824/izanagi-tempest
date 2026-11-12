@@ -584,6 +584,7 @@ fn allowed_artifact(path: &str) -> bool {
             | "recovery-down.stdout"
             | "up.stderr"
             | "up.stdout"
+            | "vm-launch.json"
             | "vm-owner.json"
             | "evidence/clock.jsonl"
             | "evidence/izanagi/alerts.log"
@@ -716,15 +717,31 @@ async fn verify_owned_group_gone(owner_file: &Path) -> io::Result<Option<u32>> {
     Ok(Some(group))
 }
 async fn recover_vm_stage(root: &Path, stage: &Path, name: &str) -> io::Result<Value> {
+    let launch_path = stage.join("vm-launch.json");
     let owner_path = stage.join("vm-owner.json");
-    if !owner_path.is_file() {
+    if !launch_path.is_file() {
+        if owner_path.exists() {
+            return Err(io::Error::other("VM owner exists without launch intent"));
+        }
         return Ok(json!({"stage":name,"present":false,"down_succeeded":true}));
+    }
+    let launch: Value = serde_json::from_slice(&fs::read(&launch_path)?)?;
+    if !owner_path.is_file() {
+        return Err(io::Error::other("VM launch outcome is unknown"));
+    }
+    if !matches!(launch["state"].as_str(), Some("spawned" | "running")) {
+        return Err(io::Error::other("VM launch intent is unresolved"));
     }
     let owner: Value = serde_json::from_slice(&fs::read(&owner_path)?)?;
     let supervisor_pid = owner["supervisor_pid"]
         .as_u64()
         .and_then(|pid| u32::try_from(pid).ok())
         .ok_or_else(|| io::Error::other("invalid VM owner"))?;
+    if launch["supervisor_pid"].as_u64() != Some(supervisor_pid.into())
+        || launch["boot_nonce"] != owner["boot_nonce"]
+    {
+        return Err(io::Error::other("VM launch and owner records disagree"));
+    }
     if !pid_alive(supervisor_pid) {
         return Ok(
             json!({"stage":name,"present":true,"supervisor_pid":supervisor_pid,"down_succeeded":true,"already_stopped":true}),
@@ -936,6 +953,12 @@ mod tests {
         let owner = root.join("owner.json");
         host_io::json_new(&owner, &json!({"state":"launching"})).unwrap();
         assert!(verify_owned_group_gone(&owner).await.is_err());
+        host_io::json_new(
+            &root.join("vm-launch.json"),
+            &json!({"state":"spawned","supervisor_pid":999999,"boot_nonce":"fixture"}),
+        )
+        .unwrap();
+        assert!(recover_vm_stage(&root, &root, "primary").await.is_err());
 
         let mut leader = std::process::Command::new("/bin/sh");
         leader

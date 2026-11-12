@@ -194,6 +194,8 @@ fresh retest transportを実VMで検査する。run終了時は成果物allowlis
 
 controllerのSIGKILL後は自動resumeしない。`tempest recover RUN_DIRECTORY`がcontroller PIDの停止と
 primary/retest各VMのsession fingerprintを照合してIzanagi downとVM PID消滅を確認する。
+各VMは`up`のspawn前にdurable launch intentを置き、spawn後のPID記録とsession確定を段階更新する。
+intent後にowner/sessionが確定していなければ、VM不在と推定せずrecoveryを拒否する。
 hostのagent/MCP process groupにはrecoveryからsignalを送らず、起動前intentと確定PGIDを照合し、
 `kill(-PGID, 0)`でgroup全体の自然終了を確認できた場合だけtransientを回収してrunをabortedへ固定する。
 launch結果が不明、leaderだけが終了してmemberが残る、いずれかのstage VMが残る場合は回収を拒否する。
