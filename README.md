@@ -50,6 +50,7 @@ Izanagi (攻撃VM: eBPF・PCAP・検知ルール) ◄──► LWS (模擬AWS: S
 ## ドキュメント
 
 - [設計ドキュメント](docs/DESIGN.md) — アーキテクチャ、シナリオフォーマット、実行フロー、評価メトリクス、制約事項
+- [Phase 1追加案の採否](docs/PHASE1-DECISIONS.md) — 独自IAM評価器・request/SES入力拡張の判断
 - [実装設計 (Phase 1)](docs/IMPLEMENTATION.md) — Rust による実装構成、VM 内の記録・防御、判定ロジック、テスト計画、マイルストーン
 
 ## 開発: M0 の前提確認
