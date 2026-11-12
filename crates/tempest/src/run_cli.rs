@@ -742,7 +742,7 @@ async fn recover_vm_stage(root: &Path, stage: &Path, name: &str) -> io::Result<V
     {
         return Err(io::Error::other("VM launch and owner records disagree"));
     }
-    if !pid_alive(supervisor_pid) {
+    if !process_group_alive(supervisor_pid) {
         return Ok(
             json!({"stage":name,"present":true,"supervisor_pid":supervisor_pid,"down_succeeded":true,"already_stopped":true}),
         );
@@ -782,10 +782,10 @@ async fn recover_vm_stage(root: &Path, stage: &Path, name: &str) -> io::Result<V
         .await
         .is_ok_and(|result| result.is_ok_and(|output| output.status.success()));
     let deadline = Instant::now() + Duration::from_secs(30);
-    while pid_alive(supervisor_pid) && Instant::now() < deadline {
+    while process_group_alive(supervisor_pid) && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    if !down_succeeded || pid_alive(supervisor_pid) {
+    if !down_succeeded || process_group_alive(supervisor_pid) {
         return Err(io::Error::other("owned VM shutdown could not be verified"));
     }
     Ok(
@@ -971,6 +971,18 @@ mod tests {
         let group = leader.id();
         assert!(leader.wait().unwrap().success());
         assert!(process_group_alive(group));
+        host_io::json_replace(
+            &root.join("vm-launch.json"),
+            &json!({"state":"running","supervisor_pid":group,"boot_nonce":"fixture"}),
+        )
+        .unwrap();
+        host_io::json_new(
+            &root.join("vm-owner.json"),
+            &json!({"supervisor_pid":group,"boot_nonce":"fixture","session_fingerprint":"missing"}),
+        )
+        .unwrap();
+        host_io::directory(&root.join("sandbox")).unwrap();
+        assert!(recover_vm_stage(&root, &root, "primary").await.is_err());
         unsafe {
             libc::kill(-(group as i32), libc::SIGKILL);
         }
