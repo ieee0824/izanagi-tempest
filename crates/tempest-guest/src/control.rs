@@ -350,6 +350,7 @@ impl Controller {
             .args([
                 "-n",
                 "-U",
+                "--immediate-mode",
                 "-B",
                 "4096",
                 "-i",
@@ -531,6 +532,11 @@ impl Controller {
         if fs::metadata(&pcap).map_or(true, |m| m.len() < 24) {
             failures.push("capture missing or incomplete header");
         }
+        if rows > 0
+            && (stats.captured == Some(0) || fs::metadata(&pcap).is_ok_and(|m| m.len() == 24))
+        {
+            failures.push("capture has no packets for observed HTTP traffic");
+        }
         if incomplete > 0 {
             failures.push("incomplete HTTP observations");
         }
@@ -552,7 +558,7 @@ impl Controller {
             }
         };
         self.manifest = Some(
-            json!({"complete":failures.is_empty(),"failures":failures,"api_rows":rows,"incomplete_rows":incomplete,"capture_started":self.capture_started,"recorder_started":self.recorder_started,"recorder_stopped":recorder_stopped,"capture_stopped":capture_stopped,"capture_interface":self.config.capture_interface,"capture_buffer_kib_requested":4096,"capture_filter":null,"capture_contains_payloads":true,"capture_statistics":stats,"recorder_statistics":recorder_stats,"complete_scope":"recorder_internal","agent_route_enforcement":"not_verified","finalized":true}),
+            json!({"complete":failures.is_empty(),"failures":failures,"api_rows":rows,"incomplete_rows":incomplete,"capture_started":self.capture_started,"recorder_started":self.recorder_started,"recorder_stopped":recorder_stopped,"capture_stopped":capture_stopped,"capture_interface":self.config.capture_interface,"capture_buffer_kib_requested":4096,"capture_immediate_mode":true,"capture_filter":null,"capture_contains_payloads":true,"capture_statistics":stats,"recorder_statistics":recorder_stats,"complete_scope":"recorder_internal","agent_route_enforcement":"not_verified","finalized":true}),
         );
         private_write(
             &self.config.evidence_dir.join("manifest.json"),

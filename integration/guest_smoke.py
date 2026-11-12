@@ -57,7 +57,7 @@ def request_http(endpoint, method='GET', path='/', key=None, body=None, headers=
 
 
 class Guest:
-    def __init__(self, capture_failure=False, seed_failure=False):
+    def __init__(self, capture_failure=False, seed_failure=False, capture_empty=False):
         self.temp = tempfile.TemporaryDirectory(prefix='tempest-m2-', dir='/private/tmp' if sys.platform == 'darwin' else '/tmp')
         self.root = Path(self.temp.name)
         self.proxy_port, self.backend_port = port(), port()
@@ -93,6 +93,18 @@ class Guest:
         wrapper = self.root / 'lws-observer'
         wrapper.write_text(f'#!{sys.executable}\nimport os,socket,json\ns=socket.socket(socket.AF_UNIX)\ns.connect({str(audit_path)!r})\ns.sendall(json.dumps({{"key":os.environ["LWS_ROOT_ACCESS_KEY_ID"],"pid":os.getpid()}}).encode())\ns.close()\nos.execv({str(OPTIONS.lws)!r}, [{str(OPTIONS.lws)!r}])\n')
         wrapper.chmod(0o700)
+        capture_program = '/bin/false' if capture_failure else str(OPTIONS.tcpdump)
+        if capture_empty:
+            capture_program = str(self.root / 'empty-capture')
+            Path(capture_program).write_text(
+                '#!' + sys.executable + '\nimport sys,struct,signal,time\n'
+                'p=sys.argv[sys.argv.index("-w")+1]\n'
+                'open(p,"wb").write(struct.pack("<IHHIIII",0xa1b2c3d4,2,4,0,0,65535,1))\n'
+                'def stop(*args):\n print("0 packets captured\\n0 packets dropped by kernel",file=sys.stderr,flush=True);sys.exit(0)\n'
+                'signal.signal(signal.SIGINT,stop)\n'
+                'print("listening on test",file=sys.stderr,flush=True)\n'
+                'while True: time.sleep(1)\n')
+            Path(capture_program).chmod(0o700)
         self.config = private_json(self.root / 'guest.json', {
             'state_dir': str(self.root / 'state'),
             'data_dir': str(self.root / 'data'),
@@ -100,7 +112,7 @@ class Guest:
             'listen': f'127.0.0.1:{self.proxy_port}',
             'upstream': f'127.0.0.1:{self.backend_port}',
             'lws': str(wrapper), 'aws': '/bin/false' if seed_failure else str(OPTIONS.aws),
-            'tcpdump': '/bin/false' if capture_failure else str(OPTIONS.tcpdump),
+            'tcpdump': capture_program,
             'capture_interface': 'lo0' if sys.platform == 'darwin' else 'lo',
             'service_uid': os.getuid(), 'service_gid': os.getgid(),
             'development': True, 'timeout_seconds': 5,
@@ -304,6 +316,19 @@ class GuestIntegration(unittest.TestCase):
             g.process = g.start()
             g.call('claim', token=False, failure=True)
             g.call('seal', failure=True)
+
+    def test_header_only_capture_is_not_complete_for_observed_http(self):
+        with Guest(capture_empty=True) as g:
+            g.claim()
+            worker = g.seed()
+            g.call('seal')
+            status, _ = request_http(g.proxy_port, path='/public-data/readme.txt', key=worker)
+            self.assertEqual(status, 200)
+            result = g.call('export', g.root / 'export', failure=True)
+            exported = json.loads(result.stdout)
+            self.assertFalse(exported['complete'])
+            self.assertIn('capture has no packets for observed HTTP traffic', exported['manifest']['failures'])
+            self.assertEqual(exported['manifest']['api_rows'], 1)
 
     def test_claim_response_loss_and_restart_cannot_reissue(self):
         with Guest() as g:

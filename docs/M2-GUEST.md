@@ -111,11 +111,13 @@ claim は digest と状態を排他内で atomic rename・fsync してから一�
 
 seal は seed/probe 完了後、tcpdump の readiness → proxy の readiness → 状態永続化 → 成功応答。
 seed/probe は seal 前だけ直接 backend へ送る。HTTP listener は seal 前には存在しない。
+tcpdump は `--immediate-mode -U` で短い実行の packet をユーザー空間へ即時に届ける。
 capture buffer は4096 KiBを要求する（OSによる実割当の保証ではない）。loopback 全体を取得し、4566だけのフィルターで4567迂回や非HTTPの試行を落とさない。
 PCAP は JSONL と異なり通信本文・署名を含み得るため、私有証跡として扱う。
 
 export は HTTP受付停止 → 有限drain → JSONL flush/sync → tcpdump終了待ち → 新規DIRへコピー/sync。
 manifest.json に開始準備・終了確認の時刻、範囲、行数、部分行、欠損・失敗、
+HTTP の観測があるのに PCAP がヘッダーだけ、または captured=0 の場合は complete にしない。
 tcpdump の captured / dropped 統計を出す。時刻は準備と終了を観測した時刻であり、
 JSONLとPCAPの最終パケットが同一時刻で切れるという保証ではない。
 packet drop、drain期限超過、子の異常終了、統計不明、部分HTTPは complete=false。
