@@ -282,6 +282,8 @@ impl Vm {
     }
     pub async fn call(&mut self, operation: &str, mut fields: Value) -> io::Result<Value> {
         self.ensure_alive()?;
+        let audit_id = host_io::random_hex()?;
+        self.audit_control(&audit_id, operation, "started")?;
         if let Some(authorization) = &self.authorization {
             fields["authorization"] = authorization.clone().into();
         }
@@ -292,6 +294,18 @@ impl Vm {
             fields,
         )
         .await;
+        if let Err(error) = self.audit_control(
+            &audit_id,
+            operation,
+            if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            },
+        ) {
+            self.poisoned = true;
+            return Err(error);
+        }
         let result = match result {
             Ok(value) => value,
             Err(error) => {
@@ -301,6 +315,21 @@ impl Vm {
         };
         self.ensure_alive()?;
         Ok(result)
+    }
+    fn audit_control(&self, id: &str, operation: &str, state: &str) -> io::Result<()> {
+        use std::{io::Write, os::unix::fs::OpenOptionsExt};
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(self.directory.join("evidence/control.jsonl"))?;
+        serde_json::to_writer(
+            &mut file,
+            &json!({"id":id,"operation":operation,"state":state,"host_ns":host_io::now_ns()?}),
+        )?;
+        file.write_all(b"\n")?;
+        file.sync_all()
     }
     pub async fn clock(&mut self, group: &str, file: &mut fs::File) -> io::Result<()> {
         self.ensure_alive()?;

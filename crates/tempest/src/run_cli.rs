@@ -588,6 +588,7 @@ fn allowed_artifact(path: &str) -> bool {
             | "vm-launch.json"
             | "vm-owner.json"
             | "evidence/clock.jsonl"
+            | "evidence/control.jsonl"
             | "evidence/izanagi/alerts.log"
             | "evidence/izanagi/events.log"
     );
