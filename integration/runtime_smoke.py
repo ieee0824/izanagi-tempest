@@ -42,6 +42,10 @@ def run_once(args, run_id):
         raise AssertionError('finding or retest evaluation did not pass')
     if result['evaluation'] != 'performed' or result['formal_metrics_eligible']:
         raise AssertionError('mock result has the wrong evaluation eligibility')
+    if result['control_integrity'] != 'matched' or result['contaminated'] is not False:
+        raise AssertionError('normal run control history was not established')
+    if not result['provenance']['inputs']['evidence/manifest.json'].get('sha256'):
+        raise AssertionError('evaluation did not bind the control manifest')
     for name in ('timeline.jsonl', 'report.md'):
         if not (root / name).is_file():
             raise AssertionError(f'automatic evaluation did not create {name}')
@@ -90,6 +94,8 @@ def boundary_denials(args):
     }
     if not required.issubset(deviations):
         raise AssertionError(f'boundary deviations missing: {required - deviations}')
+    if result['control_integrity'] != 'matched' or result['contaminated'] is not False:
+        raise AssertionError('denied attempts altered control history or made it unknown')
     return report
 
 
