@@ -488,6 +488,47 @@ fn control_integrity(manifest: &Value) -> &'static str {
     }
 }
 
+/// Read one committed generation while excluding concurrent writers.
+pub fn read_committed(root: &Path) -> io::Result<Value> {
+    use std::os::unix::{fs::OpenOptionsExt, io::AsRawFd};
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(root.join("evaluation.lock"))?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } != 0 {
+        return Err(io::Error::other("evaluation is being updated"));
+    }
+    let marker: Value = serde_json::from_slice(&read(&root.join("evaluation-state.json"))?)?;
+    if marker["state"] != "committed" {
+        return Err(io::Error::other("evaluation is not committed"));
+    }
+    let artifacts = marker["artifacts"]
+        .as_object()
+        .ok_or_else(|| io::Error::other("invalid artifact manifest"))?;
+    let mut result = None;
+    for (name, metadata) in artifacts {
+        if !matches!(
+            name.as_str(),
+            "result.json" | "report.md" | "timeline.jsonl" | "evaluation-input-run.json"
+        ) {
+            return Err(io::Error::other("unexpected evaluation artifact"));
+        }
+        let bytes = read(&root.join(name))?;
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        if metadata["sha256"].as_str() != Some(&digest) {
+            return Err(io::Error::other("evaluation artifact digest mismatch"));
+        }
+        if name == "result.json" {
+            result = Some(serde_json::from_slice::<Value>(&bytes)?);
+        }
+    }
+    let result = result.ok_or_else(|| io::Error::other("result missing from artifact manifest"))?;
+    if marker["evaluation_id"] != result["provenance"]["evaluation_id"] {
+        return Err(io::Error::other("evaluation generation mismatch"));
+    }
+    Ok(result)
+}
+
 pub fn generate(root: &Path) -> io::Result<Value> {
     use std::os::unix::{fs::OpenOptionsExt, io::AsRawFd};
     let lock = fs::OpenOptions::new()
@@ -1125,6 +1166,14 @@ mod tests {
         let state: Value =
             serde_json::from_slice(&fs::read(root.join("evaluation-state.json")).unwrap()).unwrap();
         assert_eq!(state["state"], "committed");
+        assert_eq!(read_committed(&root).unwrap()["evaluation"], "partial");
+        host_io::replace(&root.join("report.md"), b"tampered report").unwrap();
+        assert!(
+            read_committed(&root)
+                .unwrap_err()
+                .to_string()
+                .contains("digest mismatch")
+        );
         assert_eq!(
             state["artifacts"]["result.json"]["sha256"],
             host_io::digest(&root.join("result.json")).unwrap()
