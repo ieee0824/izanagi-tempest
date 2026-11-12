@@ -14,16 +14,16 @@ pub struct Mapping {
 }
 pub fn access_key(headers: &HeaderMap, uri: &Uri) -> Option<String> {
     if let Some(auth) = headers.get("authorization") {
-        return auth
-            .to_str()
-            .ok()?
-            .strip_prefix("AWS4-HMAC-SHA256 ")?
-            .split(',')
-            .find_map(|p| p.trim().strip_prefix("Credential="))?
-            .split('/')
-            .next()
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned);
+        if let Ok(auth) = auth.to_str() {
+            return auth
+                .strip_prefix("AWS4-HMAC-SHA256 ")?
+                .split(',')
+                .find_map(|p| p.trim().strip_prefix("Credential="))?
+                .split('/')
+                .next()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+        }
     }
     let query: BTreeMap<String, String> =
         serde_urlencoded::from_str(uri.query().unwrap_or("")).ok()?;
