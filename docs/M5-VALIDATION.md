@@ -20,13 +20,14 @@ Issue #6 / PR #31。以下は完了宣言ではなく、現行実装と確認済
 - `/private/tmp/tempest-m5-freeze-e2e-001/`: 通常2回・境界拒否1回の実行成功。
 - `/private/tmp/tempest-m5-host-audit-runs-001/normal-audit/`: host管理要求監査の実行成功。
 - `/private/tmp/tempest-m5-request-audit-e2e-001/`: 要求ID監査入りイメージで正常2回・防御1回成功。正常結果の要求ID一致と失敗操作記録なしを確認。
+- `/private/tmp/tempest-m5-final-report.qca34l/`: 最新評価器で上記3runの私有コピーを再評価。通常2回はいずれもfound/retest passed/ID matched、確定候補0・未確定11。防御runは候補計上を保持。各世代は入力snapshotと出力hash付きで確定。
 
 私有run directoryにはcredential claimを含む証跡があり、リポジトリへ複製しない。
 上記パスはこの検証環境の所在であり、他環境で存在するとは限らない。
 
 ## 未完了の照合
 
-- 最新評価器による確定成果物の再検証。
+- 最新headの成果物hashの最終照合。
 - optional finding/retestの4通りと、aborted/部分証跡に対する最終結果の接続試験。
 - 未確定背景候補と正式適格性の契約。時刻相関だけで主体を確定しない。
 - 最新headの全検証とPRレビュー所見の最終照合。
