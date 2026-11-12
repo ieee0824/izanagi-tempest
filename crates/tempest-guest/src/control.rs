@@ -55,6 +55,8 @@ enum Phase {
 struct State {
     phase: Phase,
     token_digest: Option<String>,
+    #[serde(default)]
+    transitions: Vec<Phase>,
 }
 #[derive(Default, Serialize)]
 struct CaptureStats {
@@ -165,6 +167,7 @@ impl Controller {
     }
     fn transition(&mut self, phase: Phase) -> Result<()> {
         self.state.phase = phase;
+        self.state.transitions.push(phase);
         self.persist()
     }
     fn authorize(&self, request: &Request) -> Result<()> {
@@ -560,6 +563,8 @@ impl Controller {
         self.manifest = Some(
             json!({"complete":failures.is_empty(),"failures":failures,"api_rows":rows,"incomplete_rows":incomplete,"capture_started":self.capture_started,"recorder_started":self.recorder_started,"recorder_stopped":recorder_stopped,"capture_stopped":capture_stopped,"capture_interface":self.config.capture_interface,"capture_buffer_kib_requested":4096,"capture_immediate_mode":true,"capture_filter":null,"capture_contains_payloads":true,"capture_statistics":stats,"recorder_statistics":recorder_stats,"complete_scope":"recorder_internal","agent_route_enforcement":"not_verified","finalized":true}),
         );
+        self.manifest.as_mut().unwrap()["control_transitions"] =
+            serde_json::to_value(&self.state.transitions)?;
         private_write(
             &self.config.evidence_dir.join("manifest.json"),
             &serde_json::to_vec_pretty(self.manifest.as_ref().unwrap())?,
@@ -631,6 +636,7 @@ pub async fn serve(config: Config) -> Result<()> {
         State {
             phase: Phase::Unclaimed,
             token_digest: None,
+            transitions: Vec::new(),
         }
     };
     let mut controller = Controller {

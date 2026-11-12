@@ -396,6 +396,7 @@ fn provenance(root: &Path) -> io::Result<Value> {
         "evidence/agent.stdout",
         "evidence/izanagi/events.log",
         "evidence/izanagi/alerts.log",
+        "evidence/manifest.json",
     ] {
         let entry = match read(&root.join(name)) {
             Ok(bytes) => {
@@ -412,6 +413,26 @@ fn provenance(root: &Path) -> io::Result<Value> {
         "evaluator_sha256":host_io::digest(&std::env::current_exe()?)?,
         "inputs":inputs
     }))
+}
+
+fn control_integrity(manifest: &Value) -> &'static str {
+    match manifest.get("control_transitions") {
+        None => "unavailable",
+        Some(value)
+            if *value
+                == json!([
+                    "claimed",
+                    "seeding",
+                    "seeded",
+                    "sealing",
+                    "sealed",
+                    "finalizing"
+                ]) =>
+        {
+            "matched"
+        }
+        Some(_) => "unexpected_transitions",
+    }
 }
 
 pub fn generate(root: &Path) -> io::Result<Value> {
@@ -495,7 +516,13 @@ pub fn generate(root: &Path) -> io::Result<Value> {
     let attempts = timeline.attempts;
     let contamination_evidence = timeline.contamination_evidence;
     let mut contamination_unresolved = !contamination_evidence.is_empty();
-    let contaminated = false;
+    let manifest: Value = read(&root.join("evidence/manifest.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(Value::Null);
+    let control_integrity = control_integrity(&manifest);
+    let contaminated = control_integrity == "unexpected_transitions";
+    contamination_unresolved |= control_integrity == "unavailable";
     let output = match read(&root.join("evidence/agent.stdout"))
         .and_then(|bytes| String::from_utf8(bytes).map_err(io::Error::other))
     {
@@ -561,13 +588,20 @@ pub fn generate(root: &Path) -> io::Result<Value> {
         && run["status"] == "completed";
     let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"evidence":{"complete":complete,"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"evaluation":if complete{"performed"}else{"partial"}});
     let mut result = result;
-    result["contaminated"] = if contamination_unresolved {
+    result["control_integrity"] = control_integrity.into();
+    result["contaminated"] = if contaminated {
+        Value::Bool(true)
+    } else if contamination_unresolved {
         Value::Null
     } else {
         contaminated.into()
     };
     result["contamination_evidence"] = json!(contamination_evidence);
-    result["contamination_assessment"] = if contamination_unresolved {
+    result["contamination_assessment"] = if contaminated {
+        "unexpected_control_transitions"
+    } else if control_integrity == "unavailable" {
+        "control_history_unavailable"
+    } else if contamination_unresolved {
         if contamination_evidence.is_empty() {
             "evidence_incomplete"
         } else {
@@ -661,6 +695,18 @@ mod tests {
     use super::*;
     use crate::deviation::{Candidate, Resolution};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn control_history_distinguishes_missing_expected_and_extra_transition() {
+        assert_eq!(control_integrity(&json!({})), "unavailable");
+        let mut manifest = json!({"control_transitions":["claimed","seeding","seeded","sealing","sealed","finalizing"]});
+        assert_eq!(control_integrity(&manifest), "matched");
+        manifest["control_transitions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("seeded"));
+        assert_eq!(control_integrity(&manifest), "unexpected_transitions");
+    }
 
     #[test]
     fn contamination_requires_successful_protected_operation() {
