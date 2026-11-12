@@ -21,6 +21,15 @@ MAX_INPUT = 8 * 1024 * 1024
 MAX_CHUNK = 32768
 ID = re.compile(r'[a-f0-9]{32}\Z')
 FILES = {'api.jsonl', 'capture.pcap', 'manifest.json'}
+QUIESCE = '/usr/local/libexec/tempest-quiesce'
+
+
+def daemon_control(operation, expected=None):
+    response = subprocess.run([QUIESCE, operation], input=json.dumps(expected).encode() if expected is not None else None,
+                              capture_output=True, timeout=20,
+                              env={'PATH': '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'})
+    require(response.returncode == 0, 'daemon_barrier_failed_discard_vm')
+    return json.loads(response.stdout)
 
 
 class Rejected(Exception):
@@ -136,7 +145,7 @@ def fetch(payload, exports):
 def dispatch(request_id, payload):
     operation = payload.get('operation')
     fields = {'claim': set(), 'ping': set(), 'seed': {'setup'}, 'probe': {'probe'},
-              'seal': set(), 'export': set(), 'fetch': {'export_id', 'file', 'offset', 'max_bytes'}}
+              'seal': set(), 'attest': set(), 'export': {'daemon_identity'}, 'fetch': {'export_id', 'file', 'offset', 'max_bytes'}}
     require(operation in fields, 'unknown_operation')
     require(set(payload) <= {'version', 'id', 'operation', 'authorization', 'reply_key'} | fields[operation], 'unknown_field')
     if operation not in {'claim', 'ping'}:
@@ -151,6 +160,12 @@ def dispatch(request_id, payload):
         return {'ready': True}
     if operation == 'fetch':
         return fetch(payload, exports)
+    if operation == 'attest':
+        return daemon_control('attest')
+    barrier = None
+    if operation == 'export':
+        require(isinstance(payload.get('daemon_identity'), dict), 'daemon_identity_required')
+        barrier = daemon_control('quiesce', payload['daemon_identity'])
     command = [NATIVE, '--config', CONFIG, operation]
     stdin = None
     if operation != 'claim':
@@ -173,6 +188,8 @@ def dispatch(request_id, payload):
     finally:
         if source is not None:
             source.unlink(missing_ok=True)
+        if barrier is not None:
+            daemon_control('thaw', payload['daemon_identity'])
     require(response.stdout and len(response.stdout) <= 1024 * 1024, 'native_operation_failed')
     result = json.loads(response.stdout)
     require(response.returncode == 0 or (operation == 'export' and result.get('complete') is False), 'native_operation_failed')
@@ -181,7 +198,8 @@ def dispatch(request_id, payload):
                         'sha256': file_digest(exports / request_id / name)}
                  for name in FILES if (exports / request_id / name).is_file()}
         write_json(exports / request_id / 'files.json', index)
-        return {'export_id': request_id, 'files': index, 'complete': result['complete'], 'manifest': result['manifest']}
+        return {'export_id': request_id, 'files': index, 'complete': result['complete'], 'manifest': result['manifest'],
+                'quiesce': barrier}
     return result
 
 

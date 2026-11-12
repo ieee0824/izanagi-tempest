@@ -61,7 +61,7 @@ runのbudget/timeout/abort/contaminationと証跡完全性も別軸で保持す�
 集計は指標ごとに設定対象数・実施数・証拠適格数・中止/汚染/欠損/未設定数を明記する。
 具体的なresult型と集計の試験は#6/#7で実装し、#14はその接続まで完了扱いにしない。
 
-## 配送と終了境界（実装・実VM検証待ち）
+## 配送と終了境界（guest部分を実VM検証、host結合待ち）
 
 sandboxはM3のroot-private mailboxだけを例外とする。agent-cwdは空に保つ。
 Mailboxのroot mappingはVM起動前に確定し、入力の一時ファイルも私有inbox内に置く。
@@ -69,7 +69,8 @@ root consumerが要求を自律処理し、doasは保存済み暗号文を非破
 サイズ/nonce/障害時処理は[image/README.md](../image/README.md)に従う。
 実Linux host全体は未実施。その環境を採用する際のmapping検査をfail-closed条件として残す。
 
-終了barrierの案:
+終了barrierの接続契約。guest部分の固定hash・2回の実測と未確認項目は
+[M4終了確認](M4-QUIESCE.md)に記録する。
 
 1. proxyのagent admissionを閉じ、新しいtools/callを中継しない。
 2. forward済み全RPC応答を有限期限で収束させる。固定agentのExecは最大300秒で結果を返す。
@@ -82,11 +83,13 @@ root consumerが要求を自律処理し、doasは保存済み暗号文を非破
    対象subtreeのpopulated=0と、親に検証済みroot daemonだけが残ることを確認する。
    管理MainPIDを残した親cgroupを「空」とは呼ばない。必要なthaw後も有限期限で確認し、
    失敗ならexportしない。これはSIGSTOPだけで回収済みとする案ではない。
-5. root daemonを再開し、以降のexecはhost管理操作だけにする。agent側proxyは閉鎖済み。
+5. daemonをfreezeしたまま、consumer側でnative exportを最終化する。
+   終了確認とexportの間にdoas応答取得用のexecを挟まない。
    guestの非rootからTCP9001への直接制御経路を追加owner制限で閉じる案を検証する。
    Hostfwdの制御を壊さないこと、fw_cfg token/secretの読取り拒否、未起動依頼の残留を確認する。
    停止前後の所属/PID/starttime/結果を私有証跡に保存し、確定不能なら通常exportを拒否する。
-6. agentとゲスト内対象の終了確認後にexportを最終化し、証跡回収→VM downを行う。
+6. export呼出しが終わってからdaemonをthawし、保存済み暗号文と証跡を回収→VM downを行う。
+   thawやexportが不明なら成功にせずVMを破棄する。thaw後に起動する管理execを測定区間へ含めない。
 
 単なるホストCLI終了やUID/PIDの一度きりの列挙だけでは回収済みとしない。
 cgroupの所有/委譲、freeze/終了/再走査、inflight応答との順序、正常/予算/timeout/異常/回収失敗は

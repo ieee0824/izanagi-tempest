@@ -9,6 +9,7 @@ from pathlib import Path
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -179,6 +180,8 @@ def main():
         call('ping')
         credential = call('claim')['token']
         secret_markers.append(credential)
+        daemon_identity = call('attest', credential)
+        report['checks']['daemon_identity'] = daemon_identity
         report['checks']['claim_nonreissue'] = call('claim', expected_error=True)
         bundle = {'users': [{'name': 'worker', 'policy': {'Version': '2012-10-17', 'Statement': [
             {'Effect': 'Allow', 'Action': ['s3:GetObject'], 'Resource': 'arn:aws:s3:::public-data/*'}]}}],
@@ -197,6 +200,36 @@ def main():
             assert (probe['outcome'], probe['status'], probe['complete']) == (name, {'allow': 200, 'deny': 403, 'unsupported': 501}[name], True)
             report['checks']['probe_' + name] = probe
         check('backend_denied', "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); assert s.connect_ex(('127.0.0.1',4567))!=0\"")
+        check('rpc_direct_denied', "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); assert s.connect_ex(('127.0.0.1',9001))!=0\"")
+        check('rpc_direct_ipv6_denied', "python3 -c \"import socket; s=socket.socket(socket.AF_INET6); s.settimeout(2); assert s.connect_ex(('::1',9001))!=0\"")
+        instance = hashlib.sha256(os.fsencode(box.workspace.resolve())).hexdigest()
+        session_path = Path.home() / '.izanagi/instances' / instance / 'session.json'
+        host_port = json.loads(session_path.read_bytes())['backend']['host_port']
+        # Prove that this is a live host listener, then try the guest gateway route.
+        with socket.create_connection(('127.0.0.1', host_port), timeout=2):
+            pass
+        gateway_code = ("import socket\nfor port in [9001," + str(host_port) + "]:\n"
+                        " s=socket.socket();s.settimeout(2)\n"
+                        " assert s.connect_ex(('10.0.2.2',port))!=0\n s.close()")
+        check('rpc_gateway_denied', 'python3 -c ' + shlex.quote(gateway_code))
+        secret_code = ("import os,errno,json\n"
+                       "assert json.load(open('/etc/tempest/image.json'))['schema_version']==1\n"
+                       "for name in ['token','secret']:\n"
+                       " try:\n  fd=os.open('/sys/firmware/qemu_fw_cfg/by_name/opt/izanagi.'+name+'/raw',os.O_RDONLY)\n"
+                       " except OSError as e:\n  assert e.errno in (errno.EACCES,errno.EPERM)\n"
+                       " else:\n  os.close(fd);raise AssertionError('fw_cfg secret readable')")
+        check('fw_cfg_secret_denied', 'python3 -c ' + shlex.quote(secret_code))
+        cgroup_code = ("import os,errno\nfrom pathlib import Path\n"
+                       "for p in map(Path,['/sys/fs/cgroup','/sys/fs/cgroup/system.slice','/sys/fs/cgroup/system.slice/izanagi-agent.service']):\n"
+                       " for name in ['cgroup.procs','cgroup.freeze','cgroup.kill']:\n"
+                       "  if not (p/name).exists():\n   assert p==Path('/sys/fs/cgroup');continue\n"
+                       "  try:\n   fd=os.open(p/name,os.O_WRONLY)\n"
+                       "  except OSError as e:\n   assert e.errno in (errno.EACCES,errno.EPERM,errno.EROFS)\n"
+                       "  else:\n   os.close(fd);raise AssertionError('actor can change cgroup')\n"
+                       " try:\n  (p/'tempest-escape-attempt').mkdir()\n"
+                       " except OSError as e:\n  assert e.errno in (errno.EACCES,errno.EPERM,errno.EROFS)\n"
+                       " else:\n  raise AssertionError('actor can create cgroup')")
+        check('cgroup_actor_write_denied', 'python3 -c ' + shlex.quote(cgroup_code))
         check('lws_environ_denied', 'p=$(pgrep -x lws); test -n "$p" && ! cat /proc/$p/environ')
         uid_code = ("import json,subprocess; from pathlib import Path; "
                     "m=json.loads(Path('/etc/tempest/image.json').read_text()); "
@@ -267,8 +300,23 @@ def main():
         check('agent_proxy', 'curl -fsS -H ' + shlex.quote('Authorization: ' + header) + ' http://127.0.0.1:4566/public-data/readme.txt')
         report['checks']['sealed_seed_rejected'] = call('seed', credential, expected_error=True, setup=bundle)
         check('agent_proxy_final', 'curl -fsS -H ' + shlex.quote('Authorization: ' + header) + ' http://127.0.0.1:4566/public-data/end.txt')
-        exported = call('export', credential)
+        wrong_identity = {**daemon_identity, 'start_ticks': '0'}
+        report['checks']['wrong_daemon_export_rejected'] = call('export', credential, expected_error=True, daemon_identity=wrong_identity)
+        # A detached UID1000 process outlives its parent and continues writing.
+        escaped = execute('/usr/bin/python3', '-c',
+                          "import subprocess,sys; p=subprocess.Popen([sys.executable,'-c',"
+                          + repr("import time\nwhile True:\n open('/tmp/tempest-live-heartbeat','w').write(str(time.monotonic_ns()))\n time.sleep(0.02)")
+                          + "],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True);print(p.pid)")
+        assert escaped.returncode == 0
+        escaped_pid = int(escaped.stdout.strip())
+        check('escaped_live_before_export', 'kill -0 ' + str(escaped_pid))
+        exported = call('export', credential, daemon_identity=daemon_identity)
         assert exported['complete'], 'recorder finalization incomplete'
+        assert exported['quiesce']['descendants_empty'] and exported['quiesce']['service_frozen']
+        stopped = execute('/usr/bin/python3', '-c',
+                          "from pathlib import Path; p=Path('/proc/" + str(escaped_pid) + "/stat'); assert not p.exists() or p.read_text().rsplit(')',1)[1].split()[0]=='Z'")
+        assert stopped.returncode == 0, 'detached descendant survived cgroup barrier'
+        report['checks']['cgroup_detached_descendant_killed'] = {'passed': True, 'pid': escaped_pid}
         report['checks']['export'] = exported
         evidence = output / 'guest-evidence'
         evidence.mkdir(mode=0o700)

@@ -108,3 +108,7 @@ run 終了後に廃棄する。guest 側 nonce/reply は使い捨て snapshot �
 LWS/proxy は専用 lws UID、capture は root。HTTP listener と capture は M2 の seal で開始し、
 export で最終化する。起動時に tcpdump を開始しない。
 agent の子孫終了と export 順序を含む M4 の lifecycle 全体は別途 #5 の責務となる。
+
+M4用派生イメージは `attest` とidentity付き `export` により、daemonをfreezeしたまま
+子孫終了確認・native exportを行う。旧M3イメージとはexport要求が異なるため、同じ版のscriptを使う。
+実装順序、固定hash、2回のVM検査と未確認範囲は [M4終了確認](../docs/M4-QUIESCE.md)を参照。
