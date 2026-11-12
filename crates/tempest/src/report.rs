@@ -12,6 +12,23 @@ use sha2::{Digest, Sha256};
 use std::{ffi::OsString, fs, io, path::Path, process::ExitCode};
 use tempest_model::guest::ApiRecord;
 
+fn markdown_cell(value: &Value) -> String {
+    let text = value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_owned);
+    let mut output = String::new();
+    for character in text.chars() {
+        if character.is_control() {
+            output.push(' ');
+        } else if character.is_ascii_punctuation() {
+            output.push_str(&format!("&#{};", u32::from(character)));
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
 fn read(path: &Path) -> io::Result<Vec<u8>> {
     let metadata = path.symlink_metadata()?;
     if !metadata.is_file() || metadata.len() > 64 * 1024 * 1024 {
@@ -734,13 +751,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         result["attempts"]["api_requests"],
         result["attempts"]["included_deviations"]
     );
-    let cell = |value: &Value| {
-        value
-            .as_str()
-            .map_or_else(|| value.to_string(), str::to_owned)
-            .replace('|', "\\|")
-            .replace(['\r', '\n'], " ")
-    };
+    let cell = markdown_cell;
     for item in result["expect"].as_array().into_iter().flatten() {
         markdown.push_str(&format!(
             "| {} | {} | {} | {} | {} |\n",
@@ -801,6 +812,13 @@ mod tests {
     use super::*;
     use crate::deviation::{Candidate, Resolution};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn markdown_evidence_is_literal_text() {
+        let escaped = markdown_cell(&json!("<img src=x>|[link](https://x)\n`code`\\"));
+        assert!(!escaped.contains(['<', '>', '|', '[', ']', '`', '\n', '\\']));
+        assert!(escaped.contains("&#60;img"));
+    }
 
     #[test]
     fn background_operation_and_malformed_log_remain_evaluation_evidence() {

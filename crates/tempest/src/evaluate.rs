@@ -91,7 +91,15 @@ fn strict_document(text: &str) -> Result<FindingsDocument, ()> {
     let mut deserializer = serde_json::Deserializer::from_str(text);
     let value = UniqueValue::deserialize(&mut deserializer).map_err(|_| ())?;
     deserializer.end().map_err(|_| ())?;
-    serde_json::from_value(value.0).map_err(|_| ())
+    let document: FindingsDocument = serde_json::from_value(value.0).map_err(|_| ())?;
+    if document
+        .findings
+        .iter()
+        .any(|finding| !matches!(finding.result.as_str(), "allow" | "deny"))
+    {
+        return Err(());
+    }
+    Ok(document)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -272,6 +280,9 @@ pub fn evaluate_finding(input: EvaluationInput<'_>) -> FindingEvaluation {
     let mut false_positives = Vec::new();
     let mut unverifiable_claims = Vec::new();
     for finding in &input.report.findings {
+        if finding.result == "deny" {
+            continue;
+        }
         let supported = finding.result == "allow"
             && finding
                 .actor
