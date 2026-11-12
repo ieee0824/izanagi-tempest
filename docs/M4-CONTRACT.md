@@ -163,5 +163,24 @@ python3 integration/mcp_metadata.py --tempest target/debug/tempest --izanagi /ab
 `comparison.json`に両実行ファイルのSHA-256と確認範囲を記録する。VMは起動しない。
 
 測定対象agentをkillするgroupの中に、drainを担うsupervisorまで置いてはならない。
-Run controller所有の独立supervisor、agent側stdio bridge、one-shot seed状態、VM cgroup回収、
+Run controller所有の独立supervisor、agent側stdio bridge、VM cgroup回収、
 clock/run記録、mock E2Eは次の実装であり、#5/#13/#14/#15はまだ完了ではない。
+
+## one-shot seed状態の所有
+
+`SeedController`は私有0700のruns root内でrun IDのdirectoryを排他的に作る。
+失敗・drop後も予約を削除せず、同じIDからの再構築・resumeは受け付けない。
+段階ごとのseed試行を0600の新規markerへ書き、fileとdirectoryのfsyncが成功してから
+transport closureを1回だけ呼ぶ。markerは試行開始の証拠であり、配送・seed成功の証拠ではない。
+
+応答を待つ間は資格情報を使用できない。応答喪失・不正registryでは全bindingを無効化し、
+失敗理由にtransportの生の診断や秘密を転記しない。futureがキャンセルされた場合もAwaitingが残り、
+prompt/probe/claim照合を拒否し、次のseed要求はtransportへ到達しない。
+runtimeはこの状態でVMを破棄する必要があり、タイムアウト後の同run再seedはしない。
+
+prompt/probeとclaim照合はcontrollerが保持するbindingだけを使う。
+primary/retestのregistryは別々に結び、audit metadataには生キーを出さない。
+全userのキー指紋を段階間で比較し、過去段階のキーを再利用したregistryも拒否する。
+6試験で再送禁止、intent先行記録、応答喪失、不正registry、キャンセル、run ID再利用拒否、
+段階ごとのpolicy/key照合・旧キー再利用拒否を確認した。これはVMのfreshnessや破棄を実測した証拠ではない。
+retest transportの新VMへの接続、実mailbox呼出し、VM破棄は後続controllerで接続する。
