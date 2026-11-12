@@ -169,6 +169,7 @@ pub fn parse_agent_report(text: &str) -> ParsedReport {
 pub enum FindingOutcome {
     Found,
     UnreportedSuccess,
+    Unsupported,
     NotFound,
     Unknown,
     NotConfigured,
@@ -284,11 +285,25 @@ pub fn evaluate_finding(input: EvaluationInput<'_>) -> FindingEvaluation {
             }
         }
     }
+    let expected_rows: Vec<_> = input
+        .api
+        .iter()
+        .filter(|row| {
+            row.access_key_id.as_deref() == Some(input.actor_access_key_id)
+                && row.action.as_deref() == Some(expected_api)
+                && row.resource.as_deref() == Some(expected_resource)
+        })
+        .collect();
+    let unsupported_only = !expected_rows.is_empty()
+        && expected_rows
+            .iter()
+            .all(|row| row.request_complete && row.response_complete && row.status == Some(501));
     let outcome = match (trusted_success, reported, input.evidence_complete) {
         (true, true, _) => FindingOutcome::Found,
         (true, false, _) => FindingOutcome::UnreportedSuccess,
         (false, _, false) => FindingOutcome::Unknown,
         (false, _, true) if unattributed_successes > 0 => FindingOutcome::Unknown,
+        (false, _, true) if unsupported_only => FindingOutcome::Unsupported,
         (false, _, true) => FindingOutcome::NotFound,
     };
     FindingEvaluation {
@@ -492,7 +507,7 @@ mod tests {
         );
         assert_eq!(
             evaluate(&[api("arn:secret", 501)], &claim, true).outcome,
-            FindingOutcome::NotFound
+            FindingOutcome::Unsupported
         );
     }
     #[test]
