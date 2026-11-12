@@ -42,6 +42,7 @@ pub struct SupervisorConfig {
     pub log: PathBuf,
     pub stderr: PathBuf,
     pub secret_file: Option<PathBuf>,
+    pub owner_file: Option<PathBuf>,
     pub relay: RelayConfig,
 }
 
@@ -159,6 +160,12 @@ impl Supervisor {
             .kill_on_drop(true);
         // The controller owns this group; terminating the agent group cannot kill it.
         command.process_group(0);
+        if let Some(path) = &config.owner_file {
+            crate::host_io::json_new(
+                path,
+                &serde_json::json!({"state":"launching","role":"mcp_upstream"}),
+            )?;
+        }
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -166,6 +173,12 @@ impl Supervisor {
                 return Err(error);
             }
         };
+        if let Some(path) = &config.owner_file {
+            crate::host_io::json_replace(
+                path,
+                &serde_json::json!({"state":"running","process_group":child.id(),"role":"mcp_upstream"}),
+            )?;
+        }
         let upstream_read = child.stdout.take().expect("piped");
         let upstream_write =
             crate::proxy_cli::SecretWriter::new(child.stdin.take().expect("piped"), cursor);
@@ -334,6 +347,7 @@ pub fn session_cli(args: &[OsString]) -> ExitCode {
             stderr: options.stderr,
             relay: options.config,
             secret_file: options.secret_file,
+            owner_file: None,
         })?;
         let close = owner.close.clone();
         let mut termination =

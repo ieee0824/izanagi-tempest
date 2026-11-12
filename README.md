@@ -161,7 +161,7 @@ packer build -var-file=tempest.pkrvars.json debian.pkr.hcl
 `restrict_network=true` のまま、M2操作、owner/doas分離、私有入力・応答、短時間PCAPを検証しています。
 一般のエージェント終了・回収フローは未実装です。
 
-## 開発: M4 の実行計画（実装中）
+## M4: mock 実行ランタイム
 
 ```bash
 cargo run --locked -p tempest -- plan scenarios/s3-overread-001.yaml --actor worker
@@ -169,11 +169,49 @@ cargo run --locked -p tempest -- plan scenarios/s3-overread-001.yaml --actor wor
 
 VMを起動せず主体とfinding/retestの有無を解決します。単一userは`--actor`を省略可能、
 複数userは明示指定が必要です。`runtime_checks=not_performed`であり実行成功を示しません。
-実装中のrun/proxy・結果契約は[M4契約](docs/M4-CONTRACT.md)を参照してください。
+run/proxy・結果契約は[M4契約](docs/M4-CONTRACT.md)を参照してください。
 ゲスト子孫のcgroup終了確認とfreeze中のexportは、固定VMで2回検査しています。
 固定hash、再現手順とhost controllerへの未接続範囲は[M4終了確認](docs/M4-QUIESCE.md)を参照してください。
 独立したMCP ownerとagent側stdio bridge、HMAC FD配送、VM結合の手順は
-[M4 supervisor](docs/M4-SUPERVISOR.md)に記載しています。正式な`tempest run`は実装中です。
+[M4 supervisor](docs/M4-SUPERVISOR.md)に記載しています。
+
+`mock` アダプタによる disposable VM 実行では、固定イメージとその入力manifestを明示します。
+
+```bash
+cargo build --release --locked -p tempest
+target/release/tempest run scenarios/s3-overread-001.yaml \
+  --agent mock --mock-script integration/mock-s3-overread.json \
+  --izanagi /absolute/path/to/izanagi \
+  --image /absolute/path/to/debian-aarch64.qcow2 \
+  --image-inputs /absolute/path/to/inputs.json \
+  --python /absolute/path/to/python3 \
+  --runs /private/tmp/tempest-runs --run-id example-001
+```
+
+controllerはMCP管理経路だけでone-shot seed、self-check、agent admission、quiesce/export、
+fresh VM retestを接続します。`run.json` は `scope: m4_execution_only`、`purpose: collection`、
+`evaluation: not_performed` です。mockの固定報告を正式なfinding判定や集計には使用しません。
+1ファイルの回収上限は`--max-evidence-bytes`（既定64 MiB）で変更できます。
+
+実VMの連続実行と故障注入はopt-inです。
+
+```bash
+python3 integration/runtime_smoke.py --help
+python3 integration/runtime_faults.py --help
+python3 integration/runtime_presence.py --help
+```
+
+前者は同一scenarioの2回実行でsnapshot reset、4つのVM namespace、資格情報の非再利用を確認します。
+後者はseed応答喪失、fetch chunk改ざん、active MCP中SIGTERMで、再送禁止、欠損分類、VM廃棄、
+controller SIGKILL後の明示回収、run ID再利用拒否、transient成果物不在を確認します。
+crash後はowner生存確認と記録済みsession identityの照合を通るまで自動再開せず、次で回収します。
+
+```bash
+target/release/tempest recover /absolute/path/to/runs/<run-id>
+```
+
+`runtime_presence.py`はfinding/retestの4通りを実行し、
+未設定の処理を生成せず、M5評価を成功扱いしないことを確認します。
 
 
 MCP中継の単体起動例（実行中のIzanagi sessionと同じcwdを指定）:

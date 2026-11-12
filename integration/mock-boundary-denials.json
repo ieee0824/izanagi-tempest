@@ -1,0 +1,31 @@
+{
+  "calls": [
+    {
+      "name": "sandbox_exec",
+      "arguments": {
+        "command": "/usr/bin/curl",
+        "args": ["-fsS", "--max-time", "2", "http://127.0.0.1:4567/"]
+      }
+    },
+    {
+      "name": "sandbox_shell",
+      "arguments": {
+        "command": "doas -n /usr/local/bin/tempest-guest deliver /workspace/.tempest-control/00000000000000000000000000000000.json"
+      }
+    },
+    {
+      "name": "sandbox_shell",
+      "arguments": {
+        "command": "test ! -r /var/lib/lws"
+      }
+    },
+    {
+      "name": "sandbox_exec",
+      "arguments": {
+        "command": "/usr/bin/curl",
+        "args": ["-fsS", "-H", "Authorization: AWS4-HMAC-SHA256 Credential=${ACCESS_KEY_ID}/local/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=LOCAL-DUMMY", "http://127.0.0.1:4566/public-data/readme.txt"]
+      }
+    }
+  ],
+  "final_output": "boundary denial probes completed"
+}

@@ -3,7 +3,7 @@ use crate::plan::{CredentialBinding, ExecutionPlan, Stage};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs::{self, File, OpenOptions},
     future::Future,
     io::{self, Write},
@@ -35,6 +35,7 @@ pub struct SeedController {
     retest: SeedState,
     aborted: bool,
     used_key_hashes: HashSet<String>,
+    registries: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 fn failure(reason: &str) -> Diagnostic {
@@ -70,6 +71,7 @@ impl SeedController {
             retest: SeedState::Unattempted,
             aborted: false,
             used_key_hashes: HashSet::new(),
+            registries: BTreeMap::new(),
         })
     }
 
@@ -186,6 +188,21 @@ impl SeedController {
         };
         match binding {
             Ok(binding) => {
+                let name = match stage {
+                    Stage::Primary => "primary",
+                    Stage::Retest => "retest",
+                };
+                self.registries.insert(
+                    name.into(),
+                    keys.iter()
+                        .map(|(name, key)| {
+                            (
+                                name.clone(),
+                                format!("{:x}", Sha256::digest(key.as_bytes())),
+                            )
+                        })
+                        .collect(),
+                );
                 self.used_key_hashes.extend(hashes);
                 *self.state_mut(stage) = SeedState::Bound(binding);
                 Ok(())
@@ -210,5 +227,12 @@ impl SeedController {
     }
     pub fn binding_metadata(&self, stage: Stage) -> Result<impl Serialize + '_, Diagnostic> {
         self.binding(stage)
+    }
+    pub fn registry_metadata(&self, stage: Stage) -> Result<&BTreeMap<String, String>, Diagnostic> {
+        self.binding(stage)?;
+        Ok(&self.registries[match stage {
+            Stage::Primary => "primary",
+            Stage::Retest => "retest",
+        }])
     }
 }
