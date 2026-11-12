@@ -3,7 +3,9 @@ use crate::{
     evaluate::{self, EvaluationInput},
     host_io,
     scenario::load,
+    timeline::{self, CallInterval, ClockSample},
 };
+use chrono::DateTime;
 use serde_json::{Value, json};
 use std::{ffi::OsString, fs, io, path::Path, process::ExitCode};
 use tempest_model::guest::ApiRecord;
@@ -23,6 +25,65 @@ fn lines<T: serde::de::DeserializeOwned>(path: &Path) -> io::Result<Vec<T>> {
         .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
         .map(|line| serde_json::from_slice(line).map_err(io::Error::other))
         .collect()
+}
+
+fn timeline_bytes(root: &Path, api: &[ApiRecord]) -> io::Result<Vec<u8>> {
+    let mcp: Vec<Value> = lines(&root.join("evidence/mcp.jsonl"))?;
+    let samples: Vec<ClockSample> = lines(&root.join("evidence/clock.jsonl"))?;
+    let mut starts = std::collections::BTreeMap::new();
+    let mut calls = Vec::new();
+    for row in &mcp {
+        let sequence = row.pointer("/data/sequence").and_then(Value::as_u64);
+        let timestamp = row["ts_ns"].as_u64();
+        match (row["event"].as_str(), sequence, timestamp) {
+            (Some("forwarded"), Some(sequence), Some(timestamp)) => {
+                starts.insert(sequence, timestamp);
+            }
+            (Some("response"), Some(sequence), Some(timestamp)) => {
+                if let Some(start) = starts.remove(&sequence) {
+                    calls.push(CallInterval {
+                        call_id: sequence,
+                        start_host_ns: start,
+                        end_host_ns: timestamp,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut rows = Vec::new();
+    for call in &calls {
+        rows.push(json!({"kind":"mcp_call","call_id":call.call_id,"start_host_ns":call.start_host_ns,"end_host_ns":call.end_host_ns}));
+    }
+    for row in api {
+        let guest_ns = DateTime::parse_from_rfc3339(&row.ts)
+            .ok()
+            .and_then(|value| value.timestamp_nanos_opt())
+            .and_then(|value| u64::try_from(value).ok());
+        let correlation = guest_ns.map_or_else(
+            || timeline::Correlation {
+                corrected_host_ns: None,
+                candidate_call_ids: vec![],
+                background: true,
+                ambiguous: false,
+                diagnostic: Some("invalid API timestamp".into()),
+            },
+            |timestamp| timeline::correlate(&samples, &calls, timestamp),
+        );
+        rows.push(json!({"kind":"api","source":{"file":"evidence/api.jsonl","seq":row.seq},"guest_ns":guest_ns,"correlation":correlation,"action":row.action,"resource":row.resource,"status":row.status,"credential_claim_present":row.access_key_id.is_some()}));
+    }
+    rows.sort_by_key(|row| {
+        row.pointer("/correlation/corrected_host_ns")
+            .and_then(Value::as_u64)
+            .or_else(|| row["start_host_ns"].as_u64())
+            .unwrap_or(u64::MAX)
+    });
+    let mut output = Vec::new();
+    for row in rows {
+        serde_json::to_writer(&mut output, &row)?;
+        output.push(b'\n');
+    }
+    Ok(output)
 }
 
 pub fn generate(root: &Path) -> io::Result<Value> {
@@ -57,6 +118,7 @@ pub fn generate(root: &Path) -> io::Result<Value> {
         .and_then(Value::as_str)
         .ok_or_else(|| io::Error::other("actor fingerprint missing"))?;
     let api: Vec<ApiRecord> = lines(&root.join("evidence/api.jsonl"))?;
+    host_io::replace(&root.join("timeline.jsonl"), &timeline_bytes(root, &api)?)?;
     let actor_key = evaluate::actor_access_key(&api, fingerprint).map_err(io::Error::other)?;
     let output = String::from_utf8(read(&root.join("evidence/agent.stdout"))?)
         .map_err(|_| io::Error::other("agent output is not UTF-8"))?;
