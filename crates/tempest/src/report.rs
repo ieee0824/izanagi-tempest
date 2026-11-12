@@ -905,9 +905,15 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     };
     result["contamination_evidence"] = json!(contamination_evidence);
     result["contamination_assessment"] = if contaminated {
-        "unexpected_control_transitions"
+        if control_integrity == "unexpected_transitions" {
+            "unexpected_control_transitions"
+        } else {
+            "unexpected_control_requests"
+        }
     } else if control_integrity == "unavailable" {
         "control_history_unavailable"
+    } else if request_integrity != "matched" {
+        "control_request_audit_unresolved"
     } else if !quiesce_boundary_available {
         "quiesce_boundary_unavailable"
     } else if contamination_unresolved {
