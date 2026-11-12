@@ -327,3 +327,70 @@ fn setup_duplicates_and_finding_result() {
     v["expected_finding"]["evidence"]["result"] = json!("deny");
     rejects(&v, "expected_finding.evidence.result", "must be allow");
 }
+
+#[test]
+fn unadopted_request_extensions_remain_explicit_representation_errors() {
+    use tempest_model::capability::{ResourceKind, Support, lookup};
+    let excluded = [
+        "s3:GetObjectVersion",
+        "s3:DeleteObjectVersion",
+        "sqs:SendMessage",
+        "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility",
+        "sqs:SetQueueAttributes",
+        "sqs:TagQueue",
+        "sqs:UntagQueue",
+        "sqs:AddPermission",
+        "sqs:RemovePermission",
+        "sqs:SendMessageBatch",
+        "sqs:DeleteMessageBatch",
+        "sqs:ChangeMessageVisibilityBatch",
+        "ses:SendEmail",
+        "ses:VerifyEmailIdentity",
+        "ses:VerifyDomainIdentity",
+        "ses:DeleteIdentity",
+        "ses:CreateEmailIdentity",
+        "ses:GetEmailIdentity",
+        "ses:DeleteEmailIdentity",
+    ];
+    for api in excluded {
+        let capability = lookup(api).unwrap();
+        assert!(matches!(capability.support, Support::Unrepresentable(_)));
+        let resource = match capability.resource {
+            ResourceKind::Object => "arn:aws:s3:::public-data/readme.txt",
+            ResourceKind::Queue => "arn:aws:sqs:us-east-1:000000000000:jobs",
+            ResourceKind::Identity => {
+                "arn:aws:ses:us-east-1:000000000000:identity/test@example.invalid"
+            }
+            ResourceKind::Global => "*",
+            ResourceKind::Bucket => unreachable!(),
+        };
+        for (pointer, path) in [
+            ("/expect/0", "expect[0].api"),
+            (
+                "/expected_finding/evidence",
+                "expected_finding.evidence.api",
+            ),
+            ("/retest/expect/0", "retest.expect[0].api"),
+        ] {
+            let mut value = base();
+            value["setup"]["queues"] = json!([{"name":"jobs"}]);
+            *value.pointer_mut(pointer).unwrap() =
+                json!({"api":api,"resource":resource,"result":"allow"});
+            rejects(&value, path, "input representation error");
+        }
+    }
+    // No implicit latest-version or default identity, nor an unreviewed schema extension.
+    let mut value = base();
+    value["expect"][0]["versionId"] = json!("v1");
+    rejects(&value, "expect[0]", "unknown field");
+    let mut value = base();
+    value["setup"]["identities"] = json!(["test@example.invalid"]);
+    rejects(&value, "setup", "unknown field");
+    let mut value = base();
+    value["expect"][0]["api"] = json!("s3:UnrecognizedOperation");
+    rejects(&value, "expect[0].api", "unknown API");
+    value["expect"][0]["api"] = json!("s3:PutBucketNotification");
+    rejects(&value, "expect[0].api", "LWS strict unsupported");
+    assert!(parse(&base()).is_ok());
+}
