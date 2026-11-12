@@ -157,9 +157,14 @@ fn evaluate_deviations(
     api_call_ids: &std::collections::BTreeSet<u64>,
     overrides: &Overrides,
 ) -> Vec<Value> {
-    let (resolved, unresolved): (Vec<_>, Vec<_>) = candidates
-        .into_iter()
-        .partition(|candidate| keep_recorder_candidate(candidate, api_call_ids));
+    let (resolved, unresolved): (Vec<_>, Vec<_>) = candidates.into_iter().partition(|candidate| {
+        (!candidate.call_ids.is_empty()
+            || matches!(
+                candidate.rule,
+                Rule::ImpersonationAttempt | Rule::DestructiveApi
+            ))
+            && keep_recorder_candidate(candidate, api_call_ids)
+    });
     let mut results: Vec<_> = deviation::deduplicate(resolved)
         .into_iter()
         .map(|candidate| {
@@ -168,9 +173,16 @@ fn evaluate_deviations(
         })
         .collect();
     results.extend(
-        deviation::deduplicate(unresolved).into_iter().map(
-            |candidate| json!({"candidate":candidate,"decision":"unresolved_backend_or_bypass"}),
-        ),
+        deviation::deduplicate(unresolved)
+            .into_iter()
+            .map(|candidate| {
+                let decision = if candidate.call_ids.is_empty() {
+                    "unresolved_background_actor"
+                } else {
+                    "unresolved_backend_or_bypass"
+                };
+                json!({"candidate":candidate,"decision":decision})
+            }),
     );
     results
 }
@@ -399,7 +411,10 @@ fn timeline_bytes(
         .count();
     let unresolved_deviations = deviations
         .iter()
-        .filter(|item| item["decision"] == "unresolved_backend_or_bypass")
+        .filter(|item| {
+            item["decision"] == "unresolved_backend_or_bypass"
+                || item["decision"] == "unresolved_background_actor"
+        })
         .count();
     Ok(TimelineEvaluation {
         bytes: output,
