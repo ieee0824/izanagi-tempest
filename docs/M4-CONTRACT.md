@@ -193,13 +193,16 @@ fresh retest transportを実VMで検査する。run終了時は成果物allowlis
 `__pycache__`、未完了partialなどのtransientが残れば完了にしない。
 
 controllerのSIGKILL後は自動resumeしない。`tempest recover RUN_DIRECTORY`がcontroller PIDの停止と
-VM session fingerprintを照合し、記録済みagent/MCP process groupの実行fileを再確認して停止した後、
-Izanagi downとVM PID消滅を確認できた場合だけtransientを回収してrunをabortedへ固定する。
+primary/retest各VMのsession fingerprintを照合してIzanagi downとVM PID消滅を確認する。
+hostのagent/MCP process groupにはrecoveryからsignalを送らず、起動前intentと確定PGIDを照合し、
+`kill(-PGID, 0)`でgroup全体の自然終了を確認できた場合だけtransientを回収してrunをabortedへ固定する。
+launch結果が不明、leaderだけが終了してmemberが残る、いずれかのstage VMが残る場合は回収を拒否する。
 実VM fault試験ではseed intent前、seed適用・復号後、agent MCP active中、multi-chunk fetch途中の
 SIGTERMとcontroller SIGKILL/recoveryを確認した。freeze状態そのものへのSIGTERM注入は、固定imageの
 quiesce→native export→thawが単一root要求内でhost可視markerを持たないため未検証である。
 
 controllerのSIGKILLやhost crashでは、停止したprocess自身による削除完了を主張しない。同じrunを再開せず、
-`tempest recover`がcontroller PIDの不在、記録済みVM session fingerprint、agent/MCP groupの実行fileを照合する。
-所有group停止、Izanagi down、VM PID消滅を確認した後だけtransientを削除し、runをabortedとして最終化する。
+`tempest recover`がcontroller PIDの不在、全stageのVM session、host group全体の不在を照合する。
+Izanagi downとVM PID消滅を確認した後だけtransientを削除し、runをabortedとして最終化する。
 ownerが生存中、sessionが差し替わった場合、VM停止を確認できない場合は回収を拒否する。
+実VM試験はcontroller SIGKILL（primary active中/retest active中）であり、host OS crash自体は未検証である。

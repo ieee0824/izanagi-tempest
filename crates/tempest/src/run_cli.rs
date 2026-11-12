@@ -489,6 +489,7 @@ async fn execute(
         success = false;
         report["cancellation"] = json!({"reason":reason,"observed_ns":host_io::now_ns()?});
     }
+    host_io::json_replace(&root.join("run.json"), &report)?;
     if success && plan.retest().is_some() {
         let directory = root.join("retest");
         host_io::directory(&directory)?;
@@ -579,6 +580,8 @@ fn allowed_artifact(path: &str) -> bool {
             | "down.stdout"
             | "izanagi.toml"
             | "management.stderr"
+            | "recovery-down.stderr"
+            | "recovery-down.stdout"
             | "up.stderr"
             | "up.stdout"
             | "vm-owner.json"
@@ -669,7 +672,7 @@ fn remove_transients(root: &Path, directory: &Path, removed: &mut Vec<String>) -
             .to_owned();
         let kind = entry.file_type()?;
         if kind.is_dir() {
-            if name == "__pycache__" || relative == "sandbox/.tempest-control" {
+            if name == "__pycache__" || relative.ends_with("sandbox/.tempest-control") {
                 fs::remove_dir_all(&path)?;
                 removed.push(relative);
             } else {
@@ -686,36 +689,91 @@ fn remove_transients(root: &Path, directory: &Path, removed: &mut Vec<String>) -
     }
     Ok(())
 }
-fn stop_owned_group(owner_file: &Path, executable: &Path) -> io::Result<Option<u32>> {
+fn process_group_alive(group: u32) -> bool {
+    let result = unsafe { libc::kill(-(group as i32), 0) };
+    result == 0 || io::Error::last_os_error().kind() == io::ErrorKind::PermissionDenied
+}
+async fn verify_owned_group_gone(owner_file: &Path) -> io::Result<Option<u32>> {
     if !owner_file.is_file() {
         return Ok(None);
     }
     let owner: Value = serde_json::from_slice(&fs::read(owner_file)?)?;
+    if owner["state"] != "running" {
+        return Err(io::Error::other("owned process launch outcome is unknown"));
+    }
     let group = owner["process_group"]
         .as_u64()
         .and_then(|pid| u32::try_from(pid).ok())
         .filter(|pid| *pid > 1)
         .ok_or_else(|| io::Error::other("invalid owned process group"))?;
-    if !pid_alive(group) {
-        return Ok(None);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while process_group_alive(group) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let output = std::process::Command::new("/bin/ps")
-        .args(["-p", &group.to_string(), "-o", "command="])
-        .env_clear()
-        .output()?;
-    let command = String::from_utf8(output.stdout)
-        .map_err(|_| io::Error::other("invalid owned process identity"))?;
-    if !output.status.success()
-        || !command
-            .trim_start()
-            .starts_with(&executable.to_string_lossy().to_string())
-    {
-        return Err(io::Error::other("owned process identity changed"));
-    }
-    if unsafe { libc::kill(-(group as i32), libc::SIGKILL) } != 0 {
-        return Err(io::Error::other("owned process group stop failed"));
+    if process_group_alive(group) {
+        return Err(io::Error::other("owned process group is still alive"));
     }
     Ok(Some(group))
+}
+async fn recover_vm_stage(root: &Path, stage: &Path, name: &str) -> io::Result<Value> {
+    let owner_path = stage.join("vm-owner.json");
+    if !owner_path.is_file() {
+        return Ok(json!({"stage":name,"present":false,"down_succeeded":true}));
+    }
+    let owner: Value = serde_json::from_slice(&fs::read(&owner_path)?)?;
+    let supervisor_pid = owner["supervisor_pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .ok_or_else(|| io::Error::other("invalid VM owner"))?;
+    if !pid_alive(supervisor_pid) {
+        return Ok(
+            json!({"stage":name,"present":true,"supervisor_pid":supervisor_pid,"down_succeeded":true,"already_stopped":true}),
+        );
+    }
+    let expected = owner["session_fingerprint"]
+        .as_str()
+        .ok_or_else(|| io::Error::other("live VM has no session fingerprint"))?;
+    let workspace = stage.join("sandbox").canonicalize()?;
+    let instance = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::other("HOME required"))?
+        .join(".izanagi/instances")
+        .join(format!(
+            "{:x}",
+            Sha256::digest(workspace.as_os_str().as_encoded_bytes())
+        ));
+    if host_io::digest(&instance.join("session.json"))? != expected {
+        return Err(io::Error::other("live VM session identity changed"));
+    }
+    let handle = crate::proxy_cli::secret_reference(&stage.join("transport-hmac"))?;
+    let mut command = host_io::command(&root.join("bin/izanagi"));
+    crate::proxy_cli::inherit_secret(&mut command, handle);
+    let child = command
+        .arg("--config")
+        .arg(stage.join("izanagi.toml"))
+        .arg("down")
+        .current_dir(&workspace)
+        .stdout(Stdio::from(crate::proxy_cli::private_new(
+            &stage.join("recovery-down.stdout"),
+        )?))
+        .stderr(Stdio::from(crate::proxy_cli::private_new(
+            &stage.join("recovery-down.stderr"),
+        )?))
+        .kill_on_drop(true)
+        .spawn()?;
+    let down_succeeded = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+        .await
+        .is_ok_and(|result| result.is_ok_and(|output| output.status.success()));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while pid_alive(supervisor_pid) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if !down_succeeded || pid_alive(supervisor_pid) {
+        return Err(io::Error::other("owned VM shutdown could not be verified"));
+    }
+    Ok(
+        json!({"stage":name,"present":true,"supervisor_pid":supervisor_pid,"down_succeeded":true,"already_stopped":false}),
+    )
 }
 async fn recover_run(root: &Path) -> io::Result<Value> {
     let root = root.canonicalize()?;
@@ -738,83 +796,26 @@ async fn recover_run(root: &Path) -> io::Result<Value> {
     if pid_alive(controller_pid) {
         return Err(io::Error::other("controller owner is still alive"));
     }
-    let vm_owner_path = root.join("vm-owner.json");
-    let vm_owner = if vm_owner_path.is_file() {
-        Some(serde_json::from_slice::<Value>(&fs::read(&vm_owner_path)?)?)
+    let primary = recover_vm_stage(&root, &root, "primary").await?;
+    let retest_directory = root.join("retest");
+    let retest = if retest_directory.is_dir() {
+        recover_vm_stage(&root, &retest_directory, "retest").await?
     } else {
-        None
+        json!({"stage":"retest","present":false,"down_succeeded":true})
     };
-    let supervisor_pid = vm_owner
-        .as_ref()
-        .and_then(|value| value["supervisor_pid"].as_u64())
-        .and_then(|pid| u32::try_from(pid).ok());
-    let vm_alive = supervisor_pid.is_some_and(pid_alive);
-    if vm_alive {
-        let expected = vm_owner
-            .as_ref()
-            .and_then(|value| value["session_fingerprint"].as_str())
-            .ok_or_else(|| io::Error::other("live VM has no session fingerprint"))?;
-        let workspace = root.join("sandbox").canonicalize()?;
-        let instance = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .ok_or_else(|| io::Error::other("HOME required"))?
-            .join(".izanagi/instances")
-            .join(format!(
-                "{:x}",
-                Sha256::digest(workspace.as_os_str().as_encoded_bytes())
-            ));
-        if host_io::digest(&instance.join("session.json"))? != expected {
-            return Err(io::Error::other("live VM session identity changed"));
-        }
-    }
-    let stopped_groups: Vec<_> = [
-        (
-            root.join("evidence/agent-owner.json"),
-            root.join("bin/tempest"),
-        ),
-        (
-            root.join("evidence/mcp-owner.json"),
-            root.join("bin/izanagi"),
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(owner, executable)| stop_owned_group(&owner, &executable).transpose())
-    .collect::<io::Result<Vec<_>>>()?;
-    let mut down_succeeded = true;
-    if vm_alive {
-        let workspace = root.join("sandbox").canonicalize()?;
-        let hmac = root.join("transport-hmac");
-        let handle = crate::proxy_cli::secret_reference(&hmac)?;
-        let mut command = host_io::command(&root.join("bin/izanagi"));
-        crate::proxy_cli::inherit_secret(&mut command, handle);
-        let child = command
-            .arg("--config")
-            .arg(root.join("izanagi.toml"))
-            .arg("down")
-            .current_dir(&workspace)
-            .stdout(Stdio::from(crate::proxy_cli::private_new(
-                &root.join("recovery-down.stdout"),
-            )?))
-            .stderr(Stdio::from(crate::proxy_cli::private_new(
-                &root.join("recovery-down.stderr"),
-            )?))
-            .kill_on_drop(true)
-            .spawn()?;
-        down_succeeded = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
-            .await
-            .is_ok_and(|result| result.is_ok_and(|output| output.status.success()));
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while supervisor_pid.is_some_and(pid_alive) && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        if !down_succeeded || supervisor_pid.is_some_and(pid_alive) {
-            return Err(io::Error::other("owned VM shutdown could not be verified"));
+    let mut verified_process_groups = Vec::new();
+    for owner_file in [
+        root.join("evidence/agent-owner.json"),
+        root.join("evidence/mcp-owner.json"),
+    ] {
+        if let Some(group) = verify_owned_group_gone(&owner_file).await? {
+            verified_process_groups.push(group);
         }
     }
     let mut removed = Vec::new();
     remove_transients(&root, &root, &mut removed)?;
     removed.sort();
-    let recovery = json!({"status":"recovered","controller_pid":controller_pid,"supervisor_pid":supervisor_pid,"stopped_process_groups":stopped_groups,"down_succeeded":down_succeeded,"removed":removed,"finished_ns":host_io::now_ns()?});
+    let recovery = json!({"status":"recovered","controller_pid":controller_pid,"stages":[primary,retest],"verified_process_groups_gone":verified_process_groups,"removed":removed,"finished_ns":host_io::now_ns()?});
     host_io::json_new(&root.join("recovery.json"), &recovery)?;
     let mut report: Value = serde_json::from_slice(&fs::read(root.join("run.json"))?)?;
     report["failure"] = "controller terminated; explicit recovery completed".into();
@@ -897,6 +898,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt;
 
     #[test]
     fn artifact_allowlist_rejects_runtime_material_and_non_regular_entries() {
@@ -920,6 +922,35 @@ mod tests {
                 .iter()
                 .any(|path| path == "transport-hmac")
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn recovery_rejects_unknown_launch_and_detects_leaderless_group() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-recovery-{}-{}",
+            std::process::id(),
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        let owner = root.join("owner.json");
+        host_io::json_new(&owner, &json!({"state":"launching"})).unwrap();
+        assert!(verify_owned_group_gone(&owner).await.is_err());
+
+        let mut leader = std::process::Command::new("/bin/sh");
+        leader
+            .args(["-c", "sleep 30 &"])
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut leader = leader.spawn().unwrap();
+        let group = leader.id();
+        assert!(leader.wait().unwrap().success());
+        assert!(process_group_alive(group));
+        unsafe {
+            libc::kill(-(group as i32), libc::SIGKILL);
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }

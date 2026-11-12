@@ -59,6 +59,10 @@ impl AgentAdapter for MockAdapter {
             .filter_map(|line| line.strip_prefix("AccessKeyId: "))
             .next_back()
             .ok_or_else(|| io::Error::other("mock prompt credential missing"))?;
+        crate::host_io::json_new(
+            &endpoint.owner_file,
+            &json!({"state":"launching","role":"agent_bridge"}),
+        )?;
         let mut child = command(&endpoint.executable)
             .arg("mcp-connect")
             .arg(&endpoint.socket)
@@ -69,9 +73,9 @@ impl AgentAdapter for MockAdapter {
             .process_group(0)
             .kill_on_drop(true)
             .spawn()?;
-        crate::host_io::json_new(
+        crate::host_io::json_replace(
             &endpoint.owner_file,
-            &json!({"process_group":child.id(),"role":"agent_bridge"}),
+            &json!({"state":"running","process_group":child.id(),"role":"agent_bridge"}),
         )?;
         let mut rpc = Rpc::new(child.stdout.take().unwrap(), child.stdin.take().unwrap());
         let timeout = Duration::from_secs(320);

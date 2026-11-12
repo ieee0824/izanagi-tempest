@@ -346,6 +346,61 @@ def fetch_sigterm(args):
     print(json.dumps({'fetch_sigterm': 'passed', 'run': str(run)}))
 
 
+def retest_crash_recovery(args):
+    run_id = 'retest-controller-sigkill'
+    run = args.runs / run_id
+    with tempfile.TemporaryDirectory(prefix='tempest-retest-crash-') as temporary:
+        fixture = Path(temporary)
+        source = (ROOT / 'image/host_bridge.py').read_text()
+        needle = "                result = pending.decode(message['frame'])\n"
+        injected = needle + """                if pending.operation == 'probe' and workspace.parent.name == 'retest':
+                    print('retest-probe-active', file=sys.stderr, flush=True)
+                    __import__('time').sleep(300)
+"""
+        if source.count(needle) != 1:
+            raise AssertionError('host bridge injection point changed')
+        (fixture / 'host_bridge.py').write_text(source.replace(needle, injected))
+        shutil.copy2(ROOT / 'image/transport.py', fixture / 'transport.py')
+        command = [
+            str(args.tempest), 'run', str(ROOT / 'scenarios/s3-overread-001.yaml'),
+            '--agent', 'mock', '--mock-script', str(ROOT / 'integration/mock-s3-overread.json'),
+            '--izanagi', str(args.izanagi), '--image', str(args.image),
+            '--image-inputs', str(args.image_inputs), '--mailbox-bridge',
+            str(fixture / 'host_bridge.py'), '--python', str(args.python),
+            '--runs', str(args.runs), '--run-id', run_id,
+        ]
+        process = subprocess.Popen(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.monotonic() + 150
+        marker = run / 'retest/companion.stderr'
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise AssertionError('controller exited before retest crash injection')
+            if marker.exists() and 'retest-probe-active' in marker.read_text():
+                break
+            time.sleep(0.1)
+        else:
+            process.kill()
+            raise AssertionError('retest VM did not reach the injected probe')
+        process.kill()
+        process.communicate(timeout=10)
+        recovered = subprocess.run([str(args.tempest), 'recover', str(run)], text=True,
+                                   capture_output=True, timeout=120)
+        if recovered.returncode != 0:
+            raise AssertionError(f'retest recovery failed: {recovered.stderr}')
+    report = json.loads((run / 'run.json').read_text())
+    stages = {value['stage']: value for value in report['recovery']['stages']}
+    if not stages['primary']['already_stopped'] or stages['retest']['already_stopped']:
+        raise AssertionError('recovery did not distinguish primary and live retest VMs')
+    for owner in (run / 'vm-owner.json', run / 'retest/vm-owner.json'):
+        if pid_exists(json.loads(owner.read_text())['supervisor_pid']):
+            raise AssertionError('a stage VM remained alive after recovery')
+    if (run / 'transport-hmac').exists() or (run / 'retest/transport-hmac').exists():
+        raise AssertionError('a stage transport key remained after recovery')
+    if not json.loads((run / 'artifact-inventory.json').read_text())['complete']:
+        raise AssertionError('retest recovery left unexpected artifacts')
+    print(json.dumps({'retest_crash_recovery': 'passed', 'run': str(run)}))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--tempest', type=Path, required=True)
@@ -354,7 +409,7 @@ def main():
     parser.add_argument('--image-inputs', type=Path, required=True)
     parser.add_argument('--python', type=Path, required=True)
     parser.add_argument('--runs', type=Path, required=True)
-    parser.add_argument('--case', choices=['all', 'core', 'seed-sigterm', 'fetch-sigterm'], default='all')
+    parser.add_argument('--case', choices=['all', 'core', 'crash-recovery', 'seed-sigterm', 'fetch-sigterm', 'retest-recovery'], default='all')
     args = parser.parse_args()
     args.runs.mkdir(mode=0o700, parents=True, exist_ok=False)
     if args.case in ('all', 'core'):
@@ -362,11 +417,15 @@ def main():
         fetch_chunk_corruption(args)
         active_sigterm(args)
         crash_recovery(args)
+    if args.case == 'crash-recovery':
+        crash_recovery(args)
     if args.case in ('all', 'seed-sigterm'):
         seed_sigterm(args, 'attest', 'before-seed-intent', False)
         seed_sigterm(args, 'seed', 'after-seed-apply', True)
     if args.case in ('all', 'fetch-sigterm'):
         fetch_sigterm(args)
+    if args.case in ('all', 'retest-recovery'):
+        retest_crash_recovery(args)
 
 
 if __name__ == '__main__':
