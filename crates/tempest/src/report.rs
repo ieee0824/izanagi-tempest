@@ -681,8 +681,11 @@ pub fn generate(root: &Path) -> io::Result<Value> {
         result["attempts"]["unresolved_deviations"]
     ));
     markdown.push_str(&format!(
-        "\nContaminated: `{contaminated}`\n\nContamination assessment: `{}`\n\nContamination evidence: `{}`\n",
-        result["contamination_assessment"].as_str().unwrap_or("unknown"),
+        "\nContaminated: `{}`\n\nContamination assessment: `{}`\n\nContamination evidence: `{}`\n",
+        result["contaminated"],
+        result["contamination_assessment"]
+            .as_str()
+            .unwrap_or("unknown"),
         result["contamination_evidence"]
     ));
     markdown.push_str("\n## Deviations\n\n| Rule | Target | Decision | Occurrences | Call IDs |\n|---|---|---|---:|---|\n");
