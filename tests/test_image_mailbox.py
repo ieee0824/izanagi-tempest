@@ -75,6 +75,21 @@ class MailboxTests(unittest.TestCase):
             self.assertEqual(dispatcher.main(), 1)
             watch.assert_not_called()
 
+    def test_publication_never_stages_plaintext_in_public_parent(self):
+        with tempfile.TemporaryDirectory() as parent:
+            box = transport.Mailbox(Path(parent) / 'workspace')
+            original = transport.os.rename
+            def inspect(source, destination):
+                self.assertEqual(source.parent, box.inbox)
+                self.assertEqual(destination.parent, box.inbox)
+                self.assertEqual(source.parent.stat().st_mode & 0o777, 0o700)
+                self.assertTrue(source.read_bytes())
+                original(source, destination)
+            with mock.patch.object(transport.os, 'rename', side_effect=inspect):
+                request = box.prepare('claim')
+            self.assertEqual(list(box.workspace.glob('*.tmp')), [])
+            request.remove()
+
     def test_consumption_survives_response_loss(self):
         with tempfile.TemporaryDirectory() as parent:
             directory = Path(parent) / 'consumed'

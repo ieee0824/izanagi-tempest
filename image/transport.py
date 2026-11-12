@@ -41,8 +41,9 @@ class Mailbox:
         encoded = json.dumps(payload, separators=(',', ':')).encode()
         if len(encoded) > 8 * 1024 * 1024:
             raise ValueError('mailbox request exceeds 8 MiB')
-        # Write outside the watched directory, then atomically publish fully mapped file.
-        temporary = self.workspace / (request_id + '.tmp')
+        # Keep plaintext private even before owner xattrs are applied (host UID may
+        # equal the guest actor UID). The consumer watches only *.json.
+        temporary = self.inbox / (request_id + '.tmp')
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'wb') as stream:
             stream.write(encoded)
