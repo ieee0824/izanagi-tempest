@@ -15,6 +15,7 @@ Issue #6 / PR #31。以下は完了宣言ではなく、現行実装と確認済
 | 評価時run入力の保存 | snapshot不変fixture | 確認済み。最終化後のrun.json変更と独立 |
 | guest要求ID・失敗監査 | ID重複/欠損/拒否/overflow/順序反転fixture | 更新イメージの正常2回・防御1回も成功 |
 | finding/retest省略4通り | `integration/runtime_presence.py` | 全4通りの実VM試験成功。not_configured/not_performedを区別 |
+| 中断・破損証跡の自動評価 | `integration/runtime_faults.py --case evaluation` | seed応答喪失・fetch破損でpartial/unknown/nullと確定済み成果物を確認 |
 
 ## 実VM証拠
 
@@ -23,6 +24,7 @@ Issue #6 / PR #31。以下は完了宣言ではなく、現行実装と確認済
 - `/private/tmp/tempest-m5-request-audit-e2e-001/`: 要求ID監査入りイメージで正常2回・防御1回成功。正常結果の要求ID一致と失敗操作記録なしを確認。
 - `/private/tmp/tempest-m5-final-report.qca34l/`: 最新評価器で上記3runの私有コピーを再評価。通常2回はいずれもfound/retest passed/ID matched、確定候補0・未確定11。防御runは候補計上を保持。各世代は入力snapshotと出力hash付きで確定。
 - `/private/tmp/tempest-m5-presence-e2e-001/`: finding/retestの全4通りが成功。
+- `/private/tmp/tempest-m5-evaluation-faults-001/`: seed応答喪失・fetch破損の部分評価検査が成功。
 
 最新headのRust全テスト・Clippy・fmt、Python 19件が成功。上記再評価3世代の
 入力snapshot・result・report・timelineの計12ファイルは、marker記録hashとの一致を直接確認済み。
@@ -32,7 +34,6 @@ Issue #6 / PR #31。以下は完了宣言ではなく、現行実装と確認済
 
 ## 未完了の照合
 
-- seed応答喪失・fetch破損後の部分評価を実VMで確認中。
 - PRレビュー所見の最終照合。
 
 未確定背景候補は保持し、指標側をunknownとする。全体の正式適格性はfalseだが、
