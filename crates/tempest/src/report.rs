@@ -304,6 +304,22 @@ fn timeline_bytes(
         }
     }
     let mut rows = Vec::new();
+    let mut control_starts = std::collections::BTreeMap::new();
+    let mut control_intervals = Vec::new();
+    if root.join("evidence/control.jsonl").exists() {
+        let controls: Vec<Value> =
+            evidence_lines(&root.join("evidence/control.jsonl"), &mut diagnostics);
+        for row in controls {
+            if let (Some(id), Some(timestamp)) = (row["id"].as_str(), row["host_ns"].as_u64()) {
+                if row["state"] == "started" {
+                    control_starts.insert(id.to_owned(), (timestamp, row["operation"].clone()));
+                } else if let Some((start, operation)) = control_starts.remove(id) {
+                    control_intervals.push((id.to_owned(), start, timestamp, operation));
+                }
+            }
+            rows.push(json!({"kind":"host_control","audit":row}));
+        }
+    }
     let mut api_call_ids = std::collections::BTreeSet::new();
     for call in &calls {
         rows.push(json!({"kind":"mcp_call","call_id":call.call_id,"start_host_ns":call.start_host_ns,"end_host_ns":call.end_host_ns}));
@@ -402,7 +418,22 @@ fn timeline_bytes(
         serde_json::to_writer(&mut output, &row)?;
         output.push(b'\n');
     }
-    let deviations = evaluate_deviations(candidates, &api_call_ids, overrides);
+    let mut deviations = evaluate_deviations(candidates, &api_call_ids, overrides);
+    for item in &mut deviations {
+        let matches: Vec<_> = item
+            .pointer("/candidate/first_seen_ns")
+            .and_then(Value::as_u64)
+            .map(|seen| {
+                control_intervals
+                    .iter()
+                    .filter(|(_, start, end, _)| *start <= seen && seen <= *end)
+                    .map(|(id, _, _, operation)| json!({"id":id,"operation":operation}))
+                    .collect()
+            })
+            .unwrap_or_default();
+        item["overlapping_host_controls"] = json!(matches);
+        item["control_attribution"] = "temporal_overlap_only".into();
+    }
     let included_deviations = deviations
         .iter()
         .filter(|item| {
@@ -437,6 +468,7 @@ fn provenance(root: &Path) -> io::Result<Value> {
         "evidence/izanagi/events.log",
         "evidence/izanagi/alerts.log",
         "evidence/manifest.json",
+        "evidence/control.jsonl",
     ] {
         let entry = match read(&root.join(name)) {
             Ok(bytes) => {
@@ -933,6 +965,16 @@ mod tests {
             clock.push(b'\n');
         }
         host_io::write_new(&root.join("evidence/clock.jsonl"), &clock).unwrap();
+        let controls = [
+            json!({"id":"seal-audit","operation":"seal","state":"started","host_ns":timestamp-1000}),
+            json!({"id":"seal-audit","operation":"seal","state":"completed","host_ns":timestamp+1000}),
+        ];
+        let mut audit = Vec::new();
+        for row in controls {
+            serde_json::to_writer(&mut audit, &row).unwrap();
+            audit.push(b'\n');
+        }
+        host_io::write_new(&root.join("evidence/control.jsonl"), &audit).unwrap();
         host_io::write_new(&root.join("evidence/izanagi/events.log"), b"[2026-11-12 23:20:48.812] INFO pid=584 x: openat(\"/var/lib/lws/x\", 0) \xe2\x86\x92 3\nbroken operation line\n").unwrap();
         host_io::write_new(&root.join("evidence/izanagi/alerts.log"), b"").unwrap();
         let result = timeline_bytes(
@@ -948,6 +990,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.deviations.len(), 1);
+        assert_eq!(
+            result.deviations[0]["overlapping_host_controls"][0]["id"],
+            "seal-audit"
+        );
+        assert_eq!(
+            result.deviations[0]["decision"],
+            "unresolved_background_actor"
+        );
         assert_eq!(result.deviations[0]["candidate"]["call_ids"], json!([]));
         assert_eq!(result.contamination_evidence.len(), 1);
         let frozen_before_operation = timeline_bytes(
