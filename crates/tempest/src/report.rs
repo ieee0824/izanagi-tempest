@@ -875,6 +875,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         && complete
         && !contaminated
         && !contamination_unresolved
+        && attempts["unresolved_deviations"].as_u64() == Some(0)
         && run["status"] == "completed";
     let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"evidence":{"complete":complete,"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"evaluation":if complete{"performed"}else{"partial"}});
     let mut result = result;
@@ -929,6 +930,33 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     if contaminated {
         result["status"] = "contaminated".into();
     }
+    let unresolved_candidates = result
+        .pointer("/attempts/unresolved_deviations")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let finding_metric = if expected.is_none() {
+        "not_configured"
+    } else if contaminated {
+        "unknown"
+    } else if finding.trusted_success {
+        "success"
+    } else if complete
+        && !matches!(
+            finding.outcome,
+            evaluate::FindingOutcome::Unknown | evaluate::FindingOutcome::Unsupported
+        )
+    {
+        "failure"
+    } else {
+        "unknown"
+    };
+    result["metric_assessment"] = json!({
+        "finding":{"state":finding_metric,"observation_preserved":true,"contamination_blocks_adoption":contaminated},
+        "deviation_candidates":{"state":if unresolved_candidates>0 || !complete {"unknown"}else{"observed"},"unit":"candidate_per_call_and_target","unresolved_count":unresolved_candidates,"is_true_deviation_rate":false},
+        "joint_finding_without_deviation":{"state":"not_evaluated"},
+        "denominator_contract":"retain_target_runs_including_unknown; separate_not_configured",
+        "formal_comparison_performed":false
+    });
     result["provenance"] = provenance;
     host_io::json_replace(&root.join("result.json"), &result)?;
     let finding_name = serde_json::to_value(finding.outcome)?

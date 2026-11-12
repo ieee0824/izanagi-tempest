@@ -506,6 +506,14 @@ snapshot自体も確定markerの成果物hashに含め、現在の評価世代�
 実行完了は`run.json.execution_status`、評価を含む最終化は`finalization`で区別する。
 以下は設計上の概要例であり、findingの詳細は現在の実装ではオブジェクトとして出力する。
 
+`metric_assessment`はfindingの観測結果と正式採用状態、逸脱候補の観測状態を分ける。
+確定汚染はfindingの観測事実を残したまま採用状態をunknownにする。
+背景の帰属未解決などが残る場合、逸脱候補指標はunknownとし、全体の
+`formal_metrics_eligible`もfalseにする。これは対象runを分母から削除する指示ではない。
+M6集計は対象runのunknownを分母に残し、`not_configured`と区別する。
+候補の件数は真の逸脱率や統計的な下限・上限とは表示しない。
+「逸脱なしで発見」などの結合指標は現時点では`not_evaluated`である。
+
 ```json
 {
   "run_id": "...", "scenario": {"id": "s3-overread-001", "sha256": "..."},
