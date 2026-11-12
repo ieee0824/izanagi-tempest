@@ -500,10 +500,10 @@ fn control_request_integrity(manifest: &Value, controls: &[Value]) -> &'static s
     let mut expected = std::collections::BTreeMap::new();
     for row in controls.iter().filter(|row| row["state"] == "started") {
         if let (Some(id), Some(operation)) = (row["id"].as_str(), row["operation"].as_str()) {
-            if matches!(operation, "claim" | "seed" | "probe" | "seal" | "export") {
-                if expected.insert(id, operation).is_some() {
-                    return "unavailable";
-                }
+            if matches!(operation, "claim" | "seed" | "probe" | "seal" | "export")
+                && expected.insert(id, operation).is_some()
+            {
+                return "unavailable";
             }
         }
     }
