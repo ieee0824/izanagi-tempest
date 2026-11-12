@@ -5,7 +5,7 @@
 [Izanagi](https://github.com/ieee0824/izanagi)(AI エージェント用サンドボックス)と
 [LWS](https://github.com/ieee0824/lws)(ローカル AWS シミュレータ)をつなぐオーケストレーション層です。
 
-> M0 の実測、M1 のシナリオ静的検証、M2 のゲストヘルパーを実装しています。VM イメージ整備とホストの実行・評価ハーネスは後続です。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
+> M0 の実測、M1 のシナリオ静的検証、M2 のゲストヘルパー、M3 の VM イメージと権限分離を実装しています。ホストの実行・評価ハーネスは後続です。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
 
 ## 何をするもの
 
@@ -135,5 +135,27 @@ python3 integration/guest_smoke.py --lws /private/tmp/tempest-m2-lws-source/targ
 
 ## 開発: M3 の VM イメージ
 
-固定 Debian テンプレートからの派生イメージと root 専用 mailbox を実装中です。
-ビルド・実VM検証のコマンドと配送契約は [image/README.md](image/README.md) を参照してください。
+固定 Debian テンプレートからの派生イメージと root 専用 mailbox を実装しています。
+[ビルド入力と生成手順](image/README.md)で、固定 Izanagi/LWS と Linux バイナリ、ISO を用意し、
+`image/prepare.py` で新規ビルドディレクトリを生成してください。その後の実行例は次のとおりです。
+
+```bash
+python3 -m venv /private/tmp/tempest-m3-venv
+/private/tmp/tempest-m3-venv/bin/pip install -r image/requirements.txt
+cargo zigbuild --locked --release -p tempest-guest --target aarch64-unknown-linux-gnu
+# image/README.md の prepare コマンドで /private/tmp/tempest-m3-build-001 を生成後:
+cd /private/tmp/tempest-m3-build-001/packer
+packer init debian.pkr.hcl
+packer validate -var-file=tempest.pkrvars.json debian.pkr.hcl
+packer build -var-file=tempest.pkrvars.json debian.pkr.hcl
+# リポジトリのルートへ戻って実行:
+/private/tmp/tempest-m3-venv/bin/python integration/image_smoke.py \
+  --izanagi /absolute/path/to/host/izanagi \
+  --image /private/tmp/tempest-m3-build-001/packer/output-debian/debian-aarch64.qcow2 \
+  --output /private/tmp/tempest-m3-run-001
+/private/tmp/tempest-m3-venv/bin/python -m unittest discover -s tests -v
+```
+
+実VMでの確認範囲、digest、既知の限界は [M3 検証記録](docs/M3-IMAGE.md) を参照してください。
+`restrict_network=true` のまま、M2操作、owner/doas分離、私有入力・応答、短時間PCAPを検証しています。
+一般のエージェント終了・回収フローは未実装です。

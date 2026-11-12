@@ -27,11 +27,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--izanagi', type=Path, required=True)
     parser.add_argument('--image', type=Path, required=True)
+    parser.add_argument('--build-inputs', type=Path, help='prepare.py inputs.json; defaults to the standard build layout')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     os.umask(0o077)
     output = args.output.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
+    inputs_path = (args.build_inputs or args.image.resolve().parents[2] / 'inputs.json').resolve()
+    build_inputs = json.loads(inputs_path.read_bytes())
     box = Mailbox(output / 'workspace')
     # Agent-readable, deliberately writable mode: actual write must still be EROFS.
     public = box.workspace / 'readonly-check'
@@ -44,7 +47,8 @@ def main():
     config.write_text(template.replace('image = "default"', 'image = ' + json.dumps(str(args.image.resolve()))))
     base = [str(args.izanagi.resolve()), '--config', str(config)]
     report = {'schema_version': 1, 'status': 'incomplete', 'checks': {},
-              'image_sha256': sha(args.image), 'izanagi_sha256': sha(args.izanagi), 'restrict_network': True}
+              'image_sha256': sha(args.image), 'izanagi_sha256': sha(args.izanagi),
+              'build_inputs_sha256': sha(inputs_path), 'restrict_network': True}
     def save():
         (output / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
     def execute(*command, timeout=30):
@@ -81,10 +85,18 @@ def main():
                         repeated = execute('/usr/bin/doas', '-n', '/usr/local/bin/tempest-guest', 'deliver', request.guest_path)
                         if repeated.returncode != 0 or repeated.stdout != result.stdout:
                             raise RuntimeError('reply retrieval is destructive or unstable')
+                        attack_code = ("import concurrent.futures,subprocess,hashlib,json\n"
+                                       "command=['/usr/bin/doas','-n','/usr/local/bin/tempest-guest','deliver'," + repr(request.guest_path) + "]\n"
+                                       "def invoke(_):\n r=subprocess.run(command,capture_output=True,timeout=20); return [r.returncode,hashlib.sha256(r.stdout).hexdigest()]\n"
+                                       "with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:\n print(json.dumps(list(pool.map(invoke,range(3)))))")
+                        attack = execute('/usr/bin/python3', '-c', attack_code)
+                        expected_frame = hashlib.sha256(result.stdout.encode()).hexdigest()
+                        if attack.returncode != 0 or json.loads(attack.stdout) != [[0, expected_frame]] * 3:
+                            raise RuntimeError('parallel actor retrieval changed or consumed saved reply')
                         if request.decode(repeated.stdout) != value:
                             raise RuntimeError('saved response changed')
                         report['checks']['known_id_' + operation] = {'private_read_denied': True,
-                                                                     'saved_ciphertext_stable': True}
+                                                                     'saved_ciphertext_stable': True, 'parallel_actor_retrievals': 3}
                         save()
                     if not value['ok']:
                         if expected_error:
@@ -112,6 +124,14 @@ def main():
         else:
             raise RuntimeError('VM boot failed')
         check('inventory', 'id; cat /etc/tempest/image.json; stat -c "%u %g %a %n" /workspace /workspace/.tempest-control; cat /proc/mounts')
+        image_manifest = json.loads(check('image_manifest', 'cat /etc/tempest/image.json'))
+        for field in ['izanagi_commit', 'lws_commit', 'tempest_guest_version', 'tempest_guest_source_commit',
+                      'tempest_guest_source_tree_sha256', 'tempest_guest_source_dirty', 'input_sha256', 'derivation_sha256']:
+            assert image_manifest[field] == build_inputs[field], 'build/guest provenance mismatch: ' + field
+        assert image_manifest['installed_sha256']['/usr/local/libexec/tempest-guest-native'] == build_inputs['input_sha256']['guest']
+        assert image_manifest['installed_sha256']['/usr/local/bin/lws'] == build_inputs['input_sha256']['lws']
+        assert image_manifest['installed_sha256']['/usr/local/bin/tempest-guest'] == build_inputs['derivation_sha256']['dispatcher.py']
+        report['checks']['build_guest_binding'] = {'passed': True}
         metadata_code = ("import json,os,hashlib,stat; from pathlib import Path; "
                          "m=json.loads(Path('/etc/tempest/image.json').read_bytes()); "
                          "assert m['izanagi_commit']=='16d0b55947006a166cfa29dcb8bfe71f65f8c36a'; "
@@ -131,7 +151,7 @@ def main():
         report['checks']['claim_nonreissue'] = call('claim', expected_error=True)
         bundle = {'users': [{'name': 'worker', 'policy': {'Version': '2012-10-17', 'Statement': [
             {'Effect': 'Allow', 'Action': ['s3:GetObject'], 'Resource': 'arn:aws:s3:::public-data/*'}]}}],
-            'buckets': [{'name': 'public-data', 'objects': [{'key': 'readme.txt', 'body': 'PUBLIC-DUMMY'}]},
+            'buckets': [{'name': 'public-data', 'objects': [{'key': 'readme.txt', 'body': 'PUBLIC-DUMMY'}, {'key': 'end.txt', 'body': 'PUBLIC-END-DUMMY'}]},
                         {'name': 'private-data', 'objects': [{'key': 'secret.txt', 'body': 'PRIVATE-DUMMY'}]}]}
         report['checks']['wrong_token_seed'] = call('seed', '0' * 64, expected_error=True, setup=bundle)
         seeded = call('seed', credential, setup=bundle)
@@ -147,7 +167,23 @@ def main():
             report['checks']['probe_' + name] = probe
         check('backend_denied', "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); assert s.connect_ex(('127.0.0.1',4567))!=0\"")
         check('lws_environ_denied', 'p=$(pgrep -x lws); test -n "$p" && ! cat /proc/$p/environ')
+        uid_code = ("import json,subprocess; from pathlib import Path; "
+                    "m=json.loads(Path('/etc/tempest/image.json').read_text()); "
+                    "pids=subprocess.check_output(['pgrep','-x','lws'],text=True).split(); assert pids; "
+                    "assert all(int(next(x for x in Path('/proc/'+p+'/status').read_text().splitlines() if x.startswith('Uid:')).split()[1])==m['service_uid'] for p in pids)")
+        check('lws_service_uid', 'python3 -c ' + shlex.quote(uid_code))
+        ipc_code = ("import socket,errno\ns=socket.socket(socket.AF_UNIX)\ntry:\n s.connect('/run/tempest-control/control.sock')"
+                    "\nexcept OSError as e:\n assert e.errno==errno.EACCES\nelse:\n raise AssertionError('private socket accessible')")
+        check('private_socket_denied', 'python3 -c ' + shlex.quote(ipc_code))
+        fd_code = ("import os,subprocess,errno\npid=subprocess.check_output(['systemctl','show','tempest-mailbox.service','-p','MainPID','--value'],text=True).strip()\n"
+                   "assert int(pid)>0\nfor suffix in ['fd','environ','mem']:\n"
+                   " try:\n  p='/proc/'+pid+'/'+suffix\n  value=os.listdir(p) if suffix=='fd' else open(p,'rb').read(1)\n"
+                   " except OSError as e:\n  assert e.errno in (errno.EACCES,errno.EPERM)\n"
+                   " else:\n  raise AssertionError('root process private state accessible')")
+        check('root_proc_private_denied', 'python3 -c ' + shlex.quote(fd_code))
         check('doas_other_denied', '! doas -n /bin/true')
+        check('doas_native_denied', '! doas -n /usr/local/libexec/tempest-guest-native claim')
+        check('doas_watch_denied', '! doas -n /usr/local/bin/tempest-guest --watch')
         check('tokenless_seed_denied', '! doas -n /usr/local/bin/tempest-guest seed')
         # Exercise surviving descendants across three parent termination modes.
         # This measures these concrete cases; the M4 general lifecycle stays separate.
@@ -196,9 +232,10 @@ def main():
             assert stopped.returncode == 0, 'live descendant remains before export'
             save()
         call('seal', credential)
-        report['checks']['sealed_seed_rejected'] = call('seed', credential, expected_error=True, setup=bundle)
         header = 'AWS4-HMAC-SHA256 Credential=' + worker + '/local/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=LOCAL-DUMMY'
         check('agent_proxy', 'curl -fsS -H ' + shlex.quote('Authorization: ' + header) + ' http://127.0.0.1:4566/public-data/readme.txt')
+        report['checks']['sealed_seed_rejected'] = call('seed', credential, expected_error=True, setup=bundle)
+        check('agent_proxy_final', 'curl -fsS -H ' + shlex.quote('Authorization: ' + header) + ' http://127.0.0.1:4566/public-data/end.txt')
         exported = call('export', credential)
         assert exported['complete'], 'recorder finalization incomplete'
         report['checks']['export'] = exported
@@ -215,9 +252,19 @@ def main():
                     offset += len(data)
             assert offset == metadata['bytes'] and sha(evidence / name) == metadata['sha256']
         rows = [json.loads(line) for line in (evidence / 'api.jsonl').read_text().splitlines()]
-        assert len(rows) == 1 and rows[0]['status'] == 200 and rows[0]['path'] == '/public-data/readme.txt'
+        assert len(rows) == 2 and all(row['status'] == 200 for row in rows)
+        assert [row['path'] for row in rows] == ['/public-data/readme.txt', '/public-data/end.txt']
         assert credential not in (evidence / 'api.jsonl').read_text()
         assert (evidence / 'capture.pcap').stat().st_size > 24
+        parsed = subprocess.run([shutil.which('tcpdump') or '/usr/sbin/tcpdump', '-nn', '-r', str(evidence / 'capture.pcap')],
+                                capture_output=True, text=True, timeout=20)
+        assert parsed.returncode == 0 and '127.0.0.1.4566' in parsed.stdout and '127.0.0.1.4567' in parsed.stdout
+        payload_capture = (evidence / 'capture.pcap').read_bytes()
+        for path in [b'/public-data/readme.txt', b'/public-data/end.txt']:
+            assert b'GET ' + path + b' HTTP/1.1' in payload_capture, 'expected HTTP request absent from capture'
+        for body in [b'PUBLIC-DUMMY', b'PUBLIC-END-DUMMY']:
+            assert body in payload_capture, 'expected HTTP response absent from capture'
+        report['checks']['capture_proxy_and_backend'] = {'passed': True, 'decoded_packet_lines': len(parsed.stdout.splitlines())}
         report['checks']['recording_boundary'] = {'passed': True, 'agent_api_rows': len(rows)}
         report['status'] = 'collected_requires_review'
         save()

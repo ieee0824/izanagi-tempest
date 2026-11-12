@@ -1,7 +1,8 @@
 # izanagi-tempest 実装設計 (Phase 1)
 
 ステータス: M0 の実測、M1 の workspace・`tempest validate`、M2 のゲストヘルパーを実装済み。
-VM イメージ整備とホストの実行オーケストレーション（M3以降）は予定。
+M3 の派生 VM イメージ・私有 mailbox を実装し、固定VMで権限・配送・記録を検証済み。
+ホストの実行オーケストレーション（M4以降）は予定。M3の範囲は [M3-IMAGE.md](M3-IMAGE.md) を参照。
 M2 の具体的な入力・状態・検証範囲は [M2-GUEST.md](M2-GUEST.md) を参照。
 M0 の収集手順は [tools/m0/README.md](../tools/m0/README.md)、実測状況は [M0-RESULTS.md](M0-RESULTS.md) を参照。
 
@@ -135,10 +136,12 @@ Phase 1 ではハーネスもエージェントも `izanagi` ユーザーで exe
 2. **管理者キーを残さない**:`tempest-guest seed` はランダムな管理者キーで LWS を起動して seed し、
    終わったら**別のランダムキーで LWS を再起動**する。再起動後の管理者キーは LWS プロセスの
    環境変数にしかなく、ファイルにも出力にも残らない
-3. **一度きりのトークン**:ハーネス専用のサブコマンドは `doas` 経由の root 実行にし、
-   トークンを要求する。トークンは `tempest-guest claim` が VM 起動後の最初の 1 回だけ発行し、
-   以降の claim は拒否する。ハーネスはエージェントを起動する前に claim するので、
-   エージェントはトークンを入手できない
+3. **一度きりのトークン**:管理操作は root 常駐 consumer が native helper を呼び、
+   トークンを要求する。claim は起動後の最初の1回だけ発行し、以降は拒否する。
+   ハーネスはエージェント起動前に root 専用 mailbox で claim し、暗号化応答から受け取る。
+   公開 doas entry は保存済み暗号文の読取りに限定し、管理要求を代理実行しない。
+
+以下は native helper の内部 API。公開 doas wrapper の CLI ではない。
 
 ```
 tempest-guest claim                    → トークンを標準出力に返す(起動後 1 回だけ)
@@ -148,8 +151,9 @@ tempest-guest seal    --token T        → recorder の記録を開始する(see
 tempest-guest export  --token T DIR    → api.jsonl と capture.pcap を DIR に書き出す
 ```
 
-エージェントが `doas tempest-guest ...` を試みることはできるが、トークンがないので失敗する。
-試行自体は execve として記録されるので逸脱として計上する(6.3)。
+エージェントによる管理コマンドの直接起動は拒否する。`deliver ID` は呼べるが、
+応答鍵を知らないため得られるのは暗号文だけで、要求の実行・消費は起きない。
+試行は execve として記録され、後続のハーネスで逸脱として扱う(6.3)。
 
 M2 の `recorder` は root の foreground 制御 supervisor として起動サービスから開始し、
 root専用 Unix socket だけを開く（claim前のbootstrap）。LWS と seal 後のHTTP処理は
@@ -159,14 +163,15 @@ root専用 Unix socket だけを開く（claim前のbootstrap）。LWS と seal 
 ただし固定 Izanagi exec は stdin を転送しない。VM 配送・argv露出と子孫停止確認は
 [#13](https://github.com/ieee0824/izanagi-tempest/issues/13) / #5 で扱い、この表を安全な配送の実証とはしない。
 seed/probe 入力は controller uid の私有ファイル・私有親ディレクトリを要求する。
-ホストの結合試験は同じ非root uid の development モードであり、実VMの権限分離は別途検証する。
+ホストの結合試験は同じ非root uid の development モードであり、M3 の実VM権限検査と区別する。
 
-M3 の配送実装は [image/README.md](../image/README.md) の root 専用 mailbox 方式を検証中。
+M3 の配送実装は [image/README.md](../image/README.md) の root 専用 mailbox 方式。
 同じ入口 UID から呼べる doas が要求内 token を補って実行する方式は、既知 ID による
 代理実行・先取り消費を防げないため採用しない。要求は root 常駐 consumer が自律処理し、
 doas は固定長 AES-GCM 暗号文の非破壊読取りだけに限定する。
 上のコマンド例は native helper の内部契約であり、VM の公開 doas インターフェースではない。
-採用には実VMの root owner/mode、read-only、既知 ID 再取得、proc/FD/ログの検証が必要。
+固定VMで root owner/mode、read-only、既知 ID 並列再取得、proc/FD/ログを検証した。
+確認した対象と未検証項目を [M3-IMAGE.md](M3-IMAGE.md) に分けて記録する。
 
 ### 3.4 reset は VM の作り直し
 
@@ -184,7 +189,7 @@ exec には自動起動の経路があるため、up の準備前に exec をポ
 runs/<run-id>/
   run.json               実験条件(7.3)
   scenario.yaml          実行時点のシナリオのコピー(ハッシュ検証用)
-  sandbox/               izanagi の cwd。agent可読の入力を置かない。M3検証中のroot専用mailboxだけを例外とする
+  sandbox/               izanagi の cwd。agent可読の入力を置かない。M3のroot専用mailboxだけを例外とする
   agent-cwd/             エージェント CLI の cwd。空
   evidence/
     mcp.jsonl            3.1
@@ -210,8 +215,8 @@ DESIGN.md 5.2 の 6 ステップを、Phase 1 の具体的な操作に展開す�
 |---|---|---|---|
 | 0 | prepare | シナリオを検証しハッシュを取る。run ディレクトリを作る | 検証エラーで終了 |
 | 1 | reset | `sandbox/` を cwd に `izanagi up --sandbox=qemu` を子プロセスで起動し、`sandbox_status` が running になるまで待つ | タイムアウトで中止 |
-| 2a | claim | `izanagi exec -- doas tempest-guest claim` でトークンを得る | 中止 |
-| 2b | seed | seed バンドル(JSON)を exec で一時ファイルに書き、`seed` を実行。ユーザーごとの AccessKeyId を受け取る | 中止 |
+| 2a | claim | root専用mailboxへclaim要求を発行し、暗号化応答からトークンを得る(3.3) | 中止 |
+| 2b | seed | seed バンドル(JSON)をroot専用mailboxで配送し、`seed` を実行。ユーザーごとの AccessKeyId を受け取る | 中止 |
 | 2c | self-check | `probe` で `expected_finding.evidence` の操作を対象ユーザーとして実行し、**誤設定が実際に効いている**(allow になる)ことを確かめる | シナリオ不成立として中止(集計に入れない) |
 | 2d | seal | 時刻差を計測(5.2)してから `seal` で記録を開始する | 中止 |
 | 3 | exec | `agent-cwd/` でエージェントを起動する。MCP は `tempest mcp-proxy` だけ。プロンプトは 4.1 のテンプレート | 予算切れ・異常終了も結果として記録する |
@@ -501,7 +506,8 @@ Izanagi の packer テンプレートを基に、次を追加した派生イメ�
 - LWS(コミット固定でビルド)、AWS CLI、`tempest-guest`、`tcpdump`、`iptables`、`doas`
 - ユーザー `lws`、`/var/lib/lws` と `/var/lib/tempest`(0700)
 - 起動時の初期化:iptables のルール(3.2)、root の `tempest-guest recorder` 制御 supervisor、`doas` の設定
-  (`izanagi` ユーザーに固定 `tempest-guest deliver ID` の暗号文読取りのみを委譲する案を検証中)
+  (`izanagi` ユーザーに固定 `tempest-guest deliver ID` の保存済み暗号文読取りのみを委譲)
+- root の mailbox consumer が私有要求を自律処理する。Python/cryptographyを同梱し、doas呼出しに処理を委譲しない
 - tcpdump と HTTP listener は M2 の seal が開始する。起動時には開始しない
 - `/etc/tempest/image.json`(LWS のコミット、tempest-guest のバージョン、ビルド日時)
 

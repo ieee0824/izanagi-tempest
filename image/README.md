@@ -1,7 +1,7 @@
 # M3 派生 Debian イメージ
 
-実装・受入検証中。成功した Packer ビルドだけでは #4 の完了を意味しない。
-VM の owner/firewall/doas と配送経路は `integration/image_smoke.py` の証跡を確認する。
+実VMの owner/firewall/doas、配送、M2操作の検証を行った。結果と検査の限界は
+[M3 検証記録](../docs/M3-IMAGE.md)を参照。成功した Packer ビルドだけでは隔離の証明にならない。
 
 ## 固定入力とビルド
 
@@ -45,7 +45,7 @@ packer build -var-file=tempest.pkrvars.json debian.pkr.hcl
 
 成果物は `output-debian/debian-aarch64.qcow2`。
 `inputs.json` と guest `/etc/tempest/image.json` に固定 commit、入力と導出スクリプトの
-SHA-256、helper version、作成日時、インストール後のバイナリ digest と Debian package version を保存する。
+SHA-256、helper version、作成日時、Rust source tree digest/dirty flag、インストール後のバイナリ digest と Debian package version を保存する。
 入力 ELF の architecture と source checkout の固定は検査するが、外部から渡した LWS/agent ELF が
 その source から作られたことを `prepare.py` だけで証明するものではない。ビルドログも保持する。
 ビルド用 root 認証と SSH は上流 lock-down/verify-image により除去する。
@@ -62,7 +62,9 @@ SHA-256、helper version、作成日時、インストール後のバイナリ d
 /private/tmp/tempest-m3-venv/bin/python -m unittest discover -s tests -v
 ```
 
-出力は新規のホスト専用ディレクトリ (0700)。`summary.json` の個別結果と
+標準レイアウトの build `inputs.json` と guest の metadata/digest を照合する。
+別レイアウトなら `--build-inputs /absolute/path/to/inputs.json` を指定する。
+ホストにも PCAP 解析用の tcpdump が必要。出力は新規のホスト専用ディレクトリ (0700)。`summary.json` の個別結果と
 `guest-evidence/` を調べ、未検査項目を成功扱いしない。
 `restrict_network=true` / read-only 9p / snapshot のまま動かす。
 実 AWS、実データ、常用資格情報を投入しない。

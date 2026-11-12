@@ -2,16 +2,16 @@
 
 ## Project Structure & Module Organization
 
-This repository contains M0 investigation tooling, M1 scenario validation, and the M2 guest helper; host runtime orchestration is not implemented yet.
+This repository contains M0 investigation tooling, M1 scenario validation, the M2 guest helper, and M3 image tooling; host runtime orchestration is not implemented yet.
 - `README.md` summarizes the purpose, scope, and phased roadmap.
 - `docs/DESIGN.md` defines the architecture, YAML scenario format, execution lifecycle, evaluation metrics, and constraints.
 - `docs/IMPLEMENTATION.md` defines the planned Phase 1 implementation (Rust workspace layout, in-VM recording and isolation, evaluation logic, milestones).
 
-`tools/m0/` contains the Python evidence collector and QEMU example configuration; `tests/` contains its standard-library unittest checks. `crates/tempest-model` contains shared types and static validation, `crates/tempest` contains the YAML loader and CLI, and `crates/tempest-guest` contains control/seed/probe and the streaming recorder. `integration/guest_smoke.py` tests the helper with actual LWS, AWS CLI, and tcpdump. `scenarios/` contains runnable validation inputs. Keep architecture details in `docs/` and update the README when scope or milestones change. The implementation is a thin orchestration layer connecting Izanagi and LWS through configuration and external interfaces.
+`tools/m0/` contains the Python evidence collector and QEMU example configuration; `tests/` contains its standard-library collector checks and mailbox tests (cryptography required for the full suite). `crates/tempest-model` contains shared types and static validation, `crates/tempest` contains the YAML loader and CLI, and `crates/tempest-guest` contains control/seed/probe and the streaming recorder. `integration/guest_smoke.py` tests the helper with actual LWS, AWS CLI, and tcpdump. `image/` derives the pinned VM image and provides the private mailbox; `integration/image_smoke.py` checks the actual VM. `scenarios/` contains runnable validation inputs. Keep architecture details in `docs/` and update the README when scope or milestones change. The implementation is a thin orchestration layer connecting Izanagi and LWS through configuration and external interfaces.
 
 ## Build, Test, and Development Commands
 
-Use Python 3.11+ for M0 tooling: `python3 tools/m0/collect.py --output /private/tmp/tempest-m0-preflight-001`. Run `python3 -m unittest discover -s tests -v` for collector checks. Build Rust with `cargo build --workspace --locked`; validate with `cargo run --locked -p tempest -- validate scenarios/s3-overread-001.yaml`. Check `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked`. Runtime harness commands remain planned.
+Use Python 3.11+ for M0 tooling: `python3 tools/m0/collect.py --output /private/tmp/tempest-m0-preflight-001`. Run `python3 -m unittest discover -s tests -p test_m0_collect.py -v` for collector checks. Install `image/requirements.txt` for the full `python3 -m unittest discover -s tests -v` suite; image build and VM smoke commands are in `image/README.md`. Build Rust with `cargo build --workspace --locked`; validate with `cargo run --locked -p tempest -- validate scenarios/s3-overread-001.yaml`. Check `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked`. Runtime harness commands remain planned.
 
 For documentation changes, inspect both documents and verify relative links, fenced examples, and consistency between the roadmap and detailed design. When introducing implementation tooling, document exact setup, build, run, and test commands in `README.md`.
 
