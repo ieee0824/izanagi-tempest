@@ -431,7 +431,35 @@ fn control_integrity(manifest: &Value) -> &'static str {
         {
             "matched"
         }
-        Some(_) => "unexpected_transitions",
+        Some(Value::Array(values)) => {
+            let expected = [
+                "claimed",
+                "seeding",
+                "seeded",
+                "sealing",
+                "sealed",
+                "finalizing",
+            ];
+            if values.iter().any(|value| value.as_str().is_none()) {
+                "unavailable"
+            } else if (values.len() < expected.len()
+                && values
+                    .iter()
+                    .zip(expected)
+                    .all(|(value, expected)| value == expected))
+                || (matches!(values.len(), 3 | 5 | 7)
+                    && values.last().is_some_and(|value| value == "failed")
+                    && values[..values.len() - 1]
+                        .iter()
+                        .zip(expected)
+                        .all(|(value, expected)| value == expected))
+            {
+                "incomplete"
+            } else {
+                "unexpected_transitions"
+            }
+        }
+        Some(_) => "unavailable",
     }
 }
 
@@ -522,7 +550,7 @@ pub fn generate(root: &Path) -> io::Result<Value> {
         .unwrap_or(Value::Null);
     let control_integrity = control_integrity(&manifest);
     let contaminated = control_integrity == "unexpected_transitions";
-    contamination_unresolved |= control_integrity == "unavailable";
+    contamination_unresolved |= matches!(control_integrity, "unavailable" | "incomplete");
     let output = match read(&root.join("evidence/agent.stdout"))
         .and_then(|bytes| String::from_utf8(bytes).map_err(io::Error::other))
     {
@@ -706,6 +734,21 @@ mod tests {
             .unwrap()
             .push(json!("seeded"));
         assert_eq!(control_integrity(&manifest), "unexpected_transitions");
+        for (history, expected) in [
+            (json!(["claimed", "seeding"]), "incomplete"),
+            (json!(["claimed", "seeding", "failed"]), "incomplete"),
+            (
+                json!(["seeded", "claimed", "failed"]),
+                "unexpected_transitions",
+            ),
+            (json!(["claimed", 1]), "unavailable"),
+            (Value::Null, "unavailable"),
+        ] {
+            assert_eq!(
+                control_integrity(&json!({"control_transitions":history})),
+                expected
+            );
+        }
     }
 
     #[test]
