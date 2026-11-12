@@ -57,6 +57,8 @@ struct State {
     token_digest: Option<String>,
     #[serde(default)]
     transitions: Vec<Phase>,
+    #[serde(default)]
+    failed_operations: std::collections::BTreeMap<String, u64>,
 }
 #[derive(Default, Serialize)]
 struct CaptureStats {
@@ -197,6 +199,32 @@ impl Controller {
         Ok(())
     }
     async fn execute(&mut self, request: Request) -> Result<Value> {
+        let operation = match &request.operation {
+            Operation::Claim => "claim",
+            Operation::Seed { .. } => "seed",
+            Operation::Probe { .. } => "probe",
+            Operation::Seal => "seal",
+            Operation::Export { .. } => "export",
+        };
+        let authorization_failed = self.authorize(&request).is_err();
+        let result = self.execute_operation(request).await;
+        if result.is_err() {
+            let category = if authorization_failed {
+                "authorization_rejected"
+            } else {
+                "operation_failed"
+            };
+            let count = self
+                .state
+                .failed_operations
+                .entry(format!("{operation}:{category}"))
+                .or_default();
+            *count = count.saturating_add(1);
+            self.persist()?;
+        }
+        result
+    }
+    async fn execute_operation(&mut self, request: Request) -> Result<Value> {
         self.authorize(&request)?;
         match request.operation {
             Operation::Claim => {
@@ -565,6 +593,8 @@ impl Controller {
         );
         self.manifest.as_mut().unwrap()["control_transitions"] =
             serde_json::to_value(&self.state.transitions)?;
+        self.manifest.as_mut().unwrap()["failed_control_operations"] =
+            serde_json::to_value(&self.state.failed_operations)?;
         private_write(
             &self.config.evidence_dir.join("manifest.json"),
             &serde_json::to_vec_pretty(self.manifest.as_ref().unwrap())?,
@@ -637,6 +667,7 @@ pub async fn serve(config: Config) -> Result<()> {
             phase: Phase::Unclaimed,
             token_digest: None,
             transitions: Vec::new(),
+            failed_operations: std::collections::BTreeMap::new(),
         }
     };
     let mut controller = Controller {
