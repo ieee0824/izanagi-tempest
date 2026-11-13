@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
+    fs,
     future::Future,
     io,
     path::{Path, PathBuf},
@@ -38,6 +39,11 @@ pub struct CliAdapter {
     pub home: PathBuf,
     pub relay_endpoint: String,
     pub maximum_turns: u64,
+    pub sandbox_executable: PathBuf,
+    pub sandbox_executable_sha256: String,
+    pub sandbox_profile: PathBuf,
+    pub sandbox_profile_sha256: String,
+    pub sandbox_jail: PathBuf,
 }
 
 struct CliLaunch {
@@ -69,6 +75,7 @@ impl CliAdapter {
             .parse::<reqwest::Url>()
             .map_err(|_| io::Error::other("invalid model relay endpoint"))?;
         let capability = relay.path().strip_prefix('/').unwrap_or_default();
+        let jail = self.sandbox_jail.canonicalize()?;
         if !self.executable.is_absolute()
             || !self.home.is_absolute()
             || !endpoint.executable.is_absolute()
@@ -93,6 +100,22 @@ impl CliAdapter {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
             || crate::host_io::digest(&self.executable)? != self.executable_sha256
+            || self.sandbox_executable != Path::new("/usr/bin/sandbox-exec")
+            || crate::host_io::digest(&self.sandbox_executable)? != self.sandbox_executable_sha256
+            || crate::host_io::digest(&self.sandbox_profile)? != self.sandbox_profile_sha256
+            || fs::read(&self.sandbox_profile)? != include_bytes!("darwin-agent.sb")
+            || ![
+                &self.executable,
+                &self.home,
+                cwd,
+                &endpoint.executable,
+                &self.sandbox_profile,
+            ]
+            .into_iter()
+            .all(|path| {
+                path.canonicalize()
+                    .is_ok_and(|path| path.starts_with(&jail))
+            })
         {
             return Err(io::Error::other("invalid measured CLI launch contract"));
         }
@@ -104,7 +127,7 @@ impl CliAdapter {
             (OsString::from("LC_ALL"), OsString::from("C.UTF-8")),
             (OsString::from("TMPDIR"), cwd.to_path_buf().into_os_string()),
         ]);
-        let arguments = match self.kind {
+        let agent_arguments = match self.kind {
             CliKind::Codex => {
                 let mut values = vec![
                     "exec".into(),
@@ -199,6 +222,19 @@ impl CliAdapter {
                 ]
             }
         };
+        let mut arguments = vec![
+            "-D".into(),
+            format!("RELAY=localhost:{}", relay.port().unwrap()).into(),
+            "-D".into(),
+            format!("JAIL={}", jail.display()).into(),
+            "-D".into(),
+            format!("MCP_SOCKET={}", endpoint.socket.display()).into(),
+            "-f".into(),
+            self.sandbox_profile.clone().into_os_string(),
+            "--".into(),
+            self.executable.clone().into_os_string(),
+        ];
+        arguments.extend(agent_arguments);
         Ok(CliLaunch {
             arguments,
             environment,
@@ -346,7 +382,7 @@ impl AgentAdapter for CliAdapter {
             &endpoint.owner_file,
             &json!({"state":"launching","role":"model_cli"}),
         )?;
-        let mut child = command(&self.executable)
+        let mut child = command(&self.sandbox_executable)
             .args(launch.arguments)
             .env_clear()
             .envs(launch.environment)
@@ -555,6 +591,48 @@ pub fn claude_final_message(
 mod stream_tests {
     use super::*;
 
+    fn cli_fixture(kind: CliKind) -> (PathBuf, CliAdapter, McpCommand, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-cli-adapter-{}",
+            crate::host_io::random_hex().unwrap()
+        ));
+        crate::host_io::directory(&root).unwrap();
+        for directory in ["bin", "home", "cwd"] {
+            crate::host_io::directory(&root.join(directory)).unwrap();
+        }
+        let executable = root.join("bin/agent");
+        let bridge = root.join("bin/tempest");
+        crate::host_io::private_copy(&std::env::current_exe().unwrap(), &executable).unwrap();
+        crate::host_io::private_copy(&std::env::current_exe().unwrap(), &bridge).unwrap();
+        let profile = root.join("agent.sb");
+        crate::host_io::write_new(&profile, include_bytes!("darwin-agent.sb")).unwrap();
+        let sandbox_executable = PathBuf::from("/usr/bin/sandbox-exec");
+        let adapter = CliAdapter {
+            kind,
+            executable: executable.clone(),
+            executable_sha256: crate::host_io::digest(&executable).unwrap(),
+            version: "fixed".into(),
+            model: "model-fixed".into(),
+            home: root.join("home"),
+            relay_endpoint: "http://127.0.0.1:1234/capabilitycapabilitycapability12".into(),
+            maximum_turns: 20,
+            sandbox_executable: sandbox_executable.clone(),
+            sandbox_executable_sha256: crate::host_io::digest(&sandbox_executable).unwrap(),
+            sandbox_profile_sha256: crate::host_io::digest(&profile).unwrap(),
+            sandbox_profile: profile,
+            sandbox_jail: root.clone(),
+        };
+        let endpoint = McpCommand {
+            executable: bridge,
+            socket: "/private/tmp/socket/s".into(),
+            owner_file: root.join("owner.json"),
+            raw_stdout: root.join("agent.events.jsonl"),
+            raw_stderr: root.join("agent.stderr"),
+        };
+        let cwd = root.join("cwd");
+        (root, adapter, endpoint, cwd)
+    }
+
     fn lines(values: &[Value]) -> Vec<u8> {
         values
             .iter()
@@ -566,29 +644,9 @@ mod stream_tests {
 
     #[test]
     fn real_cli_launches_bind_model_relay_mcp_and_empty_environment() {
-        let endpoint = McpCommand {
-            executable: "/private/tmp/run/bin/tempest".into(),
-            socket: "/private/tmp/socket/s".into(),
-            owner_file: "/private/tmp/run/owner.json".into(),
-            raw_stdout: "/private/tmp/run/agent.events.jsonl".into(),
-            raw_stderr: "/private/tmp/run/agent.stderr".into(),
-        };
-        let executable = std::env::current_exe().unwrap();
-        let executable_sha256 = crate::host_io::digest(&executable).unwrap();
         for kind in [CliKind::Codex, CliKind::ClaudeCode] {
-            let adapter = CliAdapter {
-                kind,
-                executable: executable.clone(),
-                executable_sha256: executable_sha256.clone(),
-                version: "fixed".into(),
-                model: "model-fixed".into(),
-                home: "/private/tmp/run/home".into(),
-                relay_endpoint: "http://127.0.0.1:1234/capabilitycapabilitycapability12".into(),
-                maximum_turns: 20,
-            };
-            let launch = adapter
-                .launch("fixed prompt", &endpoint, Path::new("/private/tmp/run/cwd"))
-                .unwrap();
+            let (root, adapter, endpoint, cwd) = cli_fixture(kind);
+            let launch = adapter.launch("fixed prompt", &endpoint, &cwd).unwrap();
             let arguments = launch
                 .arguments
                 .iter()
@@ -601,7 +659,7 @@ mod stream_tests {
             assert!(!arguments.contains("fixed prompt"));
             assert_eq!(
                 launch.environment[&OsString::from("HOME")],
-                "/private/tmp/run/home"
+                root.join("home")
             );
             assert!(!launch.environment.contains_key(&OsString::from("PATH")));
             assert!(
@@ -624,29 +682,13 @@ mod stream_tests {
                     );
                 }
             }
+            fs::remove_dir_all(root).unwrap();
         }
     }
 
     #[test]
     fn relay_endpoint_rejects_authority_and_encoding_confusion() {
-        let executable = std::env::current_exe().unwrap();
-        let adapter = CliAdapter {
-            kind: CliKind::Codex,
-            executable: executable.clone(),
-            executable_sha256: crate::host_io::digest(&executable).unwrap(),
-            version: "fixed".into(),
-            model: "model-fixed".into(),
-            home: "/private/tmp/run/home".into(),
-            relay_endpoint: String::new(),
-            maximum_turns: 20,
-        };
-        let endpoint = McpCommand {
-            executable: "/private/tmp/run/bin/tempest".into(),
-            socket: "/private/tmp/socket/s".into(),
-            owner_file: "/private/tmp/run/owner.json".into(),
-            raw_stdout: "/private/tmp/run/agent.events.jsonl".into(),
-            raw_stderr: "/private/tmp/run/agent.stderr".into(),
-        };
+        let (root, adapter, endpoint, cwd) = cli_fixture(CliKind::Codex);
         for value in [
             "http://127.0.0.1:1234@other.example/capabilitycapabilitycapability12",
             "http://2130706433:1234/capabilitycapabilitycapability12",
@@ -656,12 +698,73 @@ mod stream_tests {
         ] {
             let mut changed = adapter.clone();
             changed.relay_endpoint = value.into();
-            assert!(
-                changed
-                    .launch("prompt", &endpoint, Path::new("/private/tmp/run/cwd"))
-                    .is_err()
-            );
+            assert!(changed.launch("prompt", &endpoint, &cwd).is_err());
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_allows_only_jail_files_and_the_fixed_relay_port() {
+        use std::net::TcpListener;
+        let (root, adapter, _, _) = cli_fixture(CliKind::Codex);
+        let canary_root = std::env::temp_dir().join(format!(
+            "tempest-seatbelt-canary-{}",
+            crate::host_io::random_hex().unwrap()
+        ));
+        crate::host_io::directory(&canary_root).unwrap();
+        let canary = canary_root.join("host-canary");
+        crate::host_io::write_new(&canary, b"must-not-read").unwrap();
+        let allowed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let denied = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = || {
+            let mut command = std::process::Command::new(&adapter.sandbox_executable);
+            command.args([
+                "-D",
+                &format!("RELAY=localhost:{}", allowed.local_addr().unwrap().port()),
+                "-D",
+                &format!("JAIL={}", root.canonicalize().unwrap().display()),
+                "-D",
+                "MCP_SOCKET=/private/tmp/tempest-missing-socket",
+                "-f",
+                adapter.sandbox_profile.to_str().unwrap(),
+                "--",
+            ]);
+            command
+        };
+        assert!(
+            base()
+                .args([
+                    "/usr/bin/nc",
+                    "-z",
+                    "127.0.0.1",
+                    &allowed.local_addr().unwrap().port().to_string(),
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            !base()
+                .args([
+                    "/usr/bin/nc",
+                    "-z",
+                    "127.0.0.1",
+                    &denied.local_addr().unwrap().port().to_string(),
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            !base()
+                .args(["/bin/cat", canary.to_str().unwrap()])
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(canary_root).unwrap();
     }
 
     #[test]

@@ -81,6 +81,11 @@ query/fragment不在、capability pathを検査する。実行copyのhash不一�
 turn上限を強制し、Codexはrelay policyのrequest上限をAPI turn予算とする。thread/session切替は報告を拒否する。
 この契約は実装済みだが、正式proof runnerと
 native relayのlifecycleへ接続するまでは`tempest run`から選択できない。
+macOS launcherは固定hashの`/usr/bin/sandbox-exec`と同梱Seatbelt profileを必須にする。agent executable、
+MCP bridge、空HOME/cwd、profileだけをowner-private jailへ置き、default denyと`system.sb`を基礎にjail内の
+file read/write、固定relay port、固定MCP Unix socketだけを許可する。実動testでjail外canary読取と別loopback
+port接続が拒否され、固定relay portだけが成功することを確認する。MCP socketは固定hashのCLI processにも
+到達可能なので、完全tool catalog、builtin tool拒否、実CLIによるsocket bypass強制試験をproofの必須条件として残す。
 
 ## launcher capability proof
 
