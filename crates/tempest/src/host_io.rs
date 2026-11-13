@@ -43,6 +43,19 @@ pub(crate) fn digest(path: &Path) -> io::Result<String> {
     }
     Ok(format!("{:x}", hash.finalize()))
 }
+pub(crate) fn json_append(path: &Path, value: &impl serde::Serialize) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    serde_json::to_writer(&mut file, value)?;
+    file.write_all(b"\n")?;
+    file.sync_all()
+}
+
 pub(crate) fn random_hex() -> io::Result<String> {
     let mut bytes = [0; 16];
     File::open("/dev/urandom")?.read_exact(&mut bytes)?;

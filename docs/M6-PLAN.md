@@ -111,3 +111,12 @@ Sakura15364の指摘を受け、freeze中はRPC daemonも止まり、大証跡�
 この経路の失敗runもunknownとして分母内に残す。
 完了exportのbarrierへmonotonicによるfrozen_duration_nsとthawed_guest_nsを追加した。
 mailbox9試験は成功したが、現在build002にはこの時刻追加は未搭載で、実VM計測は未確認である。
+
+build002はhost容量不足によるQEMU `paused (io-error)` / `I/O status: nospace`を
+monitor画面で確認した。容量確保後の再開2回でも同状態へ戻ったため正常中断した。
+観測timeoutだけを理由に再起動したものではない。入力・生成scriptは保持し、
+容量確保後のbuild003へ進めた。build003はfreeze時刻記録を含む。
+
+hostのcontrol.jsonlには各delivery読取の開始と観測分類を同じ管理要求IDで追記する。
+暗号文受信は認証済みoperation成功とは呼ばず、RPC不確定・reply未生成・実行失敗と分ける。
+監査I/Oが失敗した場合も成功扱いにせずVMを破棄する。再試行条件は未変更である。

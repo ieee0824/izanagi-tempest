@@ -215,6 +215,7 @@ pub(crate) async fn call(
     management: &mut Management,
     operation: &str,
     fields: Value,
+    mut audit: impl FnMut(Value) -> io::Result<()>,
 ) -> io::Result<Value> {
     let prepared = companion
         .exchange(json!({"command":"prepare","operation":operation,"fields":fields}))
@@ -224,17 +225,36 @@ pub(crate) async fn call(
         .ok_or_else(|| io::Error::other("missing mailbox reference"))?;
     let started = Instant::now();
     let timeout = Duration::from_secs(260);
+    let mut attempt = 0_u64;
     loop {
         let remaining = timeout
             .checked_sub(started.elapsed())
             .ok_or_else(|| io::Error::other("guest response lost; discard VM"))?;
-        let (text, error) = management
+        attempt += 1;
+        audit(
+            json!({"state":"delivery_read_started","attempt":attempt,"host_ns":host_io::now_ns()?}),
+        )?;
+        let response = management
             .exec(
                 "/usr/bin/doas",
                 &["-n", "/usr/local/bin/tempest-guest", "deliver", path],
                 remaining,
             )
-            .await?;
+            .await;
+        let (text, error) = match response {
+            Ok(value) => value,
+            Err(error) => {
+                audit(
+                    json!({"state":"delivery_read_observed","attempt":attempt,"category":"rpc_uncertain","host_ns":host_io::now_ns()?}),
+                )?;
+                return Err(error);
+            }
+        };
+        let pending = text.strip_suffix("\n(exit code: 1)").map(str::trim)
+            == Some("{\"ok\":false,\"error\":\"reply_unavailable\"}");
+        audit(
+            json!({"state":"delivery_read_observed","attempt":attempt,"category":if !error {"ciphertext_received"} else if pending {"reply_unavailable"} else {"execution_error"},"host_ns":host_io::now_ns()?}),
+        )?;
         if !error {
             let reply = companion
                 .exchange(json!({"command":"decode","frame":text}))
@@ -247,9 +267,7 @@ pub(crate) async fn call(
                 .cloned()
                 .ok_or_else(|| io::Error::other("invalid guest response"));
         }
-        if text.strip_suffix("\n(exit code: 1)").map(str::trim)
-            != Some("{\"ok\":false,\"error\":\"reply_unavailable\"}")
-        {
+        if !pending {
             // Keep the failure observable without copying guest-controlled output
             // (which may include credentials) into run.json diagnostics.
             let category = if text.starts_with("exec failed:") {
