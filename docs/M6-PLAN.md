@@ -63,8 +63,15 @@ CLI検査のAPIはローカルスタブであり、実モデル比較ではな�
 
 - Claude Code 2.1.323: ローカルstubでBash/Read/Writeを強制要求し、全てNo such tool available。canary不変、新規書込みなし、4要求・CLI終了0。
 - Codex 0.169.0: 実binary hash `739cda86e15d30a6e2b40cf8dcbbfb988aaf48b305b27065573bb8e9fd41d002`。exec_command/apply_patch/view_imageを強制要求し全てunsupported call。canary不変、新規書込みなし、4要求・CLI終了0。
+- Codexのfail-closed化後の再検査は `/private/tmp/tempest-m6-codex-preflight-004/summary.json`。
+  4要求すべてでtool catalogは `request_user_input` のみ、同一hash、3拒否・canary不変・書込みなし。
+  API要求0またはhost書込み後に終了0を返す偽CLIはprobe自身が非0になる2負例を追加した。
+- Claudeの同じ再検査は `/private/tmp/tempest-m6-claude-preflight-002/summary.json`。
+  4要求すべてでtool catalogは空かつ同一hash、3拒否・canary不変・書込みなし。
 - 証拠は `/private/tmp/tempest-m6-claude-preflight-001/summary.json` と `/private/tmp/tempest-m6-codex-preflight-003/summary.json`。
 - この2試行はMCP未接続で、HMAC/hostfwd迂回・許可MCPの正対照は未検証。実launcherの受入完了ではない。
+  `observed` はこのローカルstub観測の成立だけを表し、launcher受入を意味しない。許可MCPの正対照と
+  本番各requestのtool集合一致・能力追加拒否は未実装である。
 - Codexの先行2試行は、shim解決失敗と別版0.142.2の未知feature拒否でモデル要求に未到達。成功試行に混ぜない。
 
 ## 議論から追加した条件
@@ -132,4 +139,20 @@ hostのcontrol.jsonlには各delivery読取の開始と観測分類を同じ管�
   primary export投入1回・失敗1回から回復しcompleted。reader PID890、freeze137149417ns。
   その後fresh retestのprobeも成功。retestはexportを行わず、retest側の強制競合を実測したという意味ではない。
 - process peer試験は、export失敗3回の打切り、seed失敗・RPC ID不一致・companion認証失敗・operation拒否・未知応答の即中断を確認。
-- 上限に近いPCAPの実測は進行中。修正した通常hostの条件は [M4実行契約](M4-CONTRACT.md) を参照。
+- 上限に近いPCAPは `/private/tmp/tempest-m6-delivery-race-large-003/` で実測した。
+  60,954,815 bytesのPCAPと29 API行を同一export IDで回収し、各ファイルのbyte数・SHA-256が
+  receiptと一致した。root reader PID862はmoved_pidsに含まれ、exit_minus_one 1回後に再投入せず
+  認証済み応答を取得し、freezeは118,546,208ns、VM cleanupも完了した。ただしtcpdumpがkernel
+  drop 10件を報告したためmanifestはincomplete、runはaborted/partialであり、正式完了とは扱わない。
+  `runtime_delivery_race.py --expect collected --large-evidence` は、この「全配送物を回収したがrecorder
+  証拠は不完全」という状態をcompletedから分離して検証する。
+  このhost側64MiB制限はexport応答後に検査され、guestの複写・fsync・hash量を制限しない。
+  したがって本試験は敵対的証跡量に対するfreeze上限の証明ではない。上限直上、guest disk枯渇、
+  native timeout後のcleanupは未検証で、発生runはunknownとして分母に残す。
+
+修正した通常hostの条件は [M4実行契約](M4-CONTRACT.md) を参照。
+
+強制再現imageは `delivery_race_fixture=true` をrunのimage metadataへ残す。評価器はこの値を
+`formal_metrics_exclusions.test_image_fixture` に写し、trueなら他の条件にかかわらず
+`formal_metrics_eligible=false` とする。これは試験fixtureの混入防止だけであり、#17で検討中の
+検証用実行と正式評価を分ける一般ゲートの採否を決めるものではない。

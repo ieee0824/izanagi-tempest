@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compare fail-closed and recovered host behavior with the explicit race VM."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,7 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('tempest', 'izanagi', 'image', 'image-inputs', 'python', 'runs'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--expect', choices=('aborted', 'completed'), required=True)
+    parser.add_argument('--expect', choices=('aborted', 'collected', 'completed'), required=True)
     parser.add_argument('--large-evidence', action='store_true', help='Generate about 58 MiB PCAP using local dummy object reads')
     args = parser.parse_args()
     if json.loads(args.image_inputs.read_text()).get('delivery_race_fixture') is not True:
@@ -58,7 +59,8 @@ def main():
     failures = [row for row in exports if row.get('category') == 'execution_error']
     if not failures:
         raise AssertionError('forced deliver failure not observed through real management MCP')
-    if run['status'] != args.expect or (result.returncode == 0) != (args.expect == 'completed'):
+    expected_status = 'aborted' if args.expect == 'collected' else args.expect
+    if run['status'] != expected_status or (result.returncode == 0) != (args.expect == 'completed'):
         raise AssertionError('unexpected runtime outcome; inspect private run directory')
     if args.expect == 'aborted':
         if 'management execution uncertain' not in run.get('failure', ''):
@@ -70,10 +72,21 @@ def main():
         barrier = export['quiesce']
         if barrier['forced_reader_pid'] not in barrier['moved_pids']:
             raise AssertionError('quiesce did not kill the instrumented root reader')
-        if not barrier['frozen_duration_ns'] > 0 or not export['complete']:
-            raise AssertionError('freeze duration/export completion not established')
+        if not barrier['frozen_duration_ns'] > 0:
+            raise AssertionError('freeze duration not established')
+        if args.expect == 'completed' and not export['complete']:
+            raise AssertionError('completed run lacks a complete export')
         if run['retest']['configured'] and not run['retest']['checks_passed']:
             raise AssertionError('fresh retest failed after primary recovery')
+        if args.expect == 'collected':
+            if not args.large_evidence:
+                raise AssertionError('collected expectation is reserved for the large-evidence control')
+            if run.get('failure') != 'recorder evidence incomplete' or export['manifest']['complete']:
+                raise AssertionError('collected control did not preserve recorder incompleteness')
+            for name, receipt in export['files'].items():
+                data = (root / 'evidence' / name).read_bytes()
+                if len(data) != receipt['bytes'] or hashlib.sha256(data).hexdigest() != receipt['sha256']:
+                    raise AssertionError(f'collected artifact receipt mismatch: {name}')
         if args.large_evidence:
             size = (root / 'evidence/capture.pcap').stat().st_size
             if not 56 * 1024 * 1024 <= size <= 64 * 1024 * 1024:
@@ -90,7 +103,8 @@ def main():
     evaluated = json.loads((root / 'result.json').read_text())
     if evaluated['formal_metrics_eligible']:
         raise AssertionError('mock race fixture became formally eligible')
-    print(json.dumps({'outcome': args.expect, 'export_submissions': len(submitted),
+    print(json.dumps({'expectation': args.expect, 'runtime_outcome': run['status'],
+                      'export_submissions': len(submitted),
                       'failed_reads': len(failures), 'run': str(root)}))
 
 

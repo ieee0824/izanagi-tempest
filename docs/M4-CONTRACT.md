@@ -228,3 +228,8 @@ native exportの240秒timeout、quiesce/thaw各20秒とhost期限を区別する
 全実行時間の無条件な上限保証ではなく、上限到達はunknownとして指標の分母へ残す。
 完了したexportにはfrozen_monotonic_ns、thawed_guest_ns、frozen_duration_nsを残す。
 失敗で認証済み応答を取得できない場合、その時間は未確認のまま保持する。
+hostの`--max-evidence-bytes`は応答index受信後のcollection上限であり、guest内の複写・fsync・hashを
+事前に打ち切る上限ではない。直上・disk枯渇・native timeoutの境界は未実証であり、超過やtimeoutを
+completeにせずunknownとして分母へ残し、VM cleanupが確認できなければ回収完了を主張しない。
+再試行で回復したrunはcontrol.jsonlの`delivery_read_retry`と観測categoryを保持し、将来の集計では
+回復件数と分類を通常の無再試行成功から区別して表示する。

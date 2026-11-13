@@ -887,13 +887,15 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         })
         .collect();
     let retest = retest_result(scenario.validated.scenario().retest.is_some(), &run);
+    let test_image_fixture = is_test_image_fixture(&run);
     let eligible = run.pointer("/adapter/adapter").and_then(Value::as_str) != Some("mock")
+        && !test_image_fixture
         && complete
         && !contaminated
         && !contamination_unresolved
         && attempts["unresolved_deviations"].as_u64() == Some(0)
         && run["status"] == "completed";
-    let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"evidence":{"complete":complete,"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"evaluation":if complete{"performed"}else{"partial"}});
+    let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"evidence":{"complete":complete,"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"formal_metrics_exclusions":{"test_image_fixture":test_image_fixture},"evaluation":if complete{"performed"}else{"partial"}});
     let mut result = result;
     result["control_integrity"] = control_integrity.into();
     result["control_request_integrity"] = request_integrity.into();
@@ -1027,6 +1029,12 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     markdown.push_str("\n> `evidence/api.jsonl` is private evidence and contains plaintext AccessKeyId credential claims. `run.json`, `result.json`, and this report do not duplicate them.\n");
     host_io::replace(&root.join("report.md"), markdown.as_bytes())?;
     Ok(result)
+}
+
+fn is_test_image_fixture(run: &Value) -> bool {
+    run.pointer("/primary/image/delivery_race_fixture")
+        .and_then(Value::as_bool)
+        == Some(true)
 }
 
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -1525,5 +1533,16 @@ mod tests {
         assert!(root.join("result.json").is_file());
         assert!(root.join("report.md").is_file());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recognizes_only_explicit_delivery_race_test_images() {
+        assert!(is_test_image_fixture(&json!({
+            "primary":{"image":{"delivery_race_fixture":true}}
+        })));
+        assert!(!is_test_image_fixture(&json!({
+            "primary":{"image":{"delivery_race_fixture":false}}
+        })));
+        assert!(!is_test_image_fixture(&json!({"primary":{}})));
     }
 }

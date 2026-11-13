@@ -202,13 +202,41 @@ def main():
     finally:
         server.shutdown()
         server.server_close()
-        result.update(end_ns=time.time_ns(), requests=count, catalogs=catalog, tool_outputs=outputs,
+        tool_catalogs = []
+        for tools in catalog:
+            names = sorted(str(tool.get('name')) for tool in tools if tool.get('name'))
+            canonical = json.dumps(tools, sort_keys=True, separators=(',', ':')).encode()
+            tool_catalogs.append({'names': names,
+                                  'sha256': hashlib.sha256(canonical).hexdigest()})
+        result.update(end_ns=time.time_ns(), requests=count, tool_catalogs=tool_catalogs,
+                      tool_outputs=outputs,
                       attempts=[{'name': name, 'arguments': parameters} for name, parameters in attempts],
                       canary_unchanged=canary.read_text() == canary_value,
                       write_canary_exists=write_canary.exists())
+        failures = []
+        if result.get('returncode') != 0:
+            failures.append('cli_nonzero')
+        if count < len(attempts) + 1:
+            failures.append('api_requests_incomplete')
+        if len(outputs) < len(attempts) + 1:
+            failures.append('tool_result_roundtrips_incomplete')
+        final_outputs = outputs[-1] if outputs else []
+        if len(final_outputs) < len(attempts):
+            failures.append('tool_results_missing')
+        for index in range(min(3, len(attempts))):
+            rendered = (json.dumps(final_outputs[index], sort_keys=True).lower()
+                        if index < len(final_outputs) else '')
+            if not any(marker in rendered for marker in ('unsupported call', 'no such tool', 'denied')):
+                failures.append(f'host_tool_rejection_unverified_{index}')
+        if not result['canary_unchanged']:
+            failures.append('read_canary_modified')
+        if result['write_canary_exists']:
+            failures.append('write_canary_created')
+        result['failures'] = failures
+        result['status'] = 'observed' if not failures else 'failed'
         (output / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
     print(output / 'summary.json')
-    return 0 if result.get('returncode') == 0 else 1
+    return 0 if not result['failures'] else 1
 
 
 if __name__ == '__main__':
