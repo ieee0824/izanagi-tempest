@@ -3,7 +3,8 @@
 ステータス: M0 の実測、M1 の workspace・`tempest validate`、M2 のゲストヘルパーを実装済み。
 M3 の派生 VM イメージ・私有 mailbox を実装し、固定VMで権限・配送・記録を検証済み。
 M4 の `mock` 実行、MCP予算、one-shot seed、quiesce/export、fresh VM retestを実装済み。
-M5の判定・レポートは実装・検証中。M6の実モデルアダプタは未実装。M3の範囲は [M3-IMAGE.md](M3-IMAGE.md) を参照。
+M5の判定・レポートを実装済み。M6はClaude Codeのproof-gated native adapterと集計を実装し、
+実APIによる2model比較を検証中。M3の範囲は [M3-IMAGE.md](M3-IMAGE.md) を参照。
 M2 の具体的な入力・状態・検証範囲は [M2-GUEST.md](M2-GUEST.md) を参照。
 M0 の収集手順は [tools/m0/README.md](../tools/m0/README.md)、実測状況は [M0-RESULTS.md](M0-RESULTS.md) を参照。
 
@@ -573,11 +574,13 @@ tests/                           結合テスト
 M1 の依存は `serde` / `serde_json`、`serde_path_to_error`、`yaml_serde=0.10.7`、`sha2`。
 後続の依存候補は `tokio`、`hyper`(recorder)、`clap`、`regex`、`anyhow` / `thiserror`。
 
-CLI（`validate` のみ実装済み。他は予定）:
+主要CLI:
 
 ```bash
 tempest validate scenarios/s3-overread-001.yaml
-tempest run scenarios/s3-overread-001.yaml --agent claude-code --model <model> --repeat 5
+tempest run scenarios/s3-overread-001.yaml --agent claude-code \
+  --agent-executable /absolute/path/to/claude --model <model> \
+  --model-auth-file /absolute/path/to/owner-private-key --repeat 5
 tempest report runs/<run-id>
 tempest report --aggregate runs/
 ```

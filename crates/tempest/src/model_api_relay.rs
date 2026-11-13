@@ -16,7 +16,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    process::ExitCode,
+    process::{ExitCode, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -107,6 +107,44 @@ pub(crate) struct ProbeRelay {
     task: JoinHandle<()>,
 }
 
+pub(crate) struct ProductionRelay {
+    endpoint: String,
+    child: tokio::process::Child,
+    process_group: i32,
+    owner_file: PathBuf,
+}
+
+impl ProductionRelay {
+    pub(crate) fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+}
+
+impl Drop for ProductionRelay {
+    fn drop(&mut self) {
+        unsafe {
+            libc::kill(-self.process_group, libc::SIGTERM);
+        }
+        let _ = self.child.start_kill();
+        let _ = host_io::json_replace(
+            &self.owner_file,
+            &json!({"state":"stop_requested","process_group":self.process_group,"role":"model_api_relay"}),
+        );
+    }
+}
+
+pub(crate) struct ProductionRelayConfig<'a> {
+    pub(crate) executable: &'a Path,
+    pub(crate) upstream: &'a str,
+    pub(crate) policy_file: &'a Path,
+    pub(crate) auth_file: &'a Path,
+    pub(crate) auth_header: &'a str,
+    pub(crate) audit_file: &'a Path,
+    pub(crate) state_root: &'a Path,
+    pub(crate) owner_file: &'a Path,
+    pub(crate) timeout_seconds: u64,
+}
+
 impl ProbeRelay {
     pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
@@ -134,6 +172,84 @@ fn private_bytes(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
         ));
     }
     fs::read(path)
+}
+
+pub(crate) async fn start_production_relay(
+    config: ProductionRelayConfig<'_>,
+) -> io::Result<ProductionRelay> {
+    let capability = host_io::random_hex()?;
+    let capability_file = config.state_root.join("model-relay-capability");
+    let ready_file = config.state_root.join("model-relay-ready.json");
+    host_io::write_new(&capability_file, capability.as_bytes())?;
+    host_io::json_new(
+        config.owner_file,
+        &json!({"state":"launching","role":"model_api_relay"}),
+    )?;
+    let mut child = host_io::command(config.executable)
+        .args([
+            OsString::from("model-api-relay"),
+            OsString::from("--upstream"),
+            OsString::from(config.upstream),
+            OsString::from("--capability-file"),
+            capability_file.as_os_str().to_owned(),
+            OsString::from("--policy-file"),
+            config.policy_file.as_os_str().to_owned(),
+            OsString::from("--audit"),
+            config.audit_file.as_os_str().to_owned(),
+            OsString::from("--ready-file"),
+            ready_file.as_os_str().to_owned(),
+            OsString::from("--auth-file"),
+            config.auth_file.as_os_str().to_owned(),
+            OsString::from("--auth-header"),
+            OsString::from(config.auth_header),
+            OsString::from("--timeout-seconds"),
+            OsString::from(config.timeout_seconds.to_string()),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()?;
+    let process_group = child
+        .id()
+        .and_then(|pid| i32::try_from(pid).ok())
+        .ok_or_else(|| invalid("production model relay process ID unavailable"))?;
+    host_io::json_replace(
+        config.owner_file,
+        &json!({"state":"running","process_group":process_group,"role":"model_api_relay",
+            "executable_sha256":host_io::digest(config.executable)?}),
+    )?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if ready_file.exists() {
+            let ready: Value = parse_unique_value(&private_bytes(&ready_file, 4096)?)?;
+            let port = ready["port"]
+                .as_u64()
+                .and_then(|port| u16::try_from(port).ok())
+                .filter(|port| *port != 0)
+                .ok_or_else(|| invalid("invalid production relay ready port"))?;
+            if ready["schema_version"] != 1
+                || ready["host"] != "127.0.0.1"
+                || ready["path_prefix"] != format!("/{capability}")
+            {
+                return Err(invalid("invalid production relay ready contract"));
+            }
+            return Ok(ProductionRelay {
+                endpoint: format!("http://127.0.0.1:{port}/{capability}"),
+                child,
+                process_group,
+                owner_file: config.owner_file.to_owned(),
+            });
+        }
+        if child.try_wait()?.is_some() {
+            return Err(invalid("production model relay exited before ready"));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(invalid("production model relay ready deadline"));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 fn sorted_unique(values: &[String]) -> bool {
     !values.is_empty() && values.windows(2).all(|pair| pair[0] < pair[1])
@@ -787,7 +903,7 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
 async fn serve(options: Options) -> io::Result<()> {
     let audit = fs::OpenOptions::new()
         .append(true)
-        .create(true)
+        .create_new(true)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(&options.audit)?;

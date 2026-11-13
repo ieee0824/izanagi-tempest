@@ -1,7 +1,8 @@
 # M6 実装計画（議論中）
 
 対象は #7、presence集計は #14。Sakura の集約親は15353。
-#6 は PR #31 で完了したが、実CLIの起動・隔離・モデル比較は未実装である。
+#6 は PR #31 で完了した。実CLIの起動・隔離・本番relayのrun接続まで実装し、
+残りは実API preflight、同一scenarioの2model×複数run、比較レポートの確定である。
 
 ## 実装順序
 
@@ -55,16 +56,16 @@ slot ID、期待条件、evaluator hashへ束縛し、欠損・不正な予定sl
 
 ## モデルAPI中継
 
-実CLIの本番requestでtool能力を再検査するため、`tools/model_api_proxy.py`を追加した。
+実CLIの本番requestでtool能力を再検査するため、Rustの`tempest model-api-relay`を実装した。
 loopbackの能力pathと許可pathへのPOSTだけを受け、model、top-level field、tool定義全体
 （名前だけでなくschema・descriptionを含む）を事前固定policyとcanonical比較する。JSONの重複key、
 追加・欠損・重複・未知tool表現、未知field、別model、会話継承、file/URL参照は409で上流へ転送しない。
 tool以外の`type`付きrequest blockもpolicyの許可typeと照合する。agent由来headerは転送せず、policyで固定した
 headerとrelay所有の認証headerだけを上流へ送る。query付きpathとContent-Lengthのないrequestは拒否する。
 上流authorityを固定し、上流の全3xxをLocationなしの502へ変換する。auditにはrequest本文や認証値を保存せず
-hash・byte数・model・path・tool名・判定・上流statusだけを残す。`tests/test_model_api_proxy.py`は完全一致の正対照、各負例、
-302を追うclientでも別authority sink到達0を検査する。これは中継を通ったrequestだけの成立であり、
-CLI processの直接egress制限、実CLI launcherへの接続、正式proof生成は未完了である。
+hash・byte数・model・path・tool名・判定・上流statusだけを残す。Rust testは完全一致の正対照、各負例、
+302を追うclientでも別authority sink到達0を検査する。native runは同じ実行内でdiscovery、acceptance、
+正式proof、計測済みrelay、LaunchPermitを接続し、CLI processの直接egressをSeatbeltでrelay portだけに制限する。
 上流認証値はowner-private fileから中継だけが読み、agentが付けたAuthorization/x-api-keyは破棄して
 中継側の値へ置換する。したがって正式launcherはagentとそのMCP childへ本物のAPI認証値を渡さない。
 
@@ -79,8 +80,8 @@ promptはargvへ置かずstdinで配送する。loopback relay URLはURL parser�
 query/fragment不在、capability pathを検査する。実行copyのhash不一致は起動前に拒否する。stdout/stderrは各16 MiBを
 上限として超過時もprefixを私有証跡へ保存し、process group全体をrun controllerが停止する。Claude CodeはCLI引数でも
 turn上限を強制し、Codexはrelay policyのrequest上限をAPI turn予算とする。thread/session切替は報告を拒否する。
-この契約は実装済みだが、正式proof runnerと
-native relayのlifecycleへ接続するまでは`tempest run`から選択できない。
+この契約は正式proof runnerとnative relayのlifecycleへ接続済みで、`tempest run --agent claude-code`から選択できる。
+relay authはrun成果物へコピーせず、acceptance用MCP/providerと本番MCP/providerを分離する。
 macOS launcherは固定hashの`/usr/bin/sandbox-exec`と同梱Seatbelt profileを必須にする。agent executable、
 MCP bridge、空HOME/cwd、profileだけをowner-private jailへ置き、default denyと`system.sb`を基礎にjail内の
 file read/write、固定relay port、固定MCP Unix socketだけを許可する。実動testでjail外canary読取と別loopback

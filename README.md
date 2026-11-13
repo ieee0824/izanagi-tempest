@@ -101,7 +101,8 @@ cargo test --workspace --locked
 検証エラーはフィールド経路と理由を stderr に出し、パーサー由来の行・列があれば併記します。
 
 `crates/tempest-model` が共有型と静的検証、`crates/tempest` が YAML 読み込みと CLI、
-`crates/tempest-guest` は次節のゲストヘルパーです。ホストの `tempest run` はまだありません。
+`crates/tempest-guest` は次節のゲストヘルパーです。ホストの `tempest run` はmockと
+proof-gatedなClaude Code native CLIを選択できます。
 API 対応表は [capability.rs](crates/tempest-model/src/capability.rs) に固定ソースの根拠を集約し、
 未知・strict 未対応・現入力形式では必要条件を表せない操作を区別します。
 ポリシーの wildcard は保持し、IAM の認可評価は実装しません。
@@ -193,6 +194,25 @@ fresh VM retestを接続します。成功した実行ではM5評価を自動実
 `result.json`・`report.md`を生成します。`run.json` は `scope: m5_evaluation`、
 `purpose: collection_and_evaluation`、`evaluation: performed` です。
 mockの固定報告は形式検証用で、正式なモデル比較の集計対象には含めません。
+Claude Code native CLIは、固定model ID、native executable、owner-privateなAnthropic API key fileを
+明示して実行します。keyはmodel relayだけが読み、CLIへは渡しません。discoveryとdeterministic acceptance、
+request policy・code closure・macOS Seatbeltの検証に成功した直後だけ、一回限りのLaunchPermitで起動します。
+
+```bash
+target/release/tempest run scenarios/s3-overread-001.yaml \
+  --agent claude-code \
+  --agent-executable /absolute/path/to/claude \
+  --model claude-sonnet-5-5 \
+  --model-auth-file /absolute/path/to/owner-private-anthropic-key \
+  --izanagi /absolute/path/to/izanagi \
+  --image /absolute/path/to/debian-aarch64.qcow2 \
+  --image-inputs /absolute/path/to/inputs.json \
+  --python /absolute/path/to/python3 \
+  --runs /private/tmp/tempest-runs --run-id native-example
+```
+
+auth fileはowner所有のregular fileかつmode 0600相当でなければ拒否します。固定policyにないCLI version/model、
+acceptance失敗、relay予算超過、adapter失敗は成功へ昇格せず、予約済みrunをUとして証跡に残します。
 1ファイルの回収上限は`--max-evidence-bytes`（既定64 MiB）で変更できます。
 `--repeat N`（1〜100）は各試行を独立VMで順次実行し、複数回ではrun IDを
 `<run-id>-001`から展開します。comparison planを併用する場合はslot IDも同じ規則で展開するため、

@@ -50,6 +50,18 @@ pub struct CapabilityDiscovery {
     pub launch_permit_verified: bool,
 }
 
+pub(crate) struct AuthorizedNativeLaunch {
+    pub(crate) discovery: CapabilityDiscovery,
+    pub(crate) adapter: CliAdapter,
+    pub(crate) relay: model_api_relay::ProductionRelay,
+}
+
+pub(crate) struct ProductionLaunchConfig {
+    pub(crate) auth_file: PathBuf,
+    pub(crate) audit_file: PathBuf,
+    pub(crate) owner_file: PathBuf,
+}
+
 fn strict_tempest_catalog(agent: CapabilityAgent, catalog: &[Value]) -> bool {
     let names = catalog
         .iter()
@@ -770,7 +782,8 @@ fn prepare_claude_proof(
 fn write_and_authorize_claude_proof(
     input: ProofInputs<'_>,
     challenge: ProbeChallenge,
-) -> io::Result<()> {
+    launch_relay_endpoint: &str,
+) -> io::Result<CliAdapter> {
     let proof_root = &input.prepared.proof_root;
     let profile_sha256 = &input.prepared.profile_sha256;
     let runner_sha256 = &input.prepared.runner_sha256;
@@ -864,7 +877,7 @@ fn write_and_authorize_claude_proof(
     let adapter = CliAdapter::new(
         permit,
         CliAdapterConfig {
-            relay_endpoint: "http://127.0.0.1:1234/capabilitycapabilitycapability12".into(),
+            relay_endpoint: launch_relay_endpoint.to_owned(),
             maximum_turns: 20,
             sandbox_profile,
             sandbox_jail: code_root.join("jail"),
@@ -874,7 +887,7 @@ fn write_and_authorize_claude_proof(
     if adapter.model_api_relay_path() != code_root.join("host/model-api-relay") {
         return Err(io::Error::other("authorized relay path mismatch"));
     }
-    Ok(())
+    Ok(adapter)
 }
 
 async fn prove_control_socket_denied(
@@ -959,7 +972,13 @@ fn validate_socket_probe(
 /// Run the actual pinned CLI in the production Seatbelt contract against the
 /// native deterministic provider and fixed MCP peer. This pass discovers the
 /// CLI's exact provider tool representation; it never issues a LaunchPermit.
-pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<CapabilityDiscovery> {
+async fn discover_inner(
+    config: CapabilityDiscoveryConfig,
+    production: Option<&ProductionLaunchConfig>,
+) -> io::Result<(
+    CapabilityDiscovery,
+    Option<(CliAdapter, model_api_relay::ProductionRelay)>,
+)> {
     if config.output.exists() || !config.executable.is_absolute() {
         return Err(io::Error::other("invalid capability discovery paths"));
     }
@@ -1128,6 +1147,7 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
     validate_catalog(config.agent, &catalogs)?;
     validate_tool_outputs(config.agent, &tool_outputs, &capability, &canary_value)?;
     let strict_tempest_only = strict_tempest_catalog(config.agent, &catalogs[0]);
+    let mut authorized_adapter = None;
     let acceptance_relay_verified = if strict_tempest_only {
         let acceptance_jail = root.join("acceptance/jail");
         for directory in [
@@ -1337,7 +1357,34 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
                 "acceptance control socket was reached after its negative probe",
             ));
         }
-        write_and_authorize_claude_proof(
+        let production_relay = match production {
+            Some(production) => {
+                let state_root = root.join("production-relay");
+                host_io::directory(&state_root)?;
+                Some(
+                    model_api_relay::start_production_relay(
+                        model_api_relay::ProductionRelayConfig {
+                            executable: &staged_code.join("host/model-api-relay"),
+                            upstream: "https://api.anthropic.com/",
+                            policy_file: &policy_path,
+                            auth_file: &production.auth_file,
+                            auth_header: "x-api-key",
+                            audit_file: &production.audit_file,
+                            state_root: &state_root,
+                            owner_file: &production.owner_file,
+                            timeout_seconds: 120,
+                        },
+                    )
+                    .await?,
+                )
+            }
+            None => None,
+        };
+        let launch_relay_endpoint = production_relay
+            .as_ref()
+            .map(model_api_relay::ProductionRelay::endpoint)
+            .unwrap_or("http://127.0.0.1:1234/capabilitycapabilitycapability12");
+        let adapter = write_and_authorize_claude_proof(
             ProofInputs {
                 root: &root,
                 prepared: &prepared_proof,
@@ -1350,7 +1397,11 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
                 control_finished_ns,
             },
             challenge,
+            launch_relay_endpoint,
         )?;
+        if let Some(relay) = production_relay {
+            authorized_adapter = Some((adapter, relay));
+        }
         true
     } else {
         false
@@ -1365,17 +1416,41 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
                 .ok_or_else(|| io::Error::other("provider request is not an object"))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    Ok(CapabilityDiscovery {
-        agent: config.agent,
-        cli_version,
-        model: config.model,
-        executable_sha256: host_io::digest(&source)?,
-        catalogs,
-        tool_outputs,
-        request_fields,
-        strict_tempest_only,
-        acceptance_relay_verified,
-        launch_permit_verified: acceptance_relay_verified,
+    Ok((
+        CapabilityDiscovery {
+            agent: config.agent,
+            cli_version,
+            model: config.model,
+            executable_sha256: host_io::digest(&source)?,
+            catalogs,
+            tool_outputs,
+            request_fields,
+            strict_tempest_only,
+            acceptance_relay_verified,
+            launch_permit_verified: acceptance_relay_verified,
+        },
+        authorized_adapter,
+    ))
+}
+
+pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<CapabilityDiscovery> {
+    discover_inner(config, None)
+        .await
+        .map(|(discovery, _)| discovery)
+}
+
+pub(crate) async fn discover_for_launch(
+    config: CapabilityDiscoveryConfig,
+    production: ProductionLaunchConfig,
+) -> io::Result<AuthorizedNativeLaunch> {
+    let (discovery, launch) = discover_inner(config, Some(&production)).await?;
+    let (adapter, relay) = launch.ok_or_else(|| {
+        io::Error::other("native CLI did not establish a strict launch capability")
+    })?;
+    Ok(AuthorizedNativeLaunch {
+        discovery,
+        adapter,
+        relay,
     })
 }
 

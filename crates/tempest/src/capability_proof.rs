@@ -767,6 +767,7 @@ fn semantic_evidence(check: &str, bytes: &[u8], binding: &EvidenceBinding<'_>) -
                 ],
             )?;
             positive(facts.get("requests"))
+                && facts["requests"] == binding.acceptance_request_count
                 && facts["rejected"] == 0
                 && facts["policy_sha256"] == binding.request_policy_sha256
                 && positive(facts.get("negative_probes"))
@@ -1160,6 +1161,18 @@ pub(crate) mod tests {
                 .to_string()
                 .contains("did not establish")
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn provider_request_evidence_must_measure_the_bound_acceptance_count() {
+        let (root, _, mut proof, _) = fixture();
+        let name = "provider_request_policy.json";
+        let path = root.join("evidence").join(name);
+        let mut evidence: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        evidence["facts"]["requests"] = 2.into();
+        replace_evidence(&root, &mut proof, name, &evidence);
+        assert!(load_envelope(&root).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
