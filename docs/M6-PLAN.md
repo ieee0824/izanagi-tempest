@@ -98,3 +98,9 @@ MCP call/API要求は0、findingはnot_found、計上候補0・未確定10で一
 root readerの待機PIDとquiesceのmoved_pids、同一要求IDへの失敗/成功読取を照合する。
 通常prepareの生成dispatcher/quiesceは元のscript bytesと一致し、metadata hashも一致した。
 Python既存19試験成功。実VMの強制再現結果はまだ得られていない。
+
+最初のfixture VM試験は、marker更新に一度きり作成用helperを流用したため、
+wrong-daemon負例の反復読取で停止した（`/private/tmp/tempest-m6-delivery-race-vm-001/`）。
+これはfixtureの不備であり、配送競合の原因確認には数えない。markerを私有一時ファイルから
+atomic replaceする方式に修正し、同一markerの反復更新を確認した。
+修正版は `/private/tmp/tempest-m6-delivery-race-build-002/` で別buildとして保持する。

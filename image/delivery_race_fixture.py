@@ -2,14 +2,22 @@
 
 
 def instrument(dispatcher, quiesce):
+    helper = """def race_marker(path, value):
+    temporary = path.with_suffix('.' + str(os.getpid()) + '.tmp')
+    write_json(temporary, value)
+    os.replace(temporary, path)
+
+
+"""
+    dispatcher = dispatcher.replace('def daemon_control(', helper + 'def daemon_control(', 1)
     before = "        barrier = daemon_control('quiesce', payload['daemon_identity'])"
-    after = "        write_json(STATE / 'race-expected.json', {'id': request_id})\n" + before
+    after = "        race_marker(STATE / 'race-expected.json', {'id': request_id})\n" + before
     assert dispatcher.count(before) == 1
     dispatcher = dispatcher.replace(before, after)
     before = "        with response.open('rb') as stream:"
     after = """        expected_file = STATE / 'race-expected.json'
         if expected_file.exists() and json.loads(expected_file.read_text())['id'] == path.stem:
-            write_json(STATE / 'race-reader.json', {'id': path.stem, 'pid': os.getpid()})
+            race_marker(STATE / 'race-reader.json', {'id': path.stem, 'pid': os.getpid()})
             time.sleep(3)  # Hold the real root deliver inside the service cgroup.
 """ + before
     assert dispatcher.count(before) == 1
