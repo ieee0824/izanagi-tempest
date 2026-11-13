@@ -19,6 +19,36 @@ HOP_HEADERS = {
     'connection', 'content-length', 'host', 'keep-alive', 'proxy-authenticate',
     'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade',
 }
+CREDENTIAL_HEADERS = {'authorization', 'x-api-key'}
+FORBIDDEN_CAPABILITY_KEYS = {
+    'attachments', 'conversation', 'conversation_id', 'file', 'file_id', 'files',
+    'image_url', 'previous_response_id', 'remote_mcp', 'url', 'urls',
+}
+
+
+def unique_object(pairs):
+    value = {}
+    for name, child in pairs:
+        if name in value:
+            raise ValueError(f'duplicate JSON key: {name}')
+        value[name] = child
+    return value
+
+
+def forbidden_capability(value):
+    if isinstance(value, dict):
+        for name, child in value.items():
+            if name in FORBIDDEN_CAPABILITY_KEYS:
+                return name
+            found = forbidden_capability(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = forbidden_capability(child)
+            if found:
+                return found
+    return None
 
 
 def tool_identity(tool):
@@ -48,14 +78,45 @@ def canonical_catalog(tools):
     return catalog
 
 
-def admitted_catalog(body, expected):
-    value = json.loads(body)
+def admitted_request(body, policy, path):
+    value = json.loads(body, object_pairs_hook=unique_object)
     if not isinstance(value, dict) or not isinstance(value.get('tools'), list):
         raise ValueError('request has no explicit tool catalog')
+    if path not in policy['paths']:
+        raise ValueError('request path is not allowed')
+    if value.get('model') not in policy['models']:
+        raise ValueError('request model is not allowed')
+    unknown = sorted(set(value) - set(policy['top_level_fields']))
+    if unknown:
+        raise ValueError(f'unknown top-level request fields: {unknown}')
+    forbidden = forbidden_capability(value)
+    if forbidden:
+        raise ValueError(f'forbidden request capability: {forbidden}')
     actual = canonical_catalog(value['tools'])
-    if actual != expected:
+    if actual != policy['tools']:
         raise ValueError('tool catalog mismatch')
     return [identity for identity, _ in actual]
+
+
+def validated_policy(policy):
+    if not isinstance(policy, dict) or policy.get('schema_version') != 1 \
+            or set(policy) != {'schema_version', 'paths', 'models',
+                               'top_level_fields', 'tools'}:
+        raise ValueError('invalid relay policy shape')
+    for name in ['paths', 'models', 'top_level_fields']:
+        values = policy.get(name)
+        if not isinstance(values, list) or not values \
+                or not all(isinstance(value, str) and value for value in values) \
+                or sorted(values) != values or len(values) != len(set(values)):
+            raise ValueError(f'invalid relay policy {name}')
+    if any(not path.startswith('/') or '?' in path or '#' in path for path in policy['paths']):
+        raise ValueError('invalid relay policy path')
+    if 'model' not in policy['top_level_fields'] or 'tools' not in policy['top_level_fields']:
+        raise ValueError('relay policy must require model and tools')
+    tools = policy.get('tools')
+    if not isinstance(tools, list) or not tools:
+        raise ValueError('invalid expected tool catalog')
+    return {**policy, 'tools': canonical_catalog(tools)}
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -94,13 +155,13 @@ class Relay(http.server.BaseHTTPRequestHandler):
         if len(body) != length:
             self.reject(400, 'truncated request')
             return
+        suffix = self.path[len(prefix):] or '/'
         try:
-            tools = admitted_catalog(body, self.server.expected_tools)
+            tools = admitted_request(body, self.server.policy, suffix)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
             self.server.record(False, body, str(error), [])
             self.reject(409, str(error))
             return
-        suffix = self.path[len(prefix):] or '/'
         target = urllib.parse.urljoin(self.server.upstream.rstrip('/') + '/', suffix.lstrip('/'))
         parsed = urllib.parse.urlparse(target)
         if (parsed.scheme, parsed.netloc) != self.server.upstream_authority:
@@ -109,8 +170,9 @@ class Relay(http.server.BaseHTTPRequestHandler):
             return
         headers = {
             name: value for name, value in self.headers.items()
-            if name.lower() not in HOP_HEADERS
+            if name.lower() not in HOP_HEADERS | CREDENTIAL_HEADERS
         }
+        headers[self.server.auth_header] = self.server.auth_value
         request = urllib.request.Request(target, data=body, headers=headers, method='POST')
         try:
             response = self.server.opener.open(request, timeout=self.server.upstream_timeout)
@@ -119,6 +181,11 @@ class Relay(http.server.BaseHTTPRequestHandler):
         except (OSError, urllib.error.URLError) as error:
             self.server.record(False, body, 'upstream transport failed', tools)
             self.reject(502, 'upstream transport failed')
+            return
+        if 300 <= response.status < 400:
+            self.server.record(False, body, f'upstream redirect {response.status}', tools)
+            response.close()
+            self.reject(502, 'upstream redirect rejected')
             return
         self.server.record(True, body, None, tools)
         self.send_response(response.status)
@@ -142,7 +209,8 @@ class Relay(http.server.BaseHTTPRequestHandler):
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, upstream, path_capability, expected_tools, audit, timeout):
+    def __init__(self, address, upstream, path_capability, policy, audit, timeout,
+                 auth_header, auth_value):
         super().__init__(address, Relay)
         parsed = urllib.parse.urlparse(upstream)
         if parsed.scheme not in {'http', 'https'} or not parsed.netloc \
@@ -151,9 +219,13 @@ class Server(http.server.ThreadingHTTPServer):
         self.upstream = upstream
         self.upstream_authority = (parsed.scheme, parsed.netloc)
         self.path_capability = path_capability
-        self.expected_tools = canonical_catalog(expected_tools)
+        self.policy = validated_policy(policy)
         self.audit = audit
         self.upstream_timeout = timeout
+        if auth_header.lower() not in CREDENTIAL_HEADERS or not auth_value:
+            raise ValueError('invalid upstream authentication configuration')
+        self.auth_header = auth_header
+        self.auth_value = auth_value
         self.opener = urllib.request.build_opener(
             NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context()))
 
@@ -186,26 +258,28 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--upstream', required=True)
     parser.add_argument('--capability-file', type=Path, required=True)
-    parser.add_argument('--tools-file', type=Path, required=True)
+    parser.add_argument('--policy-file', type=Path, required=True)
     parser.add_argument('--audit', type=Path, required=True)
     parser.add_argument('--ready-file', type=Path, required=True)
+    parser.add_argument('--upstream-auth-file', type=Path, required=True)
+    parser.add_argument('--upstream-auth-header', choices=['Authorization', 'x-api-key'], required=True)
     parser.add_argument('--timeout-seconds', type=float, default=330)
     args = parser.parse_args()
     private_file(args.capability_file)
-    private_file(args.tools_file)
+    private_file(args.policy_file)
+    private_file(args.upstream_auth_file)
     path_capability = args.capability_file.read_text().strip()
     if len(path_capability) < 32 or not path_capability.isascii() \
             or not path_capability.replace('-', '').replace('_', '').isalnum():
         raise SystemExit('invalid relay path capability')
-    expected = json.loads(args.tools_file.read_text())
-    if not isinstance(expected, list) or not expected:
-        raise SystemExit('invalid expected tool catalog')
+    policy = json.loads(args.policy_file.read_text(), object_pairs_hook=unique_object)
     try:
-        canonical_catalog(expected)
+        validated_policy(policy)
     except ValueError as error:
-        raise SystemExit(f'invalid expected tool catalog: {error}') from error
-    server = Server(('127.0.0.1', 0), args.upstream, path_capability, expected,
-                    args.audit, args.timeout_seconds)
+        raise SystemExit(f'invalid relay policy: {error}') from error
+    server = Server(('127.0.0.1', 0), args.upstream, path_capability, policy,
+                    args.audit, args.timeout_seconds, args.upstream_auth_header,
+                    args.upstream_auth_file.read_text().strip())
     ready = {'schema_version': 1, 'host': '127.0.0.1',
              'port': server.server_address[1], 'path_prefix': '/' + path_capability}
     descriptor = os.open(

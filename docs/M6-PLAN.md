@@ -56,11 +56,20 @@ slot ID、期待条件、evaluator hashへ束縛し、欠損・不正な予定sl
 ## モデルAPI中継
 
 実CLIの本番requestでtool能力を再検査するため、`tools/model_api_proxy.py`を追加した。
-loopbackの能力pathだけを受け、各POSTに含まれるtool定義全体（名前だけでなくschema・descriptionを含む）を
-事前固定catalogとcanonical比較する。追加・欠損・重複・未知表現は409で拒否し、上流へ転送しない。
-上流authorityを固定しredirectを追わず、auditにはrequest本文や認証値を保存せずhash・byte数・tool名だけを残す。
-`tests/test_model_api_proxy.py`は完全一致の正対照、追加/欠損/重複/schema変更/未知/省略の負例、
-別authority redirectを検査する。これは中継単体の成立であり、実CLI launcherへの接続と正式proof生成は未完了である。
+loopbackの能力pathと許可pathへのPOSTだけを受け、model、top-level field、tool定義全体
+（名前だけでなくschema・descriptionを含む）を事前固定policyとcanonical比較する。JSONの重複key、
+追加・欠損・重複・未知tool表現、未知field、別model、会話継承、file/URL参照は409で上流へ転送しない。
+上流authorityを固定し、上流の全3xxをLocationなしの502へ変換する。auditにはrequest本文や認証値を保存せず
+hash・byte数・tool名・判定だけを残す。`tests/test_model_api_proxy.py`は完全一致の正対照、各負例、
+302を追うclientでも別authority sink到達0を検査する。これは中継を通ったrequestだけの成立であり、
+CLI processの直接egress制限、実CLI launcherへの接続、正式proof生成は未完了である。
+上流認証値はowner-private fileから中継だけが読み、agentが付けたAuthorization/x-api-keyは破棄して
+中継側の値へ置換する。したがって正式launcherはagentとそのMCP childへ本物のAPI認証値を渡さない。
+
+CLIのJSON event streamはadapter固有parserで扱う。Codexは正常終了したturnの最後の
+`item.completed`が`agent_message`の場合だけ、Claude Codeは成功result直前のtop-levelかつtext-onlyな
+最後のassistant messageだけを報告候補にする。tool結果内のJSON、subagent text、途中のassistant text、
+途中切断、非0終了、error、tool-call終端、turn上限超過から報告を作らない。fixtureでこれらの負例を固定した。
 
 ## 再現コマンド
 

@@ -132,3 +132,202 @@ fn replace(value: &Value, key: &str) -> Value {
         _ => value.clone(),
     }
 }
+
+fn json_lines(bytes: &[u8]) -> io::Result<Vec<Value>> {
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err(io::Error::other("agent event stream too large"));
+    }
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| io::Error::other("agent stream is not UTF-8"))?;
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).map_err(io::Error::other))
+        .collect()
+}
+
+/// Extract only a final top-level assistant message from a successful Codex
+/// JSONL turn. Tool output and intermediate text are never fallback reports.
+pub fn codex_final_message(bytes: &[u8], process_success: bool) -> io::Result<String> {
+    if !process_success {
+        return Err(io::Error::other("Codex process failed"));
+    }
+    let mut thread = None;
+    let mut final_message = None;
+    let mut completed = false;
+    for event in json_lines(bytes)? {
+        if completed
+            && matches!(
+                event["type"].as_str(),
+                Some("item.completed" | "turn.started")
+            )
+        {
+            return Err(io::Error::other("Codex emitted work after terminal event"));
+        }
+        match event["type"].as_str() {
+            Some("thread.started") => {
+                thread = event["thread_id"].as_str().map(str::to_owned);
+            }
+            Some("item.completed") => {
+                let item = event["item"]
+                    .as_object()
+                    .ok_or_else(|| io::Error::other("invalid Codex completed item"))?;
+                match item.get("type").and_then(Value::as_str) {
+                    Some("agent_message") => {
+                        final_message = item
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .filter(|text| !text.is_empty())
+                            .map(str::to_owned);
+                    }
+                    Some("reasoning") => {}
+                    Some(_) => final_message = None,
+                    None => return Err(io::Error::other("Codex item type missing")),
+                }
+            }
+            Some("turn.completed") => completed = true,
+            Some("turn.failed" | "error") => {
+                return Err(io::Error::other("Codex turn failed"));
+            }
+            _ => {}
+        }
+    }
+    if thread.as_deref().is_none_or(str::is_empty) || !completed {
+        return Err(io::Error::other("Codex turn did not complete"));
+    }
+    final_message.ok_or_else(|| io::Error::other("Codex final assistant message missing"))
+}
+
+/// Extract only the last top-level, text-only assistant message preceding a
+/// successful Claude result. Nested/subagent and tool-use events are excluded.
+pub fn claude_final_message(
+    bytes: &[u8],
+    process_success: bool,
+    maximum_turns: u64,
+) -> io::Result<String> {
+    if !process_success {
+        return Err(io::Error::other("Claude process failed"));
+    }
+    let mut session = None;
+    let mut final_message = None;
+    let mut result = None;
+    for event in json_lines(bytes)? {
+        if result.is_some() && matches!(event["type"].as_str(), Some("assistant" | "result")) {
+            return Err(io::Error::other(
+                "Claude emitted work after terminal result",
+            ));
+        }
+        match event["type"].as_str() {
+            Some("system") if event["subtype"] == "init" => {
+                session = event["session_id"].as_str().map(str::to_owned);
+            }
+            Some("assistant") if event["parent_tool_use_id"].is_null() => {
+                let blocks = event
+                    .pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| io::Error::other("invalid Claude assistant content"))?;
+                let text_only = blocks.iter().all(|block| block["type"] == "text");
+                final_message = if text_only {
+                    let joined = blocks
+                        .iter()
+                        .filter_map(|block| block["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("");
+                    (!joined.is_empty()).then_some(joined)
+                } else {
+                    None
+                };
+            }
+            Some("result") => result = Some(event),
+            _ => {}
+        }
+    }
+    let result = result.ok_or_else(|| io::Error::other("Claude result missing"))?;
+    if result["subtype"] != "success"
+        || result["is_error"] != false
+        || result["stop_reason"] != "end_turn"
+        || result["terminal_reason"] != "completed"
+        || result["num_turns"]
+            .as_u64()
+            .is_none_or(|turns| turns > maximum_turns)
+        || result["session_id"].as_str() != session.as_deref()
+    {
+        return Err(io::Error::other(
+            "Claude session did not complete successfully",
+        ));
+    }
+    final_message.ok_or_else(|| io::Error::other("Claude final assistant message missing"))
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    fn lines(values: &[Value]) -> Vec<u8> {
+        values
+            .iter()
+            .map(|value| serde_json::to_string(value).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into_bytes()
+    }
+
+    #[test]
+    fn codex_accepts_only_the_last_completed_assistant_item() {
+        let valid = lines(&[
+            json!({"type":"thread.started","thread_id":"thread-1"}),
+            json!({"type":"item.completed","item":{"type":"tool_call","output":"```json secret ```"}}),
+            json!({"type":"item.completed","item":{"type":"agent_message","text":"final"}}),
+            json!({"type":"turn.completed"}),
+        ]);
+        assert_eq!(codex_final_message(&valid, true).unwrap(), "final");
+        let tool_ended = lines(&[
+            json!({"type":"thread.started","thread_id":"thread-1"}),
+            json!({"type":"item.completed","item":{"type":"agent_message","text":"intermediate"}}),
+            json!({"type":"item.completed","item":{"type":"tool_call"}}),
+            json!({"type":"turn.completed"}),
+        ]);
+        assert!(codex_final_message(&tool_ended, true).is_err());
+        let post_terminal = lines(&[
+            json!({"type":"thread.started","thread_id":"thread-1"}),
+            json!({"type":"item.completed","item":{"type":"agent_message","text":"first"}}),
+            json!({"type":"turn.completed"}),
+            json!({"type":"item.completed","item":{"type":"agent_message","text":"late"}}),
+        ]);
+        assert!(codex_final_message(&post_terminal, true).is_err());
+        assert!(codex_final_message(&valid[..valid.len() - 26], true).is_err());
+        assert!(codex_final_message(&valid, false).is_err());
+    }
+
+    #[test]
+    fn claude_rejects_nested_intermediate_truncated_and_tool_ended_streams() {
+        let init = json!({"type":"system","subtype":"init","session_id":"session-1"});
+        let result = json!({"type":"result","subtype":"success","is_error":false,
+            "stop_reason":"end_turn","terminal_reason":"completed","num_turns":2,
+            "session_id":"session-1"});
+        let valid = lines(&[
+            init.clone(),
+            json!({"type":"assistant","parent_tool_use_id":"tool-parent",
+                "message":{"content":[{"type":"text","text":"```json nested ```"}]}}),
+            json!({"type":"assistant","parent_tool_use_id":null,
+                "message":{"content":[{"type":"text","text":"final"}]}}),
+            result.clone(),
+        ]);
+        assert_eq!(claude_final_message(&valid, true, 3).unwrap(), "final");
+        assert!(claude_final_message(&valid, true, 1).is_err());
+        let tool_ended = lines(&[
+            init,
+            json!({"type":"assistant","parent_tool_use_id":null,
+                "message":{"content":[{"type":"text","text":"intermediate"},
+                    {"type":"tool_use","name":"mcp"}]}}),
+            result,
+        ]);
+        assert!(claude_final_message(&tool_ended, true, 3).is_err());
+        let mut post_terminal = valid.clone();
+        post_terminal.extend_from_slice(
+            b"\n{\"type\":\"assistant\",\"parent_tool_use_id\":null,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"late\"}]}}",
+        );
+        assert!(claude_final_message(&post_terminal, true, 3).is_err());
+        assert!(claude_final_message(&valid[..valid.len() / 2], true, 3).is_err());
+        assert!(claude_final_message(&valid, false, 3).is_err());
+    }
+}
