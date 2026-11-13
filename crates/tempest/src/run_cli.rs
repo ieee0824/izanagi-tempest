@@ -123,6 +123,13 @@ impl RuntimeAdapter {
             Self::Native(adapter) => adapter.mcp_bridge_path().to_owned(),
         }
     }
+
+    fn working_directory(&self, mock_cwd: &Path) -> PathBuf {
+        match self {
+            Self::Mock(_) => mock_cwd.to_owned(),
+            Self::Native(adapter) => adapter.sandbox_cwd_path(),
+        }
+    }
 }
 
 struct NativeRuntimeDirectory(PathBuf);
@@ -541,8 +548,11 @@ async fn primary(
     let seal_finished_ns = host_io::now_ns()?;
     report["primary"]["seal"] = json!({"started_ns":seal_started_ns,
         "finished_ns":seal_finished_ns,"duration_ns":seal_finished_ns-seal_started_ns});
-    let agent_cwd = root.join("agent-cwd");
-    host_io::directory(&agent_cwd)?;
+    let mock_agent_cwd = root.join("agent-cwd");
+    let agent_cwd = adapter.working_directory(&mock_agent_cwd);
+    if matches!(&adapter, RuntimeAdapter::Mock(_)) {
+        host_io::directory(&agent_cwd)?;
+    }
     // Darwin socket paths are bounded by sockaddr_un; keep this private owner
     // endpoint short and outside every guest share.
     let socket_base = if cfg!(target_os = "macos") {

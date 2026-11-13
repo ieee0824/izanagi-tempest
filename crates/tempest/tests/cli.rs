@@ -1,15 +1,15 @@
 use std::{
     fs,
-    os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd},
-        unix::fs::{DirBuilderExt, PermissionsExt},
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     },
     process::{Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[test]
-fn model_relay_process_exits_when_its_controller_pipe_closes() {
+fn model_relay_process_exits_when_its_controller_lifetime_closes() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -34,14 +34,9 @@ fn model_relay_process_exits_when_its_controller_pipe_closes() {
     let policy = private("policy.json", &fs::read(policy_source).unwrap());
     let audit = root.join("audit.jsonl");
     let ready = root.join("ready.json");
-    let mut descriptors = [-1; 2];
-    assert_eq!(unsafe { libc::pipe(descriptors.as_mut_ptr()) }, 0);
-    let read = unsafe { OwnedFd::from_raw_fd(descriptors[0]) };
-    let write = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
-    assert_eq!(
-        unsafe { libc::fcntl(write.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) },
-        0
-    );
+    let lifetime = root.join("lifetime");
+    let lifetime_c = std::ffi::CString::new(lifetime.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(lifetime_c.as_ptr(), 0o600) }, 0);
     let mut child = Command::new(env!("CARGO_BIN_EXE_tempest"))
         .args([
             "model-api-relay",
@@ -59,14 +54,28 @@ fn model_relay_process_exits_when_its_controller_pipe_closes() {
         .arg("--auth-file")
         .arg(auth)
         .args(["--auth-header", "x-api-key", "--timeout-seconds", "1"])
-        .arg("--lifetime-fd")
-        .arg(read.as_raw_fd().to_string())
+        .arg("--lifetime-file")
+        .arg(&lifetime)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    drop(read);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let write = loop {
+        match fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&lifetime)
+        {
+            Ok(file) => break file,
+            Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {}
+            Err(error) => panic!("lifetime writer failed: {error}"),
+        }
+        assert!(Instant::now() < deadline, "lifetime writer deadline");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    fs::remove_file(&lifetime).unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     while !ready.is_file() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));

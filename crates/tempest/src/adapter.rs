@@ -370,6 +370,14 @@ impl CliAdapter {
     pub fn mcp_bridge_path(&self) -> &Path {
         &self.contract.mcp_bridge
     }
+
+    pub fn sandbox_cwd_path(&self) -> PathBuf {
+        self.contract
+            .home
+            .parent()
+            .expect("validated jail home")
+            .join("cwd")
+    }
 }
 
 impl CliContract {

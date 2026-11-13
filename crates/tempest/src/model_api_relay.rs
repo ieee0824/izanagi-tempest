@@ -14,8 +14,10 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    },
     path::{Path, PathBuf},
     process::{ExitCode, Stdio},
     sync::{
@@ -114,7 +116,7 @@ pub(crate) struct ProductionRelay {
     child: tokio::process::Child,
     process_group: i32,
     owner_file: PathBuf,
-    lifetime: Option<OwnedFd>,
+    lifetime: Option<File>,
     stopped: bool,
 }
 
@@ -163,17 +165,13 @@ pub(crate) struct ProductionRelayConfig<'a> {
     pub(crate) timeout_seconds: u64,
 }
 
-fn lifetime_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-    let mut descriptors = [-1; 2];
-    if unsafe { libc::pipe(descriptors.as_mut_ptr()) } != 0 {
+fn create_lifetime_fifo(path: &Path) -> io::Result<()> {
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| invalid("invalid relay lifetime path"))?;
+    if unsafe { libc::mkfifo(path.as_ptr(), 0o600) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    let read = unsafe { OwnedFd::from_raw_fd(descriptors[0]) };
-    let write = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
-    if unsafe { libc::fcntl(write.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok((read, write))
+    Ok(())
 }
 
 impl ProbeRelay {
@@ -211,13 +209,13 @@ pub(crate) async fn start_production_relay(
     let capability = host_io::random_hex()?;
     let capability_file = config.state_root.join("model-relay-capability");
     let ready_file = config.state_root.join("model-relay-ready.json");
+    let lifetime_file = config.state_root.join("model-relay-lifetime");
     host_io::write_new(&capability_file, capability.as_bytes())?;
+    create_lifetime_fifo(&lifetime_file)?;
     host_io::json_new(
         config.owner_file,
         &json!({"state":"launching","role":"model_api_relay"}),
     )?;
-    let (lifetime_read, lifetime_write) = lifetime_pipe()?;
-    let lifetime_fd = lifetime_read.as_raw_fd();
     let mut child = host_io::command(config.executable)
         .args([
             OsString::from("model-api-relay"),
@@ -237,8 +235,8 @@ pub(crate) async fn start_production_relay(
             OsString::from(config.auth_header),
             OsString::from("--timeout-seconds"),
             OsString::from(config.timeout_seconds.to_string()),
-            OsString::from("--lifetime-fd"),
-            OsString::from(lifetime_fd.to_string()),
+            OsString::from("--lifetime-file"),
+            lifetime_file.as_os_str().to_owned(),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -246,7 +244,28 @@ pub(crate) async fn start_production_relay(
         .process_group(0)
         .kill_on_drop(true)
         .spawn()?;
-    drop(lifetime_read);
+    let lifetime_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let lifetime_write = loop {
+        match fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&lifetime_file)
+        {
+            Ok(file) => break file,
+            Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {}
+            Err(error) => return Err(error),
+        }
+        if child.try_wait()?.is_some() {
+            return Err(invalid(
+                "production model relay exited before lifetime bind",
+            ));
+        }
+        if tokio::time::Instant::now() >= lifetime_deadline {
+            return Err(invalid("production model relay lifetime bind deadline"));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    fs::remove_file(&lifetime_file)?;
     let process_group = child
         .id()
         .and_then(|pid| i32::try_from(pid).ok())
@@ -865,7 +884,7 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
                 | "--auth-file"
                 | "--auth-header"
                 | "--timeout-seconds"
-                | "--lifetime-fd"
+                | "--lifetime-file"
         ) || values.insert(name, pair[1].clone()).is_some()
         {
             return Err(invalid("unknown or duplicate relay option"));
@@ -928,20 +947,18 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| (1..=3600).contains(value))
         .ok_or_else(|| invalid("invalid relay timeout"))?;
-    let lifetime_fd = required("--lifetime-fd")?
-        .to_str()
-        .and_then(|value| value.parse::<RawFd>().ok())
-        .filter(|fd| *fd >= 3)
-        .ok_or_else(|| invalid("invalid relay lifetime fd"))?;
-    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-    if unsafe { libc::fstat(lifetime_fd, stat.as_mut_ptr()) } != 0 {
-        return Err(invalid("relay lifetime fd is unavailable"));
+    let lifetime_path = PathBuf::from(required("--lifetime-file")?);
+    let lifetime_metadata = lifetime_path.symlink_metadata()?;
+    if !lifetime_metadata.file_type().is_fifo()
+        || lifetime_metadata.uid() != unsafe { libc::geteuid() }
+        || lifetime_metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(invalid("relay lifetime file is not an owner-private FIFO"));
     }
-    let stat = unsafe { stat.assume_init() };
-    if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
-        return Err(invalid("relay lifetime fd is not a pipe"));
-    }
-    let lifetime = unsafe { File::from_raw_fd(lifetime_fd) };
+    let lifetime = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(lifetime_path)?;
     Ok(Options {
         upstream,
         path_capability,
@@ -991,6 +1008,7 @@ async fn serve(options: Options) -> io::Result<()> {
         lifetime.read(&mut byte)
     });
     let mut connections = tokio::task::JoinSet::new();
+    let (shutdown, _) = tokio::sync::watch::channel(false);
     loop {
         let (stream, _) = tokio::select! {
             result = &mut lifetime => {
@@ -1000,15 +1018,25 @@ async fn serve(options: Options) -> io::Result<()> {
             accepted = listener.accept() => accepted?,
         };
         let state = state.clone();
+        let mut shutdown = shutdown.subscribe();
         connections.spawn(async move {
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(
-                    TokioIo::new(stream),
-                    service_fn(move |request| handle(request, state.clone())),
-                )
-                .await;
+            let connection = hyper::server::conn::http1::Builder::new().serve_connection(
+                TokioIo::new(stream),
+                service_fn(move |request| handle(request, state.clone())),
+            );
+            tokio::pin!(connection);
+            tokio::select! {
+                _ = &mut connection => {}
+                changed = shutdown.changed() => {
+                    if changed.is_ok() {
+                        connection.as_mut().graceful_shutdown();
+                        let _ = connection.await;
+                    }
+                }
+            }
         });
     }
+    let _ = shutdown.send(true);
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while let Some(result) = connections.join_next().await {
             result.map_err(io::Error::other)?;
@@ -1020,7 +1048,7 @@ async fn serve(options: Options) -> io::Result<()> {
     Ok(())
 }
 pub fn run(args: &[OsString]) -> ExitCode {
-    const USAGE: &str = "Usage: tempest model-api-relay --upstream URL --capability-file FILE --policy-file FILE --audit FILE --ready-file FILE --auth-file FILE --auth-header NAME --timeout-seconds N --lifetime-fd FD";
+    const USAGE: &str = "Usage: tempest model-api-relay --upstream URL --capability-file FILE --policy-file FILE --audit FILE --ready-file FILE --auth-file FILE --auth-header NAME --timeout-seconds N --lifetime-file FIFO";
     let options = match parse_options(args) {
         Ok(value) => value,
         Err(error) => {
@@ -1040,15 +1068,19 @@ pub fn run(args: &[OsString]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::{FromRawFd, OwnedFd};
 
     #[tokio::test]
-    async fn production_relay_exits_when_controller_lifetime_pipe_closes() {
+    async fn production_relay_closes_idle_keepalive_when_controller_lifetime_closes() {
         let root = std::env::temp_dir().join(format!(
             "tempest-model-relay-lifetime-{}",
             host_io::random_hex().unwrap()
         ));
         host_io::directory(&root).unwrap();
-        let (read, write) = lifetime_pipe().unwrap();
+        let mut descriptors = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(descriptors.as_mut_ptr()) }, 0);
+        let read = unsafe { File::from_raw_fd(descriptors[0]) };
+        let write = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
         let options = Options {
             upstream: "https://api.example.invalid/".parse().unwrap(),
             path_capability: "x".repeat(32),
@@ -1058,7 +1090,7 @@ mod tests {
             auth_header: reqwest::header::HeaderName::from_static("x-api-key"),
             auth_value: reqwest::header::HeaderValue::from_static("fixture"),
             timeout: std::time::Duration::from_secs(1),
-            lifetime: File::from(read),
+            lifetime: read,
         };
         let task = tokio::spawn(serve(options));
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -1066,6 +1098,12 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert!(root.join("ready.json").is_file());
+        let ready: Value =
+            serde_json::from_slice(&fs::read(root.join("ready.json")).unwrap()).unwrap();
+        let _idle =
+            tokio::net::TcpStream::connect(("127.0.0.1", ready["port"].as_u64().unwrap() as u16))
+                .await
+                .unwrap();
         drop(write);
         tokio::time::timeout(std::time::Duration::from_secs(2), task)
             .await
