@@ -30,6 +30,9 @@ struct Proof {
     proof_id: String,
     created_ns: u64,
     profile_sha256: String,
+    runner_sha256: String,
+    probe_id: String,
+    probe_nonce_sha256: String,
     checks: BTreeMap<String, Check>,
     evidence: Vec<Evidence>,
 }
@@ -58,6 +61,8 @@ struct AcceptanceEvidence {
     check: String,
     profile_sha256: String,
     runner_sha256: String,
+    probe_id: String,
+    probe_nonce_sha256: String,
     started_ns: u64,
     finished_ns: u64,
     facts: Value,
@@ -114,6 +119,11 @@ pub struct VerifiedEnvelope {
     pub proof_id: String,
     pub profile_sha256: String,
     pub profile: LauncherProfile,
+    proof_sha256: String,
+    created_ns: u64,
+    runner_sha256: String,
+    probe_id: String,
+    probe_nonce_sha256: String,
 }
 
 /// In-memory, process-bound authorization. It is deliberately neither Clone
@@ -153,6 +163,10 @@ impl LaunchPermit {
         let current = load_envelope(&self.proof_root)?;
         if current.proof_id != self.envelope.proof_id
             || current.profile_sha256 != self.envelope.profile_sha256
+            || current.proof_sha256 != self.envelope.proof_sha256
+            || current.runner_sha256 != self.envelope.runner_sha256
+            || current.probe_id != self.envelope.probe_id
+            || current.probe_nonce_sha256 != self.envelope.probe_nonce_sha256
         {
             return Err(invalid("launcher proof changed after authorization"));
         }
@@ -171,13 +185,23 @@ pub fn authorize_launch(proof_root: &Path, code_destination: &Path) -> io::Resul
         return Err(invalid("launcher code destination already exists"));
     }
     let envelope = load_envelope(proof_root)?;
+    let now = host_io::now_ns()?;
+    if now.saturating_sub(envelope.created_ns) > 60_000_000_000
+        || envelope.runner_sha256 != host_io::digest(&std::env::current_exe()?)?
+        || envelope.probe_id.is_empty()
+        || !digest(&envelope.probe_nonce_sha256)
+    {
+        return Err(invalid(
+            "capability probe is stale or belongs to another runner",
+        ));
+    }
     let code = materialize_code(&envelope, code_destination)?;
     let permit = LaunchPermit {
         envelope,
         proof_root: proof_root.canonicalize()?,
         code,
         issued_pid: std::process::id(),
-        issued_ns: host_io::now_ns()?,
+        issued_ns: now,
     };
     permit.verify_immediately_before_launch()?;
     Ok(permit)
@@ -420,12 +444,17 @@ fn semantic_evidence(
     bytes: &[u8],
     profile_sha256: &str,
     request_policy_sha256: &str,
+    runner_sha256: &str,
+    probe_id: &str,
+    probe_nonce_sha256: &str,
 ) -> io::Result<()> {
     let evidence: AcceptanceEvidence = parse(bytes)?;
     if evidence.schema_version != 1
         || evidence.check != check
         || evidence.profile_sha256 != profile_sha256
-        || !digest(&evidence.runner_sha256)
+        || evidence.runner_sha256 != runner_sha256
+        || evidence.probe_id != probe_id
+        || evidence.probe_nonce_sha256 != probe_nonce_sha256
         || evidence.started_ns == 0
         || evidence.finished_ns < evidence.started_ns
     {
@@ -498,13 +527,19 @@ pub fn load_envelope(root: &Path) -> io::Result<VerifiedEnvelope> {
     let profile_bytes = bounded(&root.join("launcher-profile.json"))?;
     let profile_sha256 = sha256(&profile_bytes);
     let profile: LauncherProfile = parse(&profile_bytes)?;
-    let proof: Proof = parse(&bounded(&root.join("capability-proof.json"))?)?;
+    let proof_bytes = bounded(&root.join("capability-proof.json"))?;
+    let proof_sha256 = sha256(&proof_bytes);
+    let proof: Proof = parse(&proof_bytes)?;
+    let current_runner_sha256 = host_io::digest(&std::env::current_exe()?)?;
     if proof.schema_version != 1
         || profile.schema_version != 1
         || !identifier(&proof.proof_id)
         || proof.created_ns == 0
         || !digest(&proof.profile_sha256)
         || proof.profile_sha256 != profile_sha256
+        || proof.runner_sha256 != current_runner_sha256
+        || !identifier(&proof.probe_id)
+        || !digest(&proof.probe_nonce_sha256)
     {
         return Err(invalid("invalid capability proof identity"));
     }
@@ -573,6 +608,9 @@ pub fn load_envelope(root: &Path) -> io::Result<VerifiedEnvelope> {
             &bounded(&root.join("evidence").join(&check.evidence[0]))?,
             &profile_sha256,
             &profile.request_policy_sha256,
+            &proof.runner_sha256,
+            &proof.probe_id,
+            &proof.probe_nonce_sha256,
         )?;
     }
     let mut roles = BTreeSet::new();
@@ -597,6 +635,11 @@ pub fn load_envelope(root: &Path) -> io::Result<VerifiedEnvelope> {
         proof_id: proof.proof_id,
         profile_sha256,
         profile,
+        proof_sha256,
+        created_ns: proof.created_ns,
+        runner_sha256: proof.runner_sha256,
+        probe_id: proof.probe_id,
+        probe_nonce_sha256: proof.probe_nonce_sha256,
     })
 }
 
@@ -641,6 +684,9 @@ mod tests {
         let profile_bytes = serde_json::to_vec_pretty(&profile).unwrap();
         host_io::write_new(&root.join("launcher-profile.json"), &profile_bytes).unwrap();
         let profile_hash = sha256(&profile_bytes);
+        let runner_hash = host_io::digest(&std::env::current_exe().unwrap()).unwrap();
+        let probe_id = "probe-001";
+        let probe_nonce_hash = "d".repeat(64);
         let mut checks = serde_json::Map::new();
         let mut evidence_index = Vec::new();
         for name in REQUIRED_CHECKS {
@@ -662,7 +708,8 @@ mod tests {
             };
             let filename = format!("{name}.json");
             let bytes = serde_json::to_vec(&json!({"schema_version":1,"check":name,
-                "profile_sha256":profile_hash,"runner_sha256":"d".repeat(64),
+                "profile_sha256":profile_hash,"runner_sha256":runner_hash,
+                "probe_id":probe_id,"probe_nonce_sha256":probe_nonce_hash,
                 "started_ns":1,"finished_ns":2,"facts":facts}))
             .unwrap();
             host_io::write_new(&root.join("evidence").join(&filename), &bytes).unwrap();
@@ -674,10 +721,26 @@ mod tests {
             evidence_index.push(json!({"name":filename,"sha256":sha256(&bytes),
                 "bytes":bytes.len()}));
         }
-        let proof = json!({"schema_version":1,"proof_id":"proof-001","created_ns":1,
-            "profile_sha256":profile_hash,"checks":checks,"evidence":evidence_index});
+        let proof = json!({"schema_version":1,"proof_id":"proof-001",
+            "created_ns":host_io::now_ns().unwrap(),"profile_sha256":profile_hash,
+            "runner_sha256":runner_hash,"probe_id":probe_id,
+            "probe_nonce_sha256":probe_nonce_hash,"checks":checks,"evidence":evidence_index});
         host_io::json_new(&root.join("capability-proof.json"), &proof).unwrap();
         (root, profile, proof)
+    }
+
+    fn replace_evidence(root: &Path, proof: &mut Value, name: &str, evidence: &Value) {
+        let bytes = serde_json::to_vec(evidence).unwrap();
+        host_io::replace(&root.join("evidence").join(name), &bytes).unwrap();
+        let metadata = proof["evidence"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|item| item["name"] == name)
+            .unwrap();
+        metadata["sha256"] = sha256(&bytes).into();
+        metadata["bytes"] = bytes.len().into();
+        host_io::json_replace(&root.join("capability-proof.json"), proof).unwrap();
     }
 
     #[test]
@@ -730,23 +793,50 @@ mod tests {
         let path = root.join("evidence").join(name);
         let mut evidence: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         evidence["facts"]["successes"] = 0.into();
-        let bytes = serde_json::to_vec(&evidence).unwrap();
-        host_io::replace(&path, &bytes).unwrap();
-        let metadata = proof["evidence"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .find(|item| item["name"] == name)
-            .unwrap();
-        metadata["sha256"] = sha256(&bytes).into();
-        metadata["bytes"] = bytes.len().into();
-        host_io::json_replace(&root.join("capability-proof.json"), &proof).unwrap();
+        replace_evidence(&root, &mut proof, name, &evidence);
         assert!(
             load_envelope(&root)
                 .unwrap_err()
                 .to_string()
                 .contains("did not establish")
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn evidence_from_another_runner_probe_or_nonce_is_rejected() {
+        for (field, value) in [
+            ("runner_sha256", Value::from("1".repeat(64))),
+            ("probe_id", Value::from("probe-from-another-run")),
+            ("probe_nonce_sha256", Value::from("2".repeat(64))),
+        ] {
+            let (root, _, mut proof) = fixture();
+            let name = "allowed_mcp_succeeded.json";
+            let path = root.join("evidence").join(name);
+            let mut evidence: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            evidence[field] = value;
+            replace_evidence(&root, &mut proof, name, &evidence);
+            assert!(
+                load_envelope(&root)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("binding mismatch")
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn stale_probe_cannot_authorize_a_launch() {
+        let (root, _, mut proof) = fixture();
+        proof["created_ns"] = 1.into();
+        host_io::json_replace(&root.join("capability-proof.json"), &proof).unwrap();
+        load_envelope(&root).unwrap();
+        let error = match authorize_launch(&root, &root.join("authorized-code")) {
+            Ok(_) => panic!("stale capability probe authorized a launch"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("stale"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -770,6 +860,25 @@ mod tests {
         proof["proof_id"] = "proof-replaced".into();
         host_io::json_replace(&root.join("capability-proof.json"), &proof).unwrap();
         assert!(permit.verify_immediately_before_launch().is_err());
+        fs::remove_dir_all(root).unwrap();
+
+        let (root, _, mut proof) = fixture();
+        let permit = authorize_launch(&root, &root.join("authorized-code")).unwrap();
+        let name = "allowed_mcp_succeeded.json";
+        let path = root.join("evidence").join(name);
+        let mut evidence: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        evidence["facts"]["attempts"] = 2.into();
+        evidence["facts"]["successes"] = 2.into();
+        replace_evidence(&root, &mut proof, name, &evidence);
+        host_io::json_replace(&root.join("capability-proof.json"), &proof).unwrap();
+        assert!(load_envelope(&root).is_ok());
+        assert!(
+            permit
+                .verify_immediately_before_launch()
+                .unwrap_err()
+                .to_string()
+                .contains("changed after authorization")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
