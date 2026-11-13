@@ -104,3 +104,10 @@ wrong-daemon負例の反復読取で停止した（`/private/tmp/tempest-m6-deli
 これはfixtureの不備であり、配送競合の原因確認には数えない。markerを私有一時ファイルから
 atomic replaceする方式に修正し、同一markerの反復更新を確認した。
 修正版は `/private/tmp/tempest-m6-delivery-race-build-002/` で別buildとして保持する。
+
+Sakura15364の指摘を受け、freeze中はRPC daemonも止まり、大証跡ほど読取が無応答になる偏りを
+再試行設計へ含める。root native exportの240秒、quiesce/thaw各20秒、固定MCPの外側300秒を
+別々に扱い、host全体期限との整合と上限近くの証跡による実測を行う。
+この経路の失敗runもunknownとして分母内に残す。
+完了exportのbarrierへmonotonicによるfrozen_duration_nsとthawed_guest_nsを追加した。
+mailbox9試験は成功したが、現在build002にはこの時刻追加は未搭載で、実VM計測は未確認である。

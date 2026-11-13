@@ -36,7 +36,7 @@ def instrument(dispatcher, quiesce):
 """ + before
     assert quiesce.count(before) == 1
     quiesce = quiesce.replace(before, after)
-    before = "'frozen_guest_ns': frozen_guest_ns}"
-    after = "'frozen_guest_ns': frozen_guest_ns, 'forced_reader_pid': forced_reader_pid}"
+    before = "'frozen_guest_ns': frozen_guest_ns"
+    after = "'frozen_guest_ns': frozen_guest_ns, 'forced_reader_pid': forced_reader_pid"
     assert quiesce.count(before) == 1
     return dispatcher, quiesce.replace(before, after)
