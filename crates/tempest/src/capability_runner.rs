@@ -4,12 +4,13 @@ use crate::{
     adapter::{CapabilityProbeCliConfig, CliKind, McpCommand, run_capability_probe_cli},
     admission::CloseReason,
     capability_probe_provider::{ProbeAgent, ProbeProvider},
-    host_io,
+    host_io, model_api_relay,
     relay::RelayConfig,
     supervisor::{Supervisor, SupervisorConfig},
 };
 use serde_json::Value;
 use std::{
+    collections::BTreeSet,
     ffi::OsString,
     fs, io,
     os::unix::fs::PermissionsExt,
@@ -37,6 +38,26 @@ pub struct CapabilityDiscovery {
     pub catalogs: Vec<Vec<Value>>,
     pub tool_outputs: Vec<Vec<Value>>,
     pub request_fields: Vec<Vec<String>>,
+    pub strict_tempest_only: bool,
+    pub acceptance_relay_verified: bool,
+}
+
+fn strict_tempest_catalog(agent: CapabilityAgent, catalog: &[Value]) -> bool {
+    let names = catalog
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<Vec<_>>();
+    match agent {
+        CapabilityAgent::Codex => false,
+        CapabilityAgent::ClaudeCode => {
+            names
+                == [
+                    "mcp__tempest__sandbox_exec",
+                    "mcp__tempest__sandbox_shell",
+                    "mcp__tempest__sandbox_status",
+                ]
+        }
+    }
 }
 
 fn validate_catalog(agent: CapabilityAgent, catalogs: &[Vec<Value>]) -> io::Result<()> {
@@ -263,6 +284,8 @@ pub fn run(args: &[OsString]) -> std::process::ExitCode {
                     "cli_version":discovery.cli_version,
                     "executable_sha256":discovery.executable_sha256,
                     "requests":discovery.catalogs.len(),
+                    "strict_tempest_only":discovery.strict_tempest_only,
+                    "acceptance_relay_verified":discovery.acceptance_relay_verified,
                     "tool_output_rounds":discovery.tool_outputs.iter().filter(|values| !values.is_empty()).count(),
                     "request_shapes":discovery.request_fields})
             );
@@ -296,6 +319,121 @@ async fn version(executable: &Path) -> io::Result<String> {
 fn private_file(path: &Path, value: &[u8]) -> io::Result<()> {
     host_io::write_new(path, value)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+fn collect_value_types(value: &Value, values: &mut BTreeSet<String>) -> io::Result<()> {
+    match value {
+        Value::Object(object) => {
+            if let Some(kind) = object.get("type") {
+                values.insert(
+                    kind.as_str()
+                        .ok_or_else(|| io::Error::other("provider request type is not text"))?
+                        .to_owned(),
+                );
+            }
+            for (name, child) in object {
+                if name != "tools" {
+                    collect_value_types(child, values)?;
+                }
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                collect_value_types(child, values)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn frozen_request_policy(
+    requests: &[crate::capability_probe_provider::ProbeRequest],
+    provider_prefix: &str,
+) -> io::Result<Value> {
+    let first = requests
+        .first()
+        .ok_or_else(|| io::Error::other("provider requests missing"))?;
+    let tools = first.tools.clone();
+    if tools.is_empty() || requests.iter().any(|request| request.tools != tools) {
+        return Err(io::Error::other("provider tool catalog was not stable"));
+    }
+    let mut paths = BTreeSet::new();
+    let mut models = BTreeSet::new();
+    let mut fields = BTreeSet::new();
+    let mut value_types = BTreeSet::new();
+    for request in requests {
+        let path = request
+            .path
+            .strip_prefix(provider_prefix)
+            .filter(|path| path.starts_with('/'))
+            .ok_or_else(|| io::Error::other("provider request path escaped its capability"))?;
+        paths.insert(path.to_owned());
+        let object = request
+            .body
+            .as_object()
+            .ok_or_else(|| io::Error::other("provider request is not an object"))?;
+        models.insert(
+            object
+                .get("model")
+                .and_then(Value::as_str)
+                .ok_or_else(|| io::Error::other("provider request model missing"))?
+                .to_owned(),
+        );
+        fields.extend(object.keys().cloned());
+        let mut without_tools = request.body.clone();
+        without_tools.as_object_mut().unwrap().remove("tools");
+        collect_value_types(&without_tools, &mut value_types)?;
+    }
+    Ok(serde_json::json!({
+        "schema_version":1,
+        "paths":paths,
+        "models":models,
+        "top_level_fields":fields,
+        "request_value_types":value_types,
+        "request_headers":{"content-type":"application/json"},
+        "maximum_requests":requests.len(),
+        "tools":tools,
+    }))
+}
+
+fn validate_relay_audit(path: &Path, expected_requests: usize) -> io::Result<()> {
+    let text = fs::read_to_string(path)?;
+    let rows = text
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).map_err(io::Error::other))
+        .collect::<io::Result<Vec<_>>>()?;
+    let admitted = rows
+        .iter()
+        .filter(|row| row["forwarded"] == false && row["reason"] == "admission_verified")
+        .count();
+    let forwarded = rows
+        .iter()
+        .filter(|row| row["forwarded"] == true && row["reason"].is_null())
+        .count();
+    let rejected_health_probes = rows
+        .iter()
+        .filter(|row| {
+            row["forwarded"] == false
+                && row["reason"] == "method is not allowed"
+                && row["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("/api/hello"))
+                && row["model"].is_null()
+                && row["tools"].as_array().is_some_and(Vec::is_empty)
+                && row["upstream_status"].is_null()
+        })
+        .count();
+    if rows.len() != expected_requests * 2 + rejected_health_probes
+        || admitted != expected_requests
+        || forwarded != expected_requests
+        || rejected_health_probes > 1
+    {
+        return Err(io::Error::other(
+            "acceptance relay audit contains a rejection or incomplete request",
+        ));
+    }
+    Ok(())
 }
 
 async fn prove_control_socket_denied(
@@ -447,13 +585,13 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
             CapabilityProbeCliConfig {
                 kind,
                 executable: executable.clone(),
-                mcp_bridge: bridge,
+                mcp_bridge: bridge.clone(),
                 relay_executable: std::env::current_exe()?.canonicalize()?,
                 version: cli_version.clone(),
                 model: "tempest-capability-probe".into(),
                 relay_endpoint: provider.endpoint().into(),
                 maximum_turns: 20,
-                sandbox_profile,
+                sandbox_profile: sandbox_profile.clone(),
                 sandbox_jail: root.join("jail"),
                 harness_root: root.join("harness"),
             },
@@ -503,10 +641,149 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
         .collect();
     host_io::json_new(
         &root.join("harness/provider-observations.json"),
-        &serde_json::json!({"catalogs":catalogs,"tool_outputs":tool_outputs}),
+        &serde_json::json!({"catalogs":catalogs,"tool_outputs":tool_outputs,
+            "request_paths":requests.iter().map(|request| &request.path).collect::<Vec<_>>(),
+            "request_headers":requests.iter().map(|request| &request.headers).collect::<Vec<_>>() }),
     )?;
     validate_catalog(config.agent, &catalogs)?;
     validate_tool_outputs(config.agent, &tool_outputs, &capability, &canary_value)?;
+    let strict_tempest_only = strict_tempest_catalog(config.agent, &catalogs[0]);
+    let acceptance_relay_verified = if strict_tempest_only {
+        let acceptance_jail = root.join("acceptance/jail");
+        for directory in [
+            "acceptance",
+            "acceptance/jail",
+            "acceptance/jail/bin",
+            "acceptance/jail/home",
+            "acceptance/jail/cwd",
+        ] {
+            host_io::directory(&root.join(directory))?;
+        }
+        let acceptance_executable = acceptance_jail.join("bin/agent");
+        let acceptance_bridge = acceptance_jail.join("bin/tempest");
+        let acceptance_profile = acceptance_jail.join("agent.sb");
+        host_io::private_copy(&source, &acceptance_executable)?;
+        host_io::private_copy(&std::env::current_exe()?, &acceptance_bridge)?;
+        fs::set_permissions(&acceptance_executable, fs::Permissions::from_mode(0o500))?;
+        fs::set_permissions(&acceptance_bridge, fs::Permissions::from_mode(0o500))?;
+        private_file(&acceptance_profile, include_bytes!("darwin-agent.sb"))?;
+        let provider_url = provider
+            .endpoint()
+            .parse::<reqwest::Url>()
+            .map_err(io::Error::other)?;
+        let policy = frozen_request_policy(&requests, provider_url.path())?;
+        let policy_path = root.join("harness/request-policy.json");
+        host_io::json_new(&policy_path, &policy)?;
+        let acceptance_capability = format!("probe-{}", host_io::random_hex()?);
+        let acceptance_provider = ProbeProvider::start(
+            provider_agent,
+            &acceptance_capability,
+            &host_canary,
+            &write_canary,
+            &control_socket,
+            &hmac_file,
+        )
+        .await?;
+        let upstream = format!("{}/", acceptance_provider.endpoint())
+            .parse::<reqwest::Url>()
+            .map_err(io::Error::other)?;
+        let relay = model_api_relay::start_probe_relay(
+            upstream,
+            host_io::random_hex()?,
+            policy,
+            &root.join("harness/model-relay-audit.jsonl"),
+        )
+        .await?;
+        let acceptance_socket = root.join("socket/mcp-acceptance");
+        let acceptance_supervisor = Supervisor::start(SupervisorConfig {
+            executable: acceptance_bridge.clone(),
+            args: vec![
+                OsString::from("capability-probe-mcp"),
+                OsString::from("--probe-id"),
+                OsString::from(&acceptance_capability),
+            ],
+            cwd: root.join("harness"),
+            socket: acceptance_socket.clone(),
+            log: root.join("harness/acceptance-mcp.jsonl"),
+            stderr: root.join("harness/acceptance-mcp.stderr"),
+            secret_file: None,
+            owner_file: Some(root.join("harness/acceptance-mcp-owner.json")),
+            relay: RelayConfig {
+                max_calls: 4,
+                timeout: Duration::from_secs(60),
+                ..RelayConfig::default()
+            },
+        })?;
+        let acceptance_endpoint = McpCommand {
+            executable: acceptance_bridge.clone(),
+            socket: acceptance_socket,
+            owner_file: root.join("harness/acceptance-agent-owner.json"),
+            raw_stdout: root.join("harness/acceptance-agent.events.jsonl"),
+            raw_stderr: root.join("harness/acceptance-agent.stderr"),
+        };
+        let acceptance = tokio::time::timeout(
+            Duration::from_secs(60),
+            run_capability_probe_cli(
+                CapabilityProbeCliConfig {
+                    kind,
+                    executable: acceptance_executable,
+                    mcp_bridge: acceptance_bridge,
+                    relay_executable: std::env::current_exe()?.canonicalize()?,
+                    version: cli_version.clone(),
+                    model: "tempest-capability-probe".into(),
+                    relay_endpoint: relay.endpoint().into(),
+                    maximum_turns: 20,
+                    sandbox_profile: acceptance_profile,
+                    sandbox_jail: acceptance_jail.clone(),
+                    harness_root: root.join("harness"),
+                },
+                "Execute every requested tool exactly once, then report completion.",
+                &acceptance_endpoint,
+                &acceptance_jail.join("cwd"),
+            ),
+        )
+        .await;
+        let reason = if matches!(acceptance, Ok(Ok(_))) {
+            CloseReason::AgentFinished
+        } else {
+            CloseReason::Cancelled
+        };
+        let drained = acceptance_supervisor.finish(reason).await?;
+        let acceptance =
+            acceptance.map_err(|_| io::Error::other("capability acceptance CLI deadline"))??;
+        let acceptance_requests = acceptance_provider.requests()?;
+        let acceptance_catalogs = acceptance_requests
+            .iter()
+            .map(|request| request.tools.clone())
+            .collect::<Vec<_>>();
+        let acceptance_outputs = acceptance_requests
+            .iter()
+            .map(|request| request.tool_outputs.clone())
+            .collect::<Vec<_>>();
+        validate_catalog(config.agent, &acceptance_catalogs)?;
+        validate_tool_outputs(
+            config.agent,
+            &acceptance_outputs,
+            &acceptance_capability,
+            &canary_value,
+        )?;
+        validate_relay_audit(
+            &root.join("harness/model-relay-audit.jsonl"),
+            requests.len(),
+        )?;
+        if !drained.verified_rpc_drain()
+            || acceptance.status != "finished"
+            || acceptance_requests.len() != requests.len()
+            || acceptance_catalogs != catalogs
+            || fs::read(&host_canary)? != canary_value.as_bytes()
+            || write_canary.exists()
+        {
+            return Err(io::Error::other("capability acceptance boundary failed"));
+        }
+        true
+    } else {
+        false
+    };
     let request_fields = requests
         .iter()
         .map(|request| {
@@ -524,6 +801,8 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
         catalogs,
         tool_outputs,
         request_fields,
+        strict_tempest_only,
+        acceptance_relay_verified,
     })
 }
 

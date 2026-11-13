@@ -22,6 +22,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
+use tokio::task::JoinHandle;
 
 const MAX_REQUEST: usize = 16 * 1024 * 1024;
 const MAX_RESPONSE: usize = 64 * 1024 * 1024;
@@ -99,6 +100,23 @@ struct State {
     requests: AtomicU64,
 }
 
+pub(crate) struct ProbeRelay {
+    endpoint: String,
+    task: JoinHandle<()>,
+}
+
+impl ProbeRelay {
+    pub(crate) fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+}
+
+impl Drop for ProbeRelay {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
 }
@@ -163,10 +181,12 @@ fn validate_policy(value: Value) -> io::Result<ValidatedPolicy> {
         || !sorted_unique(&policy.top_level_fields)
         || !policy.top_level_fields.iter().any(|value| value == "model")
         || !policy.top_level_fields.iter().any(|value| value == "tools")
-        || policy
-            .paths
-            .iter()
-            .any(|path| !path.starts_with('/') || path.contains(['?', '#']))
+        || policy.paths.iter().any(|path| {
+            !path.starts_with('/')
+                || path.contains('#')
+                || path.matches('?').count() > 1
+                || path.ends_with('?')
+        })
         || policy.tools.is_empty()
         || !(1..=1000).contains(&policy.maximum_requests)
     {
@@ -317,21 +337,48 @@ async fn handle(
     state: Arc<State>,
 ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
     if request.method() != hyper::Method::POST {
+        let _ = audit(
+            &state,
+            false,
+            &[],
+            Some("method is not allowed"),
+            request.uri().path(),
+            None,
+            None,
+        );
         return Ok(response(
             StatusCode::METHOD_NOT_ALLOWED,
             "method is not allowed",
         ));
     }
     let prefix = format!("/{}", state.path_capability);
-    let Some(suffix) = request
+    let request_target = request
         .uri()
-        .path()
-        .strip_prefix(&prefix)
-        .map(str::to_owned)
-    else {
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or_else(|| request.uri().path());
+    let Some(suffix) = request_target.strip_prefix(&prefix).map(str::to_owned) else {
+        let _ = audit(
+            &state,
+            false,
+            &[],
+            Some("invalid relay capability"),
+            request_target,
+            None,
+            None,
+        );
         return Ok(response(StatusCode::NOT_FOUND, "invalid relay capability"));
     };
-    if !suffix.starts_with('/') || request.uri().query().is_some() {
+    if !suffix.starts_with('/') {
+        let _ = audit(
+            &state,
+            false,
+            &[],
+            Some("invalid relay path"),
+            request_target,
+            None,
+            None,
+        );
         return Ok(response(StatusCode::NOT_FOUND, "invalid relay path"));
     }
     if request
@@ -341,6 +388,15 @@ async fn handle(
         .and_then(|value| value.parse::<usize>().ok())
         .is_none_or(|length| length > MAX_REQUEST)
     {
+        let _ = audit(
+            &state,
+            false,
+            &[],
+            Some("invalid request length"),
+            &suffix,
+            None,
+            None,
+        );
         return Ok(response(
             StatusCode::PAYLOAD_TOO_LARGE,
             "invalid request length",
@@ -525,6 +581,74 @@ async fn handle(
     Ok(downstream.body(Full::new(Bytes::from(output))).unwrap())
 }
 
+/// Start the acceptance probe relay against a loopback deterministic peer.
+/// This deliberately reuses the production admission and forwarding path;
+/// only the upstream scheme restriction differs from the public CLI.
+pub(crate) async fn start_probe_relay(
+    upstream: reqwest::Url,
+    path_capability: String,
+    policy: Value,
+    audit_path: &Path,
+) -> io::Result<ProbeRelay> {
+    if upstream.scheme() != "http"
+        || upstream.host_str() != Some("127.0.0.1")
+        || upstream.port().is_none()
+        || upstream.path().is_empty()
+        || !upstream.path().ends_with('/')
+        || upstream.query().is_some()
+        || upstream.fragment().is_some()
+        || path_capability.len() < 32
+        || !path_capability
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(invalid("invalid acceptance probe relay endpoint"));
+    }
+    let audit = fs::OpenOptions::new()
+        .append(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(audit_path)?;
+    let state = Arc::new(State {
+        upstream,
+        path_capability: path_capability.clone(),
+        policy: validate_policy(policy)?,
+        audit: Mutex::new(audit),
+        auth_header: reqwest::header::AUTHORIZATION,
+        auth_value: "tempest-probe-relay-placeholder"
+            .parse()
+            .expect("fixed header value"),
+        client: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|error| invalid(error.to_string()))?,
+        requests: AtomicU64::new(0),
+    });
+    let listener =
+        tokio::net::TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await?;
+    let port = listener.local_addr()?.port();
+    let task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let state = state.clone();
+            tokio::spawn(async move {
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(
+                        TokioIo::new(stream),
+                        service_fn(move |request| handle(request, state.clone())),
+                    )
+                    .await;
+            });
+        }
+    });
+    Ok(ProbeRelay {
+        endpoint: format!("http://127.0.0.1:{port}/{path_capability}"),
+        task,
+    })
+}
+
 fn parse_options(args: &[OsString]) -> io::Result<Options> {
     if args.len() != 16 {
         return Err(invalid("invalid model-api-relay arguments"));
@@ -699,6 +823,16 @@ mod tests {
         assert_eq!(admission.tools, ["function:mcp__tempest__status"]);
         for invalid in [br#"{"model":"model-1","tools":[],"tools":[{"type":"function","name":"mcp__tempest__status","description":"fixed","input_schema":{"type":"object"}}]}"#.as_slice(),br#"{"model":"model-2","tools":[]}"#.as_slice(),br#"{"model":"model-1","previous_response_id":"old","tools":[]}"#.as_slice(),br#"{"model":"model-1","prompt":{"image_url":"https://example.invalid"},"tools":[]}"#.as_slice(),br#"{"model":"model-1","prompt":{"type":"file_url"},"tools":[]}"#.as_slice()]{assert!(admit(invalid,"/v1/messages",&policy).is_err())}
         assert!(admit(&valid, "/v1/files", &policy).is_err());
+
+        let query_policy = validate_policy(json!({"schema_version":1,
+            "paths":["/v1/messages?beta=true"],"models":["model-1"],
+            "top_level_fields":["model","prompt","tools"],
+            "request_value_types":["text"],"request_headers":{},"maximum_requests":1,
+            "tools":[{"type":"function","name":"mcp__tempest__status",
+                "description":"fixed","input_schema":{"type":"object"}}]}))
+        .unwrap();
+        assert!(admit(&valid, "/v1/messages?beta=true", &query_policy).is_ok());
+        assert!(admit(&valid, "/v1/messages?beta=false", &query_policy).is_err());
     }
 
     #[tokio::test]

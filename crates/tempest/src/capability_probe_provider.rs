@@ -5,6 +5,7 @@ use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
@@ -22,6 +23,8 @@ pub(crate) enum ProbeAgent {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProbeRequest {
+    pub path: String,
+    pub headers: BTreeMap<String, String>,
     pub body: Value,
     pub tools: Vec<Value>,
     pub tool_outputs: Vec<Value>,
@@ -122,6 +125,22 @@ async fn handle(
             "text/plain",
         ));
     }
+    let path = request
+        .uri()
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or_else(|| request.uri().path())
+        .to_owned();
+    let headers = request
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_owned(), value.to_owned()))
+        })
+        .collect();
     let body = match Limited::new(request.into_body(), LIMIT).collect().await {
         Ok(body) => body.to_bytes(),
         Err(_) => {
@@ -180,6 +199,8 @@ async fn handle(
         };
         let index = requests.len();
         requests.push(ProbeRequest {
+            path,
+            headers,
             body: value,
             tools: tools.clone(),
             tool_outputs,
