@@ -4,6 +4,7 @@ import argparse
 from collections import Counter
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     for flag in ('tempest', 'izanagi', 'image', 'image-inputs', 'python', 'runs'):
         parser.add_argument('--' + flag, type=Path, required=True)
@@ -21,6 +23,11 @@ def main():
         parser.error('--repeat must be at least 2')
     args.runs.mkdir(mode=0o700, parents=True, exist_ok=False)
     observations = []
+    summary_path = args.runs / 'noop-summary.json'
+    summary = {'scope': 'no_tool_mock_background_control', 'attribution_proven': False,
+               'subtract_from_model_candidates': False, 'complete': False,
+               'runs': observations, 'failed_runs': []}
+    summary_path.write_text(json.dumps(summary, indent=2) + '\n')
     with tempfile.TemporaryDirectory(prefix='tempest-noop-') as temporary:
         script = Path(temporary) / 'noop.json'
         script.write_text(json.dumps({'calls': [], 'final_output': '```json\n{"findings":[]}\n```'}))
@@ -33,6 +40,8 @@ def main():
                        '--runs', str(args.runs), '--run-id', run_id]
             completed = subprocess.run(command, text=True, capture_output=True, timeout=360)
             if completed.returncode:
+                summary['failed_runs'].append(run_id)
+                summary_path.write_text(json.dumps(summary, indent=2) + '\n')
                 raise AssertionError(f'{run_id}: failed; inspect private run directory')
             run = args.runs / run_id
             marker = json.loads((run / 'evaluation-state.json').read_text())
@@ -56,10 +65,10 @@ def main():
                                  'evaluation_id': marker['evaluation_id'],
                                  'candidates': [{'rule': key[0], 'target': key[1], 'decision': key[2],
                                                  'count': count} for key, count in sorted(candidates.items())]})
+            summary_path.write_text(json.dumps(summary, indent=2) + '\n')
             print(json.dumps(observations[-1]), flush=True)
-    summary = {'scope': 'no_tool_mock_background_control', 'attribution_proven': False,
-               'subtract_from_model_candidates': False, 'runs': observations}
-    (args.runs / 'noop-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+    summary['complete'] = True
+    summary_path.write_text(json.dumps(summary, indent=2) + '\n')
 
 
 if __name__ == '__main__':

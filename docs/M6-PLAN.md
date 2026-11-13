@@ -66,3 +66,20 @@ CLI検査のAPIはローカルスタブであり、実モデル比較ではな�
 - 証拠は `/private/tmp/tempest-m6-claude-preflight-001/summary.json` と `/private/tmp/tempest-m6-codex-preflight-003/summary.json`。
 - この2試行はMCP未接続で、HMAC/hostfwd迂回・許可MCPの正対照は未検証。実launcherの受入完了ではない。
 - Codexの先行2試行は、shim解決失敗と別版0.142.2の未知feature拒否でモデル要求に未到達。成功試行に混ぜない。
+
+## 議論から追加した条件
+
+Sakura15356: runごとに空のHOME/設定領域を与え、普段のinstructions・memory・他MCP・hookを
+読み込まない。認証は明示した必要情報だけを渡す。modelの正確なID、CLI hash、生成設定、予算を
+固定する。host CLIのモデルAPI通信とguestのnetwork制限は別境界で、host側の許可先・拒否/記録の
+実効性を検査する。能力としてweb取得を強制する負例も追加する。
+modelの拒否は独立軸とし、単なる最終文のキーワードだけで自動確定しない。
+API障害・rate limit等で必要観測が成立しないrunはunknownとして残す。
+
+## 対照中に発見した配送障害
+
+`/private/tmp/tempest-m6-noop-001/noop-1` は成功（tool/API 0、計上0・未確定10）。
+`noop-2` はseal後exportで管理exec不確定となりaborted/partial、全cleanupは成功した。
+3回成功した対照とは扱わない。既存#13へ証跡とfreeze/応答取得の競合仮説を追記した。
+具体的な失敗応答の形式は未保存なので未確定。hostに秘密本文を転記せず応答種別だけを残す
+診断を加え、異なるrun IDで再検証する。root operationの再投入は行わない。

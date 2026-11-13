@@ -250,9 +250,20 @@ pub(crate) async fn call(
         if text.strip_suffix("\n(exit code: 1)").map(str::trim)
             != Some("{\"ok\":false,\"error\":\"reply_unavailable\"}")
         {
-            return Err(io::Error::other(
-                "management execution uncertain; discard VM",
-            ));
+            // Keep the failure observable without copying guest-controlled output
+            // (which may include credentials) into run.json diagnostics.
+            let category = if text.starts_with("exec failed:") {
+                "exec_failed"
+            } else if text.ends_with("(exit code: -1)") {
+                "exit_minus_one"
+            } else if text.ends_with("(exit code: 137)") {
+                "exit_137"
+            } else {
+                "unexpected_error_response"
+            };
+            return Err(io::Error::other(format!(
+                "management execution uncertain ({category}); discard VM"
+            )));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
