@@ -59,6 +59,8 @@ pub struct LauncherProfile {
     pub cli_version: String,
     pub provider_protocol: String,
     pub upstream_authority: String,
+    pub proof_upstream_kind: String,
+    pub allowed_runtime_variance: Vec<String>,
     pub request_policy_sha256: String,
     pub argument_template: Vec<String>,
     pub environment: Vec<EnvironmentRule>,
@@ -66,6 +68,7 @@ pub struct LauncherProfile {
     pub cwd_policy: String,
     pub prompt_policy: String,
     pub real_authentication_owner: String,
+    pub system_configuration: Vec<SystemPathRule>,
     pub code_closure: Vec<LiveArtifact>,
 }
 
@@ -82,13 +85,42 @@ pub struct LiveArtifact {
 pub struct EnvironmentRule {
     pub name: String,
     pub source: String,
+    pub value_sha256: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemPathRule {
+    pub path: PathBuf,
+    pub state: String,
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug)]
-pub struct VerifiedProof {
+pub struct VerifiedEnvelope {
     pub proof_id: String,
     pub profile_sha256: String,
     pub profile: LauncherProfile,
+}
+
+/// Copy measured launcher code into one run-private directory and verify the
+/// copies. Launchers must execute these paths, never the original live paths.
+pub fn materialize_code(
+    proof: &VerifiedEnvelope,
+    destination: &Path,
+) -> io::Result<BTreeMap<String, PathBuf>> {
+    host_io::directory(destination)?;
+    let mut paths = BTreeMap::new();
+    for artifact in &proof.profile.code_closure {
+        let target = destination.join(&artifact.role);
+        host_io::private_copy(&artifact.path, &target)?;
+        if host_io::digest(&target)? != artifact.sha256 {
+            return Err(invalid("copied launcher code digest mismatch"));
+        }
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o500))?;
+        paths.insert(artifact.role.clone(), target);
+    }
+    Ok(paths)
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -187,9 +219,13 @@ impl<'de> serde::Deserialize<'de> for UniqueValue {
     }
 }
 
-fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> io::Result<T> {
+pub(crate) fn parse_unique_value(bytes: &[u8]) -> io::Result<serde_json::Value> {
     let unique: UniqueValue = serde_json::from_slice(bytes)?;
-    serde_json::from_value(unique.0).map_err(io::Error::other)
+    Ok(unique.0)
+}
+
+fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> io::Result<T> {
+    serde_json::from_value(parse_unique_value(bytes)?).map_err(io::Error::other)
 }
 
 fn private_root(root: &Path) -> io::Result<()> {
@@ -228,6 +264,15 @@ fn environment_contract(values: &[EnvironmentRule]) -> bool {
         {
             return false;
         }
+        let fixed = matches!(
+            value.source.as_str(),
+            "fixed_nonsecret" | "fixed_placeholder"
+        );
+        if fixed != value.value_sha256.as_deref().is_some_and(digest)
+            || (!fixed && value.value_sha256.is_some())
+        {
+            return false;
+        }
         home |= value.name == "HOME" && value.source == "generated_private_directory";
         endpoint |= value.source == "relay_endpoint";
         placeholder |= value.source == "fixed_placeholder";
@@ -236,7 +281,44 @@ fn environment_contract(values: &[EnvironmentRule]) -> bool {
     home && endpoint && placeholder
 }
 
-pub fn load(root: &Path) -> io::Result<VerifiedProof> {
+fn system_configuration_contract(values: &[SystemPathRule]) -> io::Result<bool> {
+    if values.is_empty() {
+        return Ok(false);
+    }
+    let mut prior: Option<&Path> = None;
+    for value in values {
+        if !value.path.is_absolute() || prior.is_some_and(|prior| prior >= value.path.as_path()) {
+            return Ok(false);
+        }
+        match value.state.as_str() {
+            "absent" => {
+                if value.sha256.is_some() {
+                    return Ok(false);
+                }
+                match value.path.symlink_metadata() {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    _ => return Ok(false),
+                }
+            }
+            "file" => {
+                let expected = match value.sha256.as_deref().filter(|value| digest(value)) {
+                    Some(value) => value,
+                    None => return Ok(false),
+                };
+                if bounded(&value.path).map(|bytes| sha256(&bytes))? != expected {
+                    return Ok(false);
+                }
+            }
+            _ => return Ok(false),
+        }
+        prior = Some(&value.path);
+    }
+    Ok(true)
+}
+
+/// Verify only the envelope, file integrity, and static profile contract.
+/// This does not establish that any capability check was meaningfully run.
+pub fn load_envelope(root: &Path) -> io::Result<VerifiedEnvelope> {
     private_root(root)?;
     private_root(&root.join("evidence"))?;
     let profile_bytes = bounded(&root.join("launcher-profile.json"))?;
@@ -263,6 +345,9 @@ pub fn load(root: &Path) -> io::Result<VerifiedProof> {
             .upstream_authority
             .strip_prefix("https://")
             .is_none_or(|host| host.is_empty() || host.contains(['/', '?', '#', '@']))
+        || profile.proof_upstream_kind != "local_deterministic_stub_through_relay"
+        || profile.allowed_runtime_variance
+            != ["relay_authentication_value", "relay_upstream_authority"]
         || !digest(&profile.request_policy_sha256)
         || profile.argument_template.is_empty()
         || !environment_contract(&profile.environment)
@@ -270,6 +355,7 @@ pub fn load(root: &Path) -> io::Result<VerifiedProof> {
         || profile.cwd_policy != "empty_owner_private"
         || profile.prompt_policy != "tempest_generated_only"
         || profile.real_authentication_owner != "model_api_relay_only"
+        || !system_configuration_contract(&profile.system_configuration)?
     {
         return Err(invalid("invalid launcher profile contract"));
     }
@@ -325,7 +411,7 @@ pub fn load(root: &Path) -> io::Result<VerifiedProof> {
             return Err(invalid("launcher code closure is incomplete"));
         }
     }
-    Ok(VerifiedProof {
+    Ok(VerifiedEnvelope {
         proof_id: proof.proof_id,
         profile_sha256,
         profile,
@@ -355,14 +441,18 @@ mod tests {
         let profile = json!({
             "schema_version":1,"agent":"codex","model":"model-fixed","cli_version":"1.0",
             "provider_protocol":"openai-responses","upstream_authority":"https://api.example.invalid",
+            "proof_upstream_kind":"local_deterministic_stub_through_relay",
+            "allowed_runtime_variance":["relay_authentication_value","relay_upstream_authority"],
             "request_policy_sha256":"a".repeat(64),"argument_template":["exec","<PROMPT>"],
             "environment":[
-                {"name":"HOME","source":"generated_private_directory"},
-                {"name":"OPENAI_API_KEY","source":"fixed_placeholder"},
-                {"name":"OPENAI_BASE_URL","source":"relay_endpoint"},
-                {"name":"PATH","source":"fixed_nonsecret"}],"home_policy":"empty_owner_private",
+                {"name":"HOME","source":"generated_private_directory","value_sha256":null},
+                {"name":"OPENAI_API_KEY","source":"fixed_placeholder","value_sha256":"b".repeat(64)},
+                {"name":"OPENAI_BASE_URL","source":"relay_endpoint","value_sha256":null},
+                {"name":"PATH","source":"fixed_nonsecret","value_sha256":"c".repeat(64)}],"home_policy":"empty_owner_private",
             "cwd_policy":"empty_owner_private","prompt_policy":"tempest_generated_only",
             "real_authentication_owner":"model_api_relay_only",
+            "system_configuration":[{"path":root.join("absent-managed-config"),
+                "state":"absent","sha256":null}],
             "code_closure":[closure("agent_executable",&executable),closure("mcp_bridge",&bridge),
                 closure("model_api_relay",&relay)]
         });
@@ -388,9 +478,26 @@ mod tests {
     #[test]
     fn complete_bound_proof_is_accepted_and_live_code_changes_are_rejected() {
         let (root, _, _) = fixture();
-        assert_eq!(load(&root).unwrap().proof_id, "proof-001");
+        let proof = load_envelope(&root).unwrap();
+        assert_eq!(proof.proof_id, "proof-001");
+        let copies = materialize_code(&proof, &root.join("copies")).unwrap();
+        assert_eq!(
+            host_io::digest(&copies["agent_executable"]).unwrap(),
+            proof
+                .profile
+                .code_closure
+                .iter()
+                .find(|item| item.role == "agent_executable")
+                .unwrap()
+                .sha256
+        );
         host_io::replace(&root.join("agent"), b"changed").unwrap();
-        assert!(load(&root).unwrap_err().to_string().contains("closure"));
+        assert!(
+            load_envelope(&root)
+                .unwrap_err()
+                .to_string()
+                .contains("closure")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -402,12 +509,12 @@ mod tests {
             .unwrap()
             .remove("allowed_mcp_succeeded");
         host_io::json_replace(&root.join("capability-proof.json"), &proof).unwrap();
-        assert!(load(&root).is_err());
+        assert!(load_envelope(&root).is_err());
         proof["checks"] = json!({"host_tools_rejected":{"performed":true,"passed":true,
             "profile_sha256":proof["profile_sha256"],"evidence":["acceptance.json"]}});
         proof["status"] = "observed".into();
         host_io::json_replace(&root.join("capability-proof.json"), &proof).unwrap();
-        assert!(load(&root).is_err());
+        assert!(load_envelope(&root).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -418,7 +525,7 @@ mod tests {
         let mut duplicate = b"{\"schema_version\":1,\"schema_version\":1,".to_vec();
         duplicate.extend_from_slice(&bytes[1..]);
         host_io::replace(&root.join("launcher-profile.json"), &duplicate).unwrap();
-        assert!(load(&root).is_err());
+        assert!(load_envelope(&root).is_err());
         fs::remove_dir_all(root).unwrap();
 
         let (root, mut profile, mut proof) = fixture();
@@ -431,7 +538,7 @@ mod tests {
             check["profile_sha256"] = profile_hash.clone();
         }
         host_io::json_replace(&root.join("capability-proof.json"), &proof).unwrap();
-        assert!(load(&root).is_err());
+        assert!(load_envelope(&root).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }

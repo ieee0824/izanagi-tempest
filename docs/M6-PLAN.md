@@ -73,17 +73,24 @@ CLIのJSON event streamはadapter固有parserで扱う。Codexは正常終了し
 
 ## launcher capability proof
 
-`capability_proof`はowner-private proof directoryの`launcher-profile.json`、
-`capability-proof.json`、`evidence/`を起動前に検証する。profileはagent/model/CLI version、provider protocolと
+`capability_proof`の現段階は、owner-private proof directoryの`launcher-profile.json`、
+`capability-proof.json`、`evidence/`のenvelope整合性だけを検証する。profileはagent/model/CLI version、provider protocolと
 上流authority、request policy hash、引数template、環境変数ごとの値の出どころ、空HOME/cwd、prompt源、
 実行code closureを固定する。code closureのagent executable、MCP bridge、API relayをlive file hashで再照合する。
 本物の認証はrelayだけが所有し、agentには固定placeholderだけを与える。
+script/shimやPATH解決は正式profileで認めず、Codexは同梱native binary、Claude Codeはnative binaryの
+canonical targetを指定する。検証後はclosureの各fileをrun私有directoryへコピーし、copyのhashを再照合して
+そのcopyだけを実行する。API relayも最終的に同じnative `tempest` binaryへ統合し、Python prototypeを正式launcherで使わない。
+空HOMEで消えないsystem/managed設定pathはCLI版ごとにprofileへ列挙し、absentまたは内容hashを起動時に照合する。
+proof測定と本番で変更可能なのはrelayの上流authorityと上流認証値だけで、agentから見えるrelay endpoint、
+引数、環境、tool/request policyは同じprofileにする。
 
-proofはhost tool拒否、許可MCP正対照、host canary read/write拒否、HMAC/control socket非到達、
+正式なproof runnerはhost tool拒否、許可MCP正対照、host canary read/write拒否、HMAC/control socket非到達、
 tool catalog一致、MCP child環境のsanitize、provider request policyを必須checkとする。全checkが
 performed/passedで同じprofile hashと実測evidence hashへ束縛されなければ拒否する。未知field、重複JSON key、
 欠落check、改変evidence、live code変更を拒否するため、旧`status: observed` summaryの再包装では通らない。
-現時点ではvalidatorまでで、同一構成を実測してproofを生成するrunnerとlauncher接続は未完了である。
+ただし現loaderはevidence内容の意味や測定主体を検証せず、`passed: true`の自己申告を起動許可にしない。
+固定runnerがcheckごとの構造化結果を実測・検証し、同じtrusted processで直ちにlauncherへ接続する部分は未完了である。
 
 ## 再現コマンド
 

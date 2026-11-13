@@ -14,3 +14,9 @@ sha2.workspace = true
 tokio = { version = "1", features = ["full"] }
 libc = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["http1", "tokio"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+futures-util = "0.3"

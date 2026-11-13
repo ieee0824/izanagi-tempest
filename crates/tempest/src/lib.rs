@@ -9,6 +9,7 @@ pub mod evaluate;
 mod guest_transport;
 mod host_io;
 pub mod izanagi_log;
+pub mod model_api_relay;
 pub mod plan;
 pub mod proxy_cli;
 pub mod relay;
