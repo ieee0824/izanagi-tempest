@@ -82,7 +82,8 @@ query/fragment不在、capability pathを検査する。実行copyのhash不一�
 turn上限を強制し、Codexはrelay policyのrequest上限をAPI turn予算とする。thread/session切替は報告を拒否する。
 この契約は正式proof runnerとnative relayのlifecycleへ接続済みで、`tempest run --agent claude-code`から選択できる。
 relay authはrun成果物へコピーせず、acceptance用MCP/providerと本番MCP/providerを分離する。
-本番relayはowner-private FIFOを通じてcontrollerだけが保持するCLOEXEC lifetime fileのEOFで自律終了する。crash recoveryは記録済みPGIDへ
+本番relayはowner-private FIFOを通じてcontrollerだけが保持するCLOEXEC lifetime fileのEOFで自律終了する。relayは
+open後のFIFO identityを再検査し、期限付きhandshakeが成立してからだけprovider認証を読む。crash recoveryは記録済みPGIDへ
 signalを送らず消滅だけを確認し、PGID再利用時に無関係なprocess groupを停止しない。
 一時capabilityとauthorized codeはrun後に削除する一方、非秘密のlauncher profile、proof、policy、
 check別evidence、acceptance relay/MCP auditは`evidence/native-acceptance/`へ保存して後日監査できるようにする。

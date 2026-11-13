@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::{Read, Write},
     os::unix::{
         ffi::OsStrExt,
         fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
@@ -56,12 +57,13 @@ fn model_relay_process_exits_when_its_controller_lifetime_closes() {
         .args(["--auth-header", "x-api-key", "--timeout-seconds", "1"])
         .arg("--lifetime-file")
         .arg(&lifetime)
+        .args(["--lifetime-bind-timeout-ms", "2000"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     let write = loop {
         match fs::OpenOptions::new()
             .write(true)
@@ -72,9 +74,20 @@ fn model_relay_process_exits_when_its_controller_lifetime_closes() {
             Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {}
             Err(error) => panic!("lifetime writer failed: {error}"),
         }
+        if let Some(status) = child.try_wait().unwrap() {
+            let mut stderr = String::new();
+            child
+                .stderr
+                .as_mut()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .unwrap();
+            panic!("relay exited before lifetime bind ({status}): {stderr}");
+        }
         assert!(Instant::now() < deadline, "lifetime writer deadline");
         std::thread::sleep(Duration::from_millis(10));
     };
+    (&write).write_all(b"L").unwrap();
     fs::remove_file(&lifetime).unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     while !ready.is_file() && Instant::now() < deadline {
@@ -101,6 +114,63 @@ fn model_relay_process_exits_when_its_controller_lifetime_closes() {
         std::thread::sleep(Duration::from_millis(10));
     };
     assert!(status.success());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn model_relay_process_exits_when_controller_never_binds_lifetime() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "tempest-relay-unbound-{}-{unique}",
+        std::process::id()
+    ));
+    fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+    let private = |name: &str, bytes: &[u8]| {
+        let path = root.join(name);
+        fs::write(&path, bytes).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    };
+    let capability = private("capability", b"0123456789abcdef0123456789abcdef");
+    let auth = private("auth", b"fixture-key");
+    let policy_source = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/policies/claude-code-2.1.323-claude-sonnet-5-5-anthropic-messages.json"
+    );
+    let policy = private("policy.json", &fs::read(policy_source).unwrap());
+    let lifetime = root.join("lifetime");
+    let lifetime_c = std::ffi::CString::new(lifetime.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(lifetime_c.as_ptr(), 0o600) }, 0);
+    let started = Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_tempest"))
+        .args([
+            "model-api-relay",
+            "--upstream",
+            "https://api.example.invalid/",
+        ])
+        .arg("--capability-file")
+        .arg(capability)
+        .arg("--policy-file")
+        .arg(policy)
+        .arg("--audit")
+        .arg(root.join("audit.jsonl"))
+        .arg("--ready-file")
+        .arg(root.join("ready.json"))
+        .arg("--auth-file")
+        .arg(auth)
+        .args(["--auth-header", "x-api-key", "--timeout-seconds", "1"])
+        .arg("--lifetime-file")
+        .arg(&lifetime)
+        .args(["--lifetime-bind-timeout-ms", "100"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("relay lifetime handshake deadline"));
+    assert!(!root.join("ready.json").exists());
     fs::remove_dir_all(root).unwrap();
 }
 

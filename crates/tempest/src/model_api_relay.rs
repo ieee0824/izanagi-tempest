@@ -174,6 +174,53 @@ fn create_lifetime_fifo(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn validate_lifetime_fifo(metadata: &fs::Metadata) -> io::Result<()> {
+    if !metadata.file_type().is_fifo()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(invalid("relay lifetime file is not an owner-private FIFO"));
+    }
+    Ok(())
+}
+
+fn bind_lifetime_fifo(path: &Path, timeout: std::time::Duration) -> io::Result<File> {
+    let path_metadata = path
+        .symlink_metadata()
+        .map_err(|error| invalid(format!("relay lifetime path metadata: {error}")))?;
+    validate_lifetime_fifo(&path_metadata)?;
+    let mut lifetime = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|error| invalid(format!("relay lifetime open: {error}")))?;
+    let opened_metadata = lifetime
+        .metadata()
+        .map_err(|error| invalid(format!("relay lifetime descriptor metadata: {error}")))?;
+    validate_lifetime_fifo(&opened_metadata)?;
+    if opened_metadata.dev() != path_metadata.dev() || opened_metadata.ino() != path_metadata.ino()
+    {
+        return Err(invalid("relay lifetime FIFO changed during open"));
+    }
+    let deadline = std::time::Instant::now() + timeout;
+    let mut marker = [0_u8; 1];
+    loop {
+        match lifetime.read(&mut marker) {
+            Ok(1) if marker[0] == b'L' => break,
+            Ok(1) => return Err(invalid("invalid relay lifetime handshake")),
+            Ok(0) => {}
+            Ok(_) => unreachable!(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error),
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(invalid("relay lifetime handshake deadline"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Ok(lifetime)
+}
+
 impl ProbeRelay {
     pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
@@ -237,6 +284,8 @@ pub(crate) async fn start_production_relay(
             OsString::from(config.timeout_seconds.to_string()),
             OsString::from("--lifetime-file"),
             lifetime_file.as_os_str().to_owned(),
+            OsString::from("--lifetime-bind-timeout-ms"),
+            OsString::from("10000"),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -265,6 +314,7 @@ pub(crate) async fn start_production_relay(
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     };
+    (&lifetime_write).write_all(b"L")?;
     fs::remove_file(&lifetime_file)?;
     let process_group = child
         .id()
@@ -866,7 +916,7 @@ pub(crate) async fn start_probe_relay(
 }
 
 fn parse_options(args: &[OsString]) -> io::Result<Options> {
-    if args.len() != 18 {
+    if args.len() != 20 {
         return Err(invalid("invalid model-api-relay arguments"));
     }
     let mut values = HashMap::new();
@@ -885,6 +935,7 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
                 | "--auth-header"
                 | "--timeout-seconds"
                 | "--lifetime-file"
+                | "--lifetime-bind-timeout-ms"
         ) || values.insert(name, pair[1].clone()).is_some()
         {
             return Err(invalid("unknown or duplicate relay option"));
@@ -929,11 +980,6 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
         Path::new(&required("--policy-file")?),
         1024 * 1024,
     )?)?)?;
-    let auth_value = reqwest::header::HeaderValue::from_bytes(&private_bytes(
-        Path::new(&required("--auth-file")?),
-        8192,
-    )?)
-    .map_err(|error| invalid(error.to_string()))?;
     let auth_header = required("--auth-header")?
         .to_str()
         .ok_or_else(|| invalid("invalid auth header"))?
@@ -947,18 +993,21 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| (1..=3600).contains(value))
         .ok_or_else(|| invalid("invalid relay timeout"))?;
-    let lifetime_path = PathBuf::from(required("--lifetime-file")?);
-    let lifetime_metadata = lifetime_path.symlink_metadata()?;
-    if !lifetime_metadata.file_type().is_fifo()
-        || lifetime_metadata.uid() != unsafe { libc::geteuid() }
-        || lifetime_metadata.permissions().mode() & 0o077 != 0
-    {
-        return Err(invalid("relay lifetime file is not an owner-private FIFO"));
-    }
-    let lifetime = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(lifetime_path)?;
+    let lifetime_timeout = required("--lifetime-bind-timeout-ms")?
+        .to_str()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (100..=10_000).contains(value))
+        .ok_or_else(|| invalid("invalid relay lifetime bind timeout"))?;
+    // Establish controller liveness before loading the real provider credential.
+    let lifetime = bind_lifetime_fifo(
+        Path::new(&required("--lifetime-file")?),
+        std::time::Duration::from_millis(lifetime_timeout),
+    )?;
+    let auth_value = reqwest::header::HeaderValue::from_bytes(&private_bytes(
+        Path::new(&required("--auth-file")?),
+        8192,
+    )?)
+    .map_err(|error| invalid(error.to_string()))?;
     Ok(Options {
         upstream,
         path_capability,
@@ -1005,7 +1054,16 @@ async fn serve(options: Options) -> io::Result<()> {
     let mut lifetime = tokio::task::spawn_blocking(move || {
         let mut lifetime = options.lifetime;
         let mut byte = [0_u8; 1];
-        lifetime.read(&mut byte)
+        loop {
+            match lifetime.read(&mut byte) {
+                Ok(0) => return Ok(0),
+                Ok(read) => return Ok(read),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => return Err(error),
+            }
+        }
     });
     let mut connections = tokio::task::JoinSet::new();
     let (shutdown, _) = tokio::sync::watch::channel(false);
@@ -1048,7 +1106,7 @@ async fn serve(options: Options) -> io::Result<()> {
     Ok(())
 }
 pub fn run(args: &[OsString]) -> ExitCode {
-    const USAGE: &str = "Usage: tempest model-api-relay --upstream URL --capability-file FILE --policy-file FILE --audit FILE --ready-file FILE --auth-file FILE --auth-header NAME --timeout-seconds N --lifetime-file FIFO";
+    const USAGE: &str = "Usage: tempest model-api-relay --upstream URL --capability-file FILE --policy-file FILE --audit FILE --ready-file FILE --auth-file FILE --auth-header NAME --timeout-seconds N --lifetime-file FIFO --lifetime-bind-timeout-ms N";
     let options = match parse_options(args) {
         Ok(value) => value,
         Err(error) => {
