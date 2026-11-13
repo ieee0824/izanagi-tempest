@@ -86,6 +86,10 @@ MCP bridge、空HOME/cwd、profileだけをowner-private jailへ置き、default
 file read/write、固定relay port、固定MCP Unix socketだけを許可する。実動testでjail外canary読取と別loopback
 port接続が拒否され、固定relay portだけが成功することを確認する。MCP socketは固定hashのCLI processにも
 到達可能なので、完全tool catalog、builtin tool拒否、実CLIによるsocket bypass強制試験をproofの必須条件として残す。
+専用jailはowner/mode 0700、`bin/{agent,tempest}`・空`home`・空`cwd`・`agent.sb`だけの厳密layoutとし、
+harness rootとの包含・重複、余分なsecret file、root jailを拒否する。import先の`system.sb`と`dyld-support.sb`、
+`sandbox-exec`自体のhashも起動時に照合し、adapter descriptionと比較条件へ記録する。このhashが未知のOS更新後は
+再測定なしに起動しない。system profileの許可範囲が変わり得るため、単一canaryだけで全host資産非到達とは扱わない。
 
 ## launcher capability proof
 

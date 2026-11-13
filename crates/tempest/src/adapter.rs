@@ -44,11 +44,49 @@ pub struct CliAdapter {
     pub sandbox_profile: PathBuf,
     pub sandbox_profile_sha256: String,
     pub sandbox_jail: PathBuf,
+    pub harness_root: PathBuf,
+    pub system_profile_sha256: String,
+    pub dyld_profile_sha256: String,
 }
 
 struct CliLaunch {
     arguments: Vec<OsString>,
     environment: BTreeMap<OsString, OsString>,
+}
+
+fn private_directory(path: &Path) -> io::Result<PathBuf> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let metadata = path.symlink_metadata()?;
+    if !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        return Err(io::Error::other("CLI jail directory is not owner-private"));
+    }
+    path.canonicalize()
+}
+
+fn exact_names(path: &Path, expected: &[&str]) -> io::Result<bool> {
+    let mut names = fs::read_dir(path)?
+        .map(|entry| {
+            entry.and_then(|entry| {
+                entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| io::Error::other("non-UTF-8 CLI jail entry"))
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    names.sort();
+    Ok(names == expected)
+}
+
+fn private_regular(path: &Path) -> io::Result<bool> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let metadata = path.symlink_metadata()?;
+    Ok(metadata.is_file()
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.permissions().mode() & 0o077 == 0)
 }
 
 #[derive(Debug, Serialize)]
@@ -75,7 +113,13 @@ impl CliAdapter {
             .parse::<reqwest::Url>()
             .map_err(|_| io::Error::other("invalid model relay endpoint"))?;
         let capability = relay.path().strip_prefix('/').unwrap_or_default();
-        let jail = self.sandbox_jail.canonicalize()?;
+        let jail = private_directory(&self.sandbox_jail)?;
+        let harness = private_directory(&self.harness_root)?;
+        let executable = self.executable.canonicalize()?;
+        let home = private_directory(&self.home)?;
+        let cwd = private_directory(cwd)?;
+        let bridge_path = endpoint.executable.canonicalize()?;
+        let profile = self.sandbox_profile.canonicalize()?;
         if !self.executable.is_absolute()
             || !self.home.is_absolute()
             || !endpoint.executable.is_absolute()
@@ -104,18 +148,31 @@ impl CliAdapter {
             || crate::host_io::digest(&self.sandbox_executable)? != self.sandbox_executable_sha256
             || crate::host_io::digest(&self.sandbox_profile)? != self.sandbox_profile_sha256
             || fs::read(&self.sandbox_profile)? != include_bytes!("darwin-agent.sb")
-            || ![
-                &self.executable,
-                &self.home,
-                cwd,
-                &endpoint.executable,
-                &self.sandbox_profile,
-            ]
-            .into_iter()
-            .all(|path| {
-                path.canonicalize()
-                    .is_ok_and(|path| path.starts_with(&jail))
-            })
+            || crate::host_io::digest(Path::new("/System/Library/Sandbox/Profiles/system.sb"))?
+                != self.system_profile_sha256
+            || crate::host_io::digest(Path::new(
+                "/System/Library/Sandbox/Profiles/dyld-support.sb",
+            ))? != self.dyld_profile_sha256
+            || jail == Path::new("/")
+            || jail.starts_with(&harness)
+            || harness.starts_with(&jail)
+            || executable != jail.join("bin/agent")
+            || bridge_path != jail.join("bin/tempest")
+            || profile != jail.join("agent.sb")
+            || home != jail.join("home")
+            || cwd != jail.join("cwd")
+            || !private_regular(&executable)?
+            || !private_regular(&bridge_path)?
+            || !private_regular(&profile)?
+            || !exact_names(&jail, &["agent.sb", "bin", "cwd", "home"])?
+            || !exact_names(&jail.join("bin"), &["agent", "tempest"])?
+            || !exact_names(&home, &[])?
+            || !exact_names(&cwd, &[])?
+            || !endpoint.owner_file.starts_with(&self.harness_root)
+            || !endpoint.raw_stdout.starts_with(&self.harness_root)
+            || !endpoint.raw_stderr.starts_with(&self.harness_root)
+            || endpoint.socket.starts_with(&jail)
+            || endpoint.socket.starts_with(&harness)
         {
             return Err(io::Error::other("invalid measured CLI launch contract"));
         }
@@ -368,7 +425,11 @@ async fn bounded_stream<R: tokio::io::AsyncRead + Unpin>(reader: R) -> io::Resul
 impl AgentAdapter for CliAdapter {
     fn describe(&self) -> Value {
         json!({"adapter":match self.kind {CliKind::Codex=>"codex",CliKind::ClaudeCode=>"claude-code"},
-            "model":self.model,"cli_version":self.version,"executable_sha256":self.executable_sha256})
+            "model":self.model,"cli_version":self.version,"executable_sha256":self.executable_sha256,
+            "sandbox_executable_sha256":self.sandbox_executable_sha256,
+            "sandbox_profile_sha256":self.sandbox_profile_sha256,
+            "system_profile_sha256":self.system_profile_sha256,
+            "dyld_profile_sha256":self.dyld_profile_sha256})
     }
 
     async fn run<'a>(
@@ -597,14 +658,18 @@ mod stream_tests {
             crate::host_io::random_hex().unwrap()
         ));
         crate::host_io::directory(&root).unwrap();
+        let jail = root.join("jail");
+        let harness = root.join("harness");
+        crate::host_io::directory(&jail).unwrap();
+        crate::host_io::directory(&harness).unwrap();
         for directory in ["bin", "home", "cwd"] {
-            crate::host_io::directory(&root.join(directory)).unwrap();
+            crate::host_io::directory(&jail.join(directory)).unwrap();
         }
-        let executable = root.join("bin/agent");
-        let bridge = root.join("bin/tempest");
+        let executable = jail.join("bin/agent");
+        let bridge = jail.join("bin/tempest");
         crate::host_io::private_copy(&std::env::current_exe().unwrap(), &executable).unwrap();
         crate::host_io::private_copy(&std::env::current_exe().unwrap(), &bridge).unwrap();
-        let profile = root.join("agent.sb");
+        let profile = jail.join("agent.sb");
         crate::host_io::write_new(&profile, include_bytes!("darwin-agent.sb")).unwrap();
         let sandbox_executable = PathBuf::from("/usr/bin/sandbox-exec");
         let adapter = CliAdapter {
@@ -613,23 +678,32 @@ mod stream_tests {
             executable_sha256: crate::host_io::digest(&executable).unwrap(),
             version: "fixed".into(),
             model: "model-fixed".into(),
-            home: root.join("home"),
+            home: jail.join("home"),
             relay_endpoint: "http://127.0.0.1:1234/capabilitycapabilitycapability12".into(),
             maximum_turns: 20,
             sandbox_executable: sandbox_executable.clone(),
             sandbox_executable_sha256: crate::host_io::digest(&sandbox_executable).unwrap(),
             sandbox_profile_sha256: crate::host_io::digest(&profile).unwrap(),
             sandbox_profile: profile,
-            sandbox_jail: root.clone(),
+            sandbox_jail: jail.clone(),
+            harness_root: harness.clone(),
+            system_profile_sha256: crate::host_io::digest(Path::new(
+                "/System/Library/Sandbox/Profiles/system.sb",
+            ))
+            .unwrap(),
+            dyld_profile_sha256: crate::host_io::digest(Path::new(
+                "/System/Library/Sandbox/Profiles/dyld-support.sb",
+            ))
+            .unwrap(),
         };
         let endpoint = McpCommand {
             executable: bridge,
             socket: "/private/tmp/socket/s".into(),
-            owner_file: root.join("owner.json"),
-            raw_stdout: root.join("agent.events.jsonl"),
-            raw_stderr: root.join("agent.stderr"),
+            owner_file: harness.join("owner.json"),
+            raw_stdout: harness.join("agent.events.jsonl"),
+            raw_stderr: harness.join("agent.stderr"),
         };
-        let cwd = root.join("cwd");
+        let cwd = jail.join("cwd");
         (root, adapter, endpoint, cwd)
     }
 
@@ -659,7 +733,7 @@ mod stream_tests {
             assert!(!arguments.contains("fixed prompt"));
             assert_eq!(
                 launch.environment[&OsString::from("HOME")],
-                root.join("home")
+                root.join("jail/home")
             );
             assert!(!launch.environment.contains_key(&OsString::from("PATH")));
             assert!(
@@ -700,6 +774,20 @@ mod stream_tests {
             changed.relay_endpoint = value.into();
             assert!(changed.launch("prompt", &endpoint, &cwd).is_err());
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn jail_rejects_root_overlap_and_unlisted_secret_material() {
+        let (root, adapter, endpoint, cwd) = cli_fixture(CliKind::Codex);
+        let mut invalid = adapter.clone();
+        invalid.sandbox_jail = "/".into();
+        assert!(invalid.launch("prompt", &endpoint, &cwd).is_err());
+        let mut invalid = adapter.clone();
+        invalid.harness_root = root.clone();
+        assert!(invalid.launch("prompt", &endpoint, &cwd).is_err());
+        crate::host_io::write_new(&adapter.sandbox_jail.join("secret"), b"hidden").unwrap();
+        assert!(adapter.launch("prompt", &endpoint, &cwd).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
