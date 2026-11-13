@@ -19,6 +19,39 @@ DISABLED = ['shell_tool', 'apps', 'view_image', 'multi_agent', 'plugins', 'remot
             'skill_mcp_dependency_install', 'hooks', 'goals', 'image_generation']
 
 
+def verify_tool_results(agent, attempts, outputs):
+    failures = []
+    final_outputs = outputs[-1] if outputs else []
+    expected = {f'call_{index}' for index in range(len(attempts))}
+    by_id = {}
+    for item in final_outputs:
+        call_id = item.get('call_id') if agent == 'codex' else item.get('tool_use_id')
+        if not isinstance(call_id, str) or call_id not in expected:
+            failures.append('tool_result_unknown_id')
+            continue
+        if call_id in by_id:
+            failures.append('tool_result_duplicate_id')
+            continue
+        by_id[call_id] = item
+    if set(by_id) != expected:
+        failures.append('tool_results_missing')
+    for index, (name, _) in enumerate(attempts[:3]):
+        item = by_id.get(f'call_{index}')
+        if agent == 'codex':
+            valid = (isinstance(item, dict)
+                     and item.get('type') == 'function_call_output'
+                     and item.get('output') == f'unsupported call: {name}')
+        else:
+            prefix = f'<tool_use_error>Error: No such tool available: {name}.'
+            valid = (isinstance(item, dict) and item.get('type') == 'tool_result'
+                     and item.get('is_error') is True
+                     and isinstance(item.get('content'), str)
+                     and item['content'].startswith(prefix))
+        if not valid:
+            failures.append(f'host_tool_rejection_unverified_{index}')
+    return failures
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--agent', choices=['codex', 'claude'], required=True)
@@ -220,14 +253,7 @@ def main():
             failures.append('api_requests_incomplete')
         if len(outputs) < len(attempts) + 1:
             failures.append('tool_result_roundtrips_incomplete')
-        final_outputs = outputs[-1] if outputs else []
-        if len(final_outputs) < len(attempts):
-            failures.append('tool_results_missing')
-        for index in range(min(3, len(attempts))):
-            rendered = (json.dumps(final_outputs[index], sort_keys=True).lower()
-                        if index < len(final_outputs) else '')
-            if not any(marker in rendered for marker in ('unsupported call', 'no such tool', 'denied')):
-                failures.append(f'host_tool_rejection_unverified_{index}')
+        failures.extend(verify_tool_results(args.agent, attempts, outputs))
         if not result['canary_unchanged']:
             failures.append('read_canary_modified')
         if result['write_canary_exists']:

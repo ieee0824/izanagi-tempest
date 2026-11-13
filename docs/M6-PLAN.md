@@ -63,10 +63,11 @@ CLI検査のAPIはローカルスタブであり、実モデル比較ではな�
 
 - Claude Code 2.1.323: ローカルstubでBash/Read/Writeを強制要求し、全てNo such tool available。canary不変、新規書込みなし、4要求・CLI終了0。
 - Codex 0.169.0: 実binary hash `739cda86e15d30a6e2b40cf8dcbbfb988aaf48b305b27065573bb8e9fd41d002`。exec_command/apply_patch/view_imageを強制要求し全てunsupported call。canary不変、新規書込みなし、4要求・CLI終了0。
-- Codexのfail-closed化後の再検査は `/private/tmp/tempest-m6-codex-preflight-004/summary.json`。
+- Codexのfail-closed化後の再検査は `/private/tmp/tempest-m6-codex-preflight-005/summary.json`。
   4要求すべてでtool catalogは `request_user_input` のみ、同一hash、3拒否・canary不変・書込みなし。
-  API要求0またはhost書込み後に終了0を返す偽CLIはprobe自身が非0になる2負例を追加した。
-- Claudeの同じ再検査は `/private/tmp/tempest-m6-claude-preflight-002/summary.json`。
+  API要求0、host書込み後に終了0、結果ID不一致、成功本文中の`denied.txt`を拒否として偽装する
+  CLIをprobe自身が非0にする負例を追加した。結果はcall IDで一対一照合し、固定版の構造化errorを検査する。
+- Claudeの同じ再検査は `/private/tmp/tempest-m6-claude-preflight-003/summary.json`。
   4要求すべてでtool catalogは空かつ同一hash、3拒否・canary不変・書込みなし。
 - 証拠は `/private/tmp/tempest-m6-claude-preflight-001/summary.json` と `/private/tmp/tempest-m6-codex-preflight-003/summary.json`。
 - この2試行はMCP未接続で、HMAC/hostfwd迂回・許可MCPの正対照は未検証。実launcherの受入完了ではない。
