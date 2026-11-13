@@ -101,7 +101,7 @@ pub struct LiveArtifact {
     pub sha256: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentRule {
     pub name: String,

@@ -3,7 +3,7 @@
 use crate::{
     adapter::{
         CapabilityProbeCliConfig, CliAdapter, CliAdapterConfig, CliKind, McpCommand,
-        run_capability_probe_cli,
+        claude_argument_template, claude_environment_rules, run_capability_probe_cli,
     },
     admission::CloseReason,
     capability_probe_provider::{ProbeAgent, ProbeProvider},
@@ -678,8 +678,9 @@ fn prepare_claude_proof(
     let runner = std::env::current_exe()?.canonicalize()?;
     let runner_sha256 = host_io::digest(&runner)?;
     let policy_sha256 = host_io::digest(request_policy)?;
-    let fixed_hash = |value: &str| sha256_bytes(value.as_bytes());
     let system_configuration = reviewed_system_configuration()?;
+    let argument_template = claude_argument_template(20);
+    let environment = claude_environment_rules();
     let profile = serde_json::json!({
         "schema_version":1,"agent":"claude-code","model":"tempest-capability-probe",
         "cli_version":cli_version,"provider_protocol":"anthropic-messages",
@@ -687,21 +688,8 @@ fn prepare_claude_proof(
         "proof_upstream_kind":"local_deterministic_stub_through_relay",
         "allowed_runtime_variance":["relay_authentication_value","relay_upstream_authority"],
         "request_policy_sha256":policy_sha256,
-        "argument_template":["-p","--model","<MODEL>","--max-turns","20","--bare",
-            "--tools","","--strict-mcp-config","--mcp-config","<FIXED_TEMPEST_MCP>",
-            "--setting-sources","","--disable-slash-commands","--permission-mode","dontAsk",
-            "--no-session-persistence","--output-format","stream-json","--verbose",
-            "--allowedTools","mcp__tempest__sandbox_status","mcp__tempest__sandbox_exec",
-            "mcp__tempest__sandbox_shell","<PROMPT_STDIN>"],
-        "environment":[
-            {"name":"ANTHROPIC_API_KEY","source":"fixed_placeholder","value_sha256":fixed_hash("tempest-relay-placeholder")},
-            {"name":"ANTHROPIC_BASE_URL","source":"relay_endpoint","value_sha256":null},
-            {"name":"CLAUDE_CODE_TMPDIR","source":"generated_private_directory","value_sha256":null},
-            {"name":"DISABLE_AUTOUPDATER","source":"fixed_nonsecret","value_sha256":fixed_hash("1")},
-            {"name":"HOME","source":"generated_private_directory","value_sha256":null},
-            {"name":"LANG","source":"fixed_nonsecret","value_sha256":fixed_hash("C.UTF-8")},
-            {"name":"LC_ALL","source":"fixed_nonsecret","value_sha256":fixed_hash("C.UTF-8")},
-            {"name":"TMPDIR","source":"generated_private_directory","value_sha256":null}],
+        "argument_template":argument_template,
+        "environment":environment,
         "home_policy":"empty_owner_private","cwd_policy":"empty_owner_private",
         "prompt_policy":"tempest_generated_only","real_authentication_owner":"model_api_relay_only",
         "system_configuration":system_configuration,

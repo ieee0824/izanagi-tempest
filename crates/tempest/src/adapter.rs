@@ -1,7 +1,12 @@
 //! Deterministic mock and proof-gated real CLI adapter process contracts.
-use crate::{capability_proof::LaunchPermit, host_io::command, rpc::Rpc};
+use crate::{
+    capability_proof::{EnvironmentRule, LaunchPermit},
+    host_io::command,
+    rpc::Rpc,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
@@ -23,7 +28,7 @@ pub struct McpCommand {
     pub raw_stderr: PathBuf,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CliKind {
     Codex,
     ClaudeCode,
@@ -81,6 +86,107 @@ struct CliContract {
 struct CliLaunch {
     arguments: Vec<OsString>,
     environment: BTreeMap<OsString, OsString>,
+}
+
+fn sha256(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+pub(crate) fn claude_argument_template(maximum_turns: u64) -> Vec<String> {
+    [
+        "-p",
+        "--model",
+        "<MODEL>",
+        "--max-turns",
+        &maximum_turns.to_string(),
+        "--bare",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "<FIXED_TEMPEST_MCP>",
+        "--setting-sources",
+        "",
+        "--disable-slash-commands",
+        "--permission-mode",
+        "dontAsk",
+        "--no-session-persistence",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--allowedTools",
+        "mcp__tempest__sandbox_status",
+        "mcp__tempest__sandbox_exec",
+        "mcp__tempest__sandbox_shell",
+        "<PROMPT_STDIN>",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+pub(crate) fn claude_environment_rules() -> Vec<EnvironmentRule> {
+    [
+        (
+            "ANTHROPIC_API_KEY",
+            "fixed_placeholder",
+            Some(sha256("tempest-relay-placeholder")),
+        ),
+        ("ANTHROPIC_BASE_URL", "relay_endpoint", None),
+        ("CLAUDE_CODE_TMPDIR", "generated_private_directory", None),
+        ("DISABLE_AUTOUPDATER", "fixed_nonsecret", Some(sha256("1"))),
+        ("HOME", "generated_private_directory", None),
+        ("LANG", "fixed_nonsecret", Some(sha256("C.UTF-8"))),
+        ("LC_ALL", "fixed_nonsecret", Some(sha256("C.UTF-8"))),
+        ("TMPDIR", "generated_private_directory", None),
+    ]
+    .into_iter()
+    .map(|(name, source, value_sha256)| EnvironmentRule {
+        name: name.to_owned(),
+        source: source.to_owned(),
+        value_sha256,
+    })
+    .collect()
+}
+
+fn claude_environment(
+    home: &Path,
+    cwd: &Path,
+    relay_endpoint: &str,
+) -> io::Result<BTreeMap<OsString, OsString>> {
+    claude_environment_rules()
+        .into_iter()
+        .map(|rule| {
+            let value = match (rule.name.as_str(), rule.source.as_str()) {
+                ("ANTHROPIC_API_KEY", "fixed_placeholder") => {
+                    OsString::from("tempest-relay-placeholder")
+                }
+                ("ANTHROPIC_BASE_URL", "relay_endpoint") => relay_endpoint.into(),
+                ("CLAUDE_CODE_TMPDIR" | "TMPDIR", "generated_private_directory") => {
+                    cwd.as_os_str().to_owned()
+                }
+                ("HOME", "generated_private_directory") => home.as_os_str().to_owned(),
+                ("DISABLE_AUTOUPDATER", "fixed_nonsecret") => "1".into(),
+                ("LANG" | "LC_ALL", "fixed_nonsecret") => "C.UTF-8".into(),
+                _ => return Err(io::Error::other("invalid Claude environment contract")),
+            };
+            Ok((rule.name.into(), value))
+        })
+        .collect()
+}
+
+fn measured_launch_contract_matches(
+    profile: &crate::capability_proof::LauncherProfile,
+    kind: CliKind,
+    maximum_turns: u64,
+) -> bool {
+    match kind {
+        CliKind::ClaudeCode => {
+            profile.argument_template == claude_argument_template(maximum_turns)
+                && profile.environment == claude_environment_rules()
+        }
+        CliKind::Codex => true,
+    }
 }
 
 fn private_directory(path: &Path) -> io::Result<PathBuf> {
@@ -208,6 +314,11 @@ impl CliAdapter {
             system_profile_sha256,
             dyld_profile_sha256,
         };
+        if !measured_launch_contract_matches(profile, kind, config.maximum_turns) {
+            return Err(io::Error::other(
+                "measured CLI argv or environment contract does not match launch",
+            ));
+        }
         if contract.executable != contract.sandbox_jail.join("bin/agent")
             || contract.mcp_bridge != contract.sandbox_jail.join("bin/tempest")
             || contract
@@ -299,32 +410,19 @@ impl CliContract {
         }
         let bridge = endpoint.executable.to_string_lossy().into_owned();
         let socket = endpoint.socket.to_string_lossy().into_owned();
-        let mut environment = BTreeMap::from([
-            (OsString::from("HOME"), self.home.clone().into_os_string()),
-            (OsString::from("LANG"), OsString::from("C.UTF-8")),
-            (OsString::from("LC_ALL"), OsString::from("C.UTF-8")),
-            (OsString::from("TMPDIR"), cwd.to_path_buf().into_os_string()),
-        ]);
-        match self.kind {
+        let environment = match self.kind {
             CliKind::Codex => {
+                let mut environment = BTreeMap::from([
+                    (OsString::from("HOME"), self.home.clone().into_os_string()),
+                    (OsString::from("LANG"), OsString::from("C.UTF-8")),
+                    (OsString::from("LC_ALL"), OsString::from("C.UTF-8")),
+                    (OsString::from("TMPDIR"), cwd.to_path_buf().into_os_string()),
+                ]);
                 environment.insert("OPENAI_API_KEY".into(), "tempest-relay-placeholder".into());
+                environment
             }
-            CliKind::ClaudeCode => {
-                environment.insert(
-                    "ANTHROPIC_BASE_URL".into(),
-                    self.relay_endpoint.clone().into(),
-                );
-                environment.insert(
-                    "ANTHROPIC_API_KEY".into(),
-                    "tempest-relay-placeholder".into(),
-                );
-                environment.insert(
-                    "CLAUDE_CODE_TMPDIR".into(),
-                    cwd.to_path_buf().into_os_string(),
-                );
-                environment.insert("DISABLE_AUTOUPDATER".into(), "1".into());
-            }
-        }
+            CliKind::ClaudeCode => claude_environment(&self.home, &cwd, &self.relay_endpoint)?,
+        };
         let environment_policy = match self.kind {
             CliKind::Codex => "codex-v1",
             CliKind::ClaudeCode => "claude-code-v1",
@@ -391,32 +489,16 @@ impl CliContract {
             CliKind::ClaudeCode => {
                 let mcp = json!({"mcpServers":{"tempest":{"command":bridge,
                     "args":["mcp-connect",socket,"--environment-policy",environment_policy],"env":{}}}});
-                vec![
-                    "-p".into(),
-                    "--model".into(),
-                    self.model.clone().into(),
-                    "--max-turns".into(),
-                    self.maximum_turns.to_string().into(),
-                    "--bare".into(),
-                    "--tools".into(),
-                    "".into(),
-                    "--strict-mcp-config".into(),
-                    "--mcp-config".into(),
-                    serde_json::to_string(&mcp)?.into(),
-                    "--setting-sources".into(),
-                    "".into(),
-                    "--disable-slash-commands".into(),
-                    "--permission-mode".into(),
-                    "dontAsk".into(),
-                    "--no-session-persistence".into(),
-                    "--output-format".into(),
-                    "stream-json".into(),
-                    "--verbose".into(),
-                    "--allowedTools".into(),
-                    "mcp__tempest__sandbox_status".into(),
-                    "mcp__tempest__sandbox_exec".into(),
-                    "mcp__tempest__sandbox_shell".into(),
-                ]
+                let mcp = serde_json::to_string(&mcp)?;
+                claude_argument_template(self.maximum_turns)
+                    .into_iter()
+                    .filter_map(|value| match value.as_str() {
+                        "<MODEL>" => Some(self.model.clone().into()),
+                        "<FIXED_TEMPEST_MCP>" => Some(mcp.clone().into()),
+                        "<PROMPT_STDIN>" => None,
+                        _ => Some(value.into()),
+                    })
+                    .collect()
             }
         };
         let mut arguments = vec![
@@ -845,6 +927,40 @@ pub fn claude_final_message(
 #[cfg(test)]
 mod stream_tests {
     use super::*;
+
+    #[test]
+    fn measured_claude_contract_rejects_turn_or_environment_variance() {
+        let (_, mut profile, _, _) = crate::capability_proof::tests::fixture();
+        profile["agent"] = "claude-code".into();
+        profile["cli_version"] = "2.1.323 (Claude Code)".into();
+        profile["provider_protocol"] = "anthropic-messages".into();
+        profile["argument_template"] = serde_json::to_value(claude_argument_template(20)).unwrap();
+        profile["environment"] = serde_json::to_value(claude_environment_rules()).unwrap();
+        let mut profile: crate::capability_proof::LauncherProfile =
+            serde_json::from_value(profile).unwrap();
+        let names = profile
+            .environment
+            .iter()
+            .map(|rule| rule.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(measured_launch_contract_matches(
+            &profile,
+            CliKind::ClaudeCode,
+            20
+        ));
+        assert!(!measured_launch_contract_matches(
+            &profile,
+            CliKind::ClaudeCode,
+            19
+        ));
+        profile.environment[0].value_sha256 = Some("0".repeat(64));
+        assert!(!measured_launch_contract_matches(
+            &profile,
+            CliKind::ClaudeCode,
+            20
+        ));
+    }
 
     fn cli_fixture(kind: CliKind) -> (PathBuf, CliContract, McpCommand, PathBuf) {
         let root = std::env::temp_dir().join(format!(
