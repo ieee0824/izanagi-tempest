@@ -21,6 +21,8 @@ pub struct StoppingRule {
     pub kind: String,
     pub slots: u64,
     pub retry: String,
+    #[serde(default)]
+    pub minimum_interval_seconds: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -68,6 +70,7 @@ pub fn load(path: &Path) -> io::Result<LoadedPlan> {
         || plan.created_ns == 0
         || plan.stopping_rule.kind != "fixed_slots"
         || plan.stopping_rule.retry != "new_slot_only"
+        || plan.stopping_rule.minimum_interval_seconds > 3600
         || plan.slots.is_empty()
         || plan.slots.len() > 1000
         || plan.stopping_rule.slots != plan.slots.len() as u64

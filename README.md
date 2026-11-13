@@ -196,7 +196,11 @@ mockの固定報告は形式検証用で、正式なモデル比較の集計対�
 1ファイルの回収上限は`--max-evidence-bytes`（既定64 MiB）で変更できます。
 `--repeat N`（1〜100）は各試行を独立VMで順次実行し、複数回ではrun IDを
 `<run-id>-001`から展開します。comparison planを併用する場合はslot IDも同じ規則で展開するため、
-planには`<comparison-slot>-001`以降と対応するrun IDを事前登録します。基盤エラー時は後続試行を開始しません。
+planには`<comparison-slot>-001`以降と対応するrun IDを事前登録します。`--repeat-interval-seconds`は
+試行間隔を固定し、planの`stopping_rule.minimum_interval_seconds`と一致しなければ拒否します。
+`--repeat`は単一条件の連続反復用であり、複数modelの比較順序にはplanのslot順を実行する別runnerを使います。
+中断後に同じbaseを再開することは認めず、予約済みslotをUのまま残します。signal後は未予約slotを消費しません。
+run内で確定した不成立は後続を継続し、起動前のplan/image/code契約不一致だけがbatchを停止します。
 
 回収済みrunをM5で再評価し、`result.json`と`report.md`を原子的に生成するには次を実行します。
 

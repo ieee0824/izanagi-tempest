@@ -27,7 +27,7 @@ use tempest_model::{
     scenario::Outcome,
 };
 
-const USAGE: &str = "Usage: tempest run SCENARIO --agent mock --mock-script FILE --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]";
+const USAGE: &str = "Usage: tempest run SCENARIO --agent mock --mock-script FILE --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--repeat-interval-seconds N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]";
 async fn version(executable: &Path) -> io::Result<String> {
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -58,6 +58,7 @@ struct Options {
     runs: PathBuf,
     id: String,
     repeat: usize,
+    repeat_interval_seconds: u64,
     actor: Option<String>,
     comparison_plan: Option<PathBuf>,
     comparison_slot: Option<String>,
@@ -85,6 +86,7 @@ fn options(args: &[OsString]) -> io::Result<Options> {
                 | "--runs"
                 | "--run-id"
                 | "--repeat"
+                | "--repeat-interval-seconds"
                 | "--actor"
                 | "--max-evidence-bytes"
                 | "--comparison-plan"
@@ -146,6 +148,14 @@ fn options(args: &[OsString]) -> io::Result<Options> {
                 .ok()
                 .filter(|value| (1..=100).contains(value))
                 .ok_or_else(|| io::Error::other("invalid repeat count"))?,
+        },
+        repeat_interval_seconds: match text("--repeat-interval-seconds")? {
+            None => 0,
+            Some(value) => value
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value <= 3600)
+                .ok_or_else(|| io::Error::other("invalid repeat interval"))?,
         },
         actor: text("--actor")?,
         comparison_plan,
@@ -420,6 +430,9 @@ async fn execute(
     options: Options,
     mut cancel: tokio::sync::watch::Receiver<Option<&'static str>>,
 ) -> io::Result<(PathBuf, bool)> {
+    if cancel.borrow().is_some() {
+        return Err(io::Error::other("run cancelled before reservation"));
+    }
     let raw = fs::read(&options.scenario)?;
     let loaded = load(&raw).map_err(|_| {
         io::Error::other("scenario validation failed; use tempest validate for diagnostics")
@@ -437,6 +450,10 @@ async fn execute(
         options.comparison_slot.as_deref(),
     ) {
         let comparison = crate::comparison_plan::load(path)?;
+        if comparison.plan.stopping_rule.minimum_interval_seconds != options.repeat_interval_seconds
+        {
+            return Err(io::Error::other("comparison plan interval mismatch"));
+        }
         let slot = comparison.slot(slot_id, &options.id, &evaluator_sha256)?;
         if slot.finding_configured != plan.self_check().is_some()
             || slot.retest_configured != plan.retest().is_some()
@@ -483,7 +500,7 @@ async fn execute(
     host_io::private_copy(&bridge, &companion.join("host_bridge.py"))?;
     host_io::private_copy(&transport, &companion.join("transport.py"))?;
     let budget = &loaded.validated.scenario().budget;
-    let mut report = json!({"schema_version":1,"scope":"m5_evaluation","purpose":"collection_and_evaluation","iteration":options.iteration,"adapter":adapter.describe(),"comparison_binding":comparison_binding,"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&root.join("bin/izanagi"))?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"mock_script_sha256":host_io::digest(&root.join("mock-script.json"))?,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"evaluation_pending"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
+    let mut report = json!({"schema_version":1,"scope":"m5_evaluation","purpose":"collection_and_evaluation","iteration":options.iteration,"adapter":adapter.describe(),"comparison_binding":comparison_binding,"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&root.join("bin/izanagi"))?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"mock_script_sha256":host_io::digest(&root.join("mock-script.json"))?,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"repeat_interval_seconds":options.repeat_interval_seconds,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"evaluation_pending"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
     report["conditions"]["izanagi_version"] = version(&izanagi).await?.into();
     report["conditions"]["tempest_version"] = env!("CARGO_PKG_VERSION").into();
     report["conditions"]["host_utc_offset_seconds"] = host_io::utc_offset_seconds()?.into();
@@ -976,7 +993,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         Err(_) => return ExitCode::FAILURE,
     };
     let result = runtime.block_on(async {
-        let (sender, receiver) = tokio::sync::watch::channel(None);
+        let (sender, mut receiver) = tokio::sync::watch::channel(None);
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let signal = tokio::spawn(async move {
             let reason =
@@ -984,25 +1001,39 @@ pub fn run(args: &[OsString]) -> ExitCode {
             let _ = sender.send(Some(reason));
         });
         let mut results = Vec::with_capacity(options.repeat);
-        let mut failure = None;
+        let mut stop_reason = None;
         for iteration in 1..=options.repeat {
+            if let Some(reason) = *receiver.borrow() {
+                stop_reason = Some(format!("cancelled:{reason}"));
+                break;
+            }
             match execute(iteration_options(&options, iteration), receiver.clone()).await {
                 Ok(result) => results.push(result),
                 Err(error) => {
-                    failure = Some(error);
+                    stop_reason = Some(format!("infrastructure:{error}"));
                     break;
+                }
+            }
+            if let Some(reason) = *receiver.borrow() {
+                stop_reason = Some(format!("cancelled:{reason}"));
+                break;
+            }
+            if iteration < options.repeat && options.repeat_interval_seconds > 0 {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(options.repeat_interval_seconds)) => {}
+                    reason = cancelled(&mut receiver) => {
+                        stop_reason = Some(format!("cancelled:{reason}"));
+                        break;
+                    }
                 }
             }
         }
         signal.abort();
-        match failure {
-            Some(error) => Err(error),
-            None => Ok(results),
-        }
+        Ok::<_, io::Error>((results, stop_reason))
     });
     runtime.shutdown_background();
     match result {
-        Ok(results) => {
+        Ok((results, stop_reason)) => {
             let runs = results
                 .iter()
                 .map(|(path, success)| {
@@ -1013,15 +1044,18 @@ pub fn run(args: &[OsString]) -> ExitCode {
                     json!({"run_directory":path,"status":metadata["status"],"evaluation":metadata["evaluation"],"finalization":metadata["finalization"],"success":success})
                 })
                 .collect::<Vec<_>>();
-            if runs.len() == 1 {
+            if runs.len() == 1 && stop_reason.is_none() {
                 println!(
                     "{}",
                     json!({"run_directory":runs[0]["run_directory"],"status":runs[0]["status"],"scope":"m5_evaluation","evaluation":runs[0]["evaluation"],"finalization":runs[0]["finalization"]})
                 );
             } else {
-                println!("{}", json!({"scope":"m5_evaluation","runs":runs}));
+                println!(
+                    "{}",
+                    json!({"scope":"m5_evaluation","runs":runs,"stopped":stop_reason})
+                );
             }
-            if results.iter().all(|(_, success)| *success) {
+            if stop_reason.is_none() && results.iter().all(|(_, success)| *success) {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -1056,6 +1090,7 @@ mod tests {
             comparison_slot: Some("slot".into()),
             maximum_evidence_file_bytes: 1,
             repeat: 3,
+            repeat_interval_seconds: 0,
             iteration: 1,
         };
         let values = (1..=options.repeat)
@@ -1066,6 +1101,36 @@ mod tests {
         assert_eq!(values[1].comparison_slot.as_deref(), Some("slot-002"));
         assert_eq!(values[2].iteration, 3);
         assert!(values.iter().all(|value| value.repeat == 1));
+    }
+
+    #[tokio::test]
+    async fn preexisting_cancellation_has_no_run_reservation_side_effect() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-repeat-cancel-{}",
+            host_io::random_hex().unwrap()
+        ));
+        let options = Options {
+            scenario: root.join("missing-scenario"),
+            script: root.join("missing-script"),
+            izanagi: root.join("missing-izanagi"),
+            image: root.join("missing-image"),
+            inputs: root.join("missing-inputs"),
+            bridge: root.join("missing-bridge"),
+            python: root.join("missing-python"),
+            runs: root.join("runs"),
+            id: "batch-002".into(),
+            actor: None,
+            comparison_plan: None,
+            comparison_slot: None,
+            maximum_evidence_file_bytes: 1,
+            repeat: 1,
+            repeat_interval_seconds: 0,
+            iteration: 2,
+        };
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        sender.send(Some("sigint")).unwrap();
+        assert!(execute(options, receiver).await.is_err());
+        assert!(!root.exists());
     }
 
     #[test]

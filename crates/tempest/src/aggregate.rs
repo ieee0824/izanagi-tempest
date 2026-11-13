@@ -647,6 +647,7 @@ mod tests {
                 kind: "fixed_slots".into(),
                 slots: 2,
                 retry: "new_slot_only".into(),
+                minimum_interval_seconds: 0,
             },
             slots: vec![
                 ComparisonSlot {
