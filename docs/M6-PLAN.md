@@ -85,6 +85,8 @@ relay authはrun成果物へコピーせず、acceptance用MCP/providerと本番
 本番relayはowner-private FIFOを通じてcontrollerだけが保持するCLOEXEC lifetime fileのEOFで自律終了する。relayは
 open後のFIFO identityを再検査し、期限付きhandshakeが成立してからだけprovider認証を読む。crash recoveryは記録済みPGIDへ
 signalを送らず消滅だけを確認し、PGID再利用時に無関係なprocess groupを停止しない。
+FIFOはhandshake直後にunlinkするが、それまでの短い区間はowner-private directoryへアクセスできる同一UIDのprocessが
+追加writerを開ける。同一UIDのhost processを攻撃者境界には含めず、異なるUIDやguestからはpathへ到達できない前提とする。
 一時capabilityとauthorized codeはrun後に削除する一方、非秘密のlauncher profile、proof、policy、
 check別evidence、acceptance relay/MCP auditは`evidence/native-acceptance/`へ保存して後日監査できるようにする。
 macOS launcherは固定hashの`/usr/bin/sandbox-exec`と同梱Seatbelt profileを必須にする。agent executable、
