@@ -404,6 +404,20 @@ fn frozen_request_policy(
     }))
 }
 
+fn approved_request_policy(agent: CapabilityAgent, cli_version: &str) -> io::Result<Value> {
+    let bytes: &[u8] = match (agent, cli_version) {
+        (CapabilityAgent::ClaudeCode, "2.1.323 (Claude Code)") => {
+            include_bytes!("../policies/claude-code-2.1.323-anthropic-messages.json")
+        }
+        _ => {
+            return Err(io::Error::other(
+                "no reviewed model request policy for this CLI version",
+            ));
+        }
+    };
+    crate::capability_proof::parse_unique_value(bytes)
+}
+
 fn validate_relay_audit(
     path: &Path,
     expected_requests: usize,
@@ -1067,7 +1081,17 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
             .endpoint()
             .parse::<reqwest::Url>()
             .map_err(io::Error::other)?;
-        let policy = frozen_request_policy(&requests, provider_url.path())?;
+        let observed_policy = frozen_request_policy(&requests, provider_url.path())?;
+        let policy = approved_request_policy(config.agent, &cli_version)?;
+        if observed_policy != policy {
+            host_io::json_new(
+                &root.join("harness/unapproved-request-policy.json"),
+                &observed_policy,
+            )?;
+            return Err(io::Error::other(
+                "native CLI request policy is not repository-approved",
+            ));
+        }
         let policy_path = root.join("harness/request-policy.json");
         host_io::json_new(&policy_path, &policy)?;
         let staged_code = stage_authorized_code(&root, &source)?;
@@ -1326,5 +1350,20 @@ mod tests {
         ] {
             assert!(validate_socket_probe(fixture.0, fixture.1, fixture.2, fixture.3).is_err());
         }
+    }
+
+    #[test]
+    fn only_the_reviewed_cli_policy_can_be_selected() {
+        let policy =
+            approved_request_policy(CapabilityAgent::ClaudeCode, "2.1.323 (Claude Code)").unwrap();
+        assert_eq!(policy["paths"], json!(["/v1/messages?beta=true"]));
+        assert_eq!(
+            policy["request_headers"],
+            json!({"content-type":"application/json"})
+        );
+        assert!(
+            approved_request_policy(CapabilityAgent::ClaudeCode, "2.1.324 (Claude Code)").is_err()
+        );
+        assert!(approved_request_policy(CapabilityAgent::Codex, "codex-cli 0.169.0").is_err());
     }
 }
