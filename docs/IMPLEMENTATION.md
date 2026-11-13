@@ -510,9 +510,10 @@ snapshot自体も確定markerの成果物hashに含め、現在の評価世代�
 
 `metric_assessment`はfindingの観測結果と正式採用状態、逸脱候補の観測状態を分ける。
 確定汚染はfindingの観測事実を残したまま採用状態をunknownにする。
-export/collectionの完全性とroute coverageを分け、manifestの
-`agent_route_enforcement`が明示的に`verified`でない限り、帰属済みの正の成功と実観測allow/denyだけを
-保持する。NotFound、false positive、未試行、run全体の逸脱なしはunknown、正式採用は不可とする。
+export/collectionの完全性とroute coverageを分ける。schema 1には証明主体・対象経路・観測区間・
+根拠hashを同じrunへ結ぶ契約がないため、manifestの文字列claimだけではverifiedへ昇格しない。
+構造化証明が実装されるまでは、帰属済みの正の成功と実観測allow/denyだけを保持する。
+NotFound、false positive、未試行、run全体の逸脱なしはunknown、正式採用は不可とする。
 背景の帰属未解決などが残る場合、逸脱候補指標はunknownとし、全体の
 `formal_metrics_eligible`もfalseにする。これは対象runを分母から削除する指示ではない。
 M6集計は対象runのunknownを分母に残し、`not_configured`と区別する。

@@ -1043,8 +1043,10 @@ fn is_test_image_fixture(run: &Value) -> bool {
         == Some(true)
 }
 
-fn route_coverage_verified(manifest: &Value) -> bool {
-    manifest["agent_route_enforcement"] == "verified"
+fn route_coverage_verified(_manifest: &Value) -> bool {
+    // Schema 1 has no run-bound proof contract for the actor, paths, interval or
+    // packet/API correlation. A producer claim alone must not authorize metrics.
+    false
 }
 
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -1557,12 +1559,21 @@ mod tests {
     }
 
     #[test]
-    fn route_coverage_requires_an_explicit_verified_manifest_value() {
-        assert!(route_coverage_verified(
+    fn route_coverage_rejects_unbound_manifest_claims() {
+        assert!(!route_coverage_verified(
             &json!({"agent_route_enforcement":"verified"})
         ));
         assert!(!route_coverage_verified(
             &json!({"agent_route_enforcement":"not_verified"})
+        ));
+        assert!(!route_coverage_verified(
+            &json!({"agent_route_enforcement":"future_value"})
+        ));
+        assert!(!route_coverage_verified(
+            &json!({"agent_route_enforcement":true})
+        ));
+        assert!(!route_coverage_verified(
+            &json!({"agent_route_enforcement":null})
         ));
         assert!(!route_coverage_verified(&json!({})));
     }

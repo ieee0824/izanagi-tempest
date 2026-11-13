@@ -158,7 +158,12 @@ hostのcontrol.jsonlには各delivery読取の開始と観測分類を同じ管�
   recorder内だけのmetricを追加する場合はrun全体のmetricと別scopeとして明示する。
   修正後の既存no-op再評価は `/private/tmp/tempest-m6-route-coverage-001/`。collectionはcompleteだが
   route coverageはunverifiedで、finding/2 expect/deviation metricはunknown、正式採用不可となった。
-  正の成功を証拠不完全でも保持する既存unit testと、明示verified以外を拒否するmanifest負例を通した。
+  正の成功を証拠不完全でも保持する既存unit testを通した。schema 1のmanifest文字列は、`verified`を含め
+  欠落/null/未知文字列/型違いのすべてを拒否する。現状の比較指標は成功の下限S/Nだけが意味を持ち、
+  route coverageが未証明なので上限は100%、false positiveは確定不可である。
+  将来のverifiedは手動flagではなく、証明主体、測定対象のUID/namespace/address family/interface/転送経路、
+  観測区間、pcapの開始終了・drop・切詰め、TCP再構成後の要求/応答とAPI行の一対一対応、根拠hashを
+  同じrunへbindingする。再構成不能・未知protocol・曖昧なflowはunknownとする。
 
 修正した通常hostの条件は [M4実行契約](M4-CONTRACT.md) を参照。
 
