@@ -301,6 +301,8 @@ async fn primary(
         executable: root.join("bin/tempest"),
         socket,
         owner_file: evidence.join("agent-owner.json"),
+        raw_stdout: evidence.join("agent.events.jsonl"),
+        raw_stderr: evidence.join("agent.stderr"),
     };
     let outcome = tokio::time::timeout(
         budget.timeout.0,
@@ -682,6 +684,8 @@ fn allowed_artifact(path: &str) -> bool {
             | "companion/transport.py"
             | "controller-owner.json"
             | "evidence/agent.stdout"
+            | "evidence/agent.events.jsonl"
+            | "evidence/agent.stderr"
             | "evidence/agent-owner.json"
             | "evidence/api.jsonl"
             | "evidence/capture.pcap"

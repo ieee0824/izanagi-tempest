@@ -17,7 +17,10 @@ use std::{
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::ExitCode,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 const MAX_REQUEST: usize = 16 * 1024 * 1024;
@@ -59,6 +62,7 @@ struct Policy {
     top_level_fields: Vec<String>,
     request_value_types: Vec<String>,
     request_headers: BTreeMap<String, String>,
+    maximum_requests: u64,
     tools: Vec<Value>,
 }
 struct ValidatedPolicy {
@@ -67,6 +71,7 @@ struct ValidatedPolicy {
     fields: BTreeSet<String>,
     request_value_types: BTreeSet<String>,
     request_headers: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
+    maximum_requests: u64,
     tools: Vec<(String, String)>,
 }
 struct Admission {
@@ -91,6 +96,7 @@ struct State {
     auth_header: reqwest::header::HeaderName,
     auth_value: reqwest::header::HeaderValue,
     client: reqwest::Client,
+    requests: AtomicU64,
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -162,6 +168,7 @@ fn validate_policy(value: Value) -> io::Result<ValidatedPolicy> {
             .iter()
             .any(|path| !path.starts_with('/') || path.contains(['?', '#']))
         || policy.tools.is_empty()
+        || !(1..=1000).contains(&policy.maximum_requests)
     {
         return Err(invalid("invalid model relay policy"));
     }
@@ -191,6 +198,7 @@ fn validate_policy(value: Value) -> io::Result<ValidatedPolicy> {
         fields: policy.top_level_fields.into_iter().collect(),
         request_value_types: policy.request_value_types.into_iter().collect(),
         request_headers,
+        maximum_requests: policy.maximum_requests,
         tools: canonical_tools(&policy.tools)?,
     })
 }
@@ -360,6 +368,21 @@ async fn handle(
             return Ok(response(StatusCode::CONFLICT, &error.to_string()));
         }
     };
+    if state.requests.fetch_add(1, Ordering::SeqCst) >= state.policy.maximum_requests {
+        let _ = audit(
+            &state,
+            false,
+            &body,
+            Some("model request budget exhausted"),
+            &suffix,
+            Some(&admission),
+            None,
+        );
+        return Ok(response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "model request budget exhausted",
+        ));
+    }
     let target = match state.upstream.join(suffix.trim_start_matches('/')) {
         Ok(target)
             if target.scheme() == state.upstream.scheme()
@@ -614,6 +637,7 @@ async fn serve(options: Options) -> io::Result<()> {
             .timeout(options.timeout)
             .build()
             .map_err(|error| invalid(error.to_string()))?,
+        requests: AtomicU64::new(0),
     });
     let listener =
         tokio::net::TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await?;
@@ -662,6 +686,8 @@ mod tests {
         validate_policy(json!({"schema_version":1,"paths":["/v1/messages"],"models":["model-1"],
         "top_level_fields":["model","prompt","tools"],"request_value_types":["text"],
         "request_headers":{"content-type":"application/json","x-tempest-profile":"fixed"},
+        "maximum_requests":20,
+        "maximum_requests":20,
         "tools":[{"type":"function","name":"mcp__tempest__status","description":"fixed","input_schema":{"type":"object"}}]})).unwrap()
     }
     #[test]
@@ -738,6 +764,7 @@ mod tests {
                 .no_proxy()
                 .build()
                 .unwrap(),
+            requests: AtomicU64::new(0),
         });
         let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let relay_address = relay.local_addr().unwrap();

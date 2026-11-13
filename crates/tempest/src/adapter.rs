@@ -18,6 +18,8 @@ pub struct McpCommand {
     pub executable: PathBuf,
     pub socket: PathBuf,
     pub owner_file: PathBuf,
+    pub raw_stdout: PathBuf,
+    pub raw_stderr: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -26,9 +28,11 @@ pub enum CliKind {
     ClaudeCode,
 }
 
+#[derive(Clone)]
 pub struct CliAdapter {
     pub kind: CliKind,
     pub executable: PathBuf,
+    pub executable_sha256: String,
     pub version: String,
     pub model: String,
     pub home: PathBuf,
@@ -59,15 +63,36 @@ pub trait AgentAdapter {
 }
 
 impl CliAdapter {
-    fn launch(&self, prompt: &str, endpoint: &McpCommand, cwd: &Path) -> io::Result<CliLaunch> {
+    fn launch(&self, _prompt: &str, endpoint: &McpCommand, cwd: &Path) -> io::Result<CliLaunch> {
+        let relay = self
+            .relay_endpoint
+            .parse::<reqwest::Url>()
+            .map_err(|_| io::Error::other("invalid model relay endpoint"))?;
+        let capability = relay.path().strip_prefix('/').unwrap_or_default();
         if !self.executable.is_absolute()
             || !self.home.is_absolute()
             || !endpoint.executable.is_absolute()
             || !endpoint.socket.is_absolute()
+            || !endpoint.owner_file.is_absolute()
+            || !endpoint.raw_stdout.is_absolute()
+            || !endpoint.raw_stderr.is_absolute()
             || !cwd.is_absolute()
             || self.model.is_empty()
             || self.maximum_turns == 0
             || !self.relay_endpoint.starts_with("http://127.0.0.1:")
+            || relay.scheme() != "http"
+            || relay.host_str() != Some("127.0.0.1")
+            || relay.port().is_none()
+            || !relay.username().is_empty()
+            || relay.password().is_some()
+            || relay.query().is_some()
+            || relay.fragment().is_some()
+            || capability.len() < 32
+            || capability.contains(['/', '%'])
+            || !capability
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || crate::host_io::digest(&self.executable)? != self.executable_sha256
         {
             return Err(io::Error::other("invalid measured CLI launch contract"));
         }
@@ -131,7 +156,7 @@ impl CliAdapter {
                     values.extend([OsString::from("-c"), setting.into()]);
                 }
                 environment.insert("OPENAI_API_KEY".into(), "tempest-relay-placeholder".into());
-                values.push(prompt.into());
+                values.push("-".into());
                 values
             }
             CliKind::ClaudeCode => {
@@ -148,9 +173,10 @@ impl CliAdapter {
                     "args":["mcp-connect",socket],"env":{}}}});
                 vec![
                     "-p".into(),
-                    prompt.into(),
                     "--model".into(),
                     self.model.clone().into(),
+                    "--max-turns".into(),
+                    self.maximum_turns.to_string().into(),
                     "--bare".into(),
                     "--tools".into(),
                     "".into(),
@@ -267,23 +293,46 @@ impl AgentAdapter for MockAdapter {
     }
 }
 
-async fn bounded_stream<R: tokio::io::AsyncRead + Unpin>(reader: R) -> io::Result<Vec<u8>> {
-    use tokio::io::AsyncReadExt;
-    let mut bytes = Vec::new();
-    reader
-        .take(MAX_AGENT_STREAM + 1)
-        .read_to_end(&mut bytes)
-        .await?;
-    if bytes.len() as u64 > MAX_AGENT_STREAM {
-        return Err(io::Error::other("agent event stream too large"));
+struct ProcessGroupGuard(Option<i32>);
+
+impl ProcessGroupGuard {
+    fn stop(&mut self) {
+        if let Some(group) = self.0.take() {
+            unsafe {
+                libc::kill(-group, libc::SIGKILL);
+            }
+        }
     }
-    Ok(bytes)
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+async fn bounded_stream<R: tokio::io::AsyncRead + Unpin>(reader: R) -> io::Result<(Vec<u8>, bool)> {
+    use tokio::io::AsyncReadExt;
+    let mut reader = reader;
+    let mut bytes = Vec::new();
+    let mut exceeded = false;
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let count = reader.read(&mut chunk).await?;
+        if count == 0 {
+            break;
+        }
+        let remaining = (MAX_AGENT_STREAM as usize).saturating_sub(bytes.len());
+        bytes.extend_from_slice(&chunk[..count.min(remaining)]);
+        exceeded |= count > remaining;
+    }
+    Ok((bytes, exceeded))
 }
 
 impl AgentAdapter for CliAdapter {
     fn describe(&self) -> Value {
         json!({"adapter":match self.kind {CliKind::Codex=>"codex",CliKind::ClaudeCode=>"claude-code"},
-            "model":self.model,"cli_version":self.version,"executable_sha256":crate::host_io::digest(&self.executable).ok()})
+            "model":self.model,"cli_version":self.version,"executable_sha256":self.executable_sha256})
     }
 
     async fn run<'a>(
@@ -302,16 +351,26 @@ impl AgentAdapter for CliAdapter {
             .env_clear()
             .envs(launch.environment)
             .current_dir(cwd)
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0)
             .kill_on_drop(true)
             .spawn()?;
+        let mut group = ProcessGroupGuard(child.id().map(|id| id as i32));
         crate::host_io::json_replace(
             &endpoint.owner_file,
             &json!({"state":"running","process_group":child.id(),"role":"model_cli"}),
         )?;
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| io::Error::other("agent stdin unavailable"))?;
+            stdin.write_all(prompt.as_bytes()).await?;
+            stdin.shutdown().await?;
+        }
         let stdout = child
             .stdout
             .take()
@@ -320,10 +379,13 @@ impl AgentAdapter for CliAdapter {
             .stderr
             .take()
             .ok_or_else(|| io::Error::other("agent stderr unavailable"))?;
-        let (stdout, stderr, status) =
+        let ((stdout, stdout_exceeded), (stderr, stderr_exceeded), status) =
             tokio::try_join!(bounded_stream(stdout), bounded_stream(stderr), child.wait())?;
-        if stderr.len() > MAX_AGENT_STREAM as usize {
-            return Err(io::Error::other("agent stderr too large"));
+        group.stop();
+        crate::host_io::write_new(&endpoint.raw_stdout, &stdout)?;
+        crate::host_io::write_new(&endpoint.raw_stderr, &stderr)?;
+        if stdout_exceeded || stderr_exceeded {
+            return Err(io::Error::other("agent process stream too large"));
         }
         let final_output = match self.kind {
             CliKind::Codex => codex_final_message(&stdout, status.success())?,
@@ -378,13 +440,18 @@ pub fn codex_final_message(bytes: &[u8], process_success: bool) -> io::Result<St
         if completed
             && matches!(
                 event["type"].as_str(),
-                Some("item.completed" | "turn.started")
+                Some(
+                    "thread.started" | "item.completed" | "turn.started" | "turn.failed" | "error"
+                )
             )
         {
             return Err(io::Error::other("Codex emitted work after terminal event"));
         }
         match event["type"].as_str() {
             Some("thread.started") => {
+                if thread.is_some() {
+                    return Err(io::Error::other("Codex thread changed"));
+                }
                 thread = event["thread_id"].as_str().map(str::to_owned);
             }
             Some("item.completed") => {
@@ -438,9 +505,15 @@ pub fn claude_final_message(
         }
         match event["type"].as_str() {
             Some("system") if event["subtype"] == "init" => {
+                if session.is_some() {
+                    return Err(io::Error::other("Claude session changed"));
+                }
                 session = event["session_id"].as_str().map(str::to_owned);
             }
             Some("assistant") if event["parent_tool_use_id"].is_null() => {
+                if event["session_id"].as_str() != session.as_deref() {
+                    return Err(io::Error::other("Claude assistant session mismatch"));
+                }
                 let blocks = event
                     .pointer("/message/content")
                     .and_then(Value::as_array)
@@ -497,15 +570,20 @@ mod stream_tests {
             executable: "/private/tmp/run/bin/tempest".into(),
             socket: "/private/tmp/socket/s".into(),
             owner_file: "/private/tmp/run/owner.json".into(),
+            raw_stdout: "/private/tmp/run/agent.events.jsonl".into(),
+            raw_stderr: "/private/tmp/run/agent.stderr".into(),
         };
+        let executable = std::env::current_exe().unwrap();
+        let executable_sha256 = crate::host_io::digest(&executable).unwrap();
         for kind in [CliKind::Codex, CliKind::ClaudeCode] {
             let adapter = CliAdapter {
                 kind,
-                executable: "/private/tmp/run/bin/agent".into(),
+                executable: executable.clone(),
+                executable_sha256: executable_sha256.clone(),
                 version: "fixed".into(),
                 model: "model-fixed".into(),
                 home: "/private/tmp/run/home".into(),
-                relay_endpoint: "http://127.0.0.1:1234/capability".into(),
+                relay_endpoint: "http://127.0.0.1:1234/capabilitycapabilitycapability12".into(),
                 maximum_turns: 20,
             };
             let launch = adapter
@@ -520,7 +598,7 @@ mod stream_tests {
             assert!(arguments.contains("model-fixed"));
             assert!(arguments.contains("mcp-connect"));
             assert!(arguments.contains("/private/tmp/socket/s"));
-            assert!(arguments.contains("fixed prompt"));
+            assert!(!arguments.contains("fixed prompt"));
             assert_eq!(
                 launch.environment[&OsString::from("HOME")],
                 "/private/tmp/run/home"
@@ -550,6 +628,43 @@ mod stream_tests {
     }
 
     #[test]
+    fn relay_endpoint_rejects_authority_and_encoding_confusion() {
+        let executable = std::env::current_exe().unwrap();
+        let adapter = CliAdapter {
+            kind: CliKind::Codex,
+            executable: executable.clone(),
+            executable_sha256: crate::host_io::digest(&executable).unwrap(),
+            version: "fixed".into(),
+            model: "model-fixed".into(),
+            home: "/private/tmp/run/home".into(),
+            relay_endpoint: String::new(),
+            maximum_turns: 20,
+        };
+        let endpoint = McpCommand {
+            executable: "/private/tmp/run/bin/tempest".into(),
+            socket: "/private/tmp/socket/s".into(),
+            owner_file: "/private/tmp/run/owner.json".into(),
+            raw_stdout: "/private/tmp/run/agent.events.jsonl".into(),
+            raw_stderr: "/private/tmp/run/agent.stderr".into(),
+        };
+        for value in [
+            "http://127.0.0.1:1234@other.example/capabilitycapabilitycapability12",
+            "http://2130706433:1234/capabilitycapabilitycapability12",
+            "https://127.0.0.1:1234/capabilitycapabilitycapability12",
+            "http://127.0.0.1:1234/capabilitycapabilitycapability12?q=x",
+            "http://127.0.0.1:1234/capability%2Fcapabilitycapability12",
+        ] {
+            let mut changed = adapter.clone();
+            changed.relay_endpoint = value.into();
+            assert!(
+                changed
+                    .launch("prompt", &endpoint, Path::new("/private/tmp/run/cwd"))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn codex_accepts_only_the_last_completed_assistant_item() {
         let valid = lines(&[
             json!({"type":"thread.started","thread_id":"thread-1"}),
@@ -572,6 +687,12 @@ mod stream_tests {
             json!({"type":"item.completed","item":{"type":"agent_message","text":"late"}}),
         ]);
         assert!(codex_final_message(&post_terminal, true).is_err());
+        let changed_thread = lines(&[
+            json!({"type":"thread.started","thread_id":"thread-1"}),
+            json!({"type":"thread.started","thread_id":"thread-2"}),
+            json!({"type":"turn.completed"}),
+        ]);
+        assert!(codex_final_message(&changed_thread, true).is_err());
         assert!(codex_final_message(&valid[..valid.len() - 26], true).is_err());
         assert!(codex_final_message(&valid, false).is_err());
     }
@@ -586,7 +707,7 @@ mod stream_tests {
             init.clone(),
             json!({"type":"assistant","parent_tool_use_id":"tool-parent",
                 "message":{"content":[{"type":"text","text":"```json nested ```"}]}}),
-            json!({"type":"assistant","parent_tool_use_id":null,
+            json!({"type":"assistant","session_id":"session-1","parent_tool_use_id":null,
                 "message":{"content":[{"type":"text","text":"final"}]}}),
             result.clone(),
         ]);
@@ -594,12 +715,20 @@ mod stream_tests {
         assert!(claude_final_message(&valid, true, 1).is_err());
         let tool_ended = lines(&[
             init,
-            json!({"type":"assistant","parent_tool_use_id":null,
+            json!({"type":"assistant","session_id":"session-1","parent_tool_use_id":null,
                 "message":{"content":[{"type":"text","text":"intermediate"},
                     {"type":"tool_use","name":"mcp"}]}}),
             result,
         ]);
         assert!(claude_final_message(&tool_ended, true, 3).is_err());
+        let changed_session = lines(&[
+            json!({"type":"system","subtype":"init","session_id":"session-1"}),
+            json!({"type":"system","subtype":"init","session_id":"session-2"}),
+            json!({"type":"result","subtype":"success","is_error":false,
+                "stop_reason":"end_turn","terminal_reason":"completed","num_turns":1,
+                "session_id":"session-2"}),
+        ]);
+        assert!(claude_final_message(&changed_session, true, 3).is_err());
         let mut post_terminal = valid.clone();
         post_terminal.extend_from_slice(
             b"\n{\"type\":\"assistant\",\"parent_tool_use_id\":null,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"late\"}]}}",

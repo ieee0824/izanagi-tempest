@@ -75,7 +75,11 @@ CLIのJSON event streamはadapter固有parserで扱う。Codexは正常終了し
 実CLI process契約は空の環境からHOME/TMPDIR/localeとrelay placeholderだけを構成し、stdinを閉じ、
 固定model、絶対pathの`tempest mcp-connect`、固定3 toolだけをCLI引数へ渡す。Codexはuser config/rules/sessionを
 無効化してbuiltin featureを列挙拒否し、Claude Codeはsetting source/slash command/session persistenceを無効化する。
-stdout/stderrは各16 MiBを上限とし、process groupをrun controllerが所有する。この契約は実装済みだが、正式proof runnerと
+promptはargvへ置かずstdinで配送する。loopback relay URLはURL parserでscheme、literal host、port、userinfo不在、
+query/fragment不在、capability pathを検査する。実行copyのhash不一致は起動前に拒否する。stdout/stderrは各16 MiBを
+上限として超過時もprefixを私有証跡へ保存し、process group全体をrun controllerが停止する。Claude CodeはCLI引数でも
+turn上限を強制し、Codexはrelay policyのrequest上限をAPI turn予算とする。thread/session切替は報告を拒否する。
+この契約は実装済みだが、正式proof runnerと
 native relayのlifecycleへ接続するまでは`tempest run`から選択できない。
 
 ## launcher capability proof
