@@ -215,6 +215,7 @@ python3 integration/runtime_smoke.py --help
 python3 integration/runtime_faults.py --help
 python3 integration/runtime_presence.py --help
 python3 integration/runtime_noop.py --help
+python3 integration/runtime_delivery_race.py --help
 ```
 
 前者は同一scenarioの2回実行でsnapshot reset、4つのVM namespace、資格情報の非再利用を確認します。

@@ -120,3 +120,16 @@ monitor画面で確認した。容量確保後の再開2回でも同状態へ戻
 hostのcontrol.jsonlには各delivery読取の開始と観測分類を同じ管理要求IDで追記する。
 暗号文受信は認証済みoperation成功とは呼ばず、RPC不確定・reply未生成・実行失敗と分ける。
 監査I/Oが失敗した場合も成功扱いにせずVMを破棄する。再試行条件は未変更である。
+
+## 配送競合の実測と修正
+
+- build003のimage_smoke成功: `/private/tmp/tempest-m6-delivery-race-vm-003/summary.json`。
+  実root reader PID1304がmoved_pidsに含まれ、実行失敗→同IDの認証済み応答取得を確認。
+  freezeは107209167ns。fixture以外の隔離試験も同じsuiteで実施した。
+- 修正前host（3c7a777）の実管理MCP: `/private/tmp/tempest-m6-delivery-race-baseline-003/`。
+  export投入1回、exit_minus_one読取失敗1回でaborted、partial評価・安全回収。
+- 修正後host: `/private/tmp/tempest-m6-delivery-race-fixed-003/`。
+  primary export投入1回・失敗1回から回復しcompleted。reader PID890、freeze137149417ns。
+  その後fresh retestのprobeも成功。retestはexportを行わず、retest側の強制競合を実測したという意味ではない。
+- process peer試験は、export失敗3回の打切り、seed失敗・RPC ID不一致・companion認証失敗・operation拒否・未知応答の即中断を確認。
+- 上限に近いPCAPの実測は進行中。修正した通常hostの条件は [M4実行契約](M4-CONTRACT.md) を参照。

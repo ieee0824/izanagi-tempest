@@ -134,3 +134,14 @@ python3 integration/image_smoke.py --izanagi /absolute/path/to/izanagi --image /
 認証済み応答を取得できることを検査する。要求の再投入は行わない。失敗応答は本文を転記せず
 種別・終了コード・stdout/stderr hashだけを記録する。これは配送障害の再現試験であり、
 本番controllerの再試行契約や期限・監査の検証を代替しない。
+
+host controllerの回復と失敗上限は、同じfixtureで次を実行する。
+`--expect aborted` は修正前のhost binaryの基準確認用である。
+
+```bash
+python3 integration/runtime_delivery_race.py --tempest /absolute/path/to/tempest --izanagi /absolute/path/to/izanagi --image /private/tmp/tempest-delivery-race-build-001/packer/output-debian/debian-aarch64.qcow2 --image-inputs /private/tmp/tempest-delivery-race-build-001/inputs.json --python /absolute/path/to/python3 --runs /private/tmp/tempest-delivery-race-fixed-001 --expect completed
+python3 integration/runtime_delivery_race.py --tempest /absolute/path/to/tempest --izanagi /absolute/path/to/izanagi --image /private/tmp/tempest-delivery-race-build-001/packer/output-debian/debian-aarch64.qcow2 --image-inputs /private/tmp/tempest-delivery-race-build-001/inputs.json --python /absolute/path/to/python3 --runs /private/tmp/tempest-delivery-race-large-001 --expect completed --large-evidence
+```
+
+大証跡caseは1MiBのローカルdummy objectを29回読み、64MiBのhost上限に近いPCAPを作る。
+上限付近のサイズ・29要求の保持・認証済みexport・freeze時間・安全回収を検査する。

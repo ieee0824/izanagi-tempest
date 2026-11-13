@@ -208,3 +208,23 @@ controllerのSIGKILLやhost crashでは、停止したprocess自身による削�
 Izanagi downとVM PID消滅を確認した後だけtransientを削除し、runをabortedとして最終化する。
 ownerが生存中、sessionが差し替わった場合、VM停止を確認できない場合は回収を拒否する。
 実VM試験はcontroller SIGKILL（primary active中/retest active中）であり、host OS crash自体は未検証である。
+
+## export応答読取とfreezeの競合（#13、M6中の修正）
+
+export要求をroot mailboxへ一度置いた後の`deliver`は、保存済み暗号文の読取りだけである。
+root consumerのfreeze/killは進行中のdeliverも終了させ得る。専用fixture VMで、実root reader PIDが
+quiesceのmoved_pidsに含まれることと、その読取失敗後に同じ要求IDの認証済み応答を取得できることを確認した。
+固定管理MCPの失敗形式はこの実測で`(exit code: -1)`であった。
+
+hostはexportに限り、IDの合うRPC応答で観測した既知のexec失敗を同じpathで再読取する。
+失敗3回で打切り、全読取3200回・全体320秒を上限とし、各RPCは固定MCPの外側300秒より短い290秒までとする。
+要求prepareはloop外の1回だけで、再投入しない。seed等の他操作の実行失敗、RPCのtimeout/切断/ID不一致、
+不正応答、復号/認証失敗、認証済みoperation拒否は再試行せずVMを破棄する。
+exec失敗の分類はsignalやcallback終了の証明とは呼ばない。最終の認証済みexport/barrierとVM終了確認が
+揃うまで成功とせず、各読取開始・観測分類・retry判断をcontrol.jsonlへ残す。監査I/O失敗も破棄する。
+
+freeze中はRPC daemonも停止するため、単なる短いsleepや推定転送速度では競合の回避を保証しない。
+native exportの240秒timeout、quiesce/thaw各20秒とhost期限を区別する。ファイルhash処理等を含めた
+全実行時間の無条件な上限保証ではなく、上限到達はunknownとして指標の分母へ残す。
+完了したexportにはfrozen_monotonic_ns、thawed_guest_ns、frozen_duration_nsを残す。
+失敗で認証済み応答を取得できない場合、その時間は未確認のまま保持する。
