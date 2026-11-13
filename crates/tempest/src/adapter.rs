@@ -1,8 +1,10 @@
-//! Deterministic mock adapter; real CLI launchers remain a separate milestone.
+//! Deterministic mock and proof-gated real CLI adapter process contracts.
 use crate::{host_io::command, rpc::Rpc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
+    ffi::OsString,
     future::Future,
     io,
     path::{Path, PathBuf},
@@ -10,10 +12,33 @@ use std::{
     time::Duration,
 };
 
+const MAX_AGENT_STREAM: u64 = 16 * 1024 * 1024;
+
 pub struct McpCommand {
     pub executable: PathBuf,
     pub socket: PathBuf,
     pub owner_file: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum CliKind {
+    Codex,
+    ClaudeCode,
+}
+
+pub struct CliAdapter {
+    pub kind: CliKind,
+    pub executable: PathBuf,
+    pub version: String,
+    pub model: String,
+    pub home: PathBuf,
+    pub relay_endpoint: String,
+    pub maximum_turns: u64,
+}
+
+struct CliLaunch {
+    arguments: Vec<OsString>,
+    environment: BTreeMap<OsString, OsString>,
 }
 
 #[derive(Debug, Serialize)]
@@ -31,6 +56,128 @@ pub trait AgentAdapter {
         endpoint: &'a McpCommand,
         cwd: &'a Path,
     ) -> impl Future<Output = io::Result<AgentOutcome>> + Send + 'a;
+}
+
+impl CliAdapter {
+    fn launch(&self, prompt: &str, endpoint: &McpCommand, cwd: &Path) -> io::Result<CliLaunch> {
+        if !self.executable.is_absolute()
+            || !self.home.is_absolute()
+            || !endpoint.executable.is_absolute()
+            || !endpoint.socket.is_absolute()
+            || !cwd.is_absolute()
+            || self.model.is_empty()
+            || self.maximum_turns == 0
+            || !self.relay_endpoint.starts_with("http://127.0.0.1:")
+        {
+            return Err(io::Error::other("invalid measured CLI launch contract"));
+        }
+        let bridge = endpoint.executable.to_string_lossy().into_owned();
+        let socket = endpoint.socket.to_string_lossy().into_owned();
+        let mut environment = BTreeMap::from([
+            (OsString::from("HOME"), self.home.clone().into_os_string()),
+            (OsString::from("LANG"), OsString::from("C.UTF-8")),
+            (OsString::from("LC_ALL"), OsString::from("C.UTF-8")),
+            (OsString::from("TMPDIR"), cwd.to_path_buf().into_os_string()),
+        ]);
+        let arguments = match self.kind {
+            CliKind::Codex => {
+                let mut values = vec![
+                    "exec".into(),
+                    "--ignore-user-config".into(),
+                    "--ignore-rules".into(),
+                    "--ephemeral".into(),
+                    "--skip-git-repo-check".into(),
+                    "--json".into(),
+                    "-s".into(),
+                    "read-only".into(),
+                    "-m".into(),
+                    self.model.clone().into(),
+                ];
+                for feature in [
+                    "shell_tool",
+                    "apps",
+                    "view_image",
+                    "multi_agent",
+                    "plugins",
+                    "remote_plugin",
+                    "plugin_sharing",
+                    "plugin_discovery_prefetch",
+                    "skill_search",
+                    "skill_mcp_dependency_install",
+                    "hooks",
+                    "goals",
+                    "image_generation",
+                ] {
+                    values.extend([OsString::from("--disable"), feature.into()]);
+                }
+                for setting in [
+                    "model_provider=\"tempest\"".to_owned(),
+                    "model_providers.tempest.name=\"Tempest relay\"".to_owned(),
+                    format!(
+                        "model_providers.tempest.base_url={}",
+                        serde_json::to_string(&self.relay_endpoint)?
+                    ),
+                    "model_providers.tempest.wire_api=\"responses\"".to_owned(),
+                    "model_providers.tempest.requires_openai_auth=true".to_owned(),
+                    "web_search=\"disabled\"".to_owned(),
+                    format!("mcp_servers.tempest.command={}", serde_json::to_string(&bridge)?),
+                    format!(
+                        "mcp_servers.tempest.args={}",
+                        serde_json::to_string(&["mcp-connect", socket.as_str()])?
+                    ),
+                    "mcp_servers.tempest.enabled_tools=[\"sandbox_status\",\"sandbox_exec\",\"sandbox_shell\"]".to_owned(),
+                    "mcp_servers.tempest.default_tools_approval_mode=\"approve\"".to_owned(),
+                ] {
+                    values.extend([OsString::from("-c"), setting.into()]);
+                }
+                environment.insert("OPENAI_API_KEY".into(), "tempest-relay-placeholder".into());
+                values.push(prompt.into());
+                values
+            }
+            CliKind::ClaudeCode => {
+                environment.insert(
+                    "ANTHROPIC_BASE_URL".into(),
+                    self.relay_endpoint.clone().into(),
+                );
+                environment.insert(
+                    "ANTHROPIC_API_KEY".into(),
+                    "tempest-relay-placeholder".into(),
+                );
+                environment.insert("DISABLE_AUTOUPDATER".into(), "1".into());
+                let mcp = json!({"mcpServers":{"tempest":{"command":bridge,
+                    "args":["mcp-connect",socket],"env":{}}}});
+                vec![
+                    "-p".into(),
+                    prompt.into(),
+                    "--model".into(),
+                    self.model.clone().into(),
+                    "--bare".into(),
+                    "--tools".into(),
+                    "".into(),
+                    "--strict-mcp-config".into(),
+                    "--mcp-config".into(),
+                    serde_json::to_string(&mcp)?.into(),
+                    "--setting-sources".into(),
+                    "".into(),
+                    "--disable-slash-commands".into(),
+                    "--permission-mode".into(),
+                    "dontAsk".into(),
+                    "--no-session-persistence".into(),
+                    "--output-format".into(),
+                    "stream-json".into(),
+                    "--verbose".into(),
+                    "--allowedTools".into(),
+                    "mcp__tempest__sandbox_status".into(),
+                    "mcp__tempest__sandbox_exec".into(),
+                    "mcp__tempest__sandbox_shell".into(),
+                ]
+            }
+        };
+        Ok(CliLaunch {
+            arguments,
+            environment,
+        })
+    }
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -117,6 +264,79 @@ impl AgentAdapter for MockAdapter {
             return Err(io::Error::other("mock bridge failed"));
         }
         Ok(outcome)
+    }
+}
+
+async fn bounded_stream<R: tokio::io::AsyncRead + Unpin>(reader: R) -> io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_AGENT_STREAM + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() as u64 > MAX_AGENT_STREAM {
+        return Err(io::Error::other("agent event stream too large"));
+    }
+    Ok(bytes)
+}
+
+impl AgentAdapter for CliAdapter {
+    fn describe(&self) -> Value {
+        json!({"adapter":match self.kind {CliKind::Codex=>"codex",CliKind::ClaudeCode=>"claude-code"},
+            "model":self.model,"cli_version":self.version,"executable_sha256":crate::host_io::digest(&self.executable).ok()})
+    }
+
+    async fn run<'a>(
+        &'a self,
+        prompt: &'a str,
+        endpoint: &'a McpCommand,
+        cwd: &'a Path,
+    ) -> io::Result<AgentOutcome> {
+        let launch = self.launch(prompt, endpoint, cwd)?;
+        crate::host_io::json_new(
+            &endpoint.owner_file,
+            &json!({"state":"launching","role":"model_cli"}),
+        )?;
+        let mut child = command(&self.executable)
+            .args(launch.arguments)
+            .env_clear()
+            .envs(launch.environment)
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()?;
+        crate::host_io::json_replace(
+            &endpoint.owner_file,
+            &json!({"state":"running","process_group":child.id(),"role":"model_cli"}),
+        )?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("agent stdout unavailable"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("agent stderr unavailable"))?;
+        let (stdout, stderr, status) =
+            tokio::try_join!(bounded_stream(stdout), bounded_stream(stderr), child.wait())?;
+        if stderr.len() > MAX_AGENT_STREAM as usize {
+            return Err(io::Error::other("agent stderr too large"));
+        }
+        let final_output = match self.kind {
+            CliKind::Codex => codex_final_message(&stdout, status.success())?,
+            CliKind::ClaudeCode => {
+                claude_final_message(&stdout, status.success(), self.maximum_turns)?
+            }
+        };
+        Ok(AgentOutcome {
+            status: "finished".into(),
+            final_output,
+            calls_attempted: 0,
+            responses: Vec::new(),
+        })
     }
 }
 fn replace(value: &Value, key: &str) -> Value {
@@ -269,6 +489,64 @@ mod stream_tests {
             .collect::<Vec<_>>()
             .join("\n")
             .into_bytes()
+    }
+
+    #[test]
+    fn real_cli_launches_bind_model_relay_mcp_and_empty_environment() {
+        let endpoint = McpCommand {
+            executable: "/private/tmp/run/bin/tempest".into(),
+            socket: "/private/tmp/socket/s".into(),
+            owner_file: "/private/tmp/run/owner.json".into(),
+        };
+        for kind in [CliKind::Codex, CliKind::ClaudeCode] {
+            let adapter = CliAdapter {
+                kind,
+                executable: "/private/tmp/run/bin/agent".into(),
+                version: "fixed".into(),
+                model: "model-fixed".into(),
+                home: "/private/tmp/run/home".into(),
+                relay_endpoint: "http://127.0.0.1:1234/capability".into(),
+                maximum_turns: 20,
+            };
+            let launch = adapter
+                .launch("fixed prompt", &endpoint, Path::new("/private/tmp/run/cwd"))
+                .unwrap();
+            let arguments = launch
+                .arguments
+                .iter()
+                .map(|value| value.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(arguments.contains("model-fixed"));
+            assert!(arguments.contains("mcp-connect"));
+            assert!(arguments.contains("/private/tmp/socket/s"));
+            assert!(arguments.contains("fixed prompt"));
+            assert_eq!(
+                launch.environment[&OsString::from("HOME")],
+                "/private/tmp/run/home"
+            );
+            assert!(!launch.environment.contains_key(&OsString::from("PATH")));
+            assert!(
+                !launch
+                    .environment
+                    .contains_key(&OsString::from("AWS_SECRET_ACCESS_KEY"))
+            );
+            match kind {
+                CliKind::Codex => {
+                    assert!(arguments.contains("--ignore-user-config"));
+                    assert!(arguments.contains("shell_tool"));
+                    assert!(arguments.contains("wire_api=\"responses\""));
+                }
+                CliKind::ClaudeCode => {
+                    assert!(arguments.contains("--strict-mcp-config"));
+                    assert!(arguments.contains("--setting-sources"));
+                    assert_eq!(
+                        launch.environment[&OsString::from("DISABLE_AUTOUPDATER")],
+                        "1"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

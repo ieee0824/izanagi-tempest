@@ -72,6 +72,11 @@ CLIのJSON event streamはadapter固有parserで扱う。Codexは正常終了し
 `item.completed`が`agent_message`の場合だけ、Claude Codeは成功result直前のtop-levelかつtext-onlyな
 最後のassistant messageだけを報告候補にする。tool結果内のJSON、subagent text、途中のassistant text、
 途中切断、非0終了、error、tool-call終端、turn上限超過から報告を作らない。fixtureでこれらの負例を固定した。
+実CLI process契約は空の環境からHOME/TMPDIR/localeとrelay placeholderだけを構成し、stdinを閉じ、
+固定model、絶対pathの`tempest mcp-connect`、固定3 toolだけをCLI引数へ渡す。Codexはuser config/rules/sessionを
+無効化してbuiltin featureを列挙拒否し、Claude Codeはsetting source/slash command/session persistenceを無効化する。
+stdout/stderrは各16 MiBを上限とし、process groupをrun controllerが所有する。この契約は実装済みだが、正式proof runnerと
+native relayのlifecycleへ接続するまでは`tempest run`から選択できない。
 
 ## launcher capability proof
 
