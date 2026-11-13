@@ -637,6 +637,8 @@ struct ProofInputs<'a> {
     canary_sha256: &'a str,
     started_ns: u64,
     finished_ns: u64,
+    control_started_ns: u64,
+    control_finished_ns: u64,
 }
 
 struct PreparedProof {
@@ -645,6 +647,52 @@ struct PreparedProof {
     runner_sha256: String,
     policy_sha256: String,
     catalog_sha256: String,
+}
+
+fn reviewed_system_configuration() -> io::Result<Vec<Value>> {
+    let contract = crate::capability_proof::parse_unique_value(include_bytes!(
+        "../policies/claude-code-2.1.323-macos-system-paths.json"
+    ))?;
+    if contract["schema_version"] != 1
+        || contract["agent"] != "claude-code"
+        || contract["cli_version"] != "2.1.323 (Claude Code)"
+        || contract["os"] != "macos"
+    {
+        return Err(io::Error::other("invalid reviewed system path contract"));
+    }
+    let paths = contract["paths"]
+        .as_array()
+        .ok_or_else(|| io::Error::other("reviewed system paths missing"))?;
+    let mut output = Vec::new();
+    let mut prior = None;
+    for item in paths {
+        let object = item
+            .as_object()
+            .filter(|object| object.len() == 2)
+            .ok_or_else(|| io::Error::other("invalid reviewed system path entry"))?;
+        let path = object["path"]
+            .as_str()
+            .map(Path::new)
+            .filter(|path| path.is_absolute())
+            .ok_or_else(|| io::Error::other("reviewed system path is not absolute"))?;
+        if prior.is_some_and(|prior: &Path| prior >= path) {
+            return Err(io::Error::other("reviewed system paths are not sorted"));
+        }
+        let state = object["state"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("reviewed system path state missing"))?;
+        let sha256 = match state {
+            "absent" => match path.symlink_metadata() {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Value::Null,
+                _ => return Err(io::Error::other("reviewed managed path is present")),
+            },
+            "file" => Value::from(host_io::digest(path)?),
+            _ => return Err(io::Error::other("invalid reviewed system path state")),
+        };
+        output.push(serde_json::json!({"path":path,"state":state,"sha256":sha256}));
+        prior = Some(path);
+    }
+    Ok(output)
 }
 
 fn prepare_claude_proof(
@@ -661,7 +709,7 @@ fn prepare_claude_proof(
     let runner_sha256 = host_io::digest(&runner)?;
     let policy_sha256 = host_io::digest(request_policy)?;
     let fixed_hash = |value: &str| sha256_bytes(value.as_bytes());
-    let absent_config = root.join("acceptance-managed-config-absent");
+    let system_configuration = reviewed_system_configuration()?;
     let profile = serde_json::json!({
         "schema_version":1,"agent":"claude-code","model":"tempest-capability-probe",
         "cli_version":cli_version,"provider_protocol":"anthropic-messages",
@@ -686,11 +734,7 @@ fn prepare_claude_proof(
             {"name":"TMPDIR","source":"generated_private_directory","value_sha256":null}],
         "home_policy":"empty_owner_private","cwd_policy":"empty_owner_private",
         "prompt_policy":"tempest_generated_only","real_authentication_owner":"model_api_relay_only",
-        "system_configuration":[
-            {"path":"/System/Library/Sandbox/Profiles/dyld-support.sb","state":"file","sha256":host_io::digest(Path::new("/System/Library/Sandbox/Profiles/dyld-support.sb"))?},
-            {"path":"/System/Library/Sandbox/Profiles/system.sb","state":"file","sha256":host_io::digest(Path::new("/System/Library/Sandbox/Profiles/system.sb"))?},
-            {"path":absent_config,"state":"absent","sha256":null},
-            {"path":"/usr/bin/sandbox-exec","state":"file","sha256":host_io::digest(Path::new("/usr/bin/sandbox-exec"))?}],
+        "system_configuration":system_configuration,
         "code_closure":[
             {"role":"agent_executable","path":source,"sha256":host_io::digest(source)?},
             {"role":"mcp_bridge","path":runner,"sha256":runner_sha256},
@@ -764,11 +808,16 @@ fn write_and_authorize_claude_proof(
     let mut checks = serde_json::Map::new();
     let mut manifest = Vec::new();
     for (check, check_facts) in facts {
+        let (started_ns, finished_ns) = if check == "control_socket_unavailable" {
+            (input.control_started_ns, input.control_finished_ns)
+        } else {
+            (input.started_ns, input.finished_ns)
+        };
         let name = format!("{check}.json");
         let bytes = serde_json::to_vec(&serde_json::json!({"schema_version":1,"check":check,
             "profile_sha256":profile_sha256,"runner_sha256":runner_sha256,
             "probe_id":probe_id,"probe_nonce_sha256":probe_nonce_sha256,
-            "started_ns":input.started_ns,"finished_ns":input.finished_ns,"facts":check_facts}))?;
+            "started_ns":started_ns,"finished_ns":finished_ns,"facts":check_facts}))?;
         host_io::write_new(&proof_root.join("evidence").join(&name), &bytes)?;
         checks.insert(
             check.to_owned(),
@@ -1101,14 +1150,14 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
         let prepared_proof =
             prepare_claude_proof(&root, &source, &cli_version, &policy_path, &catalogs[0])?;
         let challenge = ProbeChallenge::generate()?;
-        let acceptance_started_ns = host_io::now_ns()?;
         let acceptance_capability = challenge.probe_id().to_owned();
+        let acceptance_control_socket = root.join("host-control-acceptance");
         let acceptance_provider = ProbeProvider::start(
             provider_agent,
             &acceptance_capability,
             &host_canary,
             &write_canary,
-            &control_socket,
+            &acceptance_control_socket,
             &hmac_file,
         )
         .await?;
@@ -1122,6 +1171,23 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
             &root.join("harness/model-relay-audit.jsonl"),
         )
         .await?;
+        let acceptance_socket = root.join("socket/mcp-acceptance");
+        let control_started_ns = host_io::now_ns()?;
+        let acceptance_control_listener = prove_control_socket_denied(
+            &acceptance_control_socket,
+            &acceptance_profile,
+            &acceptance_jail,
+            relay
+                .endpoint()
+                .parse::<reqwest::Url>()
+                .ok()
+                .and_then(|url| url.port())
+                .ok_or_else(|| io::Error::other("acceptance relay port missing"))?,
+            &acceptance_socket,
+        )
+        .await?;
+        let control_finished_ns = host_io::now_ns()?;
+        let acceptance_started_ns = host_io::now_ns()?;
         let baseline_path = requests[0]
             .path
             .strip_prefix(provider_url.path())
@@ -1134,7 +1200,6 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
                 "relay negative probe reached the trusted upstream",
             ));
         }
-        let acceptance_socket = root.join("socket/mcp-acceptance");
         let acceptance_supervisor = Supervisor::start(SupervisorConfig {
             executable: acceptance_bridge.clone(),
             args: vec![
@@ -1230,6 +1295,17 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
             return Err(io::Error::other("capability acceptance boundary failed"));
         }
         let acceptance_finished_ns = host_io::now_ns()?;
+        if tokio::time::timeout(
+            Duration::from_millis(1),
+            acceptance_control_listener.accept(),
+        )
+        .await
+        .is_ok()
+        {
+            return Err(io::Error::other(
+                "acceptance control socket was reached after its negative probe",
+            ));
+        }
         write_and_authorize_claude_proof(
             ProofInputs {
                 root: &root,
@@ -1239,6 +1315,8 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
                 canary_sha256: &host_io::digest(&host_canary)?,
                 started_ns: acceptance_started_ns,
                 finished_ns: acceptance_finished_ns,
+                control_started_ns,
+                control_finished_ns,
             },
             challenge,
         )?;

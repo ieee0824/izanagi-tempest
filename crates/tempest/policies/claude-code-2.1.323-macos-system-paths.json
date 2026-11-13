@@ -1,0 +1,36 @@
+{
+  "agent": "claude-code",
+  "cli_version": "2.1.323 (Claude Code)",
+  "os": "macos",
+  "paths": [
+    {
+      "path": "/Library/Application Support/ClaudeCode/managed-mcp.json",
+      "state": "absent"
+    },
+    {
+      "path": "/Library/Application Support/ClaudeCode/managed-settings.d",
+      "state": "absent"
+    },
+    {
+      "path": "/Library/Application Support/ClaudeCode/managed-settings.json",
+      "state": "absent"
+    },
+    {
+      "path": "/Library/Managed Preferences/com.anthropic.claudecode.plist",
+      "state": "absent"
+    },
+    {
+      "path": "/System/Library/Sandbox/Profiles/dyld-support.sb",
+      "state": "file"
+    },
+    {
+      "path": "/System/Library/Sandbox/Profiles/system.sb",
+      "state": "file"
+    },
+    {
+      "path": "/usr/bin/sandbox-exec",
+      "state": "file"
+    }
+  ],
+  "schema_version": 1
+}

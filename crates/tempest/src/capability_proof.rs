@@ -553,6 +553,39 @@ fn system_configuration_contract(values: &[SystemPathRule]) -> io::Result<bool> 
     Ok(true)
 }
 
+fn reviewed_system_path_contract(profile: &LauncherProfile) -> bool {
+    if profile.agent != "claude-code" || profile.cli_version != "2.1.323 (Claude Code)" {
+        return profile.agent == "codex";
+    }
+    let expected = [
+        (
+            "/Library/Application Support/ClaudeCode/managed-mcp.json",
+            "absent",
+        ),
+        (
+            "/Library/Application Support/ClaudeCode/managed-settings.d",
+            "absent",
+        ),
+        (
+            "/Library/Application Support/ClaudeCode/managed-settings.json",
+            "absent",
+        ),
+        (
+            "/Library/Managed Preferences/com.anthropic.claudecode.plist",
+            "absent",
+        ),
+        ("/System/Library/Sandbox/Profiles/dyld-support.sb", "file"),
+        ("/System/Library/Sandbox/Profiles/system.sb", "file"),
+        ("/usr/bin/sandbox-exec", "file"),
+    ];
+    profile.system_configuration.len() == expected.len()
+        && profile
+            .system_configuration
+            .iter()
+            .zip(expected)
+            .all(|(actual, (path, state))| actual.path == Path::new(path) && actual.state == state)
+}
+
 fn exact_facts<'a>(
     value: &'a Value,
     names: &[&str],
@@ -727,6 +760,7 @@ fn load_envelope_inner(root: &Path, verify_live_code: bool) -> io::Result<Verifi
         || profile.cwd_policy != "empty_owner_private"
         || profile.prompt_policy != "tempest_generated_only"
         || profile.real_authentication_owner != "model_api_relay_only"
+        || !reviewed_system_path_contract(&profile)
         || !system_configuration_contract(&profile.system_configuration)?
     {
         return Err(invalid("invalid launcher profile contract"));
@@ -967,6 +1001,17 @@ pub(crate) mod tests {
         materialize_code(&envelope, &staged).unwrap();
         host_io::write_new(&staged.join("host/extra"), b"unexpected").unwrap();
         assert!(authorize_staged_launch(&root, &staged, challenge).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn arbitrary_absent_path_cannot_stand_in_for_claude_managed_sources() {
+        let (root, mut profile, _, _) = fixture();
+        profile["agent"] = "claude-code".into();
+        profile["cli_version"] = "2.1.323 (Claude Code)".into();
+        profile["provider_protocol"] = "anthropic-messages".into();
+        let profile: LauncherProfile = serde_json::from_value(profile).unwrap();
+        assert!(!reviewed_system_path_contract(&profile));
         fs::remove_dir_all(root).unwrap();
     }
 
