@@ -8,6 +8,8 @@ model IDとretirement予定は2026-11-14にClaude Platform公式の[Models overv
 
 field、path/query、value type、tool schema、固定 header のいずれかが変わった場合はfail-closeとし、ファイル更新は差分をレビューしてから行う。
 
+`acceptance_requests` はdeterministic probeで観測・再現する件数で、現在は8である。`maximum_requests` はproduction relayが上流へ送信できる独立した有限budgetで、現在は20とする。20はClaude CLIの`--max-turns 20`と同じ保守的な費用上限であり、retry余裕は含めない。SDK retryや補助requestも1件として消費し、上限到達で中止したrunは成功・失敗に変換せずUnknownとして事前計画の分母に残す。両値はpolicy hashを通じてprofile/proofへ固定し、runtime varianceとして変更しない。
+
 `claude-code-2.1.323-macos-system-paths.json` は、このCLI版がmacOSで参照し得るorganization-wide `CLAUDE.md`、managed settings/MCP、machine/user MDMのsystem側パスと、Tempestが依存するSeatbeltファイルを列挙する。`{USER}` はrunnerの実効uidから解決し、managed pathは起動時に不在、Seatbeltファイルは実行時hashをprofileへ束縛する。この一覧は公式に文書化された既知の高優先度設定・指示源が混入していないことを保証するが、CLIの全file accessを独立にtraceして網羅性を証明したものではない。
 
 managed settingsの場所と優先順位はClaude Code公式の[Managed settings](https://code.claude.com/docs/en/managed-settings)、organization-wide指示は[Memory](https://code.claude.com/docs/en/memory)を根拠とする。Tempestはnon-Anthropic `ANTHROPIC_BASE_URL` を固定するため、同文書の仕様上server-managed settingsは取得されない。user/project/local settingsは空のprivate HOME/CWDと`--setting-sources ""`で除外する。

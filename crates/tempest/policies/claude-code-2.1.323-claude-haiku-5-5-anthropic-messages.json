@@ -1,5 +1,6 @@
 {
-  "maximum_requests": 8,
+  "acceptance_requests": 8,
+  "maximum_requests": 20,
   "models": [
     "claude-haiku-5-5"
   ],

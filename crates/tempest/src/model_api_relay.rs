@@ -58,6 +58,7 @@ const FORBIDDEN_KEYS: &[&str] = &[
 #[serde(deny_unknown_fields)]
 struct Policy {
     schema_version: u64,
+    acceptance_requests: u64,
     paths: Vec<String>,
     models: Vec<String>,
     top_level_fields: Vec<String>,
@@ -189,6 +190,7 @@ fn validate_policy(value: Value) -> io::Result<ValidatedPolicy> {
                 || path.ends_with('?')
         })
         || policy.tools.is_empty()
+        || !(1..=policy.maximum_requests).contains(&policy.acceptance_requests)
         || !(1..=1000).contains(&policy.maximum_requests)
     {
         return Err(invalid("invalid model relay policy"));
@@ -850,7 +852,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     fn policy_value() -> Value {
-        json!({"schema_version":1,"paths":["/v1/messages"],"models":["model-1"],
+        json!({"schema_version":1,"acceptance_requests":1,
+        "paths":["/v1/messages"],"models":["model-1"],
         "top_level_fields":["model","prompt","tools"],"request_value_types":["text"],
         "request_headers":{"content-type":"application/json","x-tempest-profile":"fixed"},
         "maximum_requests":20,
@@ -875,7 +878,7 @@ mod tests {
         for invalid in [br#"{"model":"model-1","tools":[],"tools":[{"type":"function","name":"mcp__tempest__status","description":"fixed","input_schema":{"type":"object"}}]}"#.as_slice(),br#"{"model":"model-2","tools":[]}"#.as_slice(),br#"{"model":"model-1","previous_response_id":"old","tools":[]}"#.as_slice(),br#"{"model":"model-1","prompt":{"image_url":"https://example.invalid"},"tools":[]}"#.as_slice(),br#"{"model":"model-1","prompt":{"type":"file_url"},"tools":[]}"#.as_slice()]{assert!(admit(invalid,"/v1/messages",&policy).is_err())}
         assert!(admit(&valid, "/v1/files", &policy).is_err());
 
-        let query_policy = validate_policy(json!({"schema_version":1,
+        let query_policy = validate_policy(json!({"schema_version":1,"acceptance_requests":1,
             "paths":["/v1/messages?beta=true"],"models":["model-1"],
             "top_level_fields":["model","prompt","tools"],
             "request_value_types":["text"],"request_headers":{},"maximum_requests":1,

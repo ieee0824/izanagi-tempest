@@ -83,6 +83,8 @@ pub struct LauncherProfile {
     pub proof_upstream_kind: String,
     pub allowed_runtime_variance: Vec<String>,
     pub request_policy_sha256: String,
+    pub acceptance_request_count: u64,
+    pub production_request_budget: u64,
     pub argument_template: Vec<String>,
     pub environment: Vec<EnvironmentRule>,
     pub home_policy: String,
@@ -674,22 +676,24 @@ fn positive(value: Option<&Value>) -> bool {
     value.and_then(Value::as_u64).is_some_and(|value| value > 0)
 }
 
-fn semantic_evidence(
-    check: &str,
-    bytes: &[u8],
-    profile_sha256: &str,
-    request_policy_sha256: &str,
-    runner_sha256: &str,
-    probe_id: &str,
-    probe_nonce_sha256: &str,
-) -> io::Result<()> {
+struct EvidenceBinding<'a> {
+    profile_sha256: &'a str,
+    request_policy_sha256: &'a str,
+    runner_sha256: &'a str,
+    probe_id: &'a str,
+    probe_nonce_sha256: &'a str,
+    acceptance_request_count: u64,
+    production_request_budget: u64,
+}
+
+fn semantic_evidence(check: &str, bytes: &[u8], binding: &EvidenceBinding<'_>) -> io::Result<()> {
     let evidence: AcceptanceEvidence = parse(bytes)?;
     if evidence.schema_version != 1
         || evidence.check != check
-        || evidence.profile_sha256 != profile_sha256
-        || evidence.runner_sha256 != runner_sha256
-        || evidence.probe_id != probe_id
-        || evidence.probe_nonce_sha256 != probe_nonce_sha256
+        || evidence.profile_sha256 != binding.profile_sha256
+        || evidence.runner_sha256 != binding.runner_sha256
+        || evidence.probe_id != binding.probe_id
+        || evidence.probe_nonce_sha256 != binding.probe_nonce_sha256
         || evidence.started_ns == 0
         || evidence.finished_ns < evidence.started_ns
     {
@@ -758,14 +762,18 @@ fn semantic_evidence(
                     "negative_probes",
                     "negative_rejections",
                     "upstream_bypass_events",
+                    "acceptance_request_count",
+                    "production_request_budget",
                 ],
             )?;
             positive(facts.get("requests"))
                 && facts["rejected"] == 0
-                && facts["policy_sha256"] == request_policy_sha256
+                && facts["policy_sha256"] == binding.request_policy_sha256
                 && positive(facts.get("negative_probes"))
                 && facts["negative_probes"] == facts["negative_rejections"]
                 && facts["upstream_bypass_events"] == 0
+                && facts["acceptance_request_count"] == binding.acceptance_request_count
+                && facts["production_request_budget"] == binding.production_request_budget
         }
         "tool_catalog_exact" => {
             let facts = exact_facts(
@@ -823,6 +831,8 @@ fn load_envelope_inner(root: &Path, verify_live_code: bool) -> io::Result<Verifi
         || profile.allowed_runtime_variance
             != ["relay_authentication_value", "relay_upstream_authority"]
         || !digest(&profile.request_policy_sha256)
+        || !(1..=profile.production_request_budget).contains(&profile.acceptance_request_count)
+        || !(1..=1000).contains(&profile.production_request_budget)
         || profile.argument_template.is_empty()
         || !environment_contract(&profile.environment)
         || profile.home_policy != "empty_owner_private"
@@ -856,6 +866,15 @@ fn load_envelope_inner(root: &Path, verify_live_code: bool) -> io::Result<Verifi
         }
     }
     let mut used_evidence = BTreeSet::new();
+    let evidence_binding = EvidenceBinding {
+        profile_sha256: &profile_sha256,
+        request_policy_sha256: &profile.request_policy_sha256,
+        runner_sha256: &proof.runner_sha256,
+        probe_id: &proof.probe_id,
+        probe_nonce_sha256: &proof.probe_nonce_sha256,
+        acceptance_request_count: profile.acceptance_request_count,
+        production_request_budget: profile.production_request_budget,
+    };
     for (name, check) in &proof.checks {
         if !check.performed
             || !check.passed
@@ -872,11 +891,7 @@ fn load_envelope_inner(root: &Path, verify_live_code: bool) -> io::Result<Verifi
         semantic_evidence(
             name,
             &bounded(&root.join("evidence").join(&check.evidence[0]))?,
-            &profile_sha256,
-            &profile.request_policy_sha256,
-            &proof.runner_sha256,
-            &proof.probe_id,
-            &proof.probe_nonce_sha256,
+            &evidence_binding,
         )?;
     }
     let mut roles = BTreeSet::new();
@@ -940,7 +955,8 @@ pub(crate) mod tests {
             "provider_protocol":"openai-responses","upstream_authority":"https://api.example.invalid",
             "proof_upstream_kind":"local_deterministic_stub_through_relay",
             "allowed_runtime_variance":["relay_authentication_value","relay_upstream_authority"],
-            "request_policy_sha256":"a".repeat(64),"argument_template":["exec","<PROMPT>"],
+            "request_policy_sha256":"a".repeat(64),"acceptance_request_count":1,
+            "production_request_budget":20,"argument_template":["exec","<PROMPT>"],
             "environment":[
                 {"name":"HOME","source":"generated_private_directory","value_sha256":null},
                 {"name":"OPENAI_API_KEY","source":"fixed_placeholder","value_sha256":"b".repeat(64)},
@@ -983,7 +999,8 @@ pub(crate) mod tests {
                 "provider_request_policy" => {
                     json!({"requests":1,"rejected":0,"policy_sha256":"a".repeat(64),
                         "negative_probes":1,"negative_rejections":1,
-                        "upstream_bypass_events":0})
+                        "upstream_bypass_events":0,"acceptance_request_count":1,
+                        "production_request_budget":20})
                 }
                 "tool_catalog_exact" => json!({"requests":1,
                     "expected_sha256":"f".repeat(64),"observed_sha256":"f".repeat(64)}),

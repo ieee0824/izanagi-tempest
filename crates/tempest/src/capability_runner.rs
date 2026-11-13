@@ -412,9 +412,29 @@ fn frozen_request_policy(
         "top_level_fields":fields,
         "request_value_types":value_types,
         "request_headers":{"content-type":"application/json"},
-        "maximum_requests":requests.len(),
+        "acceptance_requests":requests.len(),
         "tools":tools,
     }))
+}
+
+fn approved_observation(policy: &Value) -> io::Result<Value> {
+    let mut observation = policy.clone();
+    observation
+        .as_object_mut()
+        .ok_or_else(|| io::Error::other("reviewed request policy is not an object"))?
+        .remove("maximum_requests")
+        .ok_or_else(|| io::Error::other("reviewed production request budget missing"))?;
+    Ok(observation)
+}
+
+fn acceptance_policy(policy: &Value) -> io::Result<Value> {
+    let mut acceptance = policy.clone();
+    let requests = acceptance
+        .get("acceptance_requests")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| io::Error::other("reviewed acceptance request count missing"))?;
+    acceptance["maximum_requests"] = requests.into();
+    Ok(acceptance)
 }
 
 fn approved_request_policy(
@@ -671,6 +691,8 @@ struct PreparedProof {
     runner_sha256: String,
     policy_sha256: String,
     catalog_sha256: String,
+    acceptance_request_count: u64,
+    production_request_budget: u64,
 }
 
 fn reviewed_system_configuration() -> io::Result<Vec<Value>> {
@@ -703,6 +725,13 @@ fn prepare_claude_proof(
     let runner = std::env::current_exe()?.canonicalize()?;
     let runner_sha256 = host_io::digest(&runner)?;
     let policy_sha256 = host_io::digest(request_policy)?;
+    let policy: Value = crate::capability_proof::parse_unique_value(&fs::read(request_policy)?)?;
+    let acceptance_request_count = policy["acceptance_requests"]
+        .as_u64()
+        .ok_or_else(|| io::Error::other("acceptance request count missing"))?;
+    let production_request_budget = policy["maximum_requests"]
+        .as_u64()
+        .ok_or_else(|| io::Error::other("production request budget missing"))?;
     let system_configuration = reviewed_system_configuration()?;
     let argument_template = claude_argument_template(20);
     let environment = claude_environment_rules();
@@ -713,6 +742,8 @@ fn prepare_claude_proof(
         "proof_upstream_kind":"local_deterministic_stub_through_relay",
         "allowed_runtime_variance":["relay_authentication_value","relay_upstream_authority"],
         "request_policy_sha256":policy_sha256,
+        "acceptance_request_count":acceptance_request_count,
+        "production_request_budget":production_request_budget,
         "argument_template":argument_template,
         "environment":environment,
         "home_policy":"empty_owner_private","cwd_policy":"empty_owner_private",
@@ -731,6 +762,8 @@ fn prepare_claude_proof(
         runner_sha256,
         policy_sha256,
         catalog_sha256: sha256_bytes(&serde_json::to_vec(catalog)?),
+        acceptance_request_count,
+        production_request_budget,
     })
 }
 
@@ -778,7 +811,9 @@ fn write_and_authorize_claude_proof(
             "provider_request_policy",
             serde_json::json!({"requests":input.request_count,"rejected":0,
             "policy_sha256":policy_sha256,"negative_probes":input.negative_count,
-            "negative_rejections":input.negative_count,"upstream_bypass_events":0}),
+            "negative_rejections":input.negative_count,"upstream_bypass_events":0,
+            "acceptance_request_count":input.prepared.acceptance_request_count,
+            "production_request_budget":input.prepared.production_request_budget}),
         ),
         (
             "tool_catalog_exact",
@@ -1118,7 +1153,7 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
             .map_err(io::Error::other)?;
         let observed_policy = frozen_request_policy(&requests, provider_url.path())?;
         let policy = approved_request_policy(config.agent, &cli_version, &config.model)?;
-        if observed_policy != policy {
+        if observed_policy != approved_observation(&policy)? {
             host_io::json_new(
                 &root.join("harness/unapproved-request-policy.json"),
                 &observed_policy,
@@ -1163,7 +1198,7 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
         let relay = model_api_relay::start_probe_relay(
             upstream,
             host_io::random_hex()?,
-            policy,
+            acceptance_policy(&policy)?,
             &root.join("harness/model-relay-audit.jsonl"),
         )
         .await?;
@@ -1437,6 +1472,9 @@ mod tests {
         .unwrap();
         assert_eq!(policy["paths"], json!(["/v1/messages?beta=true"]));
         assert_eq!(policy["models"], json!(["claude-sonnet-5-5"]));
+        assert_eq!(policy["acceptance_requests"], 8);
+        assert_eq!(policy["maximum_requests"], 20);
+        assert_eq!(acceptance_policy(&policy).unwrap()["maximum_requests"], 8);
         assert_eq!(
             policy["request_headers"],
             json!({"content-type":"application/json"})
