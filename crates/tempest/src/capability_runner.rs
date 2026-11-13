@@ -33,12 +33,14 @@ pub enum CapabilityAgent {
 pub struct CapabilityDiscoveryConfig {
     pub agent: CapabilityAgent,
     pub executable: PathBuf,
+    pub model: String,
     pub output: PathBuf,
 }
 
 pub struct CapabilityDiscovery {
     pub agent: CapabilityAgent,
     pub cli_version: String,
+    pub model: String,
     pub executable_sha256: String,
     pub catalogs: Vec<Vec<Value>>,
     pub tool_outputs: Vec<Vec<Value>>,
@@ -235,17 +237,18 @@ fn validate_tool_outputs(
 }
 
 pub fn run(args: &[OsString]) -> std::process::ExitCode {
-    const USAGE: &str = "Usage: tempest capability-discover --agent codex|claude-code --executable FILE --output DIR";
+    const USAGE: &str = "Usage: tempest capability-discover --agent codex|claude-code --executable FILE --model EXACT_MODEL_ID --output DIR";
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         println!("{USAGE}");
         return std::process::ExitCode::SUCCESS;
     }
-    if args.len() != 6 {
+    if args.len() != 8 {
         eprintln!("{USAGE}");
         return std::process::ExitCode::from(2);
     }
     let mut agent = None;
     let mut executable = None;
+    let mut model = None;
     let mut output = None;
     for pair in args.chunks_exact(2) {
         match pair[0].to_str() {
@@ -259,6 +262,12 @@ pub fn run(args: &[OsString]) -> std::process::ExitCode {
             Some("--executable") if executable.is_none() => {
                 executable = Some(PathBuf::from(&pair[1]));
             }
+            Some("--model") if model.is_none() => {
+                model = pair[1]
+                    .to_str()
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned);
+            }
             Some("--output") if output.is_none() => output = Some(PathBuf::from(&pair[1])),
             _ => {
                 eprintln!("{USAGE}");
@@ -266,7 +275,9 @@ pub fn run(args: &[OsString]) -> std::process::ExitCode {
             }
         }
     }
-    let (Some(agent), Some(executable), Some(output)) = (agent, executable, output) else {
+    let (Some(agent), Some(executable), Some(model), Some(output)) =
+        (agent, executable, model, output)
+    else {
         eprintln!("{USAGE}");
         return std::process::ExitCode::from(2);
     };
@@ -280,6 +291,7 @@ pub fn run(args: &[OsString]) -> std::process::ExitCode {
     match runtime.block_on(discover(CapabilityDiscoveryConfig {
         agent,
         executable,
+        model,
         output,
     })) {
         Ok(discovery) => {
@@ -288,6 +300,7 @@ pub fn run(args: &[OsString]) -> std::process::ExitCode {
                 serde_json::json!({"agent":match discovery.agent {CapabilityAgent::Codex=>"codex",
                     CapabilityAgent::ClaudeCode=>"claude-code"},
                     "cli_version":discovery.cli_version,
+                    "model":discovery.model,
                     "executable_sha256":discovery.executable_sha256,
                     "requests":discovery.catalogs.len(),
                     "strict_tempest_only":discovery.strict_tempest_only,
@@ -404,14 +417,25 @@ fn frozen_request_policy(
     }))
 }
 
-fn approved_request_policy(agent: CapabilityAgent, cli_version: &str) -> io::Result<Value> {
-    let bytes: &[u8] = match (agent, cli_version) {
-        (CapabilityAgent::ClaudeCode, "2.1.323 (Claude Code)") => {
-            include_bytes!("../policies/claude-code-2.1.323-anthropic-messages.json")
+fn approved_request_policy(
+    agent: CapabilityAgent,
+    cli_version: &str,
+    model: &str,
+) -> io::Result<Value> {
+    let bytes: &[u8] = match (agent, cli_version, model) {
+        (CapabilityAgent::ClaudeCode, "2.1.323 (Claude Code)", "claude-haiku-5-5") => {
+            include_bytes!(
+                "../policies/claude-code-2.1.323-claude-haiku-5-5-anthropic-messages.json"
+            )
+        }
+        (CapabilityAgent::ClaudeCode, "2.1.323 (Claude Code)", "claude-sonnet-5-5") => {
+            include_bytes!(
+                "../policies/claude-code-2.1.323-claude-sonnet-5-5-anthropic-messages.json"
+            )
         }
         _ => {
             return Err(io::Error::other(
-                "no reviewed model request policy for this CLI version",
+                "no reviewed model request policy for this CLI version and exact model ID",
             ));
         }
     };
@@ -669,6 +693,7 @@ fn prepare_claude_proof(
     root: &Path,
     source: &Path,
     cli_version: &str,
+    model: &str,
     request_policy: &Path,
     catalog: &[Value],
 ) -> io::Result<PreparedProof> {
@@ -682,7 +707,7 @@ fn prepare_claude_proof(
     let argument_template = claude_argument_template(20);
     let environment = claude_environment_rules();
     let profile = serde_json::json!({
-        "schema_version":1,"agent":"claude-code","model":"tempest-capability-probe",
+        "schema_version":1,"agent":"claude-code","model":model,
         "cli_version":cli_version,"provider_protocol":"anthropic-messages",
         "upstream_authority":"https://api.anthropic.com",
         "proof_upstream_kind":"local_deterministic_stub_through_relay",
@@ -1004,7 +1029,7 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
                 mcp_bridge: bridge.clone(),
                 relay_executable: std::env::current_exe()?.canonicalize()?,
                 version: cli_version.clone(),
-                model: "tempest-capability-probe".into(),
+                model: config.model.clone(),
                 relay_endpoint: provider.endpoint().into(),
                 maximum_turns: 20,
                 sandbox_profile: sandbox_profile.clone(),
@@ -1089,7 +1114,7 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
             .parse::<reqwest::Url>()
             .map_err(io::Error::other)?;
         let observed_policy = frozen_request_policy(&requests, provider_url.path())?;
-        let policy = approved_request_policy(config.agent, &cli_version)?;
+        let policy = approved_request_policy(config.agent, &cli_version, &config.model)?;
         if observed_policy != policy {
             host_io::json_new(
                 &root.join("harness/unapproved-request-policy.json"),
@@ -1105,8 +1130,14 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
         if staged_code != root.join("authorized-code") {
             return Err(io::Error::other("staged code path mismatch"));
         }
-        let prepared_proof =
-            prepare_claude_proof(&root, &source, &cli_version, &policy_path, &catalogs[0])?;
+        let prepared_proof = prepare_claude_proof(
+            &root,
+            &source,
+            &cli_version,
+            &config.model,
+            &policy_path,
+            &catalogs[0],
+        )?;
         let challenge = ProbeChallenge::generate()?;
         let acceptance_capability = challenge.probe_id().to_owned();
         let acceptance_control_socket = root.join("host-control-acceptance");
@@ -1194,7 +1225,7 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
                     mcp_bridge: acceptance_bridge,
                     relay_executable: std::env::current_exe()?.canonicalize()?,
                     version: cli_version.clone(),
-                    model: "tempest-capability-probe".into(),
+                    model: config.model.clone(),
                     relay_endpoint: relay.endpoint().into(),
                     maximum_turns: 20,
                     sandbox_profile: acceptance_profile,
@@ -1296,6 +1327,7 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
     Ok(CapabilityDiscovery {
         agent: config.agent,
         cli_version,
+        model: config.model,
         executable_sha256: host_io::digest(&source)?,
         catalogs,
         tool_outputs,
@@ -1391,16 +1423,37 @@ mod tests {
 
     #[test]
     fn only_the_reviewed_cli_policy_can_be_selected() {
-        let policy =
-            approved_request_policy(CapabilityAgent::ClaudeCode, "2.1.323 (Claude Code)").unwrap();
+        let policy = approved_request_policy(
+            CapabilityAgent::ClaudeCode,
+            "2.1.323 (Claude Code)",
+            "claude-sonnet-5-5",
+        )
+        .unwrap();
         assert_eq!(policy["paths"], json!(["/v1/messages?beta=true"]));
+        assert_eq!(policy["models"], json!(["claude-sonnet-5-5"]));
         assert_eq!(
             policy["request_headers"],
             json!({"content-type":"application/json"})
         );
-        assert!(
-            approved_request_policy(CapabilityAgent::ClaudeCode, "2.1.324 (Claude Code)").is_err()
-        );
-        assert!(approved_request_policy(CapabilityAgent::Codex, "codex-cli 0.169.0").is_err());
+        for (agent, version, model) in [
+            (
+                CapabilityAgent::ClaudeCode,
+                "2.1.323 (Claude Code)",
+                "tempest-capability-probe",
+            ),
+            (
+                CapabilityAgent::ClaudeCode,
+                "2.1.323 (Claude Code)",
+                "sonnet",
+            ),
+            (
+                CapabilityAgent::ClaudeCode,
+                "2.1.324 (Claude Code)",
+                "claude-sonnet-5-5",
+            ),
+            (CapabilityAgent::Codex, "codex-cli 0.169.0", "gpt-6.1"),
+        ] {
+            assert!(approved_request_policy(agent, version, model).is_err());
+        }
     }
 }

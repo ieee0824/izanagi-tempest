@@ -150,20 +150,18 @@ fn sse_response(body: Vec<u8>, delay: Duration) -> Response<ProviderBody> {
         .split_inclusive("\n\n")
         .map(|event| Bytes::copy_from_slice(event.as_bytes()))
         .collect::<Vec<_>>();
-    let stream =
-        futures_util::stream::unfold((events.into_iter(), true), move |state| async move {
-            let (mut events, send_event) = state;
-            if send_event {
-                let event = events.next()?;
-                Some((Ok::<_, io::Error>(Frame::data(event)), (events, false)))
-            } else {
-                tokio::time::sleep(delay).await;
-                Some((
-                    Ok(Frame::data(Bytes::from_static(b": heartbeat\n\n"))),
-                    (events, true),
-                ))
-            }
-        });
+    let mut chunks = Vec::with_capacity(events.len() + 1);
+    for (index, event) in events.into_iter().enumerate() {
+        chunks.push((Duration::ZERO, event));
+        if index == 0 {
+            chunks.push((delay, Bytes::from_static(b": heartbeat\n\n")));
+        }
+    }
+    let stream = futures_util::stream::unfold(chunks.into_iter(), |mut chunks| async move {
+        let (delay, chunk) = chunks.next()?;
+        tokio::time::sleep(delay).await;
+        Some((Ok::<_, io::Error>(Frame::data(chunk)), chunks))
+    });
     Response::builder()
         .status(StatusCode::OK)
         .header(hyper::header::CONTENT_TYPE, "text/event-stream")

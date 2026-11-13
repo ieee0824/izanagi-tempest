@@ -1,7 +1,7 @@
 {
   "maximum_requests": 8,
   "models": [
-    "tempest-capability-probe"
+    "claude-haiku-5-5"
   ],
   "paths": [
     "/v1/messages?beta=true"

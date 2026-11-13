@@ -1,0 +1,82 @@
+{
+  "maximum_requests": 8,
+  "models": [
+    "claude-sonnet-5-5"
+  ],
+  "paths": [
+    "/v1/messages?beta=true"
+  ],
+  "request_headers": {
+    "content-type": "application/json"
+  },
+  "request_value_types": [
+    "adaptive",
+    "clear_thinking_20251015",
+    "ephemeral",
+    "text",
+    "tool_result",
+    "tool_use"
+  ],
+  "schema_version": 1,
+  "tools": [
+    {
+      "description": "Execute an argv vector inside the Izanagi guest.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "name": "mcp__tempest__sandbox_exec"
+    },
+    {
+      "description": "Execute a shell command inside the Izanagi guest.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "name": "mcp__tempest__sandbox_shell"
+    },
+    {
+      "description": "Return the fixed capability probe status.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "mcp__tempest__sandbox_status"
+    }
+  ],
+  "top_level_fields": [
+    "context_management",
+    "max_tokens",
+    "messages",
+    "metadata",
+    "model",
+    "output_config",
+    "stream",
+    "system",
+    "thinking",
+    "tools"
+  ]
+}
