@@ -37,6 +37,20 @@ pub struct CliAdapterConfig {
     pub harness_root: PathBuf,
 }
 
+pub(crate) struct CapabilityProbeCliConfig {
+    pub kind: CliKind,
+    pub executable: PathBuf,
+    pub mcp_bridge: PathBuf,
+    pub relay_executable: PathBuf,
+    pub version: String,
+    pub model: String,
+    pub relay_endpoint: String,
+    pub maximum_turns: u64,
+    pub sandbox_profile: PathBuf,
+    pub sandbox_jail: PathBuf,
+    pub harness_root: PathBuf,
+}
+
 pub struct CliAdapter {
     contract: CliContract,
     permit: LaunchPermit,
@@ -304,10 +318,17 @@ impl CliContract {
                     "ANTHROPIC_API_KEY".into(),
                     "tempest-relay-placeholder".into(),
                 );
+                environment.insert(
+                    "CLAUDE_CODE_TMPDIR".into(),
+                    cwd.to_path_buf().into_os_string(),
+                );
                 environment.insert("DISABLE_AUTOUPDATER".into(), "1".into());
             }
         }
-        let environment_sha256 = crate::host_io::environment_sha256(&environment);
+        let environment_policy = match self.kind {
+            CliKind::Codex => "codex-v1",
+            CliKind::ClaudeCode => "claude-code-v1",
+        };
         let agent_arguments = match self.kind {
             CliKind::Codex => {
                 let mut values = vec![
@@ -355,8 +376,8 @@ impl CliContract {
                         serde_json::to_string(&[
                             "mcp-connect",
                             socket.as_str(),
-                            "--environment-sha256",
-                            environment_sha256.as_str(),
+                            "--environment-policy",
+                            environment_policy,
                         ])?
                     ),
                     "mcp_servers.tempest.enabled_tools=[\"sandbox_status\",\"sandbox_exec\",\"sandbox_shell\"]".to_owned(),
@@ -369,7 +390,7 @@ impl CliContract {
             }
             CliKind::ClaudeCode => {
                 let mcp = json!({"mcpServers":{"tempest":{"command":bridge,
-                    "args":["mcp-connect",socket,"--environment-sha256",environment_sha256],"env":{}}}});
+                    "args":["mcp-connect",socket,"--environment-policy",environment_policy],"env":{}}}});
                 vec![
                     "-p".into(),
                     "--model".into(),
@@ -541,6 +562,111 @@ async fn bounded_stream<R: tokio::io::AsyncRead + Unpin>(reader: R) -> io::Resul
     Ok((bytes, exceeded))
 }
 
+async fn run_cli_contract(
+    contract: &CliContract,
+    prompt: &str,
+    endpoint: &McpCommand,
+    cwd: &Path,
+    require_final_report: bool,
+    authorize: impl FnOnce() -> io::Result<()>,
+) -> io::Result<AgentOutcome> {
+    let launch = contract.launch(prompt, endpoint, cwd)?;
+    crate::host_io::json_new(
+        &endpoint.owner_file,
+        &json!({"state":"launching","role":"model_cli"}),
+    )?;
+    authorize()?;
+    let mut child = command(&contract.sandbox_executable)
+        .args(launch.arguments)
+        .env_clear()
+        .envs(launch.environment)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut group = ProcessGroupGuard(child.id().map(|id| id as i32));
+    crate::host_io::json_replace(
+        &endpoint.owner_file,
+        &json!({"state":"running","process_group":child.id(),"role":"model_cli"}),
+    )?;
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("agent stdin unavailable"))?;
+        stdin.write_all(prompt.as_bytes()).await?;
+        stdin.shutdown().await?;
+    }
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("agent stdout unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("agent stderr unavailable"))?;
+    let ((stdout, stdout_exceeded), (stderr, stderr_exceeded), status) =
+        tokio::try_join!(bounded_stream(stdout), bounded_stream(stderr), child.wait())?;
+    group.stop();
+    crate::host_io::write_new(&endpoint.raw_stdout, &stdout)?;
+    crate::host_io::write_new(&endpoint.raw_stderr, &stderr)?;
+    if stdout_exceeded || stderr_exceeded {
+        return Err(io::Error::other("agent process stream too large"));
+    }
+    if !status.success() {
+        return Err(io::Error::other("capability CLI process failed"));
+    }
+    let final_output = match (require_final_report, contract.kind) {
+        (true, CliKind::Codex) => codex_final_message(&stdout, true)?,
+        (true, CliKind::ClaudeCode) => claude_final_message(&stdout, true, contract.maximum_turns)?,
+        (false, _) => String::new(),
+    };
+    Ok(AgentOutcome {
+        status: "finished".into(),
+        final_output,
+        calls_attempted: 0,
+        responses: Vec::new(),
+    })
+}
+
+pub(crate) async fn run_capability_probe_cli(
+    config: CapabilityProbeCliConfig,
+    prompt: &str,
+    endpoint: &McpCommand,
+    cwd: &Path,
+) -> io::Result<AgentOutcome> {
+    let sandbox_executable = PathBuf::from("/usr/bin/sandbox-exec");
+    let contract = CliContract {
+        kind: config.kind,
+        executable_sha256: crate::host_io::digest(&config.executable)?,
+        executable: config.executable,
+        mcp_bridge: config.mcp_bridge,
+        relay_executable: config.relay_executable,
+        version: config.version,
+        model: config.model,
+        home: config.sandbox_jail.join("home"),
+        relay_endpoint: config.relay_endpoint,
+        maximum_turns: config.maximum_turns,
+        sandbox_executable_sha256: crate::host_io::digest(&sandbox_executable)?,
+        sandbox_executable,
+        sandbox_profile_sha256: crate::host_io::digest(&config.sandbox_profile)?,
+        sandbox_profile: config.sandbox_profile,
+        sandbox_jail: config.sandbox_jail,
+        harness_root: config.harness_root,
+        system_profile_sha256: crate::host_io::digest(Path::new(
+            "/System/Library/Sandbox/Profiles/system.sb",
+        ))?,
+        dyld_profile_sha256: crate::host_io::digest(Path::new(
+            "/System/Library/Sandbox/Profiles/dyld-support.sb",
+        ))?,
+    };
+    run_cli_contract(&contract, prompt, endpoint, cwd, false, || Ok(())).await
+}
+
 impl AgentAdapter for CliAdapter {
     fn describe(&self) -> Value {
         let contract = &self.contract;
@@ -560,65 +686,10 @@ impl AgentAdapter for CliAdapter {
         cwd: &'a Path,
     ) -> io::Result<AgentOutcome> {
         let contract = &self.contract;
-        let launch = contract.launch(prompt, endpoint, cwd)?;
-        crate::host_io::json_new(
-            &endpoint.owner_file,
-            &json!({"state":"launching","role":"model_cli"}),
-        )?;
-        self.permit.verify_immediately_before_launch()?;
-        let mut child = command(&contract.sandbox_executable)
-            .args(launch.arguments)
-            .env_clear()
-            .envs(launch.environment)
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true)
-            .spawn()?;
-        let mut group = ProcessGroupGuard(child.id().map(|id| id as i32));
-        crate::host_io::json_replace(
-            &endpoint.owner_file,
-            &json!({"state":"running","process_group":child.id(),"role":"model_cli"}),
-        )?;
-        {
-            use tokio::io::AsyncWriteExt;
-            let mut stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| io::Error::other("agent stdin unavailable"))?;
-            stdin.write_all(prompt.as_bytes()).await?;
-            stdin.shutdown().await?;
-        }
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("agent stdout unavailable"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| io::Error::other("agent stderr unavailable"))?;
-        let ((stdout, stdout_exceeded), (stderr, stderr_exceeded), status) =
-            tokio::try_join!(bounded_stream(stdout), bounded_stream(stderr), child.wait())?;
-        group.stop();
-        crate::host_io::write_new(&endpoint.raw_stdout, &stdout)?;
-        crate::host_io::write_new(&endpoint.raw_stderr, &stderr)?;
-        if stdout_exceeded || stderr_exceeded {
-            return Err(io::Error::other("agent process stream too large"));
-        }
-        let final_output = match contract.kind {
-            CliKind::Codex => codex_final_message(&stdout, status.success())?,
-            CliKind::ClaudeCode => {
-                claude_final_message(&stdout, status.success(), contract.maximum_turns)?
-            }
-        };
-        Ok(AgentOutcome {
-            status: "finished".into(),
-            final_output,
-            calls_attempted: 0,
-            responses: Vec::new(),
+        run_cli_contract(contract, prompt, endpoint, cwd, true, || {
+            self.permit.verify_immediately_before_launch()
         })
+        .await
     }
 }
 fn replace(value: &Value, key: &str) -> Value {
@@ -897,8 +968,7 @@ mod stream_tests {
                 .join(" ");
             assert!(arguments.contains("model-fixed"));
             assert!(arguments.contains("mcp-connect"));
-            assert!(arguments.contains("--environment-sha256"));
-            assert!(arguments.contains(&crate::host_io::environment_sha256(&launch.environment)));
+            assert!(arguments.contains("--environment-policy"));
             assert!(arguments.contains("/private/tmp/socket/s"));
             assert!(!arguments.contains("fixed prompt"));
             assert_eq!(

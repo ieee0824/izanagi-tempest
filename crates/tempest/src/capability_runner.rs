@@ -1,0 +1,417 @@
+//! Trusted native launcher probe. Discovery is the first pass; acceptance is
+//! issued only after a second, relay-gated pass validates the frozen contract.
+use crate::{
+    adapter::{CapabilityProbeCliConfig, CliKind, McpCommand, run_capability_probe_cli},
+    admission::CloseReason,
+    capability_probe_provider::{ProbeAgent, ProbeProvider},
+    host_io,
+    relay::RelayConfig,
+    supervisor::{Supervisor, SupervisorConfig},
+};
+use serde_json::Value;
+use std::{
+    ffi::OsString,
+    fs, io,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapabilityAgent {
+    Codex,
+    ClaudeCode,
+}
+
+pub struct CapabilityDiscoveryConfig {
+    pub agent: CapabilityAgent,
+    pub executable: PathBuf,
+    pub output: PathBuf,
+}
+
+pub struct CapabilityDiscovery {
+    pub agent: CapabilityAgent,
+    pub cli_version: String,
+    pub executable_sha256: String,
+    pub catalogs: Vec<Vec<Value>>,
+    pub tool_outputs: Vec<Vec<Value>>,
+    pub request_fields: Vec<Vec<String>>,
+}
+
+fn validate_catalog(agent: CapabilityAgent, catalogs: &[Vec<Value>]) -> io::Result<()> {
+    let Some(expected) = catalogs.first() else {
+        return Err(io::Error::other("capability discovery catalog missing"));
+    };
+    if expected.is_empty() || catalogs.iter().any(|catalog| catalog != expected) {
+        return Err(io::Error::other("capability discovery catalog changed"));
+    }
+    let names = expected
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<Vec<_>>();
+    let valid = match agent {
+        CapabilityAgent::Codex => {
+            names
+                == [
+                    "list_mcp_resources",
+                    "list_mcp_resource_templates",
+                    "read_mcp_resource",
+                    "request_user_input",
+                    "mcp__tempest",
+                ]
+                && expected[4]["type"] == "namespace"
+        }
+        CapabilityAgent::ClaudeCode => {
+            names
+                == [
+                    "mcp__tempest__sandbox_exec",
+                    "mcp__tempest__sandbox_shell",
+                    "mcp__tempest__sandbox_status",
+                ]
+        }
+    };
+    if !valid {
+        return Err(io::Error::other(
+            "capability discovery exposed an unexpected tool catalog",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_tool_outputs(
+    agent: CapabilityAgent,
+    outputs: &[Vec<Value>],
+    probe_id: &str,
+    host_canary_value: &str,
+) -> io::Result<()> {
+    let final_outputs = outputs
+        .last()
+        .ok_or_else(|| io::Error::other("capability discovery tool outputs missing"))?;
+    let expected_ids = (0..7)
+        .map(|index| format!("call_{index}"))
+        .collect::<Vec<_>>();
+    let mut by_id = std::collections::BTreeMap::new();
+    for output in final_outputs {
+        let id = match agent {
+            CapabilityAgent::Codex => output["call_id"].as_str(),
+            CapabilityAgent::ClaudeCode => output["tool_use_id"].as_str(),
+        }
+        .ok_or_else(|| io::Error::other("capability discovery tool output ID missing"))?;
+        if !expected_ids.iter().any(|expected| expected == id)
+            || by_id.insert(id.to_owned(), output).is_some()
+        {
+            return Err(io::Error::other(
+                "capability discovery tool output ID mismatch",
+            ));
+        }
+    }
+    if by_id.len() != expected_ids.len() {
+        return Err(io::Error::other(
+            "capability discovery tool outputs incomplete",
+        ));
+    }
+    let rejected_names = match agent {
+        CapabilityAgent::Codex => [
+            "exec_command",
+            "apply_patch",
+            "view_image",
+            "exec_command",
+            "exec_command",
+        ],
+        CapabilityAgent::ClaudeCode => ["Bash", "Write", "Read", "Read", "Read"],
+    };
+    for (index, name) in rejected_names.iter().enumerate() {
+        let output = by_id[&format!("call_{index}")];
+        let valid = match agent {
+            CapabilityAgent::Codex => {
+                output["type"] == "function_call_output"
+                    && output["output"] == format!("unsupported call: {name}")
+            }
+            CapabilityAgent::ClaudeCode => {
+                output["type"] == "tool_result"
+                    && output["is_error"] == true
+                    && output["content"].as_str().is_some_and(|value| {
+                        value.starts_with(&format!(
+                            "<tool_use_error>Error: No such tool available: {name}."
+                        ))
+                    })
+            }
+        };
+        if !valid {
+            return Err(io::Error::other(
+                "capability discovery host tool rejection not established",
+            ));
+        }
+    }
+    let bypass = serde_json::to_string(by_id["call_5"])?;
+    if bypass.contains(host_canary_value) || !bypass.to_ascii_lowercase().contains("error") {
+        return Err(io::Error::other(
+            "capability discovery MCP bypass rejection not established",
+        ));
+    }
+    let allowed = serde_json::to_string(by_id["call_6"])?;
+    if allowed.contains("is_error\":true")
+        || allowed.contains("isError\":true")
+        || !allowed.contains(probe_id)
+        || !allowed.contains("running")
+    {
+        return Err(io::Error::other(
+            "capability discovery allowed MCP call not established",
+        ));
+    }
+    Ok(())
+}
+
+pub fn run(args: &[OsString]) -> std::process::ExitCode {
+    const USAGE: &str = "Usage: tempest capability-discover --agent codex|claude-code --executable FILE --output DIR";
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        println!("{USAGE}");
+        return std::process::ExitCode::SUCCESS;
+    }
+    if args.len() != 6 {
+        eprintln!("{USAGE}");
+        return std::process::ExitCode::from(2);
+    }
+    let mut agent = None;
+    let mut executable = None;
+    let mut output = None;
+    for pair in args.chunks_exact(2) {
+        match pair[0].to_str() {
+            Some("--agent") if agent.is_none() => {
+                agent = match pair[1].to_str() {
+                    Some("codex") => Some(CapabilityAgent::Codex),
+                    Some("claude-code") => Some(CapabilityAgent::ClaudeCode),
+                    _ => None,
+                };
+            }
+            Some("--executable") if executable.is_none() => {
+                executable = Some(PathBuf::from(&pair[1]));
+            }
+            Some("--output") if output.is_none() => output = Some(PathBuf::from(&pair[1])),
+            _ => {
+                eprintln!("{USAGE}");
+                return std::process::ExitCode::from(2);
+            }
+        }
+    }
+    let (Some(agent), Some(executable), Some(output)) = (agent, executable, output) else {
+        eprintln!("{USAGE}");
+        return std::process::ExitCode::from(2);
+    };
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("capability discovery: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    match runtime.block_on(discover(CapabilityDiscoveryConfig {
+        agent,
+        executable,
+        output,
+    })) {
+        Ok(discovery) => {
+            println!(
+                "{}",
+                serde_json::json!({"agent":match discovery.agent {CapabilityAgent::Codex=>"codex",
+                    CapabilityAgent::ClaudeCode=>"claude-code"},
+                    "cli_version":discovery.cli_version,
+                    "executable_sha256":discovery.executable_sha256,
+                    "requests":discovery.catalogs.len(),
+                    "tool_output_rounds":discovery.tool_outputs.iter().filter(|values| !values.is_empty()).count(),
+                    "request_shapes":discovery.request_fields})
+            );
+            std::process::ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("capability discovery: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn version(executable: &Path) -> io::Result<String> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        host_io::command(executable)
+            .arg("--version")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| io::Error::other("capability probe version deadline"))??;
+    if !output.status.success() || output.stdout.is_empty() || output.stdout.len() > 4096 {
+        return Err(io::Error::other("capability probe version command failed"));
+    }
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().to_owned())
+        .map_err(|_| io::Error::other("capability probe version is not UTF-8"))
+}
+
+fn private_file(path: &Path, value: &[u8]) -> io::Result<()> {
+    host_io::write_new(path, value)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+/// Run the actual pinned CLI in the production Seatbelt contract against the
+/// native deterministic provider and fixed MCP peer. This pass discovers the
+/// CLI's exact provider tool representation; it never issues a LaunchPermit.
+pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<CapabilityDiscovery> {
+    if config.output.exists() || !config.executable.is_absolute() {
+        return Err(io::Error::other("invalid capability discovery paths"));
+    }
+    let source = config.executable.canonicalize()?;
+    if !source.symlink_metadata()?.is_file() || source == Path::new("/usr/bin/env") {
+        return Err(io::Error::other(
+            "capability probe requires a native CLI file",
+        ));
+    }
+    host_io::directory(&config.output)?;
+    let root = config.output.canonicalize()?;
+    for directory in [
+        "jail",
+        "jail/bin",
+        "jail/home",
+        "jail/cwd",
+        "harness",
+        "socket",
+    ] {
+        host_io::directory(&root.join(directory))?;
+    }
+    let executable = root.join("jail/bin/agent");
+    let bridge = root.join("jail/bin/tempest");
+    host_io::private_copy(&source, &executable)?;
+    host_io::private_copy(&std::env::current_exe()?, &bridge)?;
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o500))?;
+    fs::set_permissions(&bridge, fs::Permissions::from_mode(0o500))?;
+    let sandbox_profile = root.join("jail/agent.sb");
+    private_file(&sandbox_profile, include_bytes!("darwin-agent.sb"))?;
+    let host_canary = root.join("host-canary");
+    let hmac_file = root.join("host-hmac");
+    let control_socket = root.join("host-control");
+    let write_canary = root.join("host-write-canary");
+    let canary_value = host_io::random_hex()?;
+    private_file(&host_canary, canary_value.as_bytes())?;
+    private_file(&hmac_file, host_io::random_hex()?.as_bytes())?;
+    private_file(&control_socket, b"not-a-real-control-socket")?;
+    let capability = format!("probe-{}", host_io::random_hex()?);
+    let provider_agent = match config.agent {
+        CapabilityAgent::Codex => ProbeAgent::Codex,
+        CapabilityAgent::ClaudeCode => ProbeAgent::ClaudeCode,
+    };
+    let provider = ProbeProvider::start(
+        provider_agent,
+        &capability,
+        &host_canary,
+        &write_canary,
+        &control_socket,
+        &hmac_file,
+    )
+    .await?;
+    let socket = root.join("socket/mcp");
+    let supervisor = Supervisor::start(SupervisorConfig {
+        executable: bridge.clone(),
+        args: vec![
+            OsString::from("capability-probe-mcp"),
+            OsString::from("--probe-id"),
+            OsString::from(&capability),
+        ],
+        cwd: root.join("harness"),
+        socket: socket.clone(),
+        log: root.join("harness/mcp.jsonl"),
+        stderr: root.join("harness/mcp.stderr"),
+        secret_file: None,
+        owner_file: Some(root.join("harness/mcp-owner.json")),
+        relay: RelayConfig {
+            max_calls: 4,
+            timeout: Duration::from_secs(60),
+            ..RelayConfig::default()
+        },
+    })?;
+    let cli_version = version(&executable).await?;
+    let endpoint = McpCommand {
+        executable: bridge.clone(),
+        socket,
+        owner_file: root.join("harness/agent-owner.json"),
+        raw_stdout: root.join("harness/agent.events.jsonl"),
+        raw_stderr: root.join("harness/agent.stderr"),
+    };
+    let kind = match config.agent {
+        CapabilityAgent::Codex => CliKind::Codex,
+        CapabilityAgent::ClaudeCode => CliKind::ClaudeCode,
+    };
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(60),
+        run_capability_probe_cli(
+            CapabilityProbeCliConfig {
+                kind,
+                executable: executable.clone(),
+                mcp_bridge: bridge,
+                relay_executable: std::env::current_exe()?.canonicalize()?,
+                version: cli_version.clone(),
+                model: "tempest-capability-probe".into(),
+                relay_endpoint: provider.endpoint().into(),
+                maximum_turns: 20,
+                sandbox_profile,
+                sandbox_jail: root.join("jail"),
+                harness_root: root.join("harness"),
+            },
+            "Execute every requested tool exactly once, then report completion.",
+            &endpoint,
+            &root.join("jail/cwd"),
+        ),
+    )
+    .await;
+    let reason = if matches!(outcome, Ok(Ok(_))) {
+        CloseReason::AgentFinished
+    } else {
+        CloseReason::Cancelled
+    };
+    let drained = supervisor.finish(reason).await?;
+    let outcome = outcome.map_err(|_| io::Error::other("capability discovery CLI deadline"))??;
+    if !drained.verified_rpc_drain()
+        || outcome.status != "finished"
+        || fs::read(&host_canary)? != canary_value.as_bytes()
+        || write_canary.exists()
+    {
+        return Err(io::Error::other("capability discovery boundary failed"));
+    }
+    let requests = provider.requests()?;
+    if requests.len() < 8 {
+        return Err(io::Error::other(
+            "capability discovery request sequence incomplete",
+        ));
+    }
+    let catalogs: Vec<Vec<Value>> = requests
+        .iter()
+        .map(|request| request.tools.clone())
+        .collect();
+    let tool_outputs: Vec<Vec<Value>> = requests
+        .iter()
+        .map(|request| request.tool_outputs.clone())
+        .collect();
+    host_io::json_new(
+        &root.join("harness/provider-observations.json"),
+        &serde_json::json!({"catalogs":catalogs,"tool_outputs":tool_outputs}),
+    )?;
+    validate_catalog(config.agent, &catalogs)?;
+    validate_tool_outputs(config.agent, &tool_outputs, &capability, &canary_value)?;
+    let request_fields = requests
+        .iter()
+        .map(|request| {
+            request
+                .body
+                .as_object()
+                .map(|body| body.keys().cloned().collect())
+                .ok_or_else(|| io::Error::other("provider request is not an object"))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok(CapabilityDiscovery {
+        agent: config.agent,
+        cli_version,
+        executable_sha256: host_io::digest(&source)?,
+        catalogs,
+        tool_outputs,
+        request_fields,
+    })
+}

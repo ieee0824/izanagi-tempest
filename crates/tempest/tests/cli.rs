@@ -68,8 +68,8 @@ fn cli_exit_codes_diagnostics_and_raw_hash() {
         .args([
             "mcp-connect",
             "/private/tmp/tempest-never-connect",
-            "--environment-sha256",
-            "0000000000000000000000000000000000000000000000000000000000000000",
+            "--environment-policy",
+            "codex-v1",
         ])
         .output()
         .unwrap();

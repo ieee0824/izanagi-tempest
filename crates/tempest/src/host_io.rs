@@ -1,13 +1,8 @@
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
-    ffi::OsString,
     fs::{self, File},
     io::{self, Read, Write},
-    os::unix::{
-        ffi::OsStrExt,
-        fs::{DirBuilderExt, PermissionsExt},
-    },
+    os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -47,16 +42,6 @@ pub(crate) fn digest(path: &Path) -> io::Result<String> {
         hash.update(&buffer[..count]);
     }
     Ok(format!("{:x}", hash.finalize()))
-}
-pub(crate) fn environment_sha256(values: &BTreeMap<OsString, OsString>) -> String {
-    let mut hash = Sha256::new();
-    for (name, value) in values {
-        for bytes in [name.as_os_str().as_bytes(), value.as_os_str().as_bytes()] {
-            hash.update((bytes.len() as u64).to_be_bytes());
-            hash.update(bytes);
-        }
-    }
-    format!("{:x}", hash.finalize())
 }
 pub(crate) fn json_append(path: &Path, value: &impl serde::Serialize) -> io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;

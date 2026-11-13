@@ -293,22 +293,33 @@ pub async fn connect(socket: &Path) -> io::Result<()> {
 }
 pub fn connect_cli(args: &[OsString]) -> ExitCode {
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
-        println!("Usage: tempest mcp-connect SOCKET [--environment-sha256 SHA256]");
+        println!("Usage: tempest mcp-connect SOCKET [--environment-policy POLICY]");
         return ExitCode::SUCCESS;
     }
     if !matches!(args.len(), 1 | 3)
         || (args.len() == 3
-            && (args[1] != "--environment-sha256"
-                || args[2].to_str().is_none_or(|value| {
-                    value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit())
-                })))
+            && (args[1] != "--environment-policy"
+                || args[2]
+                    .to_str()
+                    .is_none_or(|value| !matches!(value, "codex-v1" | "claude-code-v1"))))
     {
-        eprintln!("Usage: tempest mcp-connect SOCKET [--environment-sha256 SHA256]");
+        eprintln!("Usage: tempest mcp-connect SOCKET [--environment-policy POLICY]");
         return ExitCode::from(2);
     }
     if args.len() == 3 {
         let environment = std::env::vars_os().collect::<std::collections::BTreeMap<_, _>>();
-        if crate::host_io::environment_sha256(&environment) != args[2].to_string_lossy() {
+        let policy = args[2].to_string_lossy();
+        if !bridge_environment_allowed(&policy, &environment) {
+            if let Some(directory) = std::env::var_os("TMPDIR").map(PathBuf::from) {
+                let names = environment
+                    .keys()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                let _ = crate::host_io::json_new(
+                    &directory.join("mcp-environment-rejected.json"),
+                    &serde_json::json!({"policy":policy,"names":names}),
+                );
+            }
             eprintln!("MCP bridge environment mismatch");
             return ExitCode::FAILURE;
         }
@@ -327,6 +338,102 @@ pub fn connect_cli(args: &[OsString]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn bridge_environment_allowed(
+    policy: &str,
+    environment: &std::collections::BTreeMap<OsString, OsString>,
+) -> bool {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let expected = match policy {
+        "codex-v1" => [
+            "HOME",
+            "LANG",
+            "LC_ALL",
+            "PATH",
+            "TMPDIR",
+            "__CF_USER_TEXT_ENCODING",
+        ]
+        .as_slice(),
+        "claude-code-v1" => [
+            "AI_AGENT",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDECODE",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_SIMPLE",
+            "CLAUDE_CODE_TMPDIR",
+            "CLAUDE_PROJECT_DIR",
+            "COREPACK_ENABLE_AUTO_PIN",
+            "DISABLE_AUTOUPDATER",
+            "HOME",
+            "LANG",
+            "LC_ALL",
+            "NoDefaultCurrentDirectoryInExePath",
+            "TMPDIR",
+        ]
+        .as_slice(),
+        _ => return false,
+    };
+    let names = environment
+        .keys()
+        .filter_map(|name| name.to_str())
+        .collect::<Vec<_>>();
+    if names != expected
+        || environment
+            .get(std::ffi::OsStr::new("LANG"))
+            .and_then(|value| value.to_str())
+            != Some("C.UTF-8")
+        || environment
+            .get(std::ffi::OsStr::new("LC_ALL"))
+            .and_then(|value| value.to_str())
+            != Some("C.UTF-8")
+    {
+        return false;
+    }
+    if policy == "claude-code-v1"
+        && (environment
+            .get(std::ffi::OsStr::new("ANTHROPIC_API_KEY"))
+            .and_then(|value| value.to_str())
+            != Some("tempest-relay-placeholder")
+            || environment
+                .get(std::ffi::OsStr::new("ANTHROPIC_BASE_URL"))
+                .and_then(|value| value.to_str())
+                .is_none_or(|value| !value.starts_with("http://127.0.0.1:")))
+    {
+        return false;
+    }
+    let directories = ["HOME", "TMPDIR"].map(|name| {
+        environment
+            .get(std::ffi::OsStr::new(name))
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .and_then(|path| path.canonicalize().ok())
+    });
+    let [Some(home), Some(temporary)] = directories else {
+        return false;
+    };
+    if policy == "claude-code-v1"
+        && environment
+            .get(std::ffi::OsStr::new("CLAUDE_CODE_TMPDIR"))
+            .map(PathBuf::from)
+            .and_then(|path| path.canonicalize().ok())
+            .as_ref()
+            != Some(&temporary)
+    {
+        return false;
+    }
+    if home.parent() != temporary.parent() || home == temporary {
+        return false;
+    }
+    [home, temporary].iter().all(|path| {
+        path.symlink_metadata().is_ok_and(|metadata| {
+            metadata.is_dir()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.permissions().mode() & 0o777 == 0o700
+        })
+    })
 }
 
 /// Standalone owner for integration and external controllers. Agent processes

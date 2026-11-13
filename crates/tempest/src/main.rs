@@ -31,10 +31,13 @@ fn main() -> ExitCode {
     {
         return tempest::capability_probe_mcp::run(&args[1..]);
     }
+    if args.first().is_some_and(|arg| arg == "capability-discover") {
+        return tempest::capability_runner::run(&args[1..]);
+    }
     if args.first().is_some_and(|arg| arg == "mcp-session") {
         return tempest::supervisor::session_cli(&args[1..]);
     }
-    const USAGE: &str = "Usage: tempest validate <scenario.yaml>\n       tempest plan <scenario.yaml> [--actor NAME]\n       tempest run --help\n       tempest recover RUN_DIRECTORY\n       tempest report RUN_DIRECTORY\n       tempest report --aggregate RUNS_DIRECTORY\n       tempest mcp-proxy --help\n       tempest mcp-session --help\n       tempest mcp-connect --help\n       tempest model-api-relay --help\n       tempest capability-probe-mcp --help";
+    const USAGE: &str = "Usage: tempest validate <scenario.yaml>\n       tempest plan <scenario.yaml> [--actor NAME]\n       tempest run --help\n       tempest recover RUN_DIRECTORY\n       tempest report RUN_DIRECTORY\n       tempest report --aggregate RUNS_DIRECTORY\n       tempest mcp-proxy --help\n       tempest mcp-session --help\n       tempest mcp-connect --help\n       tempest model-api-relay --help\n       tempest capability-probe-mcp --help\n       tempest capability-discover --help";
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
