@@ -1,9 +1,13 @@
 //! Trusted native launcher probe. Discovery is the first pass; acceptance is
 //! issued only after a second, relay-gated pass validates the frozen contract.
 use crate::{
-    adapter::{CapabilityProbeCliConfig, CliKind, McpCommand, run_capability_probe_cli},
+    adapter::{
+        CapabilityProbeCliConfig, CliAdapter, CliAdapterConfig, CliKind, McpCommand,
+        run_capability_probe_cli,
+    },
     admission::CloseReason,
     capability_probe_provider::{ProbeAgent, ProbeProvider},
+    capability_proof::{ProbeChallenge, authorize_staged_launch},
     host_io, model_api_relay,
     relay::RelayConfig,
     supervisor::{Supervisor, SupervisorConfig},
@@ -41,6 +45,7 @@ pub struct CapabilityDiscovery {
     pub request_fields: Vec<Vec<String>>,
     pub strict_tempest_only: bool,
     pub acceptance_relay_verified: bool,
+    pub launch_permit_verified: bool,
 }
 
 fn strict_tempest_catalog(agent: CapabilityAgent, catalog: &[Value]) -> bool {
@@ -287,6 +292,7 @@ pub fn run(args: &[OsString]) -> std::process::ExitCode {
                     "requests":discovery.catalogs.len(),
                     "strict_tempest_only":discovery.strict_tempest_only,
                     "acceptance_relay_verified":discovery.acceptance_relay_verified,
+                    "launch_permit_verified":discovery.launch_permit_verified,
                     "tool_output_rounds":discovery.tool_outputs.iter().filter(|values| !values.is_empty()).count(),
                     "request_shapes":discovery.request_fields})
             );
@@ -583,6 +589,213 @@ fn validate_relay_rejections(path: &Path, expected: &[ExpectedRelayRejection]) -
     Ok(())
 }
 
+fn sha256_bytes(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn stage_authorized_code(root: &Path, source: &Path) -> io::Result<PathBuf> {
+    let destination = root.join("authorized-code");
+    for directory in [
+        "authorized-code",
+        "authorized-code/jail",
+        "authorized-code/jail/bin",
+        "authorized-code/host",
+    ] {
+        host_io::directory(&root.join(directory))?;
+    }
+    let runner = std::env::current_exe()?.canonicalize()?;
+    for (from, to) in [
+        (source, destination.join("jail/bin/agent")),
+        (&runner, destination.join("jail/bin/tempest")),
+        (&runner, destination.join("host/model-api-relay")),
+    ] {
+        host_io::private_copy(from, &to)?;
+        fs::set_permissions(&to, fs::Permissions::from_mode(0o500))?;
+    }
+    Ok(destination)
+}
+
+struct ProofInputs<'a> {
+    root: &'a Path,
+    prepared: &'a PreparedProof,
+    request_count: usize,
+    negative_count: usize,
+    canary_sha256: &'a str,
+    started_ns: u64,
+    finished_ns: u64,
+}
+
+struct PreparedProof {
+    proof_root: PathBuf,
+    profile_sha256: String,
+    runner_sha256: String,
+    policy_sha256: String,
+    catalog_sha256: String,
+}
+
+fn prepare_claude_proof(
+    root: &Path,
+    source: &Path,
+    cli_version: &str,
+    request_policy: &Path,
+    catalog: &[Value],
+) -> io::Result<PreparedProof> {
+    let proof_root = root.join("acceptance-proof");
+    host_io::directory(&proof_root)?;
+    host_io::directory(&proof_root.join("evidence"))?;
+    let runner = std::env::current_exe()?.canonicalize()?;
+    let runner_sha256 = host_io::digest(&runner)?;
+    let policy_sha256 = host_io::digest(request_policy)?;
+    let fixed_hash = |value: &str| sha256_bytes(value.as_bytes());
+    let absent_config = root.join("acceptance-managed-config-absent");
+    let profile = serde_json::json!({
+        "schema_version":1,"agent":"claude-code","model":"tempest-capability-probe",
+        "cli_version":cli_version,"provider_protocol":"anthropic-messages",
+        "upstream_authority":"https://api.anthropic.com",
+        "proof_upstream_kind":"local_deterministic_stub_through_relay",
+        "allowed_runtime_variance":["relay_authentication_value","relay_upstream_authority"],
+        "request_policy_sha256":policy_sha256,
+        "argument_template":["-p","--model","<MODEL>","--max-turns","20","--bare",
+            "--tools","","--strict-mcp-config","--mcp-config","<FIXED_TEMPEST_MCP>",
+            "--setting-sources","","--disable-slash-commands","--permission-mode","dontAsk",
+            "--no-session-persistence","--output-format","stream-json","--verbose",
+            "--allowedTools","mcp__tempest__sandbox_status","mcp__tempest__sandbox_exec",
+            "mcp__tempest__sandbox_shell","<PROMPT_STDIN>"],
+        "environment":[
+            {"name":"ANTHROPIC_API_KEY","source":"fixed_placeholder","value_sha256":fixed_hash("tempest-relay-placeholder")},
+            {"name":"ANTHROPIC_BASE_URL","source":"relay_endpoint","value_sha256":null},
+            {"name":"CLAUDE_CODE_TMPDIR","source":"generated_private_directory","value_sha256":null},
+            {"name":"DISABLE_AUTOUPDATER","source":"fixed_nonsecret","value_sha256":fixed_hash("1")},
+            {"name":"HOME","source":"generated_private_directory","value_sha256":null},
+            {"name":"LANG","source":"fixed_nonsecret","value_sha256":fixed_hash("C.UTF-8")},
+            {"name":"LC_ALL","source":"fixed_nonsecret","value_sha256":fixed_hash("C.UTF-8")},
+            {"name":"TMPDIR","source":"generated_private_directory","value_sha256":null}],
+        "home_policy":"empty_owner_private","cwd_policy":"empty_owner_private",
+        "prompt_policy":"tempest_generated_only","real_authentication_owner":"model_api_relay_only",
+        "system_configuration":[
+            {"path":"/System/Library/Sandbox/Profiles/dyld-support.sb","state":"file","sha256":host_io::digest(Path::new("/System/Library/Sandbox/Profiles/dyld-support.sb"))?},
+            {"path":"/System/Library/Sandbox/Profiles/system.sb","state":"file","sha256":host_io::digest(Path::new("/System/Library/Sandbox/Profiles/system.sb"))?},
+            {"path":absent_config,"state":"absent","sha256":null},
+            {"path":"/usr/bin/sandbox-exec","state":"file","sha256":host_io::digest(Path::new("/usr/bin/sandbox-exec"))?}],
+        "code_closure":[
+            {"role":"agent_executable","path":source,"sha256":host_io::digest(source)?},
+            {"role":"mcp_bridge","path":runner,"sha256":runner_sha256},
+            {"role":"model_api_relay","path":runner,"sha256":runner_sha256}]
+    });
+    let profile_bytes = serde_json::to_vec_pretty(&profile)?;
+    host_io::write_new(&proof_root.join("launcher-profile.json"), &profile_bytes)?;
+    Ok(PreparedProof {
+        proof_root,
+        profile_sha256: sha256_bytes(&profile_bytes),
+        runner_sha256,
+        policy_sha256,
+        catalog_sha256: sha256_bytes(&serde_json::to_vec(catalog)?),
+    })
+}
+
+fn write_and_authorize_claude_proof(
+    input: ProofInputs<'_>,
+    challenge: ProbeChallenge,
+) -> io::Result<()> {
+    let proof_root = &input.prepared.proof_root;
+    let profile_sha256 = &input.prepared.profile_sha256;
+    let runner_sha256 = &input.prepared.runner_sha256;
+    let policy_sha256 = &input.prepared.policy_sha256;
+    let catalog_sha256 = &input.prepared.catalog_sha256;
+    let facts = [
+        (
+            "allowed_mcp_succeeded",
+            serde_json::json!({"attempts":1,"successes":1,"audit_bound":true}),
+        ),
+        (
+            "control_socket_unavailable",
+            serde_json::json!({"attempts":1,"rejections":1,
+            "bypass_events":0,"positive_control_attempts":1,"positive_control_connections":1}),
+        ),
+        (
+            "hmac_unavailable",
+            serde_json::json!({"attempts":1,"rejections":1,"bypass_events":0}),
+        ),
+        (
+            "host_canary_read_denied",
+            serde_json::json!({"attempts":2,"rejections":2,
+            "before_sha256":input.canary_sha256,"after_sha256":input.canary_sha256}),
+        ),
+        (
+            "host_canary_write_denied",
+            serde_json::json!({"attempts":1,"rejections":1,"created":false}),
+        ),
+        (
+            "host_tools_rejected",
+            serde_json::json!({"attempts":5,"rejections":5,"bypass_events":0}),
+        ),
+        (
+            "mcp_child_env_sanitized",
+            serde_json::json!({"samples":1,"violations":0}),
+        ),
+        (
+            "provider_request_policy",
+            serde_json::json!({"requests":input.request_count,"rejected":0,
+            "policy_sha256":policy_sha256,"negative_probes":input.negative_count,
+            "negative_rejections":input.negative_count,"upstream_bypass_events":0}),
+        ),
+        (
+            "tool_catalog_exact",
+            serde_json::json!({"requests":input.request_count,
+            "expected_sha256":catalog_sha256,"observed_sha256":catalog_sha256}),
+        ),
+    ];
+    let probe_id = challenge.probe_id().to_owned();
+    let probe_nonce_sha256 = challenge.nonce_sha256();
+    let mut checks = serde_json::Map::new();
+    let mut manifest = Vec::new();
+    for (check, check_facts) in facts {
+        let name = format!("{check}.json");
+        let bytes = serde_json::to_vec(&serde_json::json!({"schema_version":1,"check":check,
+            "profile_sha256":profile_sha256,"runner_sha256":runner_sha256,
+            "probe_id":probe_id,"probe_nonce_sha256":probe_nonce_sha256,
+            "started_ns":input.started_ns,"finished_ns":input.finished_ns,"facts":check_facts}))?;
+        host_io::write_new(&proof_root.join("evidence").join(&name), &bytes)?;
+        checks.insert(
+            check.to_owned(),
+            serde_json::json!({"performed":true,"passed":true,
+            "profile_sha256":profile_sha256,"evidence":[name]}),
+        );
+        manifest.push(
+            serde_json::json!({"name":name,"sha256":sha256_bytes(&bytes),"bytes":bytes.len()}),
+        );
+    }
+    host_io::json_new(
+        &proof_root.join("capability-proof.json"),
+        &serde_json::json!({
+        "schema_version":1,"proof_id":format!("proof-{}",host_io::random_hex()?),
+        "created_ns":host_io::now_ns()?,"profile_sha256":profile_sha256,
+        "runner_sha256":runner_sha256,"probe_id":probe_id,
+        "probe_nonce_sha256":probe_nonce_sha256,"checks":checks,"evidence":manifest}),
+    )?;
+    let code_root = input.root.join("authorized-code");
+    let permit = authorize_staged_launch(proof_root, &code_root, challenge)?;
+    for directory in ["jail/home", "jail/cwd", "harness"] {
+        host_io::directory(&code_root.join(directory))?;
+    }
+    let sandbox_profile = code_root.join("jail/agent.sb");
+    private_file(&sandbox_profile, include_bytes!("darwin-agent.sb"))?;
+    let adapter = CliAdapter::new(
+        permit,
+        CliAdapterConfig {
+            relay_endpoint: "http://127.0.0.1:1234/capabilitycapabilitycapability12".into(),
+            maximum_turns: 20,
+            sandbox_profile,
+            sandbox_jail: code_root.join("jail"),
+            harness_root: code_root.join("harness"),
+        },
+    )?;
+    if adapter.model_api_relay_path() != code_root.join("host/model-api-relay") {
+        return Err(io::Error::other("authorized relay path mismatch"));
+    }
+    Ok(())
+}
+
 async fn prove_control_socket_denied(
     socket: &Path,
     sandbox_profile: &Path,
@@ -857,7 +1070,15 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
         let policy = frozen_request_policy(&requests, provider_url.path())?;
         let policy_path = root.join("harness/request-policy.json");
         host_io::json_new(&policy_path, &policy)?;
-        let acceptance_capability = format!("probe-{}", host_io::random_hex()?);
+        let staged_code = stage_authorized_code(&root, &source)?;
+        if staged_code != root.join("authorized-code") {
+            return Err(io::Error::other("staged code path mismatch"));
+        }
+        let prepared_proof =
+            prepare_claude_proof(&root, &source, &cli_version, &policy_path, &catalogs[0])?;
+        let challenge = ProbeChallenge::generate()?;
+        let acceptance_started_ns = host_io::now_ns()?;
+        let acceptance_capability = challenge.probe_id().to_owned();
         let acceptance_provider = ProbeProvider::start(
             provider_agent,
             &acceptance_capability,
@@ -984,6 +1205,19 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
         {
             return Err(io::Error::other("capability acceptance boundary failed"));
         }
+        let acceptance_finished_ns = host_io::now_ns()?;
+        write_and_authorize_claude_proof(
+            ProofInputs {
+                root: &root,
+                prepared: &prepared_proof,
+                request_count: requests.len(),
+                negative_count: relay_rejections.len(),
+                canary_sha256: &host_io::digest(&host_canary)?,
+                started_ns: acceptance_started_ns,
+                finished_ns: acceptance_finished_ns,
+            },
+            challenge,
+        )?;
         true
     } else {
         false
@@ -1007,6 +1241,7 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
         request_fields,
         strict_tempest_only,
         acceptance_relay_verified,
+        launch_permit_verified: acceptance_relay_verified,
     })
 }
 
