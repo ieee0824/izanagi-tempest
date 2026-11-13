@@ -1,7 +1,7 @@
 //! Deterministic local model-provider peer for launcher capability probes.
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full, Limited};
-use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
+use http_body_util::{BodyExt, Full, Limited, StreamBody, combinators::UnsyncBoxBody};
+use hyper::{Request, Response, StatusCode, body::Frame, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
 use std::{
@@ -10,6 +10,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use tokio::{net::TcpListener, task::JoinHandle};
 
@@ -37,6 +38,7 @@ struct State {
     control_socket: String,
     hmac_file: String,
     requests: Mutex<Vec<ProbeRequest>>,
+    sse_event_delay: Option<Duration>,
 }
 
 pub(crate) struct ProbeProvider {
@@ -60,6 +62,27 @@ impl ProbeProvider {
         control_socket: &Path,
         hmac_file: &Path,
     ) -> io::Result<Self> {
+        Self::start_with_sse_delay(
+            agent,
+            capability,
+            host_canary,
+            write_canary,
+            control_socket,
+            hmac_file,
+            None,
+        )
+        .await
+    }
+
+    pub async fn start_with_sse_delay(
+        agent: ProbeAgent,
+        capability: &str,
+        host_canary: &Path,
+        write_canary: &Path,
+        control_socket: &Path,
+        hmac_file: &Path,
+        sse_event_delay: Option<Duration>,
+    ) -> io::Result<Self> {
         let listener =
             TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await?;
         let address = listener.local_addr()?;
@@ -70,6 +93,7 @@ impl ProbeProvider {
             control_socket: control_socket.to_string_lossy().into_owned(),
             hmac_file: hmac_file.to_string_lossy().into_owned(),
             requests: Mutex::new(Vec::new()),
+            sse_event_delay,
         });
         let serving = state.clone();
         let task = tokio::spawn(async move {
@@ -105,19 +129,52 @@ impl ProbeProvider {
     }
 }
 
-fn response(status: StatusCode, body: Vec<u8>, content_type: &str) -> Response<Full<Bytes>> {
+type ProviderBody = UnsyncBoxBody<Bytes, io::Error>;
+
+fn response(status: StatusCode, body: Vec<u8>, content_type: &str) -> Response<ProviderBody> {
     Response::builder()
         .status(status)
         .header(hyper::header::CONTENT_TYPE, content_type)
         .header(hyper::header::CONTENT_LENGTH, body.len())
-        .body(Full::new(Bytes::from(body)))
+        .body(
+            Full::new(Bytes::from(body))
+                .map_err(|never| match never {})
+                .boxed_unsync(),
+        )
         .expect("fixed provider response")
+}
+
+fn sse_response(body: Vec<u8>, delay: Duration) -> Response<ProviderBody> {
+    let text = String::from_utf8(body).expect("fixed SSE is UTF-8");
+    let events = text
+        .split_inclusive("\n\n")
+        .map(|event| Bytes::copy_from_slice(event.as_bytes()))
+        .collect::<Vec<_>>();
+    let stream =
+        futures_util::stream::unfold((events.into_iter(), true), move |state| async move {
+            let (mut events, send_event) = state;
+            if send_event {
+                let event = events.next()?;
+                Some((Ok::<_, io::Error>(Frame::data(event)), (events, false)))
+            } else {
+                tokio::time::sleep(delay).await;
+                Some((
+                    Ok(Frame::data(Bytes::from_static(b": heartbeat\n\n"))),
+                    (events, true),
+                ))
+            }
+        });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(hyper::header::CONTENT_TYPE, "text/event-stream")
+        .body(StreamBody::new(stream).boxed_unsync())
+        .expect("fixed streaming provider response")
 }
 
 async fn handle(
     request: Request<Incoming>,
     state: Arc<State>,
-) -> Result<Response<Full<Bytes>>, hyper::Error> {
+) -> Result<Response<ProviderBody>, hyper::Error> {
     if request.method() != hyper::Method::POST {
         return Ok(response(
             StatusCode::METHOD_NOT_ALLOWED,
@@ -208,7 +265,11 @@ async fn handle(
         index
     };
     let body = provider_response(&state, index, &tools);
-    Ok(response(StatusCode::OK, body, "text/event-stream"))
+    Ok(match state.sse_event_delay {
+        Some(delay) if index == 0 => sse_response(body, delay),
+        None => response(StatusCode::OK, body, "text/event-stream"),
+        Some(_) => response(StatusCode::OK, body, "text/event-stream"),
+    })
 }
 
 fn attempts(state: &State, tools: &[Value]) -> Vec<(String, Value, Option<String>)> {
@@ -394,6 +455,7 @@ mod tests {
             control_socket: "/host/control".into(),
             hmac_file: "/host/hmac".into(),
             requests: Mutex::new(Vec::new()),
+            sse_event_delay: None,
         };
         let tools = vec![json!({"type":"namespace","name":"mcp__tempest"})];
         let sequence = attempts(&state, &tools);

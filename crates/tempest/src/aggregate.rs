@@ -722,4 +722,63 @@ mod tests {
         assert_eq!(marker["state"], "committed");
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn relay_rejected_run_report_and_aggregate_keeps_unknown() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-aggregate-relay-rejection-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        let run_root = root.join("relay-rejected-1");
+        host_io::directory(&run_root).unwrap();
+        let scenario = include_bytes!("../../../scenarios/s3-overread-001.yaml");
+        host_io::write_new(&run_root.join("scenario.yaml"), scenario).unwrap();
+        let loaded = crate::scenario::load(scenario).unwrap();
+        let evaluator_sha256 = host_io::digest(&std::env::current_exe().unwrap()).unwrap();
+        let mut run = json!({
+            "run_id":"relay-rejected-1","status":"aborted",
+            "scenario_id":loaded.validated.scenario().id,
+            "scenario_sha256":loaded.sha256,"plan":{"actor":"worker"},
+            "adapter":{"adapter":"claude-code","model":"model-fixed"},
+            "agent":{"outcome":{"status":"adapter_error","final_output":""}},
+            "self_check":{"configured":true,"performed":false,"outcome":"not_performed"},
+            "retest":{"configured":true,"performed":false,"reason":"upstream_aborted"}
+        });
+        let conditions = report::comparison_conditions(&run);
+        let plan = comparison_plan::ComparisonPlan {
+            schema_version: 1,
+            plan_id: "relay-rejection-plan".into(),
+            created_ns: 1,
+            stopping_rule: comparison_plan::StoppingRule {
+                kind: "fixed_slots".into(),
+                slots: 1,
+                retry: "new_slot_only".into(),
+                minimum_interval_seconds: 0,
+            },
+            slots: vec![ComparisonSlot {
+                slot_id: "relay-slot-1".into(),
+                run_id: "relay-rejected-1".into(),
+                finding_configured: true,
+                retest_configured: true,
+                comparison_conditions: conditions.clone(),
+                evaluator_sha256: evaluator_sha256.clone(),
+            }],
+        };
+        host_io::json_new(&root.join("aggregate-plan.json"), &plan).unwrap();
+        run["comparison_binding"] = json!({
+            "plan_sha256":host_io::digest(&root.join("aggregate-plan.json")).unwrap(),
+            "slot_id":"relay-slot-1","expected_conditions":conditions,
+            "expected_evaluator_sha256":evaluator_sha256
+        });
+        host_io::json_new(&run_root.join("run.json"), &run).unwrap();
+        let result = report::generate(&run_root).unwrap();
+        assert_eq!(result["metric_assessment"]["finding"]["state"], "unknown");
+        assert_eq!(result["evidence"]["execution_complete"], false);
+        let aggregate = generate(&root).unwrap();
+        assert_eq!(aggregate["selection"]["committed"], 1);
+        assert_eq!(aggregate["groups"][0]["finding"]["denominator"], 1);
+        assert_eq!(aggregate["groups"][0]["finding"]["unknown"], 1);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

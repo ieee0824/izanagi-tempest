@@ -1109,7 +1109,7 @@ fn route_coverage_verified(_manifest: &Value) -> bool {
     false
 }
 
-fn comparison_conditions(run: &Value) -> Value {
+pub(crate) fn comparison_conditions(run: &Value) -> Value {
     json!({
         "schema_version":1,
         "scenario":{"id":run["scenario_id"],"sha256":run["scenario_sha256"]},

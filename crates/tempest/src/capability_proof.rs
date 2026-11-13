@@ -584,7 +584,10 @@ fn current_username() -> io::Result<String> {
     Ok(username.to_owned())
 }
 
-pub(crate) fn reviewed_claude_system_paths() -> io::Result<Vec<(PathBuf, String)>> {
+fn reviewed_claude_system_paths_for(username: &str) -> io::Result<Vec<(PathBuf, String)>> {
+    if username.is_empty() || username.contains('/') {
+        return Err(invalid("current username is invalid"));
+    }
     let contract = parse_unique_value(include_bytes!(
         "../policies/claude-code-2.1.323-macos-system-paths.json"
     ))?;
@@ -595,12 +598,10 @@ pub(crate) fn reviewed_claude_system_paths() -> io::Result<Vec<(PathBuf, String)
     {
         return Err(invalid("invalid reviewed system path contract"));
     }
-    let username = current_username()?;
     let values = contract["paths"]
         .as_array()
         .ok_or_else(|| invalid("reviewed system paths missing"))?;
     let mut paths = Vec::new();
-    let mut prior: Option<PathBuf> = None;
     for value in values {
         let object = value
             .as_object()
@@ -618,18 +619,27 @@ pub(crate) fn reviewed_claude_system_paths() -> io::Result<Vec<(PathBuf, String)
             }
             _ => return Err(invalid("invalid reviewed system path selector")),
         };
-        if !path.is_absolute() || prior.as_ref().is_some_and(|prior| prior >= &path) {
-            return Err(invalid("reviewed system paths are not sorted"));
+        if !path.is_absolute() {
+            return Err(invalid("reviewed system path is not absolute"));
         }
         let state = object
             .get("state")
             .and_then(Value::as_str)
             .filter(|state| matches!(*state, "absent" | "file"))
             .ok_or_else(|| invalid("invalid reviewed system path state"))?;
-        prior = Some(path.clone());
         paths.push((path, state.to_owned()));
     }
+    paths.sort_by(|left, right| left.0.cmp(&right.0));
+    for pair in paths.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(invalid("reviewed system paths contain a duplicate"));
+        }
+    }
     Ok(paths)
+}
+
+pub(crate) fn reviewed_claude_system_paths() -> io::Result<Vec<(PathBuf, String)>> {
+    reviewed_claude_system_paths_for(&current_username()?)
 }
 
 fn reviewed_system_path_contract(profile: &LauncherProfile) -> io::Result<bool> {
@@ -1087,6 +1097,19 @@ pub(crate) mod tests {
                 && !path.to_string_lossy().contains("{USER}")
                 && state == "absent"
         }));
+    }
+
+    #[test]
+    fn reviewed_user_path_is_sorted_after_expansion_for_any_username() {
+        for username in ["a", "node", "z"] {
+            let paths = reviewed_claude_system_paths_for(username).unwrap();
+            assert!(paths.windows(2).all(|pair| pair[0].0 < pair[1].0));
+            assert!(paths.iter().any(|(path, _)| {
+                path == Path::new(&format!(
+                    "/Library/Managed Preferences/{username}/com.anthropic.claudecode.plist"
+                ))
+            }));
+        }
     }
 
     #[test]

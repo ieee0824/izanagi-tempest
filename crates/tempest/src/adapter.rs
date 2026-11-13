@@ -185,7 +185,7 @@ fn measured_launch_contract_matches(
             profile.argument_template == claude_argument_template(maximum_turns)
                 && profile.environment == claude_environment_rules()
         }
-        CliKind::Codex => true,
+        CliKind::Codex => false,
     }
 }
 
@@ -960,6 +960,11 @@ mod stream_tests {
             CliKind::ClaudeCode,
             20
         ));
+        assert!(!measured_launch_contract_matches(
+            &profile,
+            CliKind::Codex,
+            20
+        ));
     }
 
     fn cli_fixture(kind: CliKind) -> (PathBuf, CliContract, McpCommand, PathBuf) {
@@ -1029,7 +1034,7 @@ mod stream_tests {
     }
 
     #[test]
-    fn production_adapter_is_built_only_from_a_launch_permit() {
+    fn unimplemented_codex_launch_contract_is_rejected_after_a_valid_permit() {
         let (root, _, _, challenge) = crate::capability_proof::tests::fixture();
         let code_root = root.join("authorized-code");
         let permit =
@@ -1042,7 +1047,7 @@ mod stream_tests {
         crate::host_io::write_new(&profile, include_bytes!("darwin-agent.sb")).unwrap();
         let harness = root.join("harness");
         crate::host_io::directory(&harness).unwrap();
-        let adapter = CliAdapter::new(
+        let result = CliAdapter::new(
             permit,
             CliAdapterConfig {
                 relay_endpoint: "http://127.0.0.1:1234/capabilitycapabilitycapability12".into(),
@@ -1051,23 +1056,12 @@ mod stream_tests {
                 sandbox_jail: jail.clone(),
                 harness_root: harness.clone(),
             },
-        )
-        .unwrap();
-        assert_eq!(
-            adapter.model_api_relay_path(),
-            code_root.join("host/model-api-relay")
         );
-        let endpoint = McpCommand {
-            executable: jail.join("bin/tempest"),
-            socket: "/private/tmp/socket/s".into(),
-            owner_file: harness.join("owner.json"),
-            raw_stdout: harness.join("agent.events.jsonl"),
-            raw_stderr: harness.join("agent.stderr"),
+        let error = match result {
+            Ok(_) => panic!("unimplemented Codex launch contract was accepted"),
+            Err(error) => error,
         };
-        adapter
-            .contract
-            .launch("fixed prompt", &endpoint, &jail.join("cwd"))
-            .unwrap();
+        assert!(error.to_string().contains("argv or environment contract"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1206,6 +1200,22 @@ mod stream_tests {
                 .status()
                 .unwrap()
                 .success()
+        );
+        let preference_control = std::process::Command::new("/usr/bin/defaults")
+            .args(["read", "NSGlobalDomain", "AppleLocale"])
+            .output()
+            .unwrap();
+        assert!(
+            preference_control.status.success() && !preference_control.stdout.is_empty(),
+            "CFPreferences positive control is unavailable"
+        );
+        assert!(
+            !base()
+                .args(["/usr/bin/defaults", "read", "NSGlobalDomain", "AppleLocale",])
+                .status()
+                .unwrap()
+                .success(),
+            "Seatbelt allowed a CFPreferences read"
         );
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(canary_root).unwrap();

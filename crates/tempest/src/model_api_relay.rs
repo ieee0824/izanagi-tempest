@@ -662,7 +662,8 @@ pub(crate) async fn start_probe_relay(
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
-            .timeout(std::time::Duration::from_secs(60))
+            .connect_timeout(std::time::Duration::from_secs(60))
+            .read_timeout(std::time::Duration::from_secs(60))
             .build()
             .map_err(|error| invalid(error.to_string()))?,
         requests: AtomicU64::new(0),
@@ -798,7 +799,8 @@ async fn serve(options: Options) -> io::Result<()> {
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
-            .timeout(options.timeout)
+            .connect_timeout(options.timeout)
+            .read_timeout(options.timeout)
             .build()
             .map_err(|error| invalid(error.to_string()))?,
         requests: AtomicU64::new(0),

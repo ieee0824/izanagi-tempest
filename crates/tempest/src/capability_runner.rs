@@ -1110,13 +1110,14 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
         let challenge = ProbeChallenge::generate()?;
         let acceptance_capability = challenge.probe_id().to_owned();
         let acceptance_control_socket = root.join("host-control-acceptance");
-        let acceptance_provider = ProbeProvider::start(
+        let acceptance_provider = ProbeProvider::start_with_sse_delay(
             provider_agent,
             &acceptance_capability,
             &host_canary,
             &write_canary,
             &acceptance_control_socket,
             &hmac_file,
+            Some(Duration::from_secs(2)),
         )
         .await?;
         let upstream = format!("{}/", acceptance_provider.endpoint())
