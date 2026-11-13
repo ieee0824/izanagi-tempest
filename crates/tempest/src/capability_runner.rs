@@ -9,6 +9,7 @@ use crate::{
     supervisor::{Supervisor, SupervisorConfig},
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     ffi::OsString,
@@ -397,7 +398,11 @@ fn frozen_request_policy(
     }))
 }
 
-fn validate_relay_audit(path: &Path, expected_requests: usize) -> io::Result<()> {
+fn validate_relay_audit(
+    path: &Path,
+    expected_requests: usize,
+    expected_rejections: usize,
+) -> io::Result<()> {
     let text = fs::read_to_string(path)?;
     let rows = text
         .lines()
@@ -424,7 +429,7 @@ fn validate_relay_audit(path: &Path, expected_requests: usize) -> io::Result<()>
                 && row["upstream_status"].is_null()
         })
         .count();
-    if rows.len() != expected_requests * 2 + rejected_health_probes
+    if rows.len() != expected_requests * 2 + rejected_health_probes + expected_rejections
         || admitted != expected_requests
         || forwarded != expected_requests
         || rejected_health_probes > 1
@@ -432,6 +437,148 @@ fn validate_relay_audit(path: &Path, expected_requests: usize) -> io::Result<()>
         return Err(io::Error::other(
             "acceptance relay audit contains a rejection or incomplete request",
         ));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ExpectedRelayRejection {
+    request_sha256: String,
+    reason: String,
+}
+
+async fn submit_relay_rejection(
+    endpoint: &str,
+    path: &str,
+    body: &Value,
+    expected_reason: &str,
+) -> io::Result<ExpectedRelayRejection> {
+    let bytes = serde_json::to_vec(body)?;
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(io::Error::other)?
+        .post(format!("{endpoint}{path}"))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(bytes.clone())
+        .send()
+        .await
+        .map_err(io::Error::other)?;
+    if response.status().is_success() {
+        return Err(io::Error::other("relay negative probe was accepted"));
+    }
+    let response_bytes = response.bytes().await.map_err(io::Error::other)?;
+    let value: Value = serde_json::from_slice(&response_bytes).map_err(io::Error::other)?;
+    if value["reason"] != expected_reason || value["error"] != "request_rejected" {
+        return Err(io::Error::other(
+            "relay negative probe returned an unexpected rejection",
+        ));
+    }
+    Ok(ExpectedRelayRejection {
+        request_sha256: format!("{:x}", Sha256::digest(&bytes)),
+        reason: expected_reason.to_owned(),
+    })
+}
+
+fn mutate_first_request_type(value: &mut Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            if let Some(kind) = object.get_mut("type")
+                && kind.is_string()
+            {
+                *kind = "tempest_forbidden_type".into();
+                return true;
+            }
+            object
+                .iter_mut()
+                .filter(|(name, _)| name.as_str() != "tools")
+                .any(|(_, child)| mutate_first_request_type(child))
+        }
+        Value::Array(array) => array.iter_mut().any(mutate_first_request_type),
+        _ => false,
+    }
+}
+
+async fn prove_relay_rejections(
+    endpoint: &str,
+    path: &str,
+    baseline: &Value,
+) -> io::Result<Vec<ExpectedRelayRejection>> {
+    let mut cases = Vec::new();
+
+    let mut catalog = baseline.clone();
+    let description = catalog["tools"][0]["description"]
+        .as_str()
+        .ok_or_else(|| io::Error::other("baseline tool description missing"))?;
+    catalog["tools"][0]["description"] = format!("{description} changed").into();
+    cases.push(submit_relay_rejection(endpoint, path, &catalog, "tool catalog mismatch").await?);
+
+    let mut extra_field = baseline.clone();
+    extra_field
+        .as_object_mut()
+        .ok_or_else(|| io::Error::other("baseline request is not an object"))?
+        .insert("tempest_extra".into(), true.into());
+    cases.push(
+        submit_relay_rejection(
+            endpoint,
+            path,
+            &extra_field,
+            "unknown top-level request field",
+        )
+        .await?,
+    );
+
+    let mut value_type = baseline.clone();
+    if !mutate_first_request_type(&mut value_type) {
+        return Err(io::Error::other("baseline request type missing"));
+    }
+    cases.push(
+        submit_relay_rejection(
+            endpoint,
+            path,
+            &value_type,
+            "request value type is not allowed: tempest_forbidden_type",
+        )
+        .await?,
+    );
+
+    let mut model = baseline.clone();
+    model["model"] = "tempest-forbidden-model".into();
+    cases.push(
+        submit_relay_rejection(endpoint, path, &model, "request model is not allowed").await?,
+    );
+    cases.push(
+        submit_relay_rejection(
+            endpoint,
+            "/tempest-forbidden-path",
+            baseline,
+            "request path is not allowed",
+        )
+        .await?,
+    );
+    Ok(cases)
+}
+
+fn validate_relay_rejections(path: &Path, expected: &[ExpectedRelayRejection]) -> io::Result<()> {
+    let rows = fs::read_to_string(path)?
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).map_err(io::Error::other))
+        .collect::<io::Result<Vec<_>>>()?;
+    for rejection in expected {
+        let matches = rows
+            .iter()
+            .filter(|row| {
+                row["forwarded"] == false
+                    && row["request_sha256"] == rejection.request_sha256
+                    && row["reason"] == rejection.reason
+                    && row["upstream_status"].is_null()
+            })
+            .count();
+        if matches != 1 {
+            return Err(io::Error::other(
+                "relay negative probe audit binding mismatch",
+            ));
+        }
     }
     Ok(())
 }
@@ -730,6 +877,18 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
             &root.join("harness/model-relay-audit.jsonl"),
         )
         .await?;
+        let baseline_path = requests[0]
+            .path
+            .strip_prefix(provider_url.path())
+            .ok_or_else(|| io::Error::other("baseline request path escaped capability"))?
+            .to_owned();
+        let mut relay_rejections =
+            prove_relay_rejections(relay.endpoint(), &baseline_path, &requests[0].body).await?;
+        if !acceptance_provider.requests()?.is_empty() {
+            return Err(io::Error::other(
+                "relay negative probe reached the trusted upstream",
+            ));
+        }
         let acceptance_socket = root.join("socket/mcp-acceptance");
         let acceptance_supervisor = Supervisor::start(SupervisorConfig {
             executable: acceptance_bridge.clone(),
@@ -803,13 +962,22 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
             &acceptance_capability,
             &canary_value,
         )?;
-        validate_relay_audit(
-            &root.join("harness/model-relay-audit.jsonl"),
-            requests.len(),
-        )?;
+        relay_rejections.push(
+            submit_relay_rejection(
+                relay.endpoint(),
+                &baseline_path,
+                &requests[0].body,
+                "model request budget exhausted",
+            )
+            .await?,
+        );
+        let relay_audit = root.join("harness/model-relay-audit.jsonl");
+        validate_relay_rejections(&relay_audit, &relay_rejections)?;
+        validate_relay_audit(&relay_audit, requests.len(), relay_rejections.len())?;
         if !drained.verified_rpc_drain()
             || acceptance.status != "finished"
             || acceptance_requests.len() != requests.len()
+            || acceptance_provider.requests()?.len() != requests.len()
             || acceptance_catalogs != catalogs
             || fs::read(&host_canary)? != canary_value.as_bytes()
             || write_canary.exists()
