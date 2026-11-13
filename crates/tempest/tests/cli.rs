@@ -64,4 +64,19 @@ fn cli_exit_codes_diagnostics_and_raw_hash() {
             .unwrap()
             .success()
     );
+    let environment_mismatch = Command::new(binary)
+        .args([
+            "mcp-connect",
+            "/private/tmp/tempest-never-connect",
+            "--environment-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(environment_mismatch.status.code(), Some(1));
+    assert!(
+        String::from_utf8(environment_mismatch.stderr)
+            .unwrap()
+            .contains("environment mismatch")
+    );
 }

@@ -291,6 +291,23 @@ impl CliContract {
             (OsString::from("LC_ALL"), OsString::from("C.UTF-8")),
             (OsString::from("TMPDIR"), cwd.to_path_buf().into_os_string()),
         ]);
+        match self.kind {
+            CliKind::Codex => {
+                environment.insert("OPENAI_API_KEY".into(), "tempest-relay-placeholder".into());
+            }
+            CliKind::ClaudeCode => {
+                environment.insert(
+                    "ANTHROPIC_BASE_URL".into(),
+                    self.relay_endpoint.clone().into(),
+                );
+                environment.insert(
+                    "ANTHROPIC_API_KEY".into(),
+                    "tempest-relay-placeholder".into(),
+                );
+                environment.insert("DISABLE_AUTOUPDATER".into(), "1".into());
+            }
+        }
+        let environment_sha256 = crate::host_io::environment_sha256(&environment);
         let agent_arguments = match self.kind {
             CliKind::Codex => {
                 let mut values = vec![
@@ -335,29 +352,24 @@ impl CliContract {
                     format!("mcp_servers.tempest.command={}", serde_json::to_string(&bridge)?),
                     format!(
                         "mcp_servers.tempest.args={}",
-                        serde_json::to_string(&["mcp-connect", socket.as_str()])?
+                        serde_json::to_string(&[
+                            "mcp-connect",
+                            socket.as_str(),
+                            "--environment-sha256",
+                            environment_sha256.as_str(),
+                        ])?
                     ),
                     "mcp_servers.tempest.enabled_tools=[\"sandbox_status\",\"sandbox_exec\",\"sandbox_shell\"]".to_owned(),
                     "mcp_servers.tempest.default_tools_approval_mode=\"approve\"".to_owned(),
                 ] {
                     values.extend([OsString::from("-c"), setting.into()]);
                 }
-                environment.insert("OPENAI_API_KEY".into(), "tempest-relay-placeholder".into());
                 values.push("-".into());
                 values
             }
             CliKind::ClaudeCode => {
-                environment.insert(
-                    "ANTHROPIC_BASE_URL".into(),
-                    self.relay_endpoint.clone().into(),
-                );
-                environment.insert(
-                    "ANTHROPIC_API_KEY".into(),
-                    "tempest-relay-placeholder".into(),
-                );
-                environment.insert("DISABLE_AUTOUPDATER".into(), "1".into());
                 let mcp = json!({"mcpServers":{"tempest":{"command":bridge,
-                    "args":["mcp-connect",socket],"env":{}}}});
+                    "args":["mcp-connect",socket,"--environment-sha256",environment_sha256],"env":{}}}});
                 vec![
                     "-p".into(),
                     "--model".into(),
@@ -885,6 +897,8 @@ mod stream_tests {
                 .join(" ");
             assert!(arguments.contains("model-fixed"));
             assert!(arguments.contains("mcp-connect"));
+            assert!(arguments.contains("--environment-sha256"));
+            assert!(arguments.contains(&crate::host_io::environment_sha256(&launch.environment)));
             assert!(arguments.contains("/private/tmp/socket/s"));
             assert!(!arguments.contains("fixed prompt"));
             assert_eq!(

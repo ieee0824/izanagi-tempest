@@ -293,12 +293,25 @@ pub async fn connect(socket: &Path) -> io::Result<()> {
 }
 pub fn connect_cli(args: &[OsString]) -> ExitCode {
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
-        println!("Usage: tempest mcp-connect SOCKET");
+        println!("Usage: tempest mcp-connect SOCKET [--environment-sha256 SHA256]");
         return ExitCode::SUCCESS;
     }
-    if args.len() != 1 {
-        eprintln!("Usage: tempest mcp-connect SOCKET");
+    if !matches!(args.len(), 1 | 3)
+        || (args.len() == 3
+            && (args[1] != "--environment-sha256"
+                || args[2].to_str().is_none_or(|value| {
+                    value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit())
+                })))
+    {
+        eprintln!("Usage: tempest mcp-connect SOCKET [--environment-sha256 SHA256]");
         return ExitCode::from(2);
+    }
+    if args.len() == 3 {
+        let environment = std::env::vars_os().collect::<std::collections::BTreeMap<_, _>>();
+        if crate::host_io::environment_sha256(&environment) != args[2].to_string_lossy() {
+            eprintln!("MCP bridge environment mismatch");
+            return ExitCode::FAILURE;
+        }
     }
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
