@@ -443,10 +443,9 @@ async fn prove_control_socket_denied(
     relay_port: u16,
     allowed_mcp_socket: &Path,
 ) -> io::Result<UnixListener> {
-    let listener = UnixListener::bind(socket)?;
-    let output = tokio::time::timeout(
-        Duration::from_secs(10),
-        host_io::command(Path::new("/usr/bin/sandbox-exec"))
+    let connect = |target: &Path| {
+        let mut command = host_io::command(Path::new("/usr/bin/sandbox-exec"));
+        command
             .args([
                 "-D".as_ref(),
                 format!("RELAY=localhost:{relay_port}").as_ref(),
@@ -458,26 +457,62 @@ async fn prove_control_socket_denied(
                 sandbox_profile.as_os_str(),
                 "--".as_ref(),
                 "/usr/bin/nc".as_ref(),
+                "-z".as_ref(),
                 "-U".as_ref(),
-                socket.as_os_str(),
+                target.as_os_str(),
             ])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .output(),
+            .kill_on_drop(true);
+        command
+    };
+    let positive = UnixListener::bind(allowed_mcp_socket)?;
+    let positive_output = tokio::time::timeout(
+        Duration::from_secs(10),
+        connect(allowed_mcp_socket).output(),
     )
     .await
-    .map_err(|_| io::Error::other("control socket denial probe deadline"))??;
-    let reached = tokio::time::timeout(Duration::from_millis(250), listener.accept())
+    .map_err(|_| io::Error::other("allowed socket positive control deadline"))??;
+    let positive_reached = tokio::time::timeout(Duration::from_secs(1), positive.accept())
         .await
         .is_ok();
-    if output.status.success() || reached {
+    drop(positive);
+    fs::remove_file(allowed_mcp_socket)?;
+    validate_socket_probe(
+        positive_output.status.success(),
+        positive_reached,
+        false,
+        false,
+    )?;
+    let listener = UnixListener::bind(socket)?;
+    let denied_output = tokio::time::timeout(Duration::from_secs(10), connect(socket).output())
+        .await
+        .map_err(|_| io::Error::other("control socket denial probe deadline"))??;
+    let denied_reached = tokio::time::timeout(Duration::from_millis(250), listener.accept())
+        .await
+        .is_ok();
+    validate_socket_probe(true, true, denied_output.status.success(), denied_reached)?;
+    Ok(listener)
+}
+
+fn validate_socket_probe(
+    positive_success: bool,
+    positive_reached: bool,
+    denied_success: bool,
+    denied_reached: bool,
+) -> io::Result<()> {
+    if !positive_reached {
+        return Err(io::Error::other(format!(
+            "allowed socket positive control did not establish the probe path: process_success={positive_success}, listener_reached={positive_reached}"
+        )));
+    }
+    if denied_success || denied_reached {
         return Err(io::Error::other(
             "control socket was reachable from the production Seatbelt contract",
         ));
     }
-    Ok(listener)
+    Ok(())
 }
 
 /// Run the actual pinned CLI in the production Seatbelt contract against the
@@ -623,6 +658,7 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
     host_io::json_new(
         &root.join("harness/control-socket-negative.json"),
         &serde_json::json!({"attempted":true,"accepted_connections":0,
+            "positive_control_attempted":true,"positive_control_accepted_connections":1,
             "profile_sha256":host_io::digest(&sandbox_profile)?}),
     )?;
     let requests = provider.requests()?;
@@ -873,5 +909,19 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn socket_denial_requires_a_working_positive_control() {
+        assert!(validate_socket_probe(true, true, false, false).is_ok());
+        assert!(validate_socket_probe(false, true, false, false).is_ok());
+        for fixture in [
+            (false, false, false, false),
+            (true, false, false, false),
+            (true, true, true, false),
+            (true, true, false, true),
+        ] {
+            assert!(validate_socket_probe(fixture.0, fixture.1, fixture.2, fixture.3).is_err());
+        }
     }
 }
