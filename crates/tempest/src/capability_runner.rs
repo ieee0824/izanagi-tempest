@@ -16,6 +16,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use tokio::net::UnixListener;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CapabilityAgent {
@@ -143,17 +144,61 @@ fn validate_tool_outputs(
             ));
         }
     }
-    let bypass = serde_json::to_string(by_id["call_5"])?;
-    if bypass.contains(host_canary_value) || !bypass.to_ascii_lowercase().contains("error") {
+    let bypass = by_id["call_5"];
+    let bypass_rejected = match agent {
+        CapabilityAgent::Codex => {
+            bypass["type"] == "function_call_output"
+                && bypass["call_id"] == "call_5"
+                && bypass["output"].as_str().is_some_and(|value| {
+                    value
+                        .starts_with("resources/read failed: resources/read failed for `tempest` (")
+                        && value.ends_with("Mcp error: -32601: method not found")
+                })
+        }
+        CapabilityAgent::ClaudeCode => {
+            bypass["type"] == "tool_result"
+                && bypass["tool_use_id"] == "call_5"
+                && bypass["is_error"] == true
+                && bypass["content"]
+                    == "<tool_use_error>Error: No such tool available: mcp__other__read</tool_use_error>"
+        }
+    };
+    if !bypass_rejected || serde_json::to_string(bypass)?.contains(host_canary_value) {
         return Err(io::Error::other(
             "capability discovery MCP bypass rejection not established",
         ));
     }
-    let allowed = serde_json::to_string(by_id["call_6"])?;
-    if allowed.contains("is_error\":true")
-        || allowed.contains("isError\":true")
-        || !allowed.contains(probe_id)
-        || !allowed.contains("running")
+    let allowed = by_id["call_6"];
+    let allowed_text = match agent {
+        CapabilityAgent::Codex
+            if allowed["type"] == "function_call_output"
+                && allowed["call_id"] == "call_6"
+                && allowed.get("is_error").is_none()
+                && allowed.get("isError").is_none() =>
+        {
+            allowed["output"]
+                .as_array()
+                .and_then(|items| items.last())
+                .filter(|item| item["type"] == "input_text")
+                .and_then(|item| item["text"].as_str())
+        }
+        CapabilityAgent::ClaudeCode
+            if allowed["type"] == "tool_result"
+                && allowed["tool_use_id"] == "call_6"
+                && allowed.get("is_error").is_none() =>
+        {
+            allowed["content"]
+                .as_array()
+                .and_then(|items| items.first())
+                .filter(|item| item["type"] == "text")
+                .and_then(|item| item["text"].as_str())
+        }
+        _ => None,
+    };
+    let allowed_value = allowed_text
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .filter(|value| value.as_object().is_some_and(|object| object.len() == 2));
+    if !allowed_value.is_some_and(|value| value["probe_id"] == probe_id && value["running"] == true)
     {
         return Err(io::Error::other(
             "capability discovery allowed MCP call not established",
@@ -253,6 +298,50 @@ fn private_file(path: &Path, value: &[u8]) -> io::Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))
 }
 
+async fn prove_control_socket_denied(
+    socket: &Path,
+    sandbox_profile: &Path,
+    jail: &Path,
+    relay_port: u16,
+    allowed_mcp_socket: &Path,
+) -> io::Result<UnixListener> {
+    let listener = UnixListener::bind(socket)?;
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        host_io::command(Path::new("/usr/bin/sandbox-exec"))
+            .args([
+                "-D".as_ref(),
+                format!("RELAY=localhost:{relay_port}").as_ref(),
+                "-D".as_ref(),
+                format!("JAIL={}", jail.display()).as_ref(),
+                "-D".as_ref(),
+                format!("MCP_SOCKET={}", allowed_mcp_socket.display()).as_ref(),
+                "-f".as_ref(),
+                sandbox_profile.as_os_str(),
+                "--".as_ref(),
+                "/usr/bin/nc".as_ref(),
+                "-U".as_ref(),
+                socket.as_os_str(),
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| io::Error::other("control socket denial probe deadline"))??;
+    let reached = tokio::time::timeout(Duration::from_millis(250), listener.accept())
+        .await
+        .is_ok();
+    if output.status.success() || reached {
+        return Err(io::Error::other(
+            "control socket was reachable from the production Seatbelt contract",
+        ));
+    }
+    Ok(listener)
+}
+
 /// Run the actual pinned CLI in the production Seatbelt contract against the
 /// native deterministic provider and fixed MCP peer. This pass discovers the
 /// CLI's exact provider tool representation; it never issues a LaunchPermit.
@@ -293,7 +382,6 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
     let canary_value = host_io::random_hex()?;
     private_file(&host_canary, canary_value.as_bytes())?;
     private_file(&hmac_file, host_io::random_hex()?.as_bytes())?;
-    private_file(&control_socket, b"not-a-real-control-socket")?;
     let capability = format!("probe-{}", host_io::random_hex()?);
     let provider_agent = match config.agent {
         CapabilityAgent::Codex => ProbeAgent::Codex,
@@ -309,6 +397,19 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
     )
     .await?;
     let socket = root.join("socket/mcp");
+    let control_listener = prove_control_socket_denied(
+        &control_socket,
+        &sandbox_profile,
+        &root.join("jail"),
+        provider
+            .endpoint()
+            .parse::<reqwest::Url>()
+            .ok()
+            .and_then(|url| url.port())
+            .ok_or_else(|| io::Error::other("probe provider port missing"))?,
+        &socket,
+    )
+    .await?;
     let supervisor = Supervisor::start(SupervisorConfig {
         executable: bridge.clone(),
         args: vec![
@@ -369,13 +470,23 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
     };
     let drained = supervisor.finish(reason).await?;
     let outcome = outcome.map_err(|_| io::Error::other("capability discovery CLI deadline"))??;
+    let control_reached_after =
+        tokio::time::timeout(Duration::from_millis(1), control_listener.accept())
+            .await
+            .is_ok();
     if !drained.verified_rpc_drain()
         || outcome.status != "finished"
         || fs::read(&host_canary)? != canary_value.as_bytes()
         || write_canary.exists()
+        || control_reached_after
     {
         return Err(io::Error::other("capability discovery boundary failed"));
     }
+    host_io::json_new(
+        &root.join("harness/control-socket-negative.json"),
+        &serde_json::json!({"attempted":true,"accepted_connections":0,
+            "profile_sha256":host_io::digest(&sandbox_profile)?}),
+    )?;
     let requests = provider.requests()?;
     if requests.len() < 8 {
         return Err(io::Error::other(
@@ -414,4 +525,74 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
         tool_outputs,
         request_fields,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn codex_outputs() -> Vec<Vec<Value>> {
+        let mut outputs = (0..5)
+            .zip([
+                "exec_command",
+                "apply_patch",
+                "view_image",
+                "exec_command",
+                "exec_command",
+            ])
+            .map(|(index, name)| {
+                json!({"type":"function_call_output","call_id":format!("call_{index}"),
+                    "output":format!("unsupported call: {name}")})
+            })
+            .collect::<Vec<_>>();
+        outputs.push(json!({"type":"function_call_output","call_id":"call_5",
+            "output":"resources/read failed: resources/read failed for `tempest` (file:///host/canary): Mcp error: -32601: method not found"}));
+        outputs.push(json!({"type":"function_call_output","call_id":"call_6",
+            "output":[{"type":"input_text","text":"status"},
+                {"type":"input_text","text":"{\"probe_id\":\"probe-test\",\"running\":true}"}]}));
+        vec![outputs]
+    }
+
+    #[test]
+    fn typed_tool_results_accept_the_exact_rejection_and_status() {
+        validate_tool_outputs(
+            CapabilityAgent::Codex,
+            &codex_outputs(),
+            "probe-test",
+            "secret-canary",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn success_content_containing_error_does_not_prove_bypass_rejection() {
+        let mut outputs = codex_outputs();
+        outputs[0][5] = json!({"type":"function_call_output","call_id":"call_5",
+            "output":"success: no error occurred"});
+        assert!(
+            validate_tool_outputs(
+                CapabilityAgent::Codex,
+                &outputs,
+                "probe-test",
+                "secret-canary",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn wrong_tool_result_call_id_is_rejected() {
+        let mut outputs = codex_outputs();
+        outputs[0][5]["call_id"] = "call_4".into();
+        assert!(
+            validate_tool_outputs(
+                CapabilityAgent::Codex,
+                &outputs,
+                "probe-test",
+                "secret-canary",
+            )
+            .is_err()
+        );
+    }
 }
