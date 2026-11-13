@@ -1,6 +1,7 @@
 //! Fail-closed acceptance proof for real model CLI launchers.
 use crate::host_io;
 use serde::Deserialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -48,6 +49,18 @@ struct Evidence {
     name: String,
     sha256: String,
     bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcceptanceEvidence {
+    schema_version: u64,
+    check: String,
+    profile_sha256: String,
+    runner_sha256: String,
+    started_ns: u64,
+    finished_ns: u64,
+    facts: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -316,6 +329,100 @@ fn system_configuration_contract(values: &[SystemPathRule]) -> io::Result<bool> 
     Ok(true)
 }
 
+fn exact_facts<'a>(
+    value: &'a Value,
+    names: &[&str],
+) -> io::Result<&'a serde_json::Map<String, Value>> {
+    let values = value
+        .as_object()
+        .ok_or_else(|| invalid("acceptance facts are not an object"))?;
+    if values.keys().map(String::as_str).collect::<BTreeSet<_>>()
+        != names.iter().copied().collect::<BTreeSet<_>>()
+    {
+        return Err(invalid("acceptance facts do not match the check contract"));
+    }
+    Ok(values)
+}
+
+fn positive(value: Option<&Value>) -> bool {
+    value.and_then(Value::as_u64).is_some_and(|value| value > 0)
+}
+
+fn semantic_evidence(
+    check: &str,
+    bytes: &[u8],
+    profile_sha256: &str,
+    request_policy_sha256: &str,
+) -> io::Result<()> {
+    let evidence: AcceptanceEvidence = parse(bytes)?;
+    if evidence.schema_version != 1
+        || evidence.check != check
+        || evidence.profile_sha256 != profile_sha256
+        || !digest(&evidence.runner_sha256)
+        || evidence.started_ns == 0
+        || evidence.finished_ns < evidence.started_ns
+    {
+        return Err(invalid("acceptance evidence binding mismatch"));
+    }
+    let valid = match check {
+        "allowed_mcp_succeeded" => {
+            let facts = exact_facts(&evidence.facts, &["attempts", "successes", "audit_bound"])?;
+            positive(facts.get("attempts"))
+                && facts["attempts"] == facts["successes"]
+                && facts["audit_bound"] == true
+        }
+        "control_socket_unavailable" | "hmac_unavailable" | "host_tools_rejected" => {
+            let facts = exact_facts(
+                &evidence.facts,
+                &["attempts", "rejections", "bypass_events"],
+            )?;
+            positive(facts.get("attempts"))
+                && facts["attempts"] == facts["rejections"]
+                && facts["bypass_events"] == 0
+        }
+        "host_canary_read_denied" => {
+            let facts = exact_facts(
+                &evidence.facts,
+                &["attempts", "rejections", "before_sha256", "after_sha256"],
+            )?;
+            positive(facts.get("attempts"))
+                && facts["attempts"] == facts["rejections"]
+                && facts["before_sha256"] == facts["after_sha256"]
+                && facts["before_sha256"].as_str().is_some_and(digest)
+        }
+        "host_canary_write_denied" => {
+            let facts = exact_facts(&evidence.facts, &["attempts", "rejections", "created"])?;
+            positive(facts.get("attempts"))
+                && facts["attempts"] == facts["rejections"]
+                && facts["created"] == false
+        }
+        "mcp_child_env_sanitized" => {
+            let facts = exact_facts(&evidence.facts, &["samples", "violations"])?;
+            positive(facts.get("samples")) && facts["violations"] == 0
+        }
+        "provider_request_policy" => {
+            let facts = exact_facts(&evidence.facts, &["requests", "rejected", "policy_sha256"])?;
+            positive(facts.get("requests"))
+                && facts["rejected"] == 0
+                && facts["policy_sha256"] == request_policy_sha256
+        }
+        "tool_catalog_exact" => {
+            let facts = exact_facts(
+                &evidence.facts,
+                &["requests", "expected_sha256", "observed_sha256"],
+            )?;
+            positive(facts.get("requests"))
+                && facts["expected_sha256"] == facts["observed_sha256"]
+                && facts["expected_sha256"].as_str().is_some_and(digest)
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(invalid("acceptance evidence did not establish the check"));
+    }
+    Ok(())
+}
+
 /// Verify only the envelope, file integrity, and static profile contract.
 /// This does not establish that any capability check was meaningfully run.
 pub fn load_envelope(root: &Path) -> io::Result<VerifiedEnvelope> {
@@ -380,18 +487,26 @@ pub fn load_envelope(root: &Path) -> io::Result<VerifiedEnvelope> {
             return Err(invalid("proof evidence digest mismatch"));
         }
     }
-    for check in proof.checks.values() {
+    let mut used_evidence = BTreeSet::new();
+    for (name, check) in &proof.checks {
         if !check.performed
             || !check.passed
             || check.profile_sha256 != profile_sha256
-            || check.evidence.is_empty()
+            || check.evidence.len() != 1
             || check
                 .evidence
                 .iter()
                 .any(|name| !evidence.contains_key(name))
+            || !used_evidence.insert(check.evidence[0].clone())
         {
             return Err(invalid("capability acceptance check not established"));
         }
+        semantic_evidence(
+            name,
+            &bounded(&root.join("evidence").join(&check.evidence[0]))?,
+            &profile_sha256,
+            &profile.request_policy_sha256,
+        )?;
     }
     let mut roles = BTreeSet::new();
     for artifact in &profile.code_closure {
@@ -458,19 +573,42 @@ mod tests {
         });
         let profile_bytes = serde_json::to_vec_pretty(&profile).unwrap();
         host_io::write_new(&root.join("launcher-profile.json"), &profile_bytes).unwrap();
-        let evidence_bytes = b"measured\n";
-        host_io::write_new(&root.join("evidence/acceptance.json"), evidence_bytes).unwrap();
         let profile_hash = sha256(&profile_bytes);
-        let check = json!({"performed":true,"passed":true,"profile_sha256":profile_hash,
-            "evidence":["acceptance.json"]});
-        let checks = REQUIRED_CHECKS
-            .iter()
-            .map(|name| (name.to_string(), check.clone()))
-            .collect::<serde_json::Map<_, _>>();
+        let mut checks = serde_json::Map::new();
+        let mut evidence_index = Vec::new();
+        for name in REQUIRED_CHECKS {
+            let facts = match name {
+                "allowed_mcp_succeeded" => json!({"attempts":1,"successes":1,"audit_bound":true}),
+                "control_socket_unavailable" | "hmac_unavailable" | "host_tools_rejected" => {
+                    json!({"attempts":2,"rejections":2,"bypass_events":0})
+                }
+                "host_canary_read_denied" => json!({"attempts":1,"rejections":1,
+                    "before_sha256":"e".repeat(64),"after_sha256":"e".repeat(64)}),
+                "host_canary_write_denied" => json!({"attempts":1,"rejections":1,"created":false}),
+                "mcp_child_env_sanitized" => json!({"samples":1,"violations":0}),
+                "provider_request_policy" => {
+                    json!({"requests":1,"rejected":0,"policy_sha256":"a".repeat(64)})
+                }
+                "tool_catalog_exact" => json!({"requests":1,
+                    "expected_sha256":"f".repeat(64),"observed_sha256":"f".repeat(64)}),
+                _ => unreachable!(),
+            };
+            let filename = format!("{name}.json");
+            let bytes = serde_json::to_vec(&json!({"schema_version":1,"check":name,
+                "profile_sha256":profile_hash,"runner_sha256":"d".repeat(64),
+                "started_ns":1,"finished_ns":2,"facts":facts}))
+            .unwrap();
+            host_io::write_new(&root.join("evidence").join(&filename), &bytes).unwrap();
+            checks.insert(
+                name.to_owned(),
+                json!({"performed":true,"passed":true,
+                "profile_sha256":profile_hash,"evidence":[filename]}),
+            );
+            evidence_index.push(json!({"name":filename,"sha256":sha256(&bytes),
+                "bytes":bytes.len()}));
+        }
         let proof = json!({"schema_version":1,"proof_id":"proof-001","created_ns":1,
-            "profile_sha256":profile_hash,"checks":checks,"evidence":[{
-                "name":"acceptance.json","sha256":sha256(evidence_bytes),
-                "bytes":evidence_bytes.len()}]});
+            "profile_sha256":profile_hash,"checks":checks,"evidence":evidence_index});
         host_io::json_new(&root.join("capability-proof.json"), &proof).unwrap();
         (root, profile, proof)
     }
@@ -515,6 +653,33 @@ mod tests {
         proof["status"] = "observed".into();
         host_io::json_replace(&root.join("capability-proof.json"), &proof).unwrap();
         assert!(load_envelope(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn self_declared_pass_with_semantically_failed_measurement_is_rejected() {
+        let (root, _, mut proof) = fixture();
+        let name = "allowed_mcp_succeeded.json";
+        let path = root.join("evidence").join(name);
+        let mut evidence: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        evidence["facts"]["successes"] = 0.into();
+        let bytes = serde_json::to_vec(&evidence).unwrap();
+        host_io::replace(&path, &bytes).unwrap();
+        let metadata = proof["evidence"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|item| item["name"] == name)
+            .unwrap();
+        metadata["sha256"] = sha256(&bytes).into();
+        metadata["bytes"] = bytes.len().into();
+        host_io::json_replace(&root.join("capability-proof.json"), &proof).unwrap();
+        assert!(
+            load_envelope(&root)
+                .unwrap_err()
+                .to_string()
+                .contains("did not establish")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
