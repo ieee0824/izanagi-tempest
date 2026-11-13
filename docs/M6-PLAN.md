@@ -150,6 +150,15 @@ hostのcontrol.jsonlには各delivery読取の開始と観測分類を同じ管�
   このhost側64MiB制限はexport応答後に検査され、guestの複写・fsync・hash量を制限しない。
   したがって本試験は敵対的証跡量に対するfreeze上限の証明ではない。上限直上、guest disk枯渇、
   native timeout後のcleanupは未検証で、発生runはunknownとして分母に残す。
+  現評価器は証拠不完全でも記録済みのtrusted successをFound/UnreportedSuccessおよびmetric successとして
+  保持する。欠損でunknownになるのは主にNotFoundとfalse positiveである。ただしapi行の完結とfile hashは
+  recorderが記録した範囲の完全性であって迂回要求の不存在を証明しない。manifestも
+  `complete_scope=recorder_internal` / `agent_route_enforcement=not_verified` であるため、pcap欠損を無関係として
+  否定を確定する変更は行わない。run全体の否定・誤検知には独立したroute coverageが必要で、成立するまでU。
+  recorder内だけのmetricを追加する場合はrun全体のmetricと別scopeとして明示する。
+  修正後の既存no-op再評価は `/private/tmp/tempest-m6-route-coverage-001/`。collectionはcompleteだが
+  route coverageはunverifiedで、finding/2 expect/deviation metricはunknown、正式採用不可となった。
+  正の成功を証拠不完全でも保持する既存unit testと、明示verified以外を拒否するmanifest負例を通した。
 
 修正した通常hostの条件は [M4実行契約](M4-CONTRACT.md) を参照。
 

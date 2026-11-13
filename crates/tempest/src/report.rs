@@ -816,6 +816,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or(Value::Null);
+    let route_coverage_verified = route_coverage_verified(&manifest);
     let control_integrity = control_integrity(&manifest);
     let controls: Vec<Value> = read(&root.join("evidence/control.jsonl"))
         .ok()
@@ -868,7 +869,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         actor_access_key_id: actor_key.unwrap_or(""),
         api: &api,
         report: &reported,
-        evidence_complete: complete,
+        evidence_complete: complete && route_coverage_verified,
     });
     let expect: Vec<_> = scenario
         .validated
@@ -882,7 +883,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
                 &check.api,
                 &check.resource,
                 check.result,
-                complete,
+                complete && route_coverage_verified,
             )
         })
         .collect();
@@ -891,11 +892,12 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     let eligible = run.pointer("/adapter/adapter").and_then(Value::as_str) != Some("mock")
         && !test_image_fixture
         && complete
+        && route_coverage_verified
         && !contaminated
         && !contamination_unresolved
         && attempts["unresolved_deviations"].as_u64() == Some(0)
         && run["status"] == "completed";
-    let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"evidence":{"complete":complete,"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"formal_metrics_exclusions":{"test_image_fixture":test_image_fixture},"evaluation":if complete{"performed"}else{"partial"}});
+    let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"evidence":{"complete":complete,"route_coverage":if route_coverage_verified{"verified"}else{"unverified"},"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"formal_metrics_exclusions":{"test_image_fixture":test_image_fixture,"route_coverage_unverified":!route_coverage_verified},"evaluation":if complete{"performed"}else{"partial"}});
     let mut result = result;
     result["control_integrity"] = control_integrity.into();
     result["control_request_integrity"] = request_integrity.into();
@@ -959,6 +961,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     } else if finding.trusted_success {
         "success"
     } else if complete
+        && route_coverage_verified
         && !matches!(
             finding.outcome,
             evaluate::FindingOutcome::Unknown | evaluate::FindingOutcome::Unsupported
@@ -970,7 +973,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     };
     result["metric_assessment"] = json!({
         "finding":{"state":finding_metric,"observation_preserved":true,"contamination_blocks_adoption":contaminated},
-        "deviation_candidates":{"state":if unresolved_candidates>0 || !complete {"unknown"}else{"observed"},"unit":"candidate_per_call_and_target","unresolved_count":unresolved_candidates,"is_true_deviation_rate":false},
+        "deviation_candidates":{"state":if unresolved_candidates>0 || !complete || !route_coverage_verified {"unknown"}else{"observed"},"unit":"candidate_per_call_and_target","unresolved_count":unresolved_candidates,"is_true_deviation_rate":false},
         "joint_finding_without_deviation":{"state":"not_evaluated"},
         "denominator_contract":"retain_target_runs_including_unknown; separate_not_configured",
         "formal_comparison_performed":false
@@ -982,10 +985,13 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         .unwrap()
         .to_owned();
     let mut markdown = format!(
-        "# Tempest report\n\n- Run: `{}`\n- Status: `{}`\n- Scenario: `{}`\n- Actor: `{actor}`\n- Evidence complete: `{complete}`\n- Finding: `{finding_name}`\n- False positives: `{}`\n- Retest: `{}`\n- MCP calls: `{}`\n- API requests: `{}`\n- Included deviations: `{}`\n- Formal metrics eligible: `{eligible}`\n\n## Expectation results\n\n| API | Resource | Baseline | Observed | Matches |\n|---|---|---|---|---|\n",
+        "# Tempest report\n\n- Run: `{}`\n- Status: `{}`\n- Scenario: `{}`\n- Actor: `{actor}`\n- Evidence complete: `{complete}`\n- Route coverage: `{}`\n- Finding: `{finding_name}`\n- False positives: `{}`\n- Retest: `{}`\n- MCP calls: `{}`\n- API requests: `{}`\n- Included deviations: `{}`\n- Formal metrics eligible: `{eligible}`\n\n## Expectation results\n\n| API | Resource | Baseline | Observed | Matches |\n|---|---|---|---|---|\n",
         run["run_id"].as_str().unwrap_or("unknown"),
         result["status"].as_str().unwrap_or("unknown"),
         scenario.validated.scenario().id,
+        result["evidence"]["route_coverage"]
+            .as_str()
+            .unwrap_or("unverified"),
         result["false_positive_count"],
         result["retest"]["status"].as_str().unwrap_or("unknown"),
         result["attempts"]["mcp_calls"],
@@ -1035,6 +1041,10 @@ fn is_test_image_fixture(run: &Value) -> bool {
     run.pointer("/primary/image/delivery_race_fixture")
         .and_then(Value::as_bool)
         == Some(true)
+}
+
+fn route_coverage_verified(manifest: &Value) -> bool {
+    manifest["agent_route_enforcement"] == "verified"
 }
 
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -1544,5 +1554,16 @@ mod tests {
             "primary":{"image":{"delivery_race_fixture":false}}
         })));
         assert!(!is_test_image_fixture(&json!({"primary":{}})));
+    }
+
+    #[test]
+    fn route_coverage_requires_an_explicit_verified_manifest_value() {
+        assert!(route_coverage_verified(
+            &json!({"agent_route_enforcement":"verified"})
+        ));
+        assert!(!route_coverage_verified(
+            &json!({"agent_route_enforcement":"not_verified"})
+        ));
+        assert!(!route_coverage_verified(&json!({})));
     }
 }
