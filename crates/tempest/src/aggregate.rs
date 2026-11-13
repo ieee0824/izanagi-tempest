@@ -546,6 +546,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::comparison_plan::{ComparisonPlan, ComparisonSlot, StoppingRule};
 
     fn result(id: &str, finding: &str, retest_configured: bool, retest: &str) -> Value {
         json!({
@@ -627,5 +628,97 @@ mod tests {
             condition_id(&first).unwrap(),
             condition_id(&second).unwrap()
         );
+    }
+
+    #[test]
+    fn planned_missing_slot_stays_unknown_and_unplanned_run_is_not_substituted() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-aggregate-plan-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        let conditions = json!({"scenario":"fixed","adapter":{"adapter":"codex"}});
+        let evaluator = "a".repeat(64);
+        let plan = ComparisonPlan {
+            schema_version: 1,
+            plan_id: "comparison-001".into(),
+            created_ns: 1,
+            stopping_rule: StoppingRule {
+                kind: "fixed_slots".into(),
+                slots: 2,
+                retry: "new_slot_only".into(),
+            },
+            slots: vec![
+                ComparisonSlot {
+                    slot_id: "slot-1".into(),
+                    run_id: "run-1".into(),
+                    finding_configured: true,
+                    retest_configured: false,
+                    comparison_conditions: conditions.clone(),
+                    evaluator_sha256: evaluator.clone(),
+                },
+                ComparisonSlot {
+                    slot_id: "slot-2".into(),
+                    run_id: "run-2".into(),
+                    finding_configured: true,
+                    retest_configured: false,
+                    comparison_conditions: conditions.clone(),
+                    evaluator_sha256: evaluator.clone(),
+                },
+            ],
+        };
+        host_io::json_new(&root.join("aggregate-plan.json"), &plan).unwrap();
+        let plan_sha256 = host_io::digest(&root.join("aggregate-plan.json")).unwrap();
+
+        let run = root.join("run-1");
+        host_io::directory(&run).unwrap();
+        host_io::write_new(&run.join("evaluation.lock"), b"").unwrap();
+        let mut committed = result("run-1", "success", false, "not_performed");
+        committed["evaluation"] = "performed".into();
+        committed["comparison_conditions"] = conditions.clone();
+        committed["comparison_binding"] = json!({
+            "verified":true,"plan_sha256":plan_sha256,"slot_id":"slot-1"
+        });
+        committed["provenance"] = json!({"evaluation_id":"evaluation-1"});
+        let artifacts = [
+            (
+                "result.json",
+                serde_json::to_vec_pretty(&committed).unwrap(),
+            ),
+            ("report.md", b"report\n".to_vec()),
+            ("evaluation-input-run.json", b"{}\n".to_vec()),
+            ("timeline.jsonl", Vec::new()),
+        ];
+        let mut manifest = serde_json::Map::new();
+        for (name, bytes) in artifacts {
+            host_io::write_new(&run.join(name), &bytes).unwrap();
+            manifest.insert(
+                name.into(),
+                json!({"sha256":format!("{:x}", Sha256::digest(&bytes))}),
+            );
+        }
+        host_io::json_new(
+            &run.join("evaluation-state.json"),
+            &json!({"state":"committed","evaluation_id":"evaluation-1","artifacts":manifest}),
+        )
+        .unwrap();
+        host_io::directory(&root.join("unplanned-run")).unwrap();
+
+        let aggregate = generate(&root).unwrap();
+        assert_eq!(aggregate["selection"]["planned"], 2);
+        assert_eq!(aggregate["selection"]["committed"], 1);
+        assert_eq!(aggregate["selection"]["unavailable"], 1);
+        assert_eq!(aggregate["selection"]["unplanned"], 1);
+        assert_eq!(aggregate["groups"][0]["finding"]["denominator"], 2);
+        assert_eq!(aggregate["groups"][0]["finding"]["success"], 1);
+        assert_eq!(aggregate["groups"][0]["finding"]["unknown"], 1);
+        assert_eq!(aggregate["groups"][0]["runs"]["unavailable"], 1);
+        assert_eq!(aggregate["groups"][0]["sources"][0]["state"], "committed");
+        assert_eq!(aggregate["groups"][0]["sources"][1]["state"], "unavailable");
+        assert_eq!(aggregate["unplanned_directories"], json!(["unplanned-run"]));
+        let marker: Value =
+            serde_json::from_slice(&fs::read(root.join("aggregate-state.json")).unwrap()).unwrap();
+        assert_eq!(marker["state"], "committed");
+        fs::remove_dir_all(root).unwrap();
     }
 }
