@@ -1,5 +1,5 @@
 //! Deterministic mock and proof-gated real CLI adapter process contracts.
-use crate::{host_io::command, rpc::Rpc};
+use crate::{capability_proof::LaunchPermit, host_io::command, rpc::Rpc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -29,24 +29,39 @@ pub enum CliKind {
     ClaudeCode,
 }
 
-#[derive(Clone)]
-pub struct CliAdapter {
-    pub kind: CliKind,
-    pub executable: PathBuf,
-    pub executable_sha256: String,
-    pub version: String,
-    pub model: String,
-    pub home: PathBuf,
+pub struct CliAdapterConfig {
     pub relay_endpoint: String,
     pub maximum_turns: u64,
-    pub sandbox_executable: PathBuf,
-    pub sandbox_executable_sha256: String,
     pub sandbox_profile: PathBuf,
-    pub sandbox_profile_sha256: String,
     pub sandbox_jail: PathBuf,
     pub harness_root: PathBuf,
-    pub system_profile_sha256: String,
-    pub dyld_profile_sha256: String,
+}
+
+pub struct CliAdapter {
+    contract: CliContract,
+    permit: LaunchPermit,
+}
+
+#[derive(Clone)]
+struct CliContract {
+    kind: CliKind,
+    executable: PathBuf,
+    executable_sha256: String,
+    mcp_bridge: PathBuf,
+    relay_executable: PathBuf,
+    version: String,
+    model: String,
+    home: PathBuf,
+    relay_endpoint: String,
+    maximum_turns: u64,
+    sandbox_executable: PathBuf,
+    sandbox_executable_sha256: String,
+    sandbox_profile: PathBuf,
+    sandbox_profile_sha256: String,
+    sandbox_jail: PathBuf,
+    harness_root: PathBuf,
+    system_profile_sha256: String,
+    dyld_profile_sha256: String,
 }
 
 struct CliLaunch {
@@ -106,7 +121,98 @@ pub trait AgentAdapter {
     ) -> impl Future<Output = io::Result<AgentOutcome>> + Send + 'a;
 }
 
+fn profile_file_sha256(
+    profile: &crate::capability_proof::LauncherProfile,
+    path: &Path,
+) -> io::Result<String> {
+    profile
+        .system_configuration
+        .iter()
+        .find(|item| item.path == path && item.state == "file")
+        .and_then(|item| item.sha256.clone())
+        .ok_or_else(|| io::Error::other("launcher profile does not bind a required system file"))
+}
+
 impl CliAdapter {
+    pub fn new(permit: LaunchPermit, config: CliAdapterConfig) -> io::Result<Self> {
+        permit.verify_immediately_before_launch()?;
+        let profile = permit.profile();
+        let (kind, protocol) = match profile.agent.as_str() {
+            "codex" => (CliKind::Codex, "openai-responses"),
+            "claude-code" => (CliKind::ClaudeCode, "anthropic-messages"),
+            _ => return Err(io::Error::other("unsupported measured CLI adapter")),
+        };
+        if profile.provider_protocol != protocol {
+            return Err(io::Error::other(
+                "CLI provider protocol does not match adapter",
+            ));
+        }
+        let executable = permit.code_path("agent_executable")?.canonicalize()?;
+        let mcp_bridge = permit.code_path("mcp_bridge")?.canonicalize()?;
+        let relay_executable = permit.code_path("model_api_relay")?.canonicalize()?;
+        let artifact_sha = |role: &str| {
+            profile
+                .code_closure
+                .iter()
+                .find(|item| item.role == role)
+                .map(|item| item.sha256.clone())
+                .ok_or_else(|| io::Error::other("measured CLI code role missing"))
+        };
+        let executable_sha256 = artifact_sha("agent_executable")?;
+        let sandbox_executable = PathBuf::from("/usr/bin/sandbox-exec");
+        let sandbox_executable_sha256 = profile_file_sha256(profile, &sandbox_executable)?;
+        let system_profile_sha256 = profile_file_sha256(
+            profile,
+            Path::new("/System/Library/Sandbox/Profiles/system.sb"),
+        )?;
+        let dyld_profile_sha256 = profile_file_sha256(
+            profile,
+            Path::new("/System/Library/Sandbox/Profiles/dyld-support.sb"),
+        )?;
+        let sandbox_profile_sha256 = crate::host_io::digest(&config.sandbox_profile)?;
+        let version = profile.cli_version.clone();
+        let model = profile.model.clone();
+        let sandbox_jail = private_directory(&config.sandbox_jail)?;
+        let home = sandbox_jail.join("home");
+        let contract = CliContract {
+            kind,
+            executable,
+            executable_sha256,
+            mcp_bridge,
+            relay_executable,
+            version,
+            model,
+            home,
+            relay_endpoint: config.relay_endpoint,
+            maximum_turns: config.maximum_turns,
+            sandbox_executable,
+            sandbox_executable_sha256,
+            sandbox_profile: config.sandbox_profile,
+            sandbox_profile_sha256,
+            sandbox_jail,
+            harness_root: config.harness_root,
+            system_profile_sha256,
+            dyld_profile_sha256,
+        };
+        if contract.executable != contract.sandbox_jail.join("bin/agent")
+            || contract.mcp_bridge != contract.sandbox_jail.join("bin/tempest")
+            || contract
+                .relay_executable
+                .starts_with(&contract.sandbox_jail)
+        {
+            return Err(io::Error::other(
+                "authorized launcher code is outside its measured layout",
+            ));
+        }
+        Ok(Self { contract, permit })
+    }
+
+    pub fn model_api_relay_path(&self) -> &Path {
+        &self.contract.relay_executable
+    }
+}
+
+impl CliContract {
     fn launch(&self, _prompt: &str, endpoint: &McpCommand, cwd: &Path) -> io::Result<CliLaunch> {
         let relay = self
             .relay_endpoint
@@ -144,6 +250,7 @@ impl CliAdapter {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
             || crate::host_io::digest(&self.executable)? != self.executable_sha256
+            || bridge_path != self.mcp_bridge
             || self.sandbox_executable != Path::new("/usr/bin/sandbox-exec")
             || crate::host_io::digest(&self.sandbox_executable)? != self.sandbox_executable_sha256
             || crate::host_io::digest(&self.sandbox_profile)? != self.sandbox_profile_sha256
@@ -424,12 +531,14 @@ async fn bounded_stream<R: tokio::io::AsyncRead + Unpin>(reader: R) -> io::Resul
 
 impl AgentAdapter for CliAdapter {
     fn describe(&self) -> Value {
-        json!({"adapter":match self.kind {CliKind::Codex=>"codex",CliKind::ClaudeCode=>"claude-code"},
-            "model":self.model,"cli_version":self.version,"executable_sha256":self.executable_sha256,
-            "sandbox_executable_sha256":self.sandbox_executable_sha256,
-            "sandbox_profile_sha256":self.sandbox_profile_sha256,
-            "system_profile_sha256":self.system_profile_sha256,
-            "dyld_profile_sha256":self.dyld_profile_sha256})
+        let contract = &self.contract;
+        json!({"adapter":match contract.kind {CliKind::Codex=>"codex",CliKind::ClaudeCode=>"claude-code"},
+            "model":contract.model,"cli_version":contract.version,
+            "executable_sha256":contract.executable_sha256,
+            "sandbox_executable_sha256":contract.sandbox_executable_sha256,
+            "sandbox_profile_sha256":contract.sandbox_profile_sha256,
+            "system_profile_sha256":contract.system_profile_sha256,
+            "dyld_profile_sha256":contract.dyld_profile_sha256})
     }
 
     async fn run<'a>(
@@ -438,12 +547,14 @@ impl AgentAdapter for CliAdapter {
         endpoint: &'a McpCommand,
         cwd: &'a Path,
     ) -> io::Result<AgentOutcome> {
-        let launch = self.launch(prompt, endpoint, cwd)?;
+        let contract = &self.contract;
+        let launch = contract.launch(prompt, endpoint, cwd)?;
         crate::host_io::json_new(
             &endpoint.owner_file,
             &json!({"state":"launching","role":"model_cli"}),
         )?;
-        let mut child = command(&self.sandbox_executable)
+        self.permit.verify_immediately_before_launch()?;
+        let mut child = command(&contract.sandbox_executable)
             .args(launch.arguments)
             .env_clear()
             .envs(launch.environment)
@@ -484,10 +595,10 @@ impl AgentAdapter for CliAdapter {
         if stdout_exceeded || stderr_exceeded {
             return Err(io::Error::other("agent process stream too large"));
         }
-        let final_output = match self.kind {
+        let final_output = match contract.kind {
             CliKind::Codex => codex_final_message(&stdout, status.success())?,
             CliKind::ClaudeCode => {
-                claude_final_message(&stdout, status.success(), self.maximum_turns)?
+                claude_final_message(&stdout, status.success(), contract.maximum_turns)?
             }
         };
         Ok(AgentOutcome {
@@ -652,7 +763,7 @@ pub fn claude_final_message(
 mod stream_tests {
     use super::*;
 
-    fn cli_fixture(kind: CliKind) -> (PathBuf, CliAdapter, McpCommand, PathBuf) {
+    fn cli_fixture(kind: CliKind) -> (PathBuf, CliContract, McpCommand, PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "tempest-cli-adapter-{}",
             crate::host_io::random_hex().unwrap()
@@ -672,10 +783,12 @@ mod stream_tests {
         let profile = jail.join("agent.sb");
         crate::host_io::write_new(&profile, include_bytes!("darwin-agent.sb")).unwrap();
         let sandbox_executable = PathBuf::from("/usr/bin/sandbox-exec");
-        let adapter = CliAdapter {
+        let adapter = CliContract {
             kind,
             executable: executable.clone(),
             executable_sha256: crate::host_io::digest(&executable).unwrap(),
+            mcp_bridge: bridge.canonicalize().unwrap(),
+            relay_executable: root.join("relay"),
             version: "fixed".into(),
             model: "model-fixed".into(),
             home: jail.join("home"),
@@ -714,6 +827,48 @@ mod stream_tests {
             .collect::<Vec<_>>()
             .join("\n")
             .into_bytes()
+    }
+
+    #[test]
+    fn production_adapter_is_built_only_from_a_launch_permit() {
+        let (root, _, _) = crate::capability_proof::tests::fixture();
+        let code_root = root.join("authorized-code");
+        let permit = crate::capability_proof::authorize_launch(&root, &code_root).unwrap();
+        let jail = code_root.join("jail");
+        for directory in ["home", "cwd"] {
+            crate::host_io::directory(&jail.join(directory)).unwrap();
+        }
+        let profile = jail.join("agent.sb");
+        crate::host_io::write_new(&profile, include_bytes!("darwin-agent.sb")).unwrap();
+        let harness = root.join("harness");
+        crate::host_io::directory(&harness).unwrap();
+        let adapter = CliAdapter::new(
+            permit,
+            CliAdapterConfig {
+                relay_endpoint: "http://127.0.0.1:1234/capabilitycapabilitycapability12".into(),
+                maximum_turns: 20,
+                sandbox_profile: profile,
+                sandbox_jail: jail.clone(),
+                harness_root: harness.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            adapter.model_api_relay_path(),
+            code_root.join("host/model-api-relay")
+        );
+        let endpoint = McpCommand {
+            executable: jail.join("bin/tempest"),
+            socket: "/private/tmp/socket/s".into(),
+            owner_file: harness.join("owner.json"),
+            raw_stdout: harness.join("agent.events.jsonl"),
+            raw_stderr: harness.join("agent.stderr"),
+        };
+        adapter
+            .contract
+            .launch("fixed prompt", &endpoint, &jail.join("cwd"))
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

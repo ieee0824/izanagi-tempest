@@ -214,9 +214,17 @@ pub fn materialize_code(
     destination: &Path,
 ) -> io::Result<BTreeMap<String, PathBuf>> {
     host_io::directory(destination)?;
+    host_io::directory(&destination.join("jail"))?;
+    host_io::directory(&destination.join("jail/bin"))?;
+    host_io::directory(&destination.join("host"))?;
     let mut paths = BTreeMap::new();
     for artifact in &proof.profile.code_closure {
-        let target = destination.join(&artifact.role);
+        let target = match artifact.role.as_str() {
+            "agent_executable" => destination.join("jail/bin/agent"),
+            "mcp_bridge" => destination.join("jail/bin/tempest"),
+            "model_api_relay" => destination.join("host/model-api-relay"),
+            role => destination.join("host").join(role),
+        };
         host_io::private_copy(&artifact.path, &target)?;
         if host_io::digest(&target)? != artifact.sha256 {
             return Err(invalid("copied launcher code digest mismatch"));
@@ -644,11 +652,11 @@ pub fn load_envelope(root: &Path) -> io::Result<VerifiedEnvelope> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::{Value, json};
 
-    fn fixture() -> (PathBuf, Value, Value) {
+    pub(crate) fn fixture() -> (PathBuf, Value, Value) {
         let root = std::env::temp_dir().join(format!(
             "tempest-capability-proof-{}",
             host_io::random_hex().unwrap()
@@ -676,8 +684,14 @@ mod tests {
                 {"name":"PATH","source":"fixed_nonsecret","value_sha256":"c".repeat(64)}],"home_policy":"empty_owner_private",
             "cwd_policy":"empty_owner_private","prompt_policy":"tempest_generated_only",
             "real_authentication_owner":"model_api_relay_only",
-            "system_configuration":[{"path":root.join("absent-managed-config"),
-                "state":"absent","sha256":null}],
+            "system_configuration":[
+                {"path":"/System/Library/Sandbox/Profiles/dyld-support.sb","state":"file",
+                    "sha256":host_io::digest(Path::new("/System/Library/Sandbox/Profiles/dyld-support.sb")).unwrap()},
+                {"path":"/System/Library/Sandbox/Profiles/system.sb","state":"file",
+                    "sha256":host_io::digest(Path::new("/System/Library/Sandbox/Profiles/system.sb")).unwrap()},
+                {"path":root.join("absent-managed-config"),"state":"absent","sha256":null},
+                {"path":"/usr/bin/sandbox-exec","state":"file",
+                    "sha256":host_io::digest(Path::new("/usr/bin/sandbox-exec")).unwrap()}],
             "code_closure":[closure("agent_executable",&executable),closure("mcp_bridge",&bridge),
                 closure("model_api_relay",&relay)]
         });
