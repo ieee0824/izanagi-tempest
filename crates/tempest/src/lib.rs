@@ -1,6 +1,8 @@
 pub mod adapter;
 pub mod admission;
+pub mod aggregate;
 mod collection;
+pub mod comparison_plan;
 pub mod deviation;
 pub mod evaluate;
 mod guest_transport;

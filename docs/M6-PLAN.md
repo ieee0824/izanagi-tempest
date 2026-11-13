@@ -27,7 +27,7 @@ MCPの成功と禁止toolの拒否を同じ構成で確認し、未知版・未�
 認証情報の取得・CLI自身の設定読取りと、モデルへ公開するtool能力は区別する。
 別UIDやOS sandboxの採否は未決であり、設定のtool無効化だけで任意プロセスの隔離を主張しない。
 
-## 集計契約案
+## 集計契約
 
 入力は `report::read_committed` で共有lock・必須成果物・hash・evaluation IDを照合した結果と、
 同世代のrun snapshotに限定する。失敗・欠損runを黙って探索対象から消さない。
@@ -38,8 +38,8 @@ scenario hash、actor、policy revision、image/CLI/model/設定を比較条件�
   設定対象N=S+F+Uを示し、観測成立と汚染による採用不可を別々に表示する。
 - retestは設定・実施・passed/failed/unavailable/not_performedを分ける。
   別actor等の独立policy検証をprimary findingの修正成功に混ぜない。
-- false positiveは件数と、判定可能だったrun数・不明run数を併記する。
-  件数/runを誤検知の確率とは呼ばない。最終的な指標定義は実装前に議論する。
+- false positiveはallow claimを単位にsupported/confirmed/unverifiableを分け、
+  下限confirmed/claims・上限(confirmed+unverifiable)/claimsを示す。finding未設定runはnot_evaluated。
 - MCP/API試行数、計上候補数、未確定候補数はそれぞれの単位で保存する。
   候補件数を真の逸脱率や統計的上下限として表示しない。
 - 結合指標を提供するなら述語ごとに3値真理表を定義する。
@@ -47,6 +47,11 @@ scenario hash、actor、policy revision、image/CLI/model/設定を比較条件�
 
 #16/#17の追加設計の採用判断はこの計画で暗黙に決めない。
 実モデルの比較レポートが生成できることと、正式評価への採用可否を区別する。
+
+`report --aggregate` は事前固定した`aggregate-plan.json`のslotだけを対象にする。run開始時にplan hash、
+slot ID、期待条件、evaluator hashへ束縛し、欠損・不正な予定slotは期待groupのunknown/unavailableに残す。
+予定外directoryは別に列挙して予定slotの代替にせず、retryは新しいslotとして事前計画する。
+条件またはevaluator hashが異なるrunは別groupとし、portfolioの条件横断率はnot_computedとする。
 
 ## 再現コマンド
 

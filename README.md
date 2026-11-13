@@ -199,6 +199,7 @@ mockの固定報告は形式検証用で、正式なモデル比較の集計対�
 
 ```bash
 cargo run --locked -p tempest -- report runs/<run-id>
+cargo run --locked -p tempest -- report --aggregate /absolute/path/to/runs
 ```
 
 mockの結果は形式・E2E検証用であり、生成後も正式なモデル比較指標の対象外です。
@@ -207,6 +208,12 @@ mockの結果は形式・E2E検証用であり、生成後も正式なモデル�
 接続元を確定できないログ候補は`unresolved_backend_or_bypass`として保持します。
 `evidence/api.jsonl`はcredential claimのAccessKeyIdを平文で含む私有証跡ですが、
 `run.json`・`result.json`・`report.md`には値を複製しません。
+集計には実行前に固定した`runs/aggregate-plan.json`が必要です。各slotはrun ID、比較条件、
+evaluator hash、finding/retestの設定有無を固定し、`tempest run`には
+`--comparison-plan FILE --comparison-slot ID`を渡します。集計時はplan hashへの束縛、committed marker、
+成果物hash、evaluation IDを照合します。欠損・読取不能な予定slotは期待groupのunknown/unavailableに残し、
+予定外directoryは代替せず別件数にします。条件とevaluator hashが同じrunだけをgroup化し、条件横断率は
+計算せず、`aggregate.json`と`aggregate.md`を私有runs直下へ生成します。
 
 実VMの連続実行と故障注入はopt-inです。
 

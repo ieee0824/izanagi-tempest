@@ -27,7 +27,7 @@ use tempest_model::{
     scenario::Outcome,
 };
 
-const USAGE: &str = "Usage: tempest run SCENARIO --agent mock --mock-script FILE --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--actor NAME] [--max-evidence-bytes BYTES]";
+const USAGE: &str = "Usage: tempest run SCENARIO --agent mock --mock-script FILE --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]";
 async fn version(executable: &Path) -> io::Result<String> {
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -57,6 +57,8 @@ struct Options {
     runs: PathBuf,
     id: String,
     actor: Option<String>,
+    comparison_plan: Option<PathBuf>,
+    comparison_slot: Option<String>,
     maximum_evidence_file_bytes: u64,
 }
 fn options(args: &[OsString]) -> io::Result<Options> {
@@ -81,6 +83,8 @@ fn options(args: &[OsString]) -> io::Result<Options> {
                 | "--run-id"
                 | "--actor"
                 | "--max-evidence-bytes"
+                | "--comparison-plan"
+                | "--comparison-slot"
         ) || values.insert(flag, &pair[1]).is_some()
         {
             return Err(io::Error::other("unknown or duplicate option"));
@@ -114,6 +118,13 @@ fn options(args: &[OsString]) -> io::Result<Options> {
             })
             .transpose()
     };
+    let comparison_plan = values.get("--comparison-plan").map(PathBuf::from);
+    let comparison_slot = text("--comparison-slot")?;
+    if comparison_plan.is_some() != comparison_slot.is_some() {
+        return Err(io::Error::other(
+            "comparison plan and slot must be provided together",
+        ));
+    }
     Ok(Options {
         scenario: args[0].clone().into(),
         script: required("--mock-script")?,
@@ -125,6 +136,8 @@ fn options(args: &[OsString]) -> io::Result<Options> {
         runs: optional("--runs", "runs"),
         id: text("--run-id")?.unwrap_or(host_io::random_hex()?),
         actor: text("--actor")?,
+        comparison_plan,
+        comparison_slot,
         maximum_evidence_file_bytes: match text("--max-evidence-bytes")? {
             None => 64 * 1024 * 1024,
             Some(value) => value
@@ -392,6 +405,28 @@ async fn execute(
         return Err(io::Error::other("mock script too large"));
     }
     let adapter: MockAdapter = serde_json::from_slice(&script)?;
+    let evaluator_sha256 = host_io::digest(&std::env::current_exe()?)?;
+    let comparison_binding = if let (Some(path), Some(slot_id)) = (
+        options.comparison_plan.as_deref(),
+        options.comparison_slot.as_deref(),
+    ) {
+        let comparison = crate::comparison_plan::load(path)?;
+        let slot = comparison.slot(slot_id, &options.id, &evaluator_sha256)?;
+        if slot.finding_configured != plan.self_check().is_some()
+            || slot.retest_configured != plan.retest().is_some()
+        {
+            return Err(io::Error::other("comparison slot presence mismatch"));
+        }
+        json!({
+            "plan_id":comparison.plan.plan_id.clone(),
+            "plan_sha256":comparison.sha256.clone(),
+            "slot_id":slot.slot_id.clone(),
+            "expected_evaluator_sha256":slot.evaluator_sha256.clone(),
+            "expected_conditions":slot.comparison_conditions.clone()
+        })
+    } else {
+        Value::Null
+    };
     let image = options.image.canonicalize()?;
     let izanagi = options.izanagi.canonicalize()?;
     let inputs: Value = serde_json::from_slice(&fs::read(&options.inputs)?)?;
@@ -422,7 +457,7 @@ async fn execute(
     host_io::private_copy(&bridge, &companion.join("host_bridge.py"))?;
     host_io::private_copy(&transport, &companion.join("transport.py"))?;
     let budget = &loaded.validated.scenario().budget;
-    let mut report = json!({"schema_version":1,"scope":"m5_evaluation","purpose":"collection_and_evaluation","iteration":1,"adapter":adapter.describe(),"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&izanagi)?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"mock_script_sha256":host_io::digest(&root.join("mock-script.json"))?,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"evaluation_pending"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
+    let mut report = json!({"schema_version":1,"scope":"m5_evaluation","purpose":"collection_and_evaluation","iteration":1,"adapter":adapter.describe(),"comparison_binding":comparison_binding,"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&izanagi)?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"mock_script_sha256":host_io::digest(&root.join("mock-script.json"))?,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"evaluation_pending"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
     report["conditions"]["izanagi_version"] = version(&izanagi).await?.into();
     report["conditions"]["tempest_version"] = env!("CARGO_PKG_VERSION").into();
     report["conditions"]["host_utc_offset_seconds"] = host_io::utc_offset_seconds()?.into();

@@ -618,8 +618,14 @@ fn control_integrity(manifest: &Value) -> &'static str {
     }
 }
 
-/// Read one committed generation while excluding concurrent writers.
-pub fn read_committed(root: &Path) -> io::Result<Value> {
+pub struct CommittedResult {
+    pub value: Value,
+    pub evaluation_id: String,
+    pub result_sha256: String,
+}
+
+/// Read one committed generation and its provenance while excluding concurrent writers.
+pub fn read_committed_record(root: &Path) -> io::Result<CommittedResult> {
     use std::os::unix::{fs::OpenOptionsExt, io::AsRawFd};
     let lock = fs::OpenOptions::new()
         .read(true)
@@ -636,6 +642,7 @@ pub fn read_committed(root: &Path) -> io::Result<Value> {
         .as_object()
         .ok_or_else(|| io::Error::other("invalid artifact manifest"))?;
     let mut result = None;
+    let mut result_sha256 = None;
     for (name, metadata) in artifacts {
         if !matches!(
             name.as_str(),
@@ -650,12 +657,15 @@ pub fn read_committed(root: &Path) -> io::Result<Value> {
         }
         if name == "result.json" {
             result = Some(serde_json::from_slice::<Value>(&bytes)?);
+            result_sha256 = Some(digest);
         }
     }
     let result = result.ok_or_else(|| io::Error::other("result missing from artifact manifest"))?;
-    if marker["evaluation_id"].as_str().is_none_or(str::is_empty) {
-        return Err(io::Error::other("evaluation ID missing"));
-    }
+    let evaluation_id = marker["evaluation_id"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| io::Error::other("evaluation ID missing"))?
+        .to_owned();
     for required in ["result.json", "report.md", "evaluation-input-run.json"] {
         if !artifacts.contains_key(required) {
             return Err(io::Error::other("required evaluation artifact missing"));
@@ -669,7 +679,16 @@ pub fn read_committed(root: &Path) -> io::Result<Value> {
     if marker["evaluation_id"] != result["provenance"]["evaluation_id"] {
         return Err(io::Error::other("evaluation generation mismatch"));
     }
-    Ok(result)
+    Ok(CommittedResult {
+        value: result,
+        evaluation_id,
+        result_sha256: result_sha256.unwrap(),
+    })
+}
+
+/// Read one committed generation while excluding concurrent writers.
+pub fn read_committed(root: &Path) -> io::Result<Value> {
+    read_committed_record(root).map(|record| record.value)
 }
 
 pub fn generate(root: &Path) -> io::Result<Value> {
@@ -889,6 +908,24 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         .collect();
     let retest = retest_result(scenario.validated.scenario().retest.is_some(), &run);
     let test_image_fixture = is_test_image_fixture(&run);
+    let comparison_conditions = comparison_conditions(&run);
+    let comparison_binding = if run["comparison_binding"].is_object() {
+        let expected_conditions_match =
+            run.pointer("/comparison_binding/expected_conditions") == Some(&comparison_conditions);
+        let expected_evaluator_match = run
+            .pointer("/comparison_binding/expected_evaluator_sha256")
+            .and_then(Value::as_str)
+            == provenance
+                .pointer("/evaluator_sha256")
+                .and_then(Value::as_str);
+        let mut binding = run["comparison_binding"].clone();
+        binding["expected_conditions_match"] = expected_conditions_match.into();
+        binding["expected_evaluator_match"] = expected_evaluator_match.into();
+        binding["verified"] = (expected_conditions_match && expected_evaluator_match).into();
+        binding
+    } else {
+        json!({"verified":false,"reason":"unbound_run"})
+    };
     let eligible = run.pointer("/adapter/adapter").and_then(Value::as_str) != Some("mock")
         && !test_image_fixture
         && complete
@@ -897,7 +934,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         && !contamination_unresolved
         && attempts["unresolved_deviations"].as_u64() == Some(0)
         && run["status"] == "completed";
-    let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"evidence":{"complete":complete,"route_coverage":if route_coverage_verified{"verified"}else{"unverified"},"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"formal_metrics_exclusions":{"test_image_fixture":test_image_fixture,"route_coverage_unverified":!route_coverage_verified},"evaluation":if complete{"performed"}else{"partial"}});
+    let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"comparison_conditions":comparison_conditions,"comparison_binding":comparison_binding,"evidence":{"complete":complete,"route_coverage":if route_coverage_verified{"verified"}else{"unverified"},"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"formal_metrics_exclusions":{"test_image_fixture":test_image_fixture,"route_coverage_unverified":!route_coverage_verified},"evaluation":if complete{"performed"}else{"partial"}});
     let mut result = result;
     result["control_integrity"] = control_integrity.into();
     result["control_request_integrity"] = request_integrity.into();
@@ -1047,6 +1084,30 @@ fn route_coverage_verified(_manifest: &Value) -> bool {
     // Schema 1 has no run-bound proof contract for the actor, paths, interval or
     // packet/API correlation. A producer claim alone must not authorize metrics.
     false
+}
+
+fn comparison_conditions(run: &Value) -> Value {
+    json!({
+        "schema_version":1,
+        "scenario":{"id":run["scenario_id"],"sha256":run["scenario_sha256"]},
+        "actor":run.pointer("/plan/actor").cloned().unwrap_or(Value::Null),
+        "adapter":run["adapter"],
+        "environment":{
+            "image_sha256":run.pointer("/conditions/image_sha256").cloned().unwrap_or(Value::Null),
+            "izanagi_sha256":run.pointer("/conditions/izanagi_sha256").cloned().unwrap_or(Value::Null),
+            "tempest_sha256":run.pointer("/conditions/tempest_sha256").cloned().unwrap_or(Value::Null),
+            "agent_input_sha256":run.pointer("/conditions/mock_script_sha256").cloned().unwrap_or(Value::Null),
+            "companion_sha256":run.pointer("/conditions/companion_sha256").cloned().unwrap_or(Value::Null),
+            "codec_sha256":run.pointer("/conditions/codec_sha256").cloned().unwrap_or(Value::Null),
+            "host_os":run.pointer("/conditions/host_os").cloned().unwrap_or(Value::Null),
+            "host_arch":run.pointer("/conditions/host_arch").cloned().unwrap_or(Value::Null),
+            "restrict_network":run.pointer("/conditions/restrict_network").cloned().unwrap_or(Value::Null),
+            "snapshot":run.pointer("/conditions/snapshot").cloned().unwrap_or(Value::Null),
+            "share_read_only":run.pointer("/conditions/share_read_only").cloned().unwrap_or(Value::Null),
+            "max_export_file_bytes":run.pointer("/conditions/max_export_file_bytes").cloned().unwrap_or(Value::Null),
+            "budget":run.pointer("/conditions/budget").cloned().unwrap_or(Value::Null)
+        }
+    })
 }
 
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -1576,5 +1637,28 @@ mod tests {
             &json!({"agent_route_enforcement":null})
         ));
         assert!(!route_coverage_verified(&json!({})));
+    }
+
+    #[test]
+    fn comparison_conditions_ignore_run_identity_but_preserve_model_and_environment() {
+        let base = json!({
+            "run_id":"one","scenario_id":"s","scenario_sha256":"abc",
+            "plan":{"actor":"worker"},
+            "adapter":{"adapter":"mock","model":"m1"},
+            "conditions":{"image_sha256":"image","tempest_sha256":"tempest",
+                "izanagi_sha256":"izanagi","budget":{"max_calls":3,"timeout_ms":10}},
+            "primary":{"credentials":{"policy_sha256":"policy"}}
+        });
+        let mut another_run = base.clone();
+        another_run["run_id"] = "two".into();
+        assert_eq!(
+            comparison_conditions(&base),
+            comparison_conditions(&another_run)
+        );
+        another_run["adapter"]["model"] = "m2".into();
+        assert_ne!(
+            comparison_conditions(&base),
+            comparison_conditions(&another_run)
+        );
     }
 }

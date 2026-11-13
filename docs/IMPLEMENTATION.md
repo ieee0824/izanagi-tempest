@@ -534,7 +534,15 @@ M6集計は対象runのunknownを分母に残し、`not_configured`と区別す�
 }
 ```
 
-モデル比較(DESIGN.md 5.4)は、複数の `result.json` を `tempest report --aggregate` で集計して作る。
+モデル比較(DESIGN.md 5.4)は、複数の確定済み `result.json` を
+`tempest report --aggregate RUNS_DIRECTORY` で集計して作る。実行前の`aggregate-plan.json`で固定したslotを
+対象とし、各runはplan hashとslot IDへ束縛する。shared lock、committed marker、必須成果物hash、
+evaluation IDを検証する。欠損・読取不能slotは期待groupのunknown/unavailableに残し、予定外directoryは
+代替に使わない。scenario/actor/policy/image/tempest/Izanagi/adapter・model・binary/budget等の条件と
+evaluator hashが一致するrunだけを
+同一groupにし、条件をまたぐ率は計算しない。findingの分母はS+F+Uでnot_configuredを分離し、
+下限S/N・上限(S+U)/Nを出す。retest、false positive claim、試行・候補数も単位とunknownを分ける。
+portfolioはpresenceの設定済み分母とnot_configured件数だけを条件横断で示す。
 
 ## 8. ソース構成
 
