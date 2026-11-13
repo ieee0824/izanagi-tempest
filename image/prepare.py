@@ -51,6 +51,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ['izanagi-source', 'lws-source', 'iso', 'agent', 'ebpf', 'http', 'lws', 'guest', 'output']:
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--delivery-race-fixture', action='store_true', help='TEST IMAGE ONLY: force deliver to overlap export freeze')
     args = parser.parse_args()
     try:
         source = args.izanagi_source.resolve()
@@ -75,15 +76,22 @@ def main():
                                 'apt-get install -y curl python3 python3-cryptography tcpdump iptables awscli opendoas procps file ca-certificates')
     template = template.replace('iso_url      = local.iso_url', 'iso_url      = ' + json.dumps(str(args.iso.resolve())))
     own = Path(__file__).resolve().parent
+    derived = {name: (own / name).read_bytes() for name in ['prepare.py', 'provision.sh', 'dispatcher.py', 'quiesce.py']}
+    if args.delivery_race_fixture:
+        from delivery_race_fixture import instrument
+        dispatcher, quiesce = instrument(derived['dispatcher.py'].decode(), derived['quiesce.py'].decode())
+        derived['dispatcher.py'], derived['quiesce.py'] = dispatcher.encode(), quiesce.encode()
+        derived['delivery_race_fixture.py'] = (own / 'delivery_race_fixture.py').read_bytes()
     metadata = {**helper_source(), 'schema_version': 1, 'izanagi_commit': IZANAGI, 'lws_commit': LWS,
                 'tempest_guest_version': tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['version'],
                 'tempest_guest_source_commit': subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
                 'built_at': datetime.now(timezone.utc).isoformat(),
                 'iso_sha256': iso_hash, 'input_sha256': {name: sha(path) for name, path in assets.items()},
-                'derivation_sha256': {name: sha(own / name) for name in ['prepare.py', 'provision.sh', 'dispatcher.py', 'quiesce.py']}}
+                'delivery_race_fixture': args.delivery_race_fixture,
+                'derivation_sha256': {name: hashlib.sha256(data).hexdigest() for name, data in derived.items()}}
     (output / 'packer/image.json').write_text(json.dumps(metadata, indent=2) + '\n')
     for name in ['provision.sh', 'dispatcher.py', 'quiesce.py']:
-        shutil.copyfile(own / name, output / 'packer' / name)
+        (output / 'packer' / name).write_bytes(derived[name])
     extra = '\n  provisioner "shell" { inline = ["install -d -m 0700 /tmp/tempest-m3"] }\n'
     for path, destination in [(assets['lws'], 'lws'), (assets['guest'], 'tempest-guest'),
                               ('${path.root}/dispatcher.py', 'dispatcher.py'), ('${path.root}/image.json', 'image.json'),
