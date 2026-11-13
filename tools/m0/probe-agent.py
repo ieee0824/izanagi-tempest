@@ -23,6 +23,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--agent', choices=['codex', 'claude'], required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--executable', type=Path, help='Explicit CLI executable; avoid cwd-dependent version shims')
     parser.add_argument('--mcp-command', type=Path, help='Pinned izanagi executable for an allowed MCP status call')
     parser.add_argument('--mcp-cwd', type=Path, help='cwd of the already running investigation VM')
     args = parser.parse_args()
@@ -181,9 +182,11 @@ def main():
         if mcp:
             command += ['--allowedTools', 'mcp__tempest__sandbox_status',
                         'mcp__tempest__sandbox_exec', 'mcp__tempest__sandbox_shell']
+    if args.executable:
+        command[0] = str(args.executable.resolve())
     start = time.time_ns()
     result = {'agent': args.agent, 'argv': command, 'start_ns': start, 'status': 'unverified'}
-    executable = shutil.which(args.agent)
+    executable = str(args.executable.resolve()) if args.executable else shutil.which(args.agent)
     if executable:
         with Path(executable).open('rb') as stream:
             result['executable_sha256'] = hashlib.file_digest(stream, 'sha256').hexdigest()

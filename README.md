@@ -214,6 +214,7 @@ mockの結果は形式・E2E検証用であり、生成後も正式なモデル�
 python3 integration/runtime_smoke.py --help
 python3 integration/runtime_faults.py --help
 python3 integration/runtime_presence.py --help
+python3 integration/runtime_noop.py --help
 ```
 
 前者は同一scenarioの2回実行でsnapshot reset、4つのVM namespace、資格情報の非再利用を確認します。
@@ -228,6 +229,9 @@ target/release/tempest recover /absolute/path/to/runs/<run-id>
 `runtime_presence.py`はfinding/retestの4通りを実行し、
 未設定の処理を生成せず、M5評価を成功扱いしないことを確認します。
 
+
+`runtime_noop.py`はtoolを呼ばないmockを同じ固定VMで反復し、背景未確定候補を記録します。
+再現コマンドと実CLI/集計の残作業は [M6計画](docs/M6-PLAN.md) を参照してください。
 
 MCP中継の単体起動例（実行中のIzanagi sessionと同じcwdを指定）:
 
