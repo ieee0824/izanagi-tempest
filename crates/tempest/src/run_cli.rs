@@ -27,7 +27,7 @@ use tempest_model::{
     scenario::Outcome,
 };
 
-const USAGE: &str = "Usage: tempest run SCENARIO --agent mock --mock-script FILE --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]";
+const USAGE: &str = "Usage: tempest run SCENARIO --agent mock --mock-script FILE --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]";
 async fn version(executable: &Path) -> io::Result<String> {
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -46,6 +46,7 @@ async fn version(executable: &Path) -> io::Result<String> {
         .trim()
         .to_owned())
 }
+#[derive(Clone)]
 struct Options {
     scenario: PathBuf,
     script: PathBuf,
@@ -56,10 +57,12 @@ struct Options {
     python: PathBuf,
     runs: PathBuf,
     id: String,
+    repeat: usize,
     actor: Option<String>,
     comparison_plan: Option<PathBuf>,
     comparison_slot: Option<String>,
     maximum_evidence_file_bytes: u64,
+    iteration: usize,
 }
 fn options(args: &[OsString]) -> io::Result<Options> {
     if args.is_empty() || args.len() % 2 == 0 {
@@ -81,6 +84,7 @@ fn options(args: &[OsString]) -> io::Result<Options> {
                 | "--python"
                 | "--runs"
                 | "--run-id"
+                | "--repeat"
                 | "--actor"
                 | "--max-evidence-bytes"
                 | "--comparison-plan"
@@ -135,9 +139,18 @@ fn options(args: &[OsString]) -> io::Result<Options> {
         python: optional("--python", "python3"),
         runs: optional("--runs", "runs"),
         id: text("--run-id")?.unwrap_or(host_io::random_hex()?),
+        repeat: match text("--repeat")? {
+            None => 1,
+            Some(value) => value
+                .parse::<usize>()
+                .ok()
+                .filter(|value| (1..=100).contains(value))
+                .ok_or_else(|| io::Error::other("invalid repeat count"))?,
+        },
         actor: text("--actor")?,
         comparison_plan,
         comparison_slot,
+        iteration: 1,
         maximum_evidence_file_bytes: match text("--max-evidence-bytes")? {
             None => 64 * 1024 * 1024,
             Some(value) => value
@@ -390,6 +403,19 @@ async fn cancelled(
         Err(_) => "owner_lost",
     }
 }
+fn iteration_options(options: &Options, iteration: usize) -> Options {
+    let mut value = options.clone();
+    value.repeat = 1;
+    if options.repeat > 1 {
+        value.id = format!("{}-{iteration:03}", options.id);
+        value.comparison_slot = options
+            .comparison_slot
+            .as_ref()
+            .map(|slot| format!("{slot}-{iteration:03}"));
+    }
+    value.iteration = iteration;
+    value
+}
 async fn execute(
     options: Options,
     mut cancel: tokio::sync::watch::Receiver<Option<&'static str>>,
@@ -457,7 +483,7 @@ async fn execute(
     host_io::private_copy(&bridge, &companion.join("host_bridge.py"))?;
     host_io::private_copy(&transport, &companion.join("transport.py"))?;
     let budget = &loaded.validated.scenario().budget;
-    let mut report = json!({"schema_version":1,"scope":"m5_evaluation","purpose":"collection_and_evaluation","iteration":1,"adapter":adapter.describe(),"comparison_binding":comparison_binding,"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&izanagi)?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"mock_script_sha256":host_io::digest(&root.join("mock-script.json"))?,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"evaluation_pending"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
+    let mut report = json!({"schema_version":1,"scope":"m5_evaluation","purpose":"collection_and_evaluation","iteration":options.iteration,"adapter":adapter.describe(),"comparison_binding":comparison_binding,"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&root.join("bin/izanagi"))?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"mock_script_sha256":host_io::digest(&root.join("mock-script.json"))?,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"evaluation_pending"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
     report["conditions"]["izanagi_version"] = version(&izanagi).await?.into();
     report["conditions"]["tempest_version"] = env!("CARGO_PKG_VERSION").into();
     report["conditions"]["host_utc_offset_seconds"] = host_io::utc_offset_seconds()?.into();
@@ -957,22 +983,45 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 tokio::select! {_=tokio::signal::ctrl_c()=>"sigint",_=term.recv()=>"sigterm"};
             let _ = sender.send(Some(reason));
         });
-        let result = execute(options, receiver).await;
+        let mut results = Vec::with_capacity(options.repeat);
+        let mut failure = None;
+        for iteration in 1..=options.repeat {
+            match execute(iteration_options(&options, iteration), receiver.clone()).await {
+                Ok(result) => results.push(result),
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
         signal.abort();
-        result
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(results),
+        }
     });
     runtime.shutdown_background();
     match result {
-        Ok((path, success)) => {
-            let metadata: Value = fs::read(path.join("run.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .unwrap_or(Value::Null);
-            println!(
-                "{}",
-                json!({"run_directory":path,"status":metadata["status"],"scope":"m5_evaluation","evaluation":metadata["evaluation"],"finalization":metadata["finalization"]})
-            );
-            if success {
+        Ok(results) => {
+            let runs = results
+                .iter()
+                .map(|(path, success)| {
+                    let metadata: Value = fs::read(path.join("run.json"))
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                        .unwrap_or(Value::Null);
+                    json!({"run_directory":path,"status":metadata["status"],"evaluation":metadata["evaluation"],"finalization":metadata["finalization"],"success":success})
+                })
+                .collect::<Vec<_>>();
+            if runs.len() == 1 {
+                println!(
+                    "{}",
+                    json!({"run_directory":runs[0]["run_directory"],"status":runs[0]["status"],"scope":"m5_evaluation","evaluation":runs[0]["evaluation"],"finalization":runs[0]["finalization"]})
+                );
+            } else {
+                println!("{}", json!({"scope":"m5_evaluation","runs":runs}));
+            }
+            if results.iter().all(|(_, success)| *success) {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -989,6 +1038,35 @@ pub fn run(args: &[OsString]) -> ExitCode {
 mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
+
+    #[test]
+    fn repeat_expands_run_and_comparison_slot_ids_deterministically() {
+        let options = Options {
+            scenario: "scenario".into(),
+            script: "script".into(),
+            izanagi: "izanagi".into(),
+            image: "image".into(),
+            inputs: "inputs".into(),
+            bridge: "bridge".into(),
+            python: "python".into(),
+            runs: "runs".into(),
+            id: "batch".into(),
+            actor: None,
+            comparison_plan: Some("plan".into()),
+            comparison_slot: Some("slot".into()),
+            maximum_evidence_file_bytes: 1,
+            repeat: 3,
+            iteration: 1,
+        };
+        let values = (1..=options.repeat)
+            .map(|iteration| iteration_options(&options, iteration))
+            .collect::<Vec<_>>();
+        assert_eq!(values[0].id, "batch-001");
+        assert_eq!(values[2].id, "batch-003");
+        assert_eq!(values[1].comparison_slot.as_deref(), Some("slot-002"));
+        assert_eq!(values[2].iteration, 3);
+        assert!(values.iter().all(|value| value.repeat == 1));
+    }
 
     #[test]
     fn evaluation_failure_preserves_completed_execution() {

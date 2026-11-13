@@ -185,7 +185,7 @@ target/release/tempest run scenarios/s3-overread-001.yaml \
   --image /absolute/path/to/debian-aarch64.qcow2 \
   --image-inputs /absolute/path/to/inputs.json \
   --python /absolute/path/to/python3 \
-  --runs /private/tmp/tempest-runs --run-id example-001
+  --runs /private/tmp/tempest-runs --run-id example --repeat 3
 ```
 
 controllerはMCP管理経路だけでone-shot seed、self-check、agent admission、quiesce/export、
@@ -194,6 +194,9 @@ fresh VM retestを接続します。成功した実行ではM5評価を自動実
 `purpose: collection_and_evaluation`、`evaluation: performed` です。
 mockの固定報告は形式検証用で、正式なモデル比較の集計対象には含めません。
 1ファイルの回収上限は`--max-evidence-bytes`（既定64 MiB）で変更できます。
+`--repeat N`（1〜100）は各試行を独立VMで順次実行し、複数回ではrun IDを
+`<run-id>-001`から展開します。comparison planを併用する場合はslot IDも同じ規則で展開するため、
+planには`<comparison-slot>-001`以降と対応するrun IDを事前登録します。基盤エラー時は後続試行を開始しません。
 
 回収済みrunをM5で再評価し、`result.json`と`report.md`を原子的に生成するには次を実行します。
 
