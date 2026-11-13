@@ -5,5 +5,6 @@
 (allow file-read-metadata)
 (allow file-read* (subpath (param "JAIL")))
 (allow file-write* (literal "/dev/null") (subpath (param "JAIL")))
+(deny network*)
 (allow network-outbound (remote ip (param "RELAY")))
 (allow network-outbound (literal (param "MCP_SOCKET")))
