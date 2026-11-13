@@ -71,6 +71,20 @@ CLIのJSON event streamはadapter固有parserで扱う。Codexは正常終了し
 最後のassistant messageだけを報告候補にする。tool結果内のJSON、subagent text、途中のassistant text、
 途中切断、非0終了、error、tool-call終端、turn上限超過から報告を作らない。fixtureでこれらの負例を固定した。
 
+## launcher capability proof
+
+`capability_proof`はowner-private proof directoryの`launcher-profile.json`、
+`capability-proof.json`、`evidence/`を起動前に検証する。profileはagent/model/CLI version、provider protocolと
+上流authority、request policy hash、引数template、環境変数ごとの値の出どころ、空HOME/cwd、prompt源、
+実行code closureを固定する。code closureのagent executable、MCP bridge、API relayをlive file hashで再照合する。
+本物の認証はrelayだけが所有し、agentには固定placeholderだけを与える。
+
+proofはhost tool拒否、許可MCP正対照、host canary read/write拒否、HMAC/control socket非到達、
+tool catalog一致、MCP child環境のsanitize、provider request policyを必須checkとする。全checkが
+performed/passedで同じprofile hashと実測evidence hashへ束縛されなければ拒否する。未知field、重複JSON key、
+欠落check、改変evidence、live code変更を拒否するため、旧`status: observed` summaryの再包装では通らない。
+現時点ではvalidatorまでで、同一構成を実測してproofを生成するrunnerとlauncher接続は未完了である。
+
 ## 再現コマンド
 
 ```bash

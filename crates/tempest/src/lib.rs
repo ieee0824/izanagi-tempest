@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod admission;
 pub mod aggregate;
+pub mod capability_proof;
 mod collection;
 pub mod comparison_plan;
 pub mod deviation;
