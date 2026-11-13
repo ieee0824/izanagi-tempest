@@ -33,6 +33,7 @@ pub(crate) struct ProbeRequest {
 
 struct State {
     agent: ProbeAgent,
+    model: String,
     host_canary: String,
     write_canary: String,
     control_socket: String,
@@ -47,6 +48,13 @@ pub(crate) struct ProbeProvider {
     task: JoinHandle<()>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ProbeIdentity<'a> {
+    pub(crate) agent: ProbeAgent,
+    pub(crate) model: &'a str,
+    pub(crate) capability: &'a str,
+}
+
 impl Drop for ProbeProvider {
     fn drop(&mut self) {
         self.task.abort();
@@ -55,16 +63,14 @@ impl Drop for ProbeProvider {
 
 impl ProbeProvider {
     pub async fn start(
-        agent: ProbeAgent,
-        capability: &str,
+        identity: ProbeIdentity<'_>,
         host_canary: &Path,
         write_canary: &Path,
         control_socket: &Path,
         hmac_file: &Path,
     ) -> io::Result<Self> {
         Self::start_with_sse_delay(
-            agent,
-            capability,
+            identity,
             host_canary,
             write_canary,
             control_socket,
@@ -75,8 +81,7 @@ impl ProbeProvider {
     }
 
     pub async fn start_with_sse_delay(
-        agent: ProbeAgent,
-        capability: &str,
+        identity: ProbeIdentity<'_>,
         host_canary: &Path,
         write_canary: &Path,
         control_socket: &Path,
@@ -87,7 +92,8 @@ impl ProbeProvider {
             TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await?;
         let address = listener.local_addr()?;
         let state = Arc::new(State {
-            agent,
+            agent: identity.agent,
+            model: identity.model.to_owned(),
             host_canary: host_canary.to_string_lossy().into_owned(),
             write_canary: write_canary.to_string_lossy().into_owned(),
             control_socket: control_socket.to_string_lossy().into_owned(),
@@ -110,7 +116,11 @@ impl ProbeProvider {
             }
         });
         Ok(Self {
-            endpoint: format!("http://127.0.0.1:{}/{capability}", address.port()),
+            endpoint: format!(
+                "http://127.0.0.1:{}/{}",
+                address.port(),
+                identity.capability
+            ),
             state,
             task,
         })
@@ -221,6 +231,13 @@ async fn handle(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    if value.get("model").and_then(Value::as_str) != Some(state.model.as_str()) {
+        return Ok(response(
+            StatusCode::BAD_REQUEST,
+            b"unexpected model".to_vec(),
+            "text/plain",
+        ));
+    }
     let tool_outputs = match state.agent {
         ProbeAgent::Codex => value
             .get("input")
@@ -263,6 +280,14 @@ async fn handle(
         index
     };
     let body = provider_response(&state, index, &tools);
+    if state.agent == ProbeAgent::ClaudeCode && !claude_response_model_matches(&body, &state.model)
+    {
+        return Ok(response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            b"provider response model mismatch".to_vec(),
+            "text/plain",
+        ));
+    }
     Ok(match state.sse_event_delay {
         Some(delay) if index == 0 => sse_response(body, delay),
         None => response(StatusCode::OK, body, "text/event-stream"),
@@ -349,7 +374,7 @@ fn provider_response(state: &State, index: usize, tools: &[Value]) -> Vec<u8> {
     let attempts = attempts(state, tools);
     match state.agent {
         ProbeAgent::Codex => codex_response(index, attempts.get(index)),
-        ProbeAgent::ClaudeCode => claude_response(index, attempts.get(index)),
+        ProbeAgent::ClaudeCode => claude_response(index, attempts.get(index), &state.model),
     }
 }
 
@@ -388,9 +413,13 @@ fn codex_response(index: usize, attempt: Option<&(String, Value, Option<String>)
         .into_bytes()
 }
 
-fn claude_response(index: usize, attempt: Option<&(String, Value, Option<String>)>) -> Vec<u8> {
+fn claude_response(
+    index: usize,
+    attempt: Option<&(String, Value, Option<String>)>,
+    model: &str,
+) -> Vec<u8> {
     let message = json!({"id":format!("msg_{index}"),"type":"message","role":"assistant",
-        "model":"tempest-capability-probe","content":[],"stop_reason":null,
+        "model":model,"content":[],"stop_reason":null,
         "usage":{"input_tokens":1,"output_tokens":1}});
     let (block, delta, reason) = match attempt {
         Some((name, arguments, _)) => (
@@ -440,6 +469,24 @@ fn claude_response(index: usize, attempt: Option<&(String, Value, Option<String>
         .into_bytes()
 }
 
+fn claude_response_model_matches(body: &[u8], expected: &str) -> bool {
+    let Some(first_event) = body.split(|byte| *byte == b'\n').take(2).last() else {
+        return false;
+    };
+    let Some(payload) = first_event.strip_prefix(b"data: ") else {
+        return false;
+    };
+    serde_json::from_slice::<Value>(payload)
+        .ok()
+        .and_then(|event| {
+            event
+                .pointer("/message/model")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|model| model == expected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +495,7 @@ mod tests {
     fn deterministic_sequences_finish_after_host_and_allowed_mcp_attempts() {
         let state = State {
             agent: ProbeAgent::Codex,
+            model: "model-fixed".into(),
             host_canary: "/host/read".into(),
             write_canary: "/host/write".into(),
             control_socket: "/host/control".into(),
@@ -463,5 +511,18 @@ mod tests {
         let final_response = String::from_utf8(provider_response(&state, 7, &tools)).unwrap();
         assert!(final_response.contains("Capability probe complete."));
         assert!(!final_response.contains("function_call"));
+    }
+
+    #[test]
+    fn claude_response_is_bound_to_the_requested_model() {
+        let response = claude_response(0, None, "claude-sonnet-5-5");
+        assert!(claude_response_model_matches(
+            &response,
+            "claude-sonnet-5-5"
+        ));
+        assert!(!claude_response_model_matches(
+            &response,
+            "claude-haiku-5-5"
+        ));
     }
 }

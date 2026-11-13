@@ -15,6 +15,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -59,6 +60,7 @@ pub(crate) struct CapabilityProbeCliConfig {
 pub struct CliAdapter {
     contract: CliContract,
     permit: LaunchPermit,
+    launch_claimed: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -187,6 +189,26 @@ fn measured_launch_contract_matches(
         }
         CliKind::Codex => false,
     }
+}
+
+fn measured_launch_identity_matches(
+    profile: &crate::capability_proof::LauncherProfile,
+    kind: CliKind,
+    version: &str,
+    model: &str,
+) -> bool {
+    let agent = match kind {
+        CliKind::Codex => "codex",
+        CliKind::ClaudeCode => "claude-code",
+    };
+    profile.agent == agent && profile.cli_version == version && profile.model == model
+}
+
+fn claim_measured_launch(claimed: &AtomicBool) -> io::Result<()> {
+    claimed
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .map(|_| ())
+        .map_err(|_| io::Error::other("measured CLI launch permit was already consumed"))
 }
 
 fn private_directory(path: &Path) -> io::Result<PathBuf> {
@@ -319,6 +341,11 @@ impl CliAdapter {
                 "measured CLI argv or environment contract does not match launch",
             ));
         }
+        if !measured_launch_identity_matches(profile, kind, &contract.version, &contract.model) {
+            return Err(io::Error::other(
+                "measured CLI identity does not match launch",
+            ));
+        }
         if contract.executable != contract.sandbox_jail.join("bin/agent")
             || contract.mcp_bridge != contract.sandbox_jail.join("bin/tempest")
             || contract
@@ -329,7 +356,11 @@ impl CliAdapter {
                 "authorized launcher code is outside its measured layout",
             ));
         }
-        Ok(Self { contract, permit })
+        Ok(Self {
+            contract,
+            permit,
+            launch_claimed: AtomicBool::new(false),
+        })
     }
 
     pub fn model_api_relay_path(&self) -> &Path {
@@ -769,6 +800,22 @@ impl AgentAdapter for CliAdapter {
     ) -> io::Result<AgentOutcome> {
         let contract = &self.contract;
         run_cli_contract(contract, prompt, endpoint, cwd, true, || {
+            claim_measured_launch(&self.launch_claimed)?;
+            let profile = self.permit.profile();
+            if !measured_launch_identity_matches(
+                profile,
+                contract.kind,
+                &contract.version,
+                &contract.model,
+            ) || !measured_launch_contract_matches(
+                profile,
+                contract.kind,
+                contract.maximum_turns,
+            ) {
+                return Err(io::Error::other(
+                    "measured CLI identity or launch contract changed",
+                ));
+            }
             self.permit.verify_immediately_before_launch()
         })
         .await
@@ -949,6 +996,18 @@ mod stream_tests {
             CliKind::ClaudeCode,
             20
         ));
+        assert!(measured_launch_identity_matches(
+            &profile,
+            CliKind::ClaudeCode,
+            "2.1.323 (Claude Code)",
+            "model-fixed"
+        ));
+        assert!(!measured_launch_identity_matches(
+            &profile,
+            CliKind::ClaudeCode,
+            "2.1.323 (Claude Code)",
+            "claude-haiku-5-5"
+        ));
         assert!(!measured_launch_contract_matches(
             &profile,
             CliKind::ClaudeCode,
@@ -965,6 +1024,13 @@ mod stream_tests {
             CliKind::Codex,
             20
         ));
+    }
+
+    #[test]
+    fn measured_launch_can_be_claimed_only_once() {
+        let claimed = AtomicBool::new(false);
+        claim_measured_launch(&claimed).unwrap();
+        assert!(claim_measured_launch(&claimed).is_err());
     }
 
     fn cli_fixture(kind: CliKind) -> (PathBuf, CliContract, McpCommand, PathBuf) {

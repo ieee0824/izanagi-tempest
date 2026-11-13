@@ -6,7 +6,7 @@ use crate::{
         claude_argument_template, claude_environment_rules, run_capability_probe_cli,
     },
     admission::CloseReason,
-    capability_probe_provider::{ProbeAgent, ProbeProvider},
+    capability_probe_provider::{ProbeAgent, ProbeIdentity, ProbeProvider},
     capability_proof::{ProbeChallenge, authorize_staged_launch},
     host_io, model_api_relay,
     relay::RelayConfig,
@@ -967,8 +967,11 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
         CapabilityAgent::ClaudeCode => ProbeAgent::ClaudeCode,
     };
     let provider = ProbeProvider::start(
-        provider_agent,
-        &capability,
+        ProbeIdentity {
+            agent: provider_agent,
+            model: &config.model,
+            capability: &capability,
+        },
         &host_canary,
         &write_canary,
         &control_socket,
@@ -1142,8 +1145,11 @@ pub async fn discover(config: CapabilityDiscoveryConfig) -> io::Result<Capabilit
         let acceptance_capability = challenge.probe_id().to_owned();
         let acceptance_control_socket = root.join("host-control-acceptance");
         let acceptance_provider = ProbeProvider::start_with_sse_delay(
-            provider_agent,
-            &acceptance_capability,
+            ProbeIdentity {
+                agent: provider_agent,
+                model: &config.model,
+                capability: &acceptance_capability,
+            },
             &host_canary,
             &write_canary,
             &acceptance_control_socket,
