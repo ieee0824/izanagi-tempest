@@ -831,9 +831,10 @@ mod stream_tests {
 
     #[test]
     fn production_adapter_is_built_only_from_a_launch_permit() {
-        let (root, _, _) = crate::capability_proof::tests::fixture();
+        let (root, _, _, challenge) = crate::capability_proof::tests::fixture();
         let code_root = root.join("authorized-code");
-        let permit = crate::capability_proof::authorize_launch(&root, &code_root).unwrap();
+        let permit =
+            crate::capability_proof::authorize_launch(&root, &code_root, challenge).unwrap();
         let jail = code_root.join("jail");
         for directory in ["home", "cwd"] {
             crate::host_io::directory(&jail.join(directory)).unwrap();
