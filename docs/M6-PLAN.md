@@ -93,3 +93,8 @@ MCP call/API要求は0、findingはnot_found、計上候補0・未確定10で一
 この3成功と、先行実験の1成功・1失敗を区別して保持する。成功率や正式モデル比較とは呼ばない。
 通常mockの未確定11との差はbackend/bypass候補1件だが、差分を主体帰属や控除の根拠にしない。
 管理配送の競合は修正していないため、3成功から障害解消とは結論しない。
+
+強制再現fixture（PR32 d7f570f）を別imageとしてbuild中。
+root readerの待機PIDとquiesceのmoved_pids、同一要求IDへの失敗/成功読取を照合する。
+通常prepareの生成dispatcher/quiesceは元のscript bytesと一致し、metadata hashも一致した。
+Python既存19試験成功。実VMの強制再現結果はまだ得られていない。
