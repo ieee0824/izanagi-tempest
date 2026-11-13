@@ -60,6 +60,7 @@ pub(crate) struct ProductionLaunchConfig {
     pub(crate) auth_file: PathBuf,
     pub(crate) audit_file: PathBuf,
     pub(crate) owner_file: PathBuf,
+    pub(crate) launch_harness_root: PathBuf,
 }
 
 fn strict_tempest_catalog(agent: CapabilityAgent, catalog: &[Value]) -> bool {
@@ -783,6 +784,7 @@ fn write_and_authorize_claude_proof(
     input: ProofInputs<'_>,
     challenge: ProbeChallenge,
     launch_relay_endpoint: &str,
+    launch_harness_root: &Path,
 ) -> io::Result<CliAdapter> {
     let proof_root = &input.prepared.proof_root;
     let profile_sha256 = &input.prepared.profile_sha256;
@@ -869,7 +871,7 @@ fn write_and_authorize_claude_proof(
     )?;
     let code_root = input.root.join("authorized-code");
     let permit = authorize_staged_launch(proof_root, &code_root, challenge)?;
-    for directory in ["jail/home", "jail/cwd", "harness"] {
+    for directory in ["jail/home", "jail/cwd"] {
         host_io::directory(&code_root.join(directory))?;
     }
     let sandbox_profile = code_root.join("jail/agent.sb");
@@ -881,7 +883,7 @@ fn write_and_authorize_claude_proof(
             maximum_turns: 20,
             sandbox_profile,
             sandbox_jail: code_root.join("jail"),
-            harness_root: code_root.join("harness"),
+            harness_root: launch_harness_root.to_owned(),
         },
     )?;
     if adapter.model_api_relay_path() != code_root.join("host/model-api-relay") {
@@ -1384,6 +1386,13 @@ async fn discover_inner(
             .as_ref()
             .map(model_api_relay::ProductionRelay::endpoint)
             .unwrap_or("http://127.0.0.1:1234/capabilitycapabilitycapability12");
+        let launch_harness_root = production.map_or_else(
+            || staged_code.join("harness"),
+            |production| production.launch_harness_root.clone(),
+        );
+        if production.is_none() {
+            host_io::directory(&launch_harness_root)?;
+        }
         let adapter = write_and_authorize_claude_proof(
             ProofInputs {
                 root: &root,
@@ -1398,6 +1407,7 @@ async fn discover_inner(
             },
             challenge,
             launch_relay_endpoint,
+            &launch_harness_root,
         )?;
         if let Some(relay) = production_relay {
             authorized_adapter = Some((adapter, relay));

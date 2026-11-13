@@ -12,8 +12,9 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     ffi::OsString,
     fs::{self, File},
-    io::{self, Write},
+    io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{ExitCode, Stdio},
@@ -90,6 +91,7 @@ struct Options {
     auth_header: reqwest::header::HeaderName,
     auth_value: reqwest::header::HeaderValue,
     timeout: std::time::Duration,
+    lifetime: File,
 }
 struct State {
     upstream: reqwest::Url,
@@ -112,24 +114,40 @@ pub(crate) struct ProductionRelay {
     child: tokio::process::Child,
     process_group: i32,
     owner_file: PathBuf,
+    lifetime: Option<OwnedFd>,
+    stopped: bool,
 }
 
 impl ProductionRelay {
     pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
     }
+
+    pub(crate) async fn shutdown(mut self) -> io::Result<()> {
+        drop(self.lifetime.take());
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), self.child.wait())
+            .await
+            .map_err(|_| invalid("production model relay shutdown deadline"))??;
+        if !status.success() {
+            return Err(invalid("production model relay did not stop cleanly"));
+        }
+        self.stopped = true;
+        host_io::json_replace(
+            &self.owner_file,
+            &json!({"state":"stopped","process_group":self.process_group,"role":"model_api_relay"}),
+        )
+    }
 }
 
 impl Drop for ProductionRelay {
     fn drop(&mut self) {
-        unsafe {
-            libc::kill(-self.process_group, libc::SIGTERM);
+        if !self.stopped {
+            let _ = self.child.start_kill();
+            let _ = host_io::json_replace(
+                &self.owner_file,
+                &json!({"state":"stop_requested","process_group":self.process_group,"role":"model_api_relay"}),
+            );
         }
-        let _ = self.child.start_kill();
-        let _ = host_io::json_replace(
-            &self.owner_file,
-            &json!({"state":"stop_requested","process_group":self.process_group,"role":"model_api_relay"}),
-        );
     }
 }
 
@@ -143,6 +161,19 @@ pub(crate) struct ProductionRelayConfig<'a> {
     pub(crate) state_root: &'a Path,
     pub(crate) owner_file: &'a Path,
     pub(crate) timeout_seconds: u64,
+}
+
+fn lifetime_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+    let mut descriptors = [-1; 2];
+    if unsafe { libc::pipe(descriptors.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let read = unsafe { OwnedFd::from_raw_fd(descriptors[0]) };
+    let write = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
+    if unsafe { libc::fcntl(write.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((read, write))
 }
 
 impl ProbeRelay {
@@ -185,6 +216,8 @@ pub(crate) async fn start_production_relay(
         config.owner_file,
         &json!({"state":"launching","role":"model_api_relay"}),
     )?;
+    let (lifetime_read, lifetime_write) = lifetime_pipe()?;
+    let lifetime_fd = lifetime_read.as_raw_fd();
     let mut child = host_io::command(config.executable)
         .args([
             OsString::from("model-api-relay"),
@@ -204,6 +237,8 @@ pub(crate) async fn start_production_relay(
             OsString::from(config.auth_header),
             OsString::from("--timeout-seconds"),
             OsString::from(config.timeout_seconds.to_string()),
+            OsString::from("--lifetime-fd"),
+            OsString::from(lifetime_fd.to_string()),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -211,6 +246,7 @@ pub(crate) async fn start_production_relay(
         .process_group(0)
         .kill_on_drop(true)
         .spawn()?;
+    drop(lifetime_read);
     let process_group = child
         .id()
         .and_then(|pid| i32::try_from(pid).ok())
@@ -240,6 +276,8 @@ pub(crate) async fn start_production_relay(
                 child,
                 process_group,
                 owner_file: config.owner_file.to_owned(),
+                lifetime: Some(lifetime_write),
+                stopped: false,
             });
         }
         if child.try_wait()?.is_some() {
@@ -809,7 +847,7 @@ pub(crate) async fn start_probe_relay(
 }
 
 fn parse_options(args: &[OsString]) -> io::Result<Options> {
-    if args.len() != 16 {
+    if args.len() != 18 {
         return Err(invalid("invalid model-api-relay arguments"));
     }
     let mut values = HashMap::new();
@@ -827,6 +865,7 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
                 | "--auth-file"
                 | "--auth-header"
                 | "--timeout-seconds"
+                | "--lifetime-fd"
         ) || values.insert(name, pair[1].clone()).is_some()
         {
             return Err(invalid("unknown or duplicate relay option"));
@@ -889,6 +928,20 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| (1..=3600).contains(value))
         .ok_or_else(|| invalid("invalid relay timeout"))?;
+    let lifetime_fd = required("--lifetime-fd")?
+        .to_str()
+        .and_then(|value| value.parse::<RawFd>().ok())
+        .filter(|fd| *fd >= 3)
+        .ok_or_else(|| invalid("invalid relay lifetime fd"))?;
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(lifetime_fd, stat.as_mut_ptr()) } != 0 {
+        return Err(invalid("relay lifetime fd is unavailable"));
+    }
+    let stat = unsafe { stat.assume_init() };
+    if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
+        return Err(invalid("relay lifetime fd is not a pipe"));
+    }
+    let lifetime = unsafe { File::from_raw_fd(lifetime_fd) };
     Ok(Options {
         upstream,
         path_capability,
@@ -898,6 +951,7 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
         auth_header,
         auth_value,
         timeout: std::time::Duration::from_secs(timeout),
+        lifetime,
     })
 }
 async fn serve(options: Options) -> io::Result<()> {
@@ -931,10 +985,22 @@ async fn serve(options: Options) -> io::Result<()> {
         &json!({"schema_version":1,"host":"127.0.0.1","port":address.port(),
         "path_prefix":format!("/{}",options.path_capability)}),
     )?;
+    let mut lifetime = tokio::task::spawn_blocking(move || {
+        let mut lifetime = options.lifetime;
+        let mut byte = [0_u8; 1];
+        lifetime.read(&mut byte)
+    });
+    let mut connections = tokio::task::JoinSet::new();
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, _) = tokio::select! {
+            result = &mut lifetime => {
+                result.map_err(io::Error::other)??;
+                break;
+            }
+            accepted = listener.accept() => accepted?,
+        };
         let state = state.clone();
-        tokio::spawn(async move {
+        connections.spawn(async move {
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(
                     TokioIo::new(stream),
@@ -943,9 +1009,18 @@ async fn serve(options: Options) -> io::Result<()> {
                 .await;
         });
     }
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(result) = connections.join_next().await {
+            result.map_err(io::Error::other)?;
+        }
+        Ok::<_, io::Error>(())
+    })
+    .await
+    .map_err(|_| invalid("production model relay connection drain deadline"))??;
+    Ok(())
 }
 pub fn run(args: &[OsString]) -> ExitCode {
-    const USAGE: &str = "Usage: tempest model-api-relay --upstream URL --capability-file FILE --policy-file FILE --audit FILE --ready-file FILE --auth-file FILE --auth-header NAME --timeout-seconds N";
+    const USAGE: &str = "Usage: tempest model-api-relay --upstream URL --capability-file FILE --policy-file FILE --audit FILE --ready-file FILE --auth-file FILE --auth-header NAME --timeout-seconds N --lifetime-fd FD";
     let options = match parse_options(args) {
         Ok(value) => value,
         Err(error) => {
@@ -965,6 +1040,40 @@ pub fn run(args: &[OsString]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn production_relay_exits_when_controller_lifetime_pipe_closes() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-model-relay-lifetime-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        let (read, write) = lifetime_pipe().unwrap();
+        let options = Options {
+            upstream: "https://api.example.invalid/".parse().unwrap(),
+            path_capability: "x".repeat(32),
+            policy: validate_policy(policy_value()).unwrap(),
+            audit: root.join("audit.jsonl"),
+            ready: root.join("ready.json"),
+            auth_header: reqwest::header::HeaderName::from_static("x-api-key"),
+            auth_value: reqwest::header::HeaderValue::from_static("fixture"),
+            timeout: std::time::Duration::from_secs(1),
+            lifetime: File::from(read),
+        };
+        let task = tokio::spawn(serve(options));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !root.join("ready.json").is_file() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(root.join("ready.json").is_file());
+        drop(write);
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
     use std::sync::atomic::{AtomicBool, Ordering};
 
     fn policy_value() -> Value {

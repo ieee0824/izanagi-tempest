@@ -16,7 +16,7 @@ use crate::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     ffi::OsString,
     fs, io,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -116,12 +116,73 @@ impl AgentAdapter for RuntimeAdapter {
     }
 }
 
+impl RuntimeAdapter {
+    fn mcp_bridge(&self, mock_bridge: &Path) -> PathBuf {
+        match self {
+            Self::Mock(_) => mock_bridge.to_owned(),
+            Self::Native(adapter) => adapter.mcp_bridge_path().to_owned(),
+        }
+    }
+}
+
 struct NativeRuntimeDirectory(PathBuf);
 
 impl Drop for NativeRuntimeDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+fn native_runtime_directory(root: &Path) -> io::Result<(NativeRuntimeDirectory, PathBuf)> {
+    let parent = root.join(".native-runtime");
+    host_io::directory(&parent)?;
+    let output = parent.join("discovery");
+    if output.exists() {
+        return Err(io::Error::other("native discovery output already exists"));
+    }
+    Ok((NativeRuntimeDirectory(parent), output))
+}
+
+fn preserve_native_acceptance(runtime_root: &Path, evidence: &Path) -> io::Result<()> {
+    let destination = evidence.join("native-acceptance");
+    host_io::directory(&destination)?;
+    host_io::directory(&destination.join("evidence"))?;
+    for (source, target) in [
+        (
+            "acceptance-proof/launcher-profile.json",
+            "launcher-profile.json",
+        ),
+        (
+            "acceptance-proof/capability-proof.json",
+            "capability-proof.json",
+        ),
+        ("harness/request-policy.json", "request-policy.json"),
+        (
+            "harness/model-relay-audit.jsonl",
+            "acceptance-relay-audit.jsonl",
+        ),
+        ("harness/acceptance-mcp.jsonl", "acceptance-mcp.jsonl"),
+    ] {
+        host_io::private_copy(&runtime_root.join(source), &destination.join(target))?;
+    }
+    for check in [
+        "allowed_mcp_succeeded",
+        "control_socket_unavailable",
+        "hmac_unavailable",
+        "host_canary_read_denied",
+        "host_canary_write_denied",
+        "host_tools_rejected",
+        "mcp_child_env_sanitized",
+        "provider_request_policy",
+        "tool_catalog_exact",
+    ] {
+        let name = format!("{check}.json");
+        host_io::private_copy(
+            &runtime_root.join("acceptance-proof/evidence").join(&name),
+            &destination.join("evidence").join(name),
+        )?;
+    }
+    Ok(())
 }
 fn options(args: &[OsString]) -> io::Result<Options> {
     if args.is_empty() || args.len() % 2 == 0 {
@@ -255,7 +316,7 @@ fn options(args: &[OsString]) -> io::Result<Options> {
 fn not_performed(configured: bool, reason: &str) -> Value {
     json!({"configured":configured,"performed":false,"outcome":"not_performed","reason":reason})
 }
-fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<Value> {
+fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value, bool)> {
     let metadata = path.symlink_metadata()?;
     if !metadata.is_file()
         || metadata.uid() != unsafe { libc::geteuid() }
@@ -266,6 +327,10 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<Value> 
     }
     let mut admitted = HashMap::<String, u64>::new();
     let mut completed = HashMap::<String, u64>::new();
+    let mut delivery_states = BTreeMap::<String, u64>::new();
+    let mut reasons = BTreeMap::<String, u64>::new();
+    let mut upstream_statuses = BTreeMap::<String, u64>::new();
+    let mut only_complete_pairs = true;
     let mut rows = 0_u64;
     for line in fs::read_to_string(path)?.lines() {
         rows += 1;
@@ -274,28 +339,43 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<Value> 
             .as_str()
             .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
             .ok_or_else(|| io::Error::other("invalid model relay audit request binding"))?;
-        match row["delivery_state"].as_str() {
-            Some("not_sent") if row["reason"] == "admission_verified" => {
+        let delivery_state = row["delivery_state"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("invalid model relay delivery state"))?;
+        *delivery_states
+            .entry(delivery_state.to_owned())
+            .or_default() += 1;
+        let reason = row["reason"].as_str().unwrap_or("none");
+        *reasons.entry(reason.to_owned()).or_default() += 1;
+        let upstream_status = row["upstream_status"]
+            .as_u64()
+            .map_or_else(|| "none".to_owned(), |status| status.to_string());
+        *upstream_statuses.entry(upstream_status).or_default() += 1;
+        match delivery_state {
+            "not_sent" if row["reason"] == "admission_verified" => {
                 *admitted.entry(sha256.to_owned()).or_default() += 1;
             }
-            Some("response_complete") if row["forwarded"] == true => {
+            "response_complete" if row["forwarded"] == true => {
                 *completed.entry(sha256.to_owned()).or_default() += 1;
             }
-            _ => return Err(io::Error::other("model relay delivery was not completed")),
+            _ => only_complete_pairs = false,
         }
     }
     let requests = admitted.values().sum::<u64>();
-    if rows != requests.saturating_mul(2)
-        || requests == 0
-        || requests > maximum_requests
-        || admitted != completed
-    {
-        return Err(io::Error::other("model relay audit sequence mismatch"));
+    let delivery_verified = only_complete_pairs
+        && rows == requests.saturating_mul(2)
+        && requests != 0
+        && requests <= maximum_requests
+        && admitted == completed;
+    if rows == 0 || rows > maximum_requests.saturating_mul(3) || requests > maximum_requests {
+        return Err(io::Error::other("model relay audit sequence out of bounds"));
     }
-    Ok(
-        json!({"rows":rows,"requests":requests,"responses_complete":requests,
-        "maximum_requests":maximum_requests,"delivery_verified":true}),
-    )
+    Ok((
+        json!({"rows":rows,"requests":requests,"responses_complete":completed.values().sum::<u64>(),
+        "maximum_requests":maximum_requests,"delivery_verified":delivery_verified,
+        "delivery_states":delivery_states,"reasons":reasons,"upstream_statuses":upstream_statuses}),
+        delivery_verified,
+    ))
 }
 fn seed_error(_: io::Error) -> Diagnostic {
     Diagnostic::new("runtime.seed", "seed response unavailable; discard VM")
@@ -391,6 +471,7 @@ async fn primary(
     let mut native_runtime = None;
     let mut production_request_budget = None;
     let mut production_relay = None;
+    let mut native_authorized_ns = None;
     let adapter = match setup {
         AgentSetup::Mock(adapter) => RuntimeAdapter::Mock(adapter),
         AgentSetup::ClaudeCode {
@@ -398,9 +479,8 @@ async fn primary(
             model,
             auth_file,
         } => {
-            let runtime_root = root.join(".native-runtime");
-            host_io::directory(&runtime_root)?;
-            native_runtime = Some(NativeRuntimeDirectory(runtime_root.clone()));
+            let (runtime_directory, runtime_root) = native_runtime_directory(root)?;
+            native_runtime = Some(runtime_directory);
             let launch = discover_for_launch(
                 CapabilityDiscoveryConfig {
                     agent: CapabilityAgent::ClaudeCode,
@@ -412,6 +492,7 @@ async fn primary(
                     auth_file: auth_file.canonicalize()?,
                     audit_file: evidence.join("model-relay-audit.jsonl"),
                     owner_file: evidence.join("model-relay-owner.json"),
+                    launch_harness_root: evidence.clone(),
                 },
             )
             .await?;
@@ -438,13 +519,16 @@ async fn primary(
                 "request_policy_sha256":request_policy_sha256,
                 "acceptance_request_count":request_policy["acceptance_requests"],
                 "production_request_budget":request_policy["maximum_requests"],
+                "preserved_evidence_root":"evidence/native-acceptance",
+                "runtime_capability_material_retained":false,
             });
             report["adapter"] = launch.adapter.describe();
             report["adapter"]["launcher_profile_sha256"] = launcher_profile_sha256.into();
-            report["adapter"]["capability_proof_sha256"] = capability_proof_sha256.into();
             report["adapter"]["request_policy_sha256"] = request_policy_sha256.into();
             report["adapter"]["production_request_budget"] =
                 request_policy["maximum_requests"].clone();
+            preserve_native_acceptance(&runtime_root, &evidence)?;
+            native_authorized_ns = Some(host_io::now_ns()?);
             production_request_budget = request_policy["maximum_requests"].as_u64();
             production_relay = Some(launch.relay);
             RuntimeAdapter::Native(Box::new(launch.adapter))
@@ -452,7 +536,11 @@ async fn primary(
     };
     let mut clock = crate::proxy_cli::private_new(&evidence.join("clock.jsonl"))?;
     vm.clock("pre_seal", &mut clock).await?;
+    let seal_started_ns = host_io::now_ns()?;
     vm.call("seal", json!({})).await?;
+    let seal_finished_ns = host_io::now_ns()?;
+    report["primary"]["seal"] = json!({"started_ns":seal_started_ns,
+        "finished_ns":seal_finished_ns,"duration_ns":seal_finished_ns-seal_started_ns});
     let agent_cwd = root.join("agent-cwd");
     host_io::directory(&agent_cwd)?;
     // Darwin socket paths are bounded by sockaddr_un; keep this private owner
@@ -481,9 +569,17 @@ async fn primary(
         },
     })?;
     let prompt = controller.agent_prompt().map_err(diagnostic)?;
-    report["agent"] = json!({"configured":true,"performed":true,"started_ns":host_io::now_ns()?,"description":adapter.describe()});
+    let agent_started_ns = host_io::now_ns()?;
+    report["agent"] = json!({"configured":true,"performed":true,"started_ns":agent_started_ns,"description":adapter.describe()});
+    if let Some(authorized_ns) = native_authorized_ns {
+        report["primary"]["native_launch_timing"] = json!({
+            "authorized_ns":authorized_ns,"agent_run_invoked_ns":agent_started_ns,
+            "authorization_to_run_ns":agent_started_ns.saturating_sub(authorized_ns),
+            "permit_deadline_ns":60_000_000_000_u64,
+        });
+    }
     let endpoint = McpCommand {
-        executable: root.join("bin/tempest"),
+        executable: adapter.mcp_bridge(&root.join("bin/tempest")),
         socket,
         owner_file: evidence.join("agent-owner.json"),
         raw_stdout: evidence.join("agent.events.jsonl"),
@@ -524,18 +620,34 @@ async fn primary(
             adapter_failed = true;
         }
     }
+    let relay_stopped = match production_relay.take() {
+        Some(relay) => match relay.shutdown().await {
+            Ok(()) => true,
+            Err(error) => {
+                adapter_failed = true;
+                report["primary"]["model_relay_shutdown"] = json!({
+                    "verified":false,"failure":error.to_string(),
+                });
+                false
+            }
+        },
+        None => true,
+    };
     let model_relay_audit = evidence.join("model-relay-audit.jsonl");
-    if model_relay_audit.is_file() {
+    if model_relay_audit.is_file() && relay_stopped {
         match production_request_budget
             .ok_or_else(|| io::Error::other("model relay budget binding missing"))
             .and_then(|budget| model_relay_summary(&model_relay_audit, budget))
         {
-            Ok(summary) => {
+            Ok((summary, delivery_verified)) => {
                 report["primary"]["model_relay_audit"] = json!({
                     "path":"evidence/model-relay-audit.jsonl",
                     "sha256":host_io::digest(&model_relay_audit)?,
                     "summary":summary,
                 });
+                if !delivery_verified {
+                    adapter_failed = true;
+                }
             }
             Err(error) => {
                 adapter_failed = true;
@@ -549,8 +661,8 @@ async fn primary(
         }
     } else if production_request_budget.is_some() {
         adapter_failed = true;
-        report["primary"]["model_relay_audit"] =
-            json!({"delivery_verified":false,"failure":"model relay audit missing"});
+        report["primary"]["model_relay_audit"] = json!({"delivery_verified":false,
+            "failure":if relay_stopped{"model relay audit missing"}else{"model relay shutdown unverified; audit snapshot forbidden"}});
     }
     if !drained.verified_rpc_drain() {
         vm.discard_only();
@@ -570,7 +682,6 @@ async fn primary(
     if adapter_failed {
         return Err(io::Error::other("agent adapter failed; evidence retained"));
     }
-    drop(production_relay);
     drop(native_runtime);
     Ok(())
 }
@@ -915,6 +1026,25 @@ fn allowed_artifact(path: &str) -> bool {
     if retest {
         return vm;
     }
+    if let Some(path) = path.strip_prefix("evidence/native-acceptance/") {
+        return matches!(
+            path,
+            "launcher-profile.json"
+                | "capability-proof.json"
+                | "request-policy.json"
+                | "acceptance-relay-audit.jsonl"
+                | "acceptance-mcp.jsonl"
+                | "evidence/allowed_mcp_succeeded.json"
+                | "evidence/control_socket_unavailable.json"
+                | "evidence/hmac_unavailable.json"
+                | "evidence/host_canary_read_denied.json"
+                | "evidence/host_canary_write_denied.json"
+                | "evidence/host_tools_rejected.json"
+                | "evidence/mcp_child_env_sanitized.json"
+                | "evidence/provider_request_policy.json"
+                | "evidence/tool_catalog_exact.json"
+        );
+    }
     vm || matches!(
         path,
         "artifact-inventory.json"
@@ -1060,7 +1190,10 @@ async fn verify_owned_group_gone(owner_file: &Path) -> io::Result<Option<u32>> {
         return Ok(None);
     }
     let owner: Value = serde_json::from_slice(&fs::read(owner_file)?)?;
-    if !matches!(owner["state"].as_str(), Some("running" | "stop_requested")) {
+    if !matches!(
+        owner["state"].as_str(),
+        Some("running" | "stop_requested" | "stopped")
+    ) {
         return Err(io::Error::other("owned process launch outcome is unknown"));
     }
     let group = owner["process_group"]
@@ -1068,26 +1201,14 @@ async fn verify_owned_group_gone(owner_file: &Path) -> io::Result<Option<u32>> {
         .and_then(|pid| u32::try_from(pid).ok())
         .filter(|pid| *pid > 1)
         .ok_or_else(|| io::Error::other("invalid owned process group"))?;
-    if process_group_alive(group) {
-        unsafe {
-            libc::kill(-(group as i32), libc::SIGTERM);
-        }
-    }
     let deadline = Instant::now() + Duration::from_secs(5);
     while process_group_alive(group) && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     if process_group_alive(group) {
-        unsafe {
-            libc::kill(-(group as i32), libc::SIGKILL);
-        }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while process_group_alive(group) && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-    if process_group_alive(group) {
-        return Err(io::Error::other("owned process group could not be stopped"));
+        return Err(io::Error::other(
+            "owned process group is still alive; no signal sent",
+        ));
     }
     Ok(Some(group))
 }
@@ -1379,6 +1500,77 @@ mod tests {
     }
 
     #[test]
+    fn native_run_passes_an_uncreated_child_to_capability_discovery() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-native-runtime-path-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        let (guard, output) = native_runtime_directory(&root).unwrap();
+        assert_eq!(output, root.join(".native-runtime/discovery"));
+        assert!(!output.exists());
+        drop(guard);
+        assert!(!root.join(".native-runtime").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_acceptance_keeps_reviewable_evidence_but_drops_runtime_capabilities() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-native-preserved-evidence-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        let (guard, output) = native_runtime_directory(&root).unwrap();
+        host_io::directory(&output).unwrap();
+        for directory in ["acceptance-proof", "acceptance-proof/evidence", "harness"] {
+            host_io::directory(&output.join(directory)).unwrap();
+        }
+        for path in [
+            "acceptance-proof/launcher-profile.json",
+            "acceptance-proof/capability-proof.json",
+            "harness/request-policy.json",
+            "harness/model-relay-audit.jsonl",
+            "harness/acceptance-mcp.jsonl",
+        ] {
+            host_io::write_new(&output.join(path), b"fixture").unwrap();
+        }
+        for check in [
+            "allowed_mcp_succeeded",
+            "control_socket_unavailable",
+            "hmac_unavailable",
+            "host_canary_read_denied",
+            "host_canary_write_denied",
+            "host_tools_rejected",
+            "mcp_child_env_sanitized",
+            "provider_request_policy",
+            "tool_catalog_exact",
+        ] {
+            host_io::write_new(
+                &output
+                    .join("acceptance-proof/evidence")
+                    .join(format!("{check}.json")),
+                b"fixture",
+            )
+            .unwrap();
+        }
+        let evidence = root.join("evidence");
+        host_io::directory(&evidence).unwrap();
+        preserve_native_acceptance(&output, &evidence).unwrap();
+        drop(guard);
+        assert!(!root.join(".native-runtime").exists());
+        assert!(
+            evidence
+                .join("native-acceptance/capability-proof.json")
+                .is_file()
+        );
+        let mut paths = Vec::new();
+        collect_artifacts(&root, &evidence, &mut paths).unwrap();
+        assert!(paths.iter().all(|path| allowed_artifact(path)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn production_relay_audit_requires_paired_completed_deliveries() {
         let root = std::env::temp_dir().join(format!(
             "tempest-production-relay-audit-{}",
@@ -1392,7 +1584,9 @@ mod tests {
         let completed = json!({"request_sha256":"a".repeat(64),
             "delivery_state":"response_complete","reason":null,"forwarded":true});
         host_io::write_new(&path, format!("{}\n{}\n", admitted, completed).as_bytes()).unwrap();
-        assert_eq!(model_relay_summary(&path, 20).unwrap()["requests"], 1);
+        let (summary, verified) = model_relay_summary(&path, 20).unwrap();
+        assert!(verified);
+        assert_eq!(summary["requests"], 1);
         fs::write(
             &path,
             format!(
@@ -1403,7 +1597,10 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(model_relay_summary(&path, 20).is_err());
+        let (summary, verified) = model_relay_summary(&path, 20).unwrap();
+        assert!(!verified);
+        assert_eq!(summary["delivery_states"]["request_outcome_unknown"], 1);
+        assert_eq!(summary["reasons"]["upstream transport failed"], 1);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1546,11 +1743,12 @@ mod tests {
             &json!({"state":"running","process_group":owned_group}),
         )
         .unwrap();
-        assert_eq!(
-            verify_owned_group_gone(&owner).await.unwrap(),
-            Some(owned_group)
-        );
-        assert!(reaper.await.unwrap().unwrap().success() || !process_group_alive(owned_group));
+        assert!(verify_owned_group_gone(&owner).await.is_err());
+        assert!(process_group_alive(owned_group));
+        unsafe {
+            libc::kill(-(owned_group as i32), libc::SIGKILL);
+        }
+        let _ = reaper.await.unwrap().unwrap();
         assert!(!process_group_alive(owned_group));
         host_io::json_new(
             &root.join("vm-launch.json"),

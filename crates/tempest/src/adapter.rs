@@ -366,6 +366,10 @@ impl CliAdapter {
     pub fn model_api_relay_path(&self) -> &Path {
         &self.contract.relay_executable
     }
+
+    pub fn mcp_bridge_path(&self) -> &Path {
+        &self.contract.mcp_bridge
+    }
 }
 
 impl CliContract {

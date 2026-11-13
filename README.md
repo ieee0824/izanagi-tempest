@@ -213,6 +213,9 @@ target/release/tempest run scenarios/s3-overread-001.yaml \
 
 auth fileはowner所有のregular fileかつmode 0600相当でなければ拒否します。固定policyにないCLI version/model、
 acceptance失敗、relay予算超過、adapter失敗は成功へ昇格せず、予約済みrunをUとして証跡に残します。
+正式な比較planを固定する前に、plan外の1 runだけを低額preflightとしてowner承認の上で実行し、
+固定`anthropic-beta` headerを転送しない現在のpolicyを実APIが受理するか確認します。拒否された場合は、
+必要なheader値をmodel別policyへ固定して再review・再acceptanceしてから比較run数と順序を確定します。
 1ファイルの回収上限は`--max-evidence-bytes`（既定64 MiB）で変更できます。
 `--repeat N`（1〜100）は各試行を独立VMで順次実行し、複数回ではrun IDを
 `<run-id>-001`から展開します。comparison planを併用する場合はslot IDも同じ規則で展開するため、
