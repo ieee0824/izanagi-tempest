@@ -116,6 +116,73 @@ pub struct VerifiedEnvelope {
     pub profile: LauncherProfile,
 }
 
+/// In-memory, process-bound authorization. It is deliberately neither Clone
+/// nor serializable; a proof directory by itself is not a launcher permit.
+pub struct LaunchPermit {
+    envelope: VerifiedEnvelope,
+    proof_root: PathBuf,
+    code: BTreeMap<String, PathBuf>,
+    issued_pid: u32,
+    issued_ns: u64,
+}
+
+impl LaunchPermit {
+    pub fn profile(&self) -> &LauncherProfile {
+        &self.envelope.profile
+    }
+
+    pub fn profile_sha256(&self) -> &str {
+        &self.envelope.profile_sha256
+    }
+
+    pub fn code_path(&self, role: &str) -> io::Result<&Path> {
+        self.code
+            .get(role)
+            .map(PathBuf::as_path)
+            .ok_or_else(|| invalid("authorized launcher code role missing"))
+    }
+
+    pub fn verify_immediately_before_launch(&self) -> io::Result<()> {
+        if self.issued_pid != std::process::id()
+            || host_io::now_ns()?.saturating_sub(self.issued_ns) > 60_000_000_000
+        {
+            return Err(invalid(
+                "launcher permit expired or crossed a process boundary",
+            ));
+        }
+        let current = load_envelope(&self.proof_root)?;
+        if current.proof_id != self.envelope.proof_id
+            || current.profile_sha256 != self.envelope.profile_sha256
+        {
+            return Err(invalid("launcher proof changed after authorization"));
+        }
+        for artifact in &self.envelope.profile.code_closure {
+            let path = self.code_path(&artifact.role)?;
+            if host_io::digest(path)? != artifact.sha256 {
+                return Err(invalid("authorized launcher copy changed"));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn authorize_launch(proof_root: &Path, code_destination: &Path) -> io::Result<LaunchPermit> {
+    if code_destination.exists() {
+        return Err(invalid("launcher code destination already exists"));
+    }
+    let envelope = load_envelope(proof_root)?;
+    let code = materialize_code(&envelope, code_destination)?;
+    let permit = LaunchPermit {
+        envelope,
+        proof_root: proof_root.canonicalize()?,
+        code,
+        issued_pid: std::process::id(),
+        issued_ns: host_io::now_ns()?,
+    };
+    permit.verify_immediately_before_launch()?;
+    Ok(permit)
+}
+
 /// Copy measured launcher code into one run-private directory and verify the
 /// copies. Launchers must execute these paths, never the original live paths.
 pub fn materialize_code(
@@ -680,6 +747,29 @@ mod tests {
                 .to_string()
                 .contains("did not establish")
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn launch_permit_is_process_bound_and_rechecks_proof_and_copies() {
+        let (root, _, _) = fixture();
+        let permit = authorize_launch(&root, &root.join("authorized-code")).unwrap();
+        permit.verify_immediately_before_launch().unwrap();
+        host_io::replace(permit.code_path("agent_executable").unwrap(), b"changed").unwrap();
+        assert!(
+            permit
+                .verify_immediately_before_launch()
+                .unwrap_err()
+                .to_string()
+                .contains("copy changed")
+        );
+        fs::remove_dir_all(root).unwrap();
+
+        let (root, _, mut proof) = fixture();
+        let permit = authorize_launch(&root, &root.join("authorized-code")).unwrap();
+        proof["proof_id"] = "proof-replaced".into();
+        host_io::json_replace(&root.join("capability-proof.json"), &proof).unwrap();
+        assert!(permit.verify_immediately_before_launch().is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

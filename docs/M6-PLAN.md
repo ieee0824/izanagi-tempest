@@ -114,6 +114,10 @@ canary hash不変、write未作成、MCP成功/audit束縛、catalog hash一致�
 意味検査するため、`passed: true`だけの自己申告や同一bytesの使い回しは拒否する。
 ただし現loaderは測定主体が本当に固定runnerだったことまでは独立に証明できず、proof file単独を起動許可にしない。
 固定runnerがcheckごとの構造化結果を実測・検証し、同じtrusted processで直ちにlauncherへ接続する部分は未完了である。
+起動許可APIはproof loaderの戻り値と分離した非serialize・非cloneの`LaunchPermit`を発行する。発行時にclosureを
+新規私有directoryへcopyし、同一PID・60秒以内に限って、proof/profileと全copy hashを起動直前に再検証する。
+proof directoryや過去のpermitをfileとして再利用してadapterを起動することはできない。固定runnerからpermit発行までの
+実測生成経路とadapter constructorへの型接続は未完了である。
 
 ## 再現コマンド
 
