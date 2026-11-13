@@ -650,47 +650,17 @@ struct PreparedProof {
 }
 
 fn reviewed_system_configuration() -> io::Result<Vec<Value>> {
-    let contract = crate::capability_proof::parse_unique_value(include_bytes!(
-        "../policies/claude-code-2.1.323-macos-system-paths.json"
-    ))?;
-    if contract["schema_version"] != 1
-        || contract["agent"] != "claude-code"
-        || contract["cli_version"] != "2.1.323 (Claude Code)"
-        || contract["os"] != "macos"
-    {
-        return Err(io::Error::other("invalid reviewed system path contract"));
-    }
-    let paths = contract["paths"]
-        .as_array()
-        .ok_or_else(|| io::Error::other("reviewed system paths missing"))?;
     let mut output = Vec::new();
-    let mut prior = None;
-    for item in paths {
-        let object = item
-            .as_object()
-            .filter(|object| object.len() == 2)
-            .ok_or_else(|| io::Error::other("invalid reviewed system path entry"))?;
-        let path = object["path"]
-            .as_str()
-            .map(Path::new)
-            .filter(|path| path.is_absolute())
-            .ok_or_else(|| io::Error::other("reviewed system path is not absolute"))?;
-        if prior.is_some_and(|prior: &Path| prior >= path) {
-            return Err(io::Error::other("reviewed system paths are not sorted"));
-        }
-        let state = object["state"]
-            .as_str()
-            .ok_or_else(|| io::Error::other("reviewed system path state missing"))?;
-        let sha256 = match state {
+    for (path, state) in crate::capability_proof::reviewed_claude_system_paths()? {
+        let sha256 = match state.as_str() {
             "absent" => match path.symlink_metadata() {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Value::Null,
                 _ => return Err(io::Error::other("reviewed managed path is present")),
             },
-            "file" => Value::from(host_io::digest(path)?),
+            "file" => Value::from(host_io::digest(&path)?),
             _ => return Err(io::Error::other("invalid reviewed system path state")),
         };
         output.push(serde_json::json!({"path":path,"state":state,"sha256":sha256}));
-        prior = Some(path);
     }
     Ok(output)
 }

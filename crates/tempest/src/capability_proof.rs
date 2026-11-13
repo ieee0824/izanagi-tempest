@@ -5,7 +5,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::CStr,
     fs, io,
+    mem::MaybeUninit,
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -553,37 +555,94 @@ fn system_configuration_contract(values: &[SystemPathRule]) -> io::Result<bool> 
     Ok(true)
 }
 
-fn reviewed_system_path_contract(profile: &LauncherProfile) -> bool {
-    if profile.agent != "claude-code" || profile.cli_version != "2.1.323 (Claude Code)" {
-        return profile.agent == "codex";
+fn current_username() -> io::Result<String> {
+    let mut record = MaybeUninit::<libc::passwd>::uninit();
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0_u8; 16 * 1024];
+    // SAFETY: record and buffer remain live for the call, their sizes are
+    // exact, and result is checked before dereferencing the returned record.
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::geteuid(),
+            record.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if status != 0 || result.is_null() {
+        return Err(invalid("current user identity is unavailable"));
     }
-    let expected = [
-        (
-            "/Library/Application Support/ClaudeCode/managed-mcp.json",
-            "absent",
-        ),
-        (
-            "/Library/Application Support/ClaudeCode/managed-settings.d",
-            "absent",
-        ),
-        (
-            "/Library/Application Support/ClaudeCode/managed-settings.json",
-            "absent",
-        ),
-        (
-            "/Library/Managed Preferences/com.anthropic.claudecode.plist",
-            "absent",
-        ),
-        ("/System/Library/Sandbox/Profiles/dyld-support.sb", "file"),
-        ("/System/Library/Sandbox/Profiles/system.sb", "file"),
-        ("/usr/bin/sandbox-exec", "file"),
-    ];
-    profile.system_configuration.len() == expected.len()
+    // SAFETY: successful getpwuid_r returned a record backed by buffer and a
+    // NUL-terminated pw_name for the lifetime of this function.
+    let username = unsafe { CStr::from_ptr((*result).pw_name) }
+        .to_str()
+        .map_err(|_| invalid("current username is not UTF-8"))?;
+    if username.is_empty() || username.contains('/') {
+        return Err(invalid("current username is invalid"));
+    }
+    Ok(username.to_owned())
+}
+
+pub(crate) fn reviewed_claude_system_paths() -> io::Result<Vec<(PathBuf, String)>> {
+    let contract = parse_unique_value(include_bytes!(
+        "../policies/claude-code-2.1.323-macos-system-paths.json"
+    ))?;
+    if contract["schema_version"] != 1
+        || contract["agent"] != "claude-code"
+        || contract["cli_version"] != "2.1.323 (Claude Code)"
+        || contract["os"] != "macos"
+    {
+        return Err(invalid("invalid reviewed system path contract"));
+    }
+    let username = current_username()?;
+    let values = contract["paths"]
+        .as_array()
+        .ok_or_else(|| invalid("reviewed system paths missing"))?;
+    let mut paths = Vec::new();
+    let mut prior: Option<PathBuf> = None;
+    for value in values {
+        let object = value
+            .as_object()
+            .filter(|object| object.len() == 2)
+            .ok_or_else(|| invalid("invalid reviewed system path entry"))?;
+        let path = match (
+            object.get("path").and_then(Value::as_str),
+            object.get("path_template").and_then(Value::as_str),
+        ) {
+            (Some(path), None) => PathBuf::from(path),
+            (None, Some("/Library/Managed Preferences/{USER}/com.anthropic.claudecode.plist")) => {
+                PathBuf::from(format!(
+                    "/Library/Managed Preferences/{username}/com.anthropic.claudecode.plist"
+                ))
+            }
+            _ => return Err(invalid("invalid reviewed system path selector")),
+        };
+        if !path.is_absolute() || prior.as_ref().is_some_and(|prior| prior >= &path) {
+            return Err(invalid("reviewed system paths are not sorted"));
+        }
+        let state = object
+            .get("state")
+            .and_then(Value::as_str)
+            .filter(|state| matches!(*state, "absent" | "file"))
+            .ok_or_else(|| invalid("invalid reviewed system path state"))?;
+        prior = Some(path.clone());
+        paths.push((path, state.to_owned()));
+    }
+    Ok(paths)
+}
+
+fn reviewed_system_path_contract(profile: &LauncherProfile) -> io::Result<bool> {
+    if profile.agent != "claude-code" || profile.cli_version != "2.1.323 (Claude Code)" {
+        return Ok(profile.agent == "codex");
+    }
+    let expected = reviewed_claude_system_paths()?;
+    Ok(profile.system_configuration.len() == expected.len()
         && profile
             .system_configuration
             .iter()
             .zip(expected)
-            .all(|(actual, (path, state))| actual.path == Path::new(path) && actual.state == state)
+            .all(|(actual, (path, state))| actual.path == path && actual.state == state))
 }
 
 fn exact_facts<'a>(
@@ -760,7 +819,7 @@ fn load_envelope_inner(root: &Path, verify_live_code: bool) -> io::Result<Verifi
         || profile.cwd_policy != "empty_owner_private"
         || profile.prompt_policy != "tempest_generated_only"
         || profile.real_authentication_owner != "model_api_relay_only"
-        || !reviewed_system_path_contract(&profile)
+        || !reviewed_system_path_contract(&profile)?
         || !system_configuration_contract(&profile.system_configuration)?
     {
         return Err(invalid("invalid launcher profile contract"));
@@ -1011,8 +1070,23 @@ pub(crate) mod tests {
         profile["cli_version"] = "2.1.323 (Claude Code)".into();
         profile["provider_protocol"] = "anthropic-messages".into();
         let profile: LauncherProfile = serde_json::from_value(profile).unwrap();
-        assert!(!reviewed_system_path_contract(&profile));
+        assert!(!reviewed_system_path_contract(&profile).unwrap());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reviewed_paths_include_managed_instructions_and_expand_the_launch_user() {
+        let paths = reviewed_claude_system_paths().unwrap();
+        assert!(paths.iter().any(|(path, state)| {
+            path == Path::new("/Library/Application Support/ClaudeCode/CLAUDE.md")
+                && state == "absent"
+        }));
+        assert!(paths.iter().any(|(path, state)| {
+            path.starts_with("/Library/Managed Preferences/")
+                && path.ends_with("com.anthropic.claudecode.plist")
+                && !path.to_string_lossy().contains("{USER}")
+                && state == "absent"
+        }));
     }
 
     #[test]

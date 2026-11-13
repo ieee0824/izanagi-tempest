@@ -4,6 +4,10 @@
   "os": "macos",
   "paths": [
     {
+      "path": "/Library/Application Support/ClaudeCode/CLAUDE.md",
+      "state": "absent"
+    },
+    {
       "path": "/Library/Application Support/ClaudeCode/managed-mcp.json",
       "state": "absent"
     },
@@ -13,6 +17,10 @@
     },
     {
       "path": "/Library/Application Support/ClaudeCode/managed-settings.json",
+      "state": "absent"
+    },
+    {
+      "path_template": "/Library/Managed Preferences/{USER}/com.anthropic.claudecode.plist",
       "state": "absent"
     },
     {
