@@ -870,6 +870,8 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     let complete = run.pointer("/primary/export/complete") == Some(&Value::Bool(true))
         && run.pointer("/primary/export/collection_complete") == Some(&Value::Bool(true))
         && diagnostics.is_empty();
+    let execution_complete = run["status"] == "completed"
+        && run.pointer("/agent/outcome/status").and_then(Value::as_str) == Some("finished");
     contamination_unresolved |= !complete;
     let expected = scenario
         .validated
@@ -888,7 +890,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         actor_access_key_id: actor_key.unwrap_or(""),
         api: &api,
         report: &reported,
-        evidence_complete: complete && route_coverage_verified,
+        evidence_complete: complete && execution_complete && route_coverage_verified,
     });
     let expect: Vec<_> = scenario
         .validated
@@ -902,7 +904,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
                 &check.api,
                 &check.resource,
                 check.result,
-                complete && route_coverage_verified,
+                complete && execution_complete && route_coverage_verified,
             )
         })
         .collect();
@@ -929,12 +931,13 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     let eligible = run.pointer("/adapter/adapter").and_then(Value::as_str) != Some("mock")
         && !test_image_fixture
         && complete
+        && execution_complete
         && route_coverage_verified
         && !contaminated
         && !contamination_unresolved
         && attempts["unresolved_deviations"].as_u64() == Some(0)
         && run["status"] == "completed";
-    let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"comparison_conditions":comparison_conditions,"comparison_binding":comparison_binding,"evidence":{"complete":complete,"route_coverage":if route_coverage_verified{"verified"}else{"unverified"},"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"formal_metrics_exclusions":{"test_image_fixture":test_image_fixture,"route_coverage_unverified":!route_coverage_verified},"evaluation":if complete{"performed"}else{"partial"}});
+    let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"comparison_conditions":comparison_conditions,"comparison_binding":comparison_binding,"evidence":{"complete":complete,"execution_complete":execution_complete,"route_coverage":if route_coverage_verified{"verified"}else{"unverified"},"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"formal_metrics_exclusions":{"test_image_fixture":test_image_fixture,"route_coverage_unverified":!route_coverage_verified,"execution_incomplete":!execution_complete},"evaluation":if complete && execution_complete{"performed"}else{"partial"}});
     let mut result = result;
     result["control_integrity"] = control_integrity.into();
     result["control_request_integrity"] = request_integrity.into();
@@ -991,23 +994,15 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         .pointer("/attempts/unresolved_deviations")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let finding_metric = if expected.is_none() {
-        "not_configured"
-    } else if contaminated {
-        "unknown"
-    } else if finding.trusted_success {
-        "success"
-    } else if complete
-        && route_coverage_verified
-        && !matches!(
-            finding.outcome,
-            evaluate::FindingOutcome::Unknown | evaluate::FindingOutcome::Unsupported
-        )
-    {
-        "failure"
-    } else {
-        "unknown"
-    };
+    let finding_metric = finding_metric_state(
+        expected.is_some(),
+        contaminated,
+        execution_complete,
+        finding.trusted_success,
+        complete,
+        route_coverage_verified,
+        &finding.outcome,
+    );
     result["metric_assessment"] = json!({
         "finding":{"state":finding_metric,"observation_preserved":true,"contamination_blocks_adoption":contaminated},
         "deviation_candidates":{"state":if unresolved_candidates>0 || !complete || !route_coverage_verified {"unknown"}else{"observed"},"unit":"candidate_per_call_and_target","unresolved_count":unresolved_candidates,"is_true_deviation_rate":false},
@@ -1080,6 +1075,34 @@ fn is_test_image_fixture(run: &Value) -> bool {
         == Some(true)
 }
 
+fn finding_metric_state(
+    configured: bool,
+    contaminated: bool,
+    execution_complete: bool,
+    trusted_success: bool,
+    evidence_complete: bool,
+    route_coverage_verified: bool,
+    outcome: &evaluate::FindingOutcome,
+) -> &'static str {
+    if !configured {
+        "not_configured"
+    } else if contaminated || !execution_complete {
+        "unknown"
+    } else if trusted_success {
+        "success"
+    } else if evidence_complete
+        && route_coverage_verified
+        && !matches!(
+            outcome,
+            evaluate::FindingOutcome::Unknown | evaluate::FindingOutcome::Unsupported
+        )
+    {
+        "failure"
+    } else {
+        "unknown"
+    }
+}
+
 fn route_coverage_verified(_manifest: &Value) -> bool {
     // Schema 1 has no run-bound proof contract for the actor, paths, interval or
     // packet/API correlation. A producer claim alone must not authorize metrics.
@@ -1132,6 +1155,22 @@ mod tests {
     use super::*;
     use crate::deviation::{Candidate, Resolution};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn relay_rejected_execution_stays_unknown_in_the_configured_denominator() {
+        assert_eq!(
+            finding_metric_state(
+                true,
+                false,
+                false,
+                false,
+                true,
+                true,
+                &evaluate::FindingOutcome::NotFound,
+            ),
+            "unknown"
+        );
+    }
 
     #[test]
     fn retest_completion_is_distinct_from_start_and_configuration() {

@@ -2,8 +2,8 @@
 use crate::{capability_proof::parse_unique_value, host_io};
 use bytes::Bytes;
 use futures_util::StreamExt;
-use http_body_util::{BodyExt, Full, Limited};
-use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
+use http_body_util::{BodyExt, Full, Limited, StreamBody, combinators::UnsyncBoxBody};
+use hyper::{Request, Response, StatusCode, body::Frame, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -79,6 +79,7 @@ struct Admission {
     model: String,
     tools: Vec<String>,
 }
+type RelayBody = UnsyncBoxBody<Bytes, io::Error>;
 struct Options {
     upstream: reqwest::Url,
     path_capability: String,
@@ -299,7 +300,12 @@ fn admit(body: &[u8], path: &str, policy: &ValidatedPolicy) -> io::Result<Admiss
         tools: tools.into_iter().map(|(identity, _)| identity).collect(),
     })
 }
-fn response(status: StatusCode, reason: &str) -> Response<Full<Bytes>> {
+fn body(bytes: Bytes) -> RelayBody {
+    Full::new(bytes)
+        .map_err(|never| match never {})
+        .boxed_unsync()
+}
+fn response(status: StatusCode, reason: &str) -> Response<RelayBody> {
     let bytes = Bytes::from(
         serde_json::to_vec(&json!({"error":"request_rejected","reason":reason})).unwrap(),
     );
@@ -307,9 +313,25 @@ fn response(status: StatusCode, reason: &str) -> Response<Full<Bytes>> {
         .status(status)
         .header(hyper::header::CONTENT_TYPE, "application/json")
         .header(hyper::header::CONTENT_LENGTH, bytes.len())
-        .body(Full::new(bytes))
+        .body(body(bytes))
         .unwrap()
 }
+
+fn delivery_state(forwarded: bool, reason: Option<&str>) -> &'static str {
+    match (forwarded, reason) {
+        (true, _) => "response_complete",
+        (false, Some("upstream transport failed")) => "request_outcome_unknown",
+        (false, Some(reason)) if reason.starts_with("upstream redirect ") => {
+            "request_sent_response_rejected"
+        }
+        (false, Some("upstream response failed" | "upstream response too large")) => {
+            "request_sent_response_failed"
+        }
+        (false, Some("downstream response closed")) => "request_sent_downstream_closed",
+        _ => "not_sent",
+    }
+}
+
 fn audit(
     state: &State,
     forwarded: bool,
@@ -321,9 +343,10 @@ fn audit(
 ) -> io::Result<()> {
     let model = admission.map(|value| value.model.as_str());
     let tools = admission.map(|value| value.tools.as_slice()).unwrap_or(&[]);
+    let delivery_state = delivery_state(forwarded, reason);
     let event = json!({"forwarded":forwarded,"request_sha256":format!("{:x}",Sha256::digest(body)),
         "request_bytes":body.len(),"path":path,"model":model,"tools":tools,"reason":reason,
-        "upstream_status":upstream_status});
+        "upstream_status":upstream_status,"delivery_state":delivery_state});
     let mut file = state
         .audit
         .lock()
@@ -335,7 +358,7 @@ fn audit(
 async fn handle(
     request: Request<Incoming>,
     state: Arc<State>,
-) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+) -> Result<Response<RelayBody>, std::convert::Infallible> {
     if request.method() != hyper::Method::POST {
         let _ = audit(
             &state,
@@ -519,57 +542,73 @@ async fn handle(
     }
     let status = upstream.status();
     let response_headers = upstream.headers().clone();
-    let mut stream = upstream.bytes_stream();
-    let mut output = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        let Ok(chunk) = chunk else {
-            let _ = audit(
-                &state,
-                false,
-                &body,
-                Some("upstream response failed"),
-                &suffix,
-                Some(&admission),
-                Some(status.as_u16()),
-            );
-            return Ok(response(
-                StatusCode::BAD_GATEWAY,
-                "upstream response failed",
-            ));
-        };
-        if output.len().saturating_add(chunk.len()) > MAX_RESPONSE {
-            let _ = audit(
-                &state,
-                false,
-                &body,
-                Some("upstream response too large"),
-                &suffix,
-                Some(&admission),
-                Some(status.as_u16()),
-            );
-            return Ok(response(
-                StatusCode::BAD_GATEWAY,
-                "upstream response too large",
-            ));
+    let mut upstream = upstream.bytes_stream();
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(async move {
+        let mut total = 0usize;
+        let mut downstream_open = true;
+        while let Some(chunk) = upstream.next().await {
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(_) => {
+                    let _ = audit(
+                        &state,
+                        false,
+                        &body,
+                        Some("upstream response failed"),
+                        &suffix,
+                        Some(&admission),
+                        Some(status.as_u16()),
+                    );
+                    if downstream_open {
+                        let _ = sender
+                            .send(Err(io::Error::other("upstream response failed")))
+                            .await;
+                    }
+                    return;
+                }
+            };
+            total = total.saturating_add(chunk.len());
+            if total > MAX_RESPONSE {
+                let _ = audit(
+                    &state,
+                    false,
+                    &body,
+                    Some("upstream response too large"),
+                    &suffix,
+                    Some(&admission),
+                    Some(status.as_u16()),
+                );
+                if downstream_open {
+                    let _ = sender
+                        .send(Err(io::Error::other("upstream response too large")))
+                        .await;
+                }
+                return;
+            }
+            if downstream_open && sender.send(Ok(Frame::data(chunk))).await.is_err() {
+                downstream_open = false;
+            }
         }
-        output.extend_from_slice(&chunk);
-    }
-    if audit(
-        &state,
-        true,
-        &body,
-        None,
-        &suffix,
-        Some(&admission),
-        Some(status.as_u16()),
-    )
-    .is_err()
-    {
-        return Ok(response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "relay audit completion unavailable",
-        ));
-    }
+        let reason = (!downstream_open).then_some("downstream response closed");
+        let audited = audit(
+            &state,
+            downstream_open,
+            &body,
+            reason,
+            &suffix,
+            Some(&admission),
+            Some(status.as_u16()),
+        );
+        if audited.is_err() && downstream_open {
+            let _ = sender
+                .send(Err(io::Error::other("relay audit completion unavailable")))
+                .await;
+        }
+    });
+    let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|item| (item, receiver))
+    });
     let mut downstream = Response::builder().status(status);
     for (name, value) in &response_headers {
         let lower = name.as_str().to_ascii_lowercase();
@@ -577,8 +616,9 @@ async fn handle(
             downstream = downstream.header(name, value);
         }
     }
-    downstream = downstream.header(hyper::header::CONTENT_LENGTH, output.len());
-    Ok(downstream.body(Full::new(Bytes::from(output))).unwrap())
+    Ok(downstream
+        .body(StreamBody::new(stream).boxed_unsync())
+        .unwrap())
 }
 
 /// Start the acceptance probe relay against a loopback deterministic peer.
@@ -806,13 +846,22 @@ pub fn run(args: &[OsString]) -> ExitCode {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
-    fn policy() -> ValidatedPolicy {
-        validate_policy(json!({"schema_version":1,"paths":["/v1/messages"],"models":["model-1"],
+
+    fn policy_value() -> Value {
+        json!({"schema_version":1,"paths":["/v1/messages"],"models":["model-1"],
         "top_level_fields":["model","prompt","tools"],"request_value_types":["text"],
         "request_headers":{"content-type":"application/json","x-tempest-profile":"fixed"},
         "maximum_requests":20,
-        "maximum_requests":20,
-        "tools":[{"type":"function","name":"mcp__tempest__status","description":"fixed","input_schema":{"type":"object"}}]})).unwrap()
+        "tools":[{"type":"function","name":"mcp__tempest__status","description":"fixed","input_schema":{"type":"object"}}]})
+    }
+
+    fn valid_request() -> Value {
+        json!({"model":"model-1","prompt":"secret","tools":[{"description":"fixed",
+            "input_schema":{"type":"object"},"name":"mcp__tempest__status","type":"function"}]})
+    }
+
+    fn policy() -> ValidatedPolicy {
+        validate_policy(policy_value()).unwrap()
     }
     #[test]
     fn exact_request_is_admitted_and_expansion_is_rejected() {
@@ -833,6 +882,20 @@ mod tests {
         .unwrap();
         assert!(admit(&valid, "/v1/messages?beta=true", &query_policy).is_ok());
         assert!(admit(&valid, "/v1/messages?beta=false", &query_policy).is_err());
+    }
+
+    #[test]
+    fn delivery_audit_distinguishes_unsent_uncertain_and_response_failure() {
+        assert_eq!(delivery_state(false, Some("model mismatch")), "not_sent");
+        assert_eq!(
+            delivery_state(false, Some("upstream transport failed")),
+            "request_outcome_unknown"
+        );
+        assert_eq!(
+            delivery_state(false, Some("upstream response failed")),
+            "request_sent_response_failed"
+        );
+        assert_eq!(delivery_state(true, None), "response_complete");
     }
 
     #[tokio::test]
@@ -932,7 +995,7 @@ mod tests {
         assert_eq!(result.status(), StatusCode::BAD_GATEWAY);
         assert!(!result.headers().contains_key(hyper::header::LOCATION));
         assert!(auth_replaced.load(Ordering::SeqCst));
-        upstream_task.await.unwrap();
+        upstream_task.abort();
         relay_task.await.unwrap();
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(100), sink.accept())
@@ -944,6 +1007,141 @@ mod tests {
         assert_eq!(last["path"], "/v1/messages");
         assert_eq!(last["model"], "model-1");
         assert_eq!(last["upstream_status"], 302);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn delayed_sse_is_streamed_and_completed_delivery_is_audited() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-model-relay-stream-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(
+                    TokioIo::new(stream),
+                    service_fn(|_: Request<Incoming>| async move {
+                        let chunks = futures_util::stream::unfold(0, |step| async move {
+                            match step {
+                                0 => Some((
+                                    Ok::<_, io::Error>(Frame::data(Bytes::from_static(b"first\n"))),
+                                    1,
+                                )),
+                                1 => {
+                                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                                    Some((Ok(Frame::data(Bytes::from_static(b"second\n"))), 2))
+                                }
+                                _ => None,
+                            }
+                        });
+                        Ok::<_, std::convert::Infallible>(
+                            Response::builder()
+                                .header(hyper::header::CONTENT_TYPE, "text/event-stream")
+                                .body(StreamBody::new(chunks))
+                                .unwrap(),
+                        )
+                    }),
+                )
+                .await
+                .unwrap();
+        });
+        let audit_path = root.join("audit.jsonl");
+        let relay = start_probe_relay(
+            format!("http://{address}/base/").parse().unwrap(),
+            "x".repeat(32),
+            policy_value(),
+            &audit_path,
+        )
+        .await
+        .unwrap();
+        let response = reqwest::Client::new()
+            .post(format!("{}/v1/messages", relay.endpoint()))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(serde_json::to_vec(&valid_request()).unwrap())
+            .send()
+            .await
+            .unwrap();
+        let mut chunks = response.bytes_stream();
+        let first = tokio::time::timeout(std::time::Duration::from_millis(100), chunks.next())
+            .await
+            .expect("first chunk must not wait for upstream completion")
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, "first\n");
+        let delayed_at = tokio::time::Instant::now();
+        assert_eq!(chunks.next().await.unwrap().unwrap(), "second\n");
+        assert!(delayed_at.elapsed() >= std::time::Duration::from_millis(200));
+        assert!(chunks.next().await.is_none());
+        upstream_task.abort();
+        let rows = fs::read_to_string(audit_path).unwrap();
+        assert!(rows.lines().any(|line| {
+            let row: Value = serde_json::from_str(line).unwrap();
+            row["forwarded"] == true && row["delivery_state"] == "response_complete"
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn response_stream_failure_is_distinct_from_an_unsent_request() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-model-relay-stream-failure-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(
+                    TokioIo::new(stream),
+                    service_fn(|_: Request<Incoming>| async move {
+                        let chunks = futures_util::stream::unfold(0, |step| async move {
+                            match step {
+                                0 => Some((Ok(Frame::data(Bytes::from_static(b"partial\n"))), 1)),
+                                1 => {
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                    Some((Err(io::Error::other("fixture stream failure")), 2))
+                                }
+                                _ => None,
+                            }
+                        });
+                        Ok::<_, std::convert::Infallible>(
+                            Response::builder().body(StreamBody::new(chunks)).unwrap(),
+                        )
+                    }),
+                )
+                .await;
+        });
+        let audit_path = root.join("audit.jsonl");
+        let relay = start_probe_relay(
+            format!("http://{address}/base/").parse().unwrap(),
+            "x".repeat(32),
+            policy_value(),
+            &audit_path,
+        )
+        .await
+        .unwrap();
+        let response = reqwest::Client::new()
+            .post(format!("{}/v1/messages", relay.endpoint()))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(serde_json::to_vec(&valid_request()).unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert!(response.bytes().await.is_err());
+        upstream_task.await.unwrap();
+        let rows = fs::read_to_string(audit_path).unwrap();
+        assert!(rows.lines().any(|line| {
+            let row: Value = serde_json::from_str(line).unwrap();
+            row["forwarded"] == false
+                && row["reason"] == "upstream response failed"
+                && row["delivery_state"] == "request_sent_response_failed"
+        }));
         fs::remove_dir_all(root).unwrap();
     }
 }
