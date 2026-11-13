@@ -59,8 +59,10 @@ slot ID、期待条件、evaluator hashへ束縛し、欠損・不正な予定sl
 loopbackの能力pathと許可pathへのPOSTだけを受け、model、top-level field、tool定義全体
 （名前だけでなくschema・descriptionを含む）を事前固定policyとcanonical比較する。JSONの重複key、
 追加・欠損・重複・未知tool表現、未知field、別model、会話継承、file/URL参照は409で上流へ転送しない。
+tool以外の`type`付きrequest blockもpolicyの許可typeと照合する。agent由来headerは転送せず、policyで固定した
+headerとrelay所有の認証headerだけを上流へ送る。query付きpathとContent-Lengthのないrequestは拒否する。
 上流authorityを固定し、上流の全3xxをLocationなしの502へ変換する。auditにはrequest本文や認証値を保存せず
-hash・byte数・tool名・判定だけを残す。`tests/test_model_api_proxy.py`は完全一致の正対照、各負例、
+hash・byte数・model・path・tool名・判定・上流statusだけを残す。`tests/test_model_api_proxy.py`は完全一致の正対照、各負例、
 302を追うclientでも別authority sink到達0を検査する。これは中継を通ったrequestだけの成立であり、
 CLI processの直接egress制限、実CLI launcherへの接続、正式proof生成は未完了である。
 上流認証値はowner-private fileから中継だけが読み、agentが付けたAuthorization/x-api-keyは破棄して
