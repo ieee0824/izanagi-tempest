@@ -83,3 +83,13 @@ API障害・rate limit等で必要観測が成立しないrunはunknownとして
 3回成功した対照とは扱わない。既存#13へ証跡とfreeze/応答取得の競合仮説を追記した。
 具体的な失敗応答の形式は未保存なので未確定。hostに秘密本文を転記せず応答種別だけを残す
 診断を加え、異なるrun IDで再検証する。root operationの再投入は行わない。
+
+## no-op反復対照の結果
+
+`/private/tmp/tempest-m6-noop-002/` は3回全てcompleted/performed。各回の
+MCP call/API要求は0、findingはnot_found、計上候補0・未確定10で一致した。
+未確定内訳はdoas3・tempest-guest wrapper3・native2・api.jsonl/capture.pcap各1。
+各評価世代の成果物hashを検査した。`noop-summary.json`に評価IDと内訳を保存した。
+この3成功と、先行実験の1成功・1失敗を区別して保持する。成功率や正式モデル比較とは呼ばない。
+通常mockの未確定11との差はbackend/bypass候補1件だが、差分を主体帰属や控除の根拠にしない。
+管理配送の競合は修正していないため、3成功から障害解消とは結論しない。
