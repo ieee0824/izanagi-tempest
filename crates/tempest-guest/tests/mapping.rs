@@ -34,6 +34,14 @@ fn credential_claim_header_precedence_and_presigned_query() {
     );
     headers.insert("authorization", "Bearer malformed".parse().unwrap());
     assert_eq!(mapping::access_key(&headers, &uri), None);
+    headers.insert(
+        "authorization",
+        hyper::header::HeaderValue::from_bytes(&[0x80]).unwrap(),
+    );
+    assert_eq!(
+        mapping::access_key(&headers, &uri).as_deref(),
+        Some("QUERY")
+    );
     for value in [
         "AWS4-HMAC-SHA256 Credential=/date/r/s3/aws4_request",
         "AWS4-HMAC-SHA256 Signature=x",

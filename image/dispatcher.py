@@ -147,7 +147,9 @@ def dispatch(request_id, payload):
     fields = {'claim': set(), 'ping': set(), 'seed': {'setup'}, 'probe': {'probe'},
               'seal': set(), 'attest': set(), 'export': {'daemon_identity'}, 'fetch': {'export_id', 'file', 'offset', 'max_bytes'}}
     require(operation in fields, 'unknown_operation')
-    require(set(payload) <= {'version', 'id', 'operation', 'authorization', 'reply_key'} | fields[operation], 'unknown_field')
+    require(set(payload) <= {'version', 'id', 'operation', 'authorization', 'reply_key', 'audit_id'} | fields[operation], 'unknown_field')
+    audit_id = payload.get('audit_id')
+    require(audit_id is None or (isinstance(audit_id, str) and len(audit_id) == 32 and all(c in '0123456789abcdef' for c in audit_id)), 'invalid_audit_id')
     if operation not in {'claim', 'ping'}:
         authenticate(payload.get('authorization'))
     delivery = STATE / 'delivery'
@@ -184,7 +186,7 @@ def dispatch(request_id, payload):
         command.append(str(exports / request_id))
     try:
         response = subprocess.run(command, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  env={'PATH': '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'}, timeout=240)
+                                  env={'PATH': '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin', 'TEMPEST_AUDIT_ID': audit_id or ''}, timeout=240)
     finally:
         if source is not None:
             source.unlink(missing_ok=True)

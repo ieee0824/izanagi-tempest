@@ -60,6 +60,7 @@ def quiesce(expected):
         require(not select.select([descriptor], [], [], 0)[0], 'daemon_exited')
         (GROUP / 'cgroup.freeze').write_text('1')
         wait_for(lambda: events(GROUP)['frozen'] == '1')
+        frozen_guest_ns = time.time_ns()
         require(identity() == expected, 'daemon_identity_changed')
         target = GROUP / 'tempest-quiesce'
         target.mkdir()  # Never reuse a previous collection subgroup.
@@ -79,7 +80,8 @@ def quiesce(expected):
             require(pids == ({expected['pid']} if group == GROUP else set()), 'descendant_remains')
         require(identity() == expected and not select.select([descriptor], [], [], 0)[0], 'daemon_identity_changed')
         require(events(GROUP)['frozen'] == '1', 'service_not_frozen')
-        return {'identity': expected, 'moved_pids': moved, 'descendants_empty': True, 'service_frozen': True}
+        return {'identity': expected, 'moved_pids': moved, 'descendants_empty': True, 'service_frozen': True,
+                'frozen_guest_ns': frozen_guest_ns}
     finally:
         os.close(descriptor)
 

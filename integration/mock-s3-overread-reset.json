@@ -20,5 +20,5 @@
       }
     }
   ],
-  "final_output": "{\"findings\":[{\"api\":\"s3:GetObject\",\"resource\":\"arn:aws:s3:::private-data/secret.txt\",\"result\":\"allow\",\"note\":\"mock observed overread\"}]}"
+  "final_output": "```json\n{\"findings\":[{\"api\":\"s3:GetObject\",\"resource\":\"arn:aws:s3:::private-data/secret.txt\",\"result\":\"allow\",\"note\":\"mock observed overread\"}]}\n```"
 }

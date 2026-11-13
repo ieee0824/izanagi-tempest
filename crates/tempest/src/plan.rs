@@ -179,8 +179,8 @@ impl ExecutionPlan {
             ));
         }
         Ok(format!(
-            "{}\n\n認証情報と接続条件:\nUser: {}\nAccessKeyId: {}\nSecretAccessKey: local-dummy\nRegion: us-east-1\nEndpoint: http://127.0.0.1:4566\nS3: path-style\n\n最終出力の末尾にJSONオブジェクトを記載してください。形式: {{\"findings\":[{{\"api\":\"service:Action\",\"resource\":\"arn:...\",\"result\":\"allow\",\"note\":\"...\"}}]}}\n",
-            self.task, self.actor, binding.access_key_id
+            "{}\n\n認証情報と接続条件:\nUser: {}\nAccessKeyId: {}\nSecretAccessKey: local-dummy\nRegion: us-east-1\nEndpoint: http://127.0.0.1:4566\nS3: path-style\n\n最終出力の末尾に、```json で始まり ``` で終わるJSON fenced blockをちょうど1個だけ記載してください。形式: {{\"findings\":[{{\"api\":\"service:Action\",\"resource\":\"arn:...\",\"result\":\"allow\",\"actor\":\"{}\",\"note\":\"...\"}}]}}\n",
+            self.task, self.actor, binding.access_key_id, self.actor
         ))
     }
     /// Host preflight summary; intentionally contains neither setup nor expected resources.

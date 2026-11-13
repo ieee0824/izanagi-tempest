@@ -34,6 +34,8 @@ pub enum Operation {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
+    #[serde(default)]
+    pub audit_id: Option<String>,
     pub token: Option<String>,
     pub operation: Operation,
 }
@@ -55,6 +57,14 @@ enum Phase {
 struct State {
     phase: Phase,
     token_digest: Option<String>,
+    #[serde(default)]
+    transitions: Vec<Phase>,
+    #[serde(default)]
+    failed_operations: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    operation_intents: Vec<Value>,
+    #[serde(default)]
+    operation_intents_overflow: u64,
 }
 #[derive(Default, Serialize)]
 struct CaptureStats {
@@ -165,6 +175,7 @@ impl Controller {
     }
     fn transition(&mut self, phase: Phase) -> Result<()> {
         self.state.phase = phase;
+        self.state.transitions.push(phase);
         self.persist()
     }
     fn authorize(&self, request: &Request) -> Result<()> {
@@ -194,6 +205,39 @@ impl Controller {
         Ok(())
     }
     async fn execute(&mut self, request: Request) -> Result<Value> {
+        let operation = match &request.operation {
+            Operation::Claim => "claim",
+            Operation::Seed { .. } => "seed",
+            Operation::Probe { .. } => "probe",
+            Operation::Seal => "seal",
+            Operation::Export { .. } => "export",
+        };
+        let authorization_failed = self.authorize(&request).is_err();
+        if self.state.operation_intents.len() < 4096 {
+            self.state.operation_intents.push(json!({"operation":operation,"audit_id":request.audit_id,"authorized":!authorization_failed}));
+        } else {
+            self.state.operation_intents_overflow =
+                self.state.operation_intents_overflow.saturating_add(1);
+        }
+        self.persist()?;
+        let result = self.execute_operation(request).await;
+        if result.is_err() {
+            let category = if authorization_failed {
+                "authorization_rejected"
+            } else {
+                "operation_failed"
+            };
+            let count = self
+                .state
+                .failed_operations
+                .entry(format!("{operation}:{category}"))
+                .or_default();
+            *count = count.saturating_add(1);
+            self.persist()?;
+        }
+        result
+    }
+    async fn execute_operation(&mut self, request: Request) -> Result<Value> {
         self.authorize(&request)?;
         match request.operation {
             Operation::Claim => {
@@ -560,6 +604,14 @@ impl Controller {
         self.manifest = Some(
             json!({"complete":failures.is_empty(),"failures":failures,"api_rows":rows,"incomplete_rows":incomplete,"capture_started":self.capture_started,"recorder_started":self.recorder_started,"recorder_stopped":recorder_stopped,"capture_stopped":capture_stopped,"capture_interface":self.config.capture_interface,"capture_buffer_kib_requested":4096,"capture_immediate_mode":true,"capture_filter":null,"capture_contains_payloads":true,"capture_statistics":stats,"recorder_statistics":recorder_stats,"complete_scope":"recorder_internal","agent_route_enforcement":"not_verified","finalized":true}),
         );
+        self.manifest.as_mut().unwrap()["control_transitions"] =
+            serde_json::to_value(&self.state.transitions)?;
+        self.manifest.as_mut().unwrap()["failed_control_operations"] =
+            serde_json::to_value(&self.state.failed_operations)?;
+        self.manifest.as_mut().unwrap()["control_operation_intents"] =
+            json!(self.state.operation_intents);
+        self.manifest.as_mut().unwrap()["control_operation_intents_overflow"] =
+            json!(self.state.operation_intents_overflow);
         private_write(
             &self.config.evidence_dir.join("manifest.json"),
             &serde_json::to_vec_pretty(self.manifest.as_ref().unwrap())?,
@@ -631,6 +683,10 @@ pub async fn serve(config: Config) -> Result<()> {
         State {
             phase: Phase::Unclaimed,
             token_digest: None,
+            transitions: Vec::new(),
+            failed_operations: std::collections::BTreeMap::new(),
+            operation_intents: Vec::new(),
+            operation_intents_overflow: 0,
         }
     };
     let mut controller = Controller {

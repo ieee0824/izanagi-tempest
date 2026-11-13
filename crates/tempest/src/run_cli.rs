@@ -4,6 +4,7 @@ use crate::{
     host_io,
     plan::{ExecutionPlan, Stage},
     relay::RelayConfig,
+    report as evaluation_report,
     scenario::load,
     seed_controller::SeedController,
     supervisor::{Supervisor, SupervisorConfig},
@@ -421,7 +422,7 @@ async fn execute(
     host_io::private_copy(&bridge, &companion.join("host_bridge.py"))?;
     host_io::private_copy(&transport, &companion.join("transport.py"))?;
     let budget = &loaded.validated.scenario().budget;
-    let mut report = json!({"schema_version":1,"scope":"m4_execution_only","purpose":"collection","iteration":1,"adapter":adapter.describe(),"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&izanagi)?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"mock_script_sha256":host_io::digest(&root.join("mock-script.json"))?,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"m5_not_implemented"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
+    let mut report = json!({"schema_version":1,"scope":"m5_evaluation","purpose":"collection_and_evaluation","iteration":1,"adapter":adapter.describe(),"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&izanagi)?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"mock_script_sha256":host_io::digest(&root.join("mock-script.json"))?,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"evaluation_pending"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
     report["conditions"]["izanagi_version"] = version(&izanagi).await?.into();
     report["conditions"]["tempest_version"] = env!("CARGO_PKG_VERSION").into();
     report["conditions"]["host_utc_offset_seconds"] = host_io::utc_offset_seconds()?.into();
@@ -587,6 +588,7 @@ fn allowed_artifact(path: &str) -> bool {
             | "vm-launch.json"
             | "vm-owner.json"
             | "evidence/clock.jsonl"
+            | "evidence/control.jsonl"
             | "evidence/izanagi/alerts.log"
             | "evidence/izanagi/events.log"
     );
@@ -618,14 +620,46 @@ fn allowed_artifact(path: &str) -> bool {
             | "recovery-down.stderr"
             | "recovery-down.stdout"
             | "recovery.json"
+            | "report.md"
+            | "evaluation-state.json"
+            | "evaluation.lock"
+            | "evaluation-input-run.json"
+            | "result.json"
             | "run.json"
             | "scenario.yaml"
+            | "timeline.jsonl"
     )
 }
 fn finalize(root: &Path, report: &mut Value, success: &mut bool) -> io::Result<()> {
     report["status"] = if *success { "completed" } else { "aborted" }.into();
+    report["execution_status"] = report["status"].clone();
     report["finished_ns"] = host_io::now_ns()?.into();
     host_io::json_replace(&root.join("run.json"), report)?;
+    {
+        match evaluation_report::generate(root) {
+            Ok(result) => {
+                report["evaluation"] = result["evaluation"].clone();
+                if result["finding"].is_object() {
+                    let configured = result["finding"]["outcome"] != "not_configured";
+                    report["finding"] = json!({"configured":configured,"performed":configured,"outcome":result["finding"]["outcome"]});
+                }
+                report["result"] = json!({"path":"result.json","formal_metrics_eligible":result["formal_metrics_eligible"]});
+                if result["evaluation"] != "performed" {
+                    *success = false;
+                    report["finalization"] = "incomplete".into();
+                } else {
+                    report["finalization"] = "completed".into();
+                }
+            }
+            Err(error) => {
+                *success = false;
+                report["finalization"] = "incomplete".into();
+                report["evaluation"] = "unavailable".into();
+                report["evaluation_failure"] = error.to_string().into();
+            }
+        }
+        host_io::json_replace(&root.join("run.json"), report)?;
+    }
     let mut paths = Vec::new();
     collect_artifacts(root, root, &mut paths)?;
     paths.push("artifact-inventory.json".to_owned());
@@ -895,9 +929,13 @@ pub fn run(args: &[OsString]) -> ExitCode {
     runtime.shutdown_background();
     match result {
         Ok((path, success)) => {
+            let metadata: Value = fs::read(path.join("run.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or(Value::Null);
             println!(
                 "{}",
-                json!({"run_directory":path,"status":if success{"completed"}else{"aborted"},"scope":"m4_execution_only","evaluation":"not_performed"})
+                json!({"run_directory":path,"status":metadata["status"],"scope":"m5_evaluation","evaluation":metadata["evaluation"],"finalization":metadata["finalization"]})
             );
             if success {
                 ExitCode::SUCCESS
@@ -918,6 +956,27 @@ mod tests {
     use std::os::unix::process::CommandExt;
 
     #[test]
+    fn evaluation_failure_preserves_completed_execution() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-finalize-evaluation-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        host_io::write_new(&root.join("scenario.yaml"), b"invalid scenario").unwrap();
+        let mut report = json!({"evaluation":"not_performed"});
+        let mut success = true;
+        finalize(&root, &mut report, &mut success).unwrap();
+        assert!(!success);
+        assert_eq!(report["status"], "completed");
+        assert_eq!(report["execution_status"], "completed");
+        assert_eq!(report["evaluation"], "unavailable");
+        assert_eq!(report["finalization"], "incomplete");
+        assert!(report["evaluation_failure"].is_string());
+        assert_eq!(report["artifacts"]["unexpected"], json!([]));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn artifact_allowlist_rejects_runtime_material_and_non_regular_entries() {
         let root = std::env::temp_dir().join(format!(
             "tempest-artifacts-{}-{}",
@@ -928,10 +987,13 @@ mod tests {
         host_io::write_new(&root.join("scenario.yaml"), b"id: fixture").unwrap();
         host_io::write_new(&root.join("transport-hmac"), b"not-a-real-key").unwrap();
         let mut report = json!({});
-        let mut success = true;
+        let mut success = false;
         finalize(&root, &mut report, &mut success).unwrap();
         assert!(!success);
         assert_eq!(report["artifact_failure"], "unexpected_artifacts");
+        assert_eq!(report["execution_status"], "aborted");
+        assert_eq!(report["evaluation"], "unavailable");
+        assert!(root.join("evaluation-state.json").is_file());
         assert!(
             report["artifacts"]["unexpected"]
                 .as_array()

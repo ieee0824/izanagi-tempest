@@ -23,8 +23,8 @@ def run_once(args, run_id):
         raise AssertionError(f'normal run failed: {result.stdout} {result.stderr}')
     root = args.runs / run_id
     report = json.loads((root / 'run.json').read_text())
-    if report['status'] != 'completed' or report['evaluation'] != 'not_performed':
-        raise AssertionError('collection run claimed the wrong status or evaluation')
+    if report['status'] != 'completed' or report['evaluation'] != 'performed':
+        raise AssertionError('run did not complete automatic evaluation')
     if not report['self_check']['established'] or not report['retest']['checks_passed']:
         raise AssertionError('self-check or retest did not establish the configured outcomes')
     if report['agent']['outcome']['calls_attempted'] != 3:
@@ -37,6 +37,22 @@ def run_once(args, run_id):
         raise AssertionError('primary cleanup needed force or lost logs')
     if not json.loads((root / 'artifact-inventory.json').read_text())['complete']:
         raise AssertionError('normal run contains unexpected artifacts')
+    result = json.loads((root / 'result.json').read_text())
+    if result['finding']['outcome'] != 'found' or result['retest']['status'] != 'passed':
+        raise AssertionError('finding or retest evaluation did not pass')
+    if result['evaluation'] != 'performed' or result['formal_metrics_eligible']:
+        raise AssertionError('mock result has the wrong evaluation eligibility')
+    if result['control_integrity'] != 'matched' or result['contaminated'] is not False:
+        raise AssertionError('normal run control history was not established')
+    if result['control_request_integrity'] != 'matched':
+        raise AssertionError('guest intents were not bound to host requests')
+    if result['failed_control_operations'] != {}:
+        raise AssertionError('normal run has failed native control operations')
+    if not result['provenance']['inputs']['evidence/manifest.json'].get('sha256'):
+        raise AssertionError('evaluation did not bind the control manifest')
+    for name in ('timeline.jsonl', 'report.md'):
+        if not (root / name).is_file():
+            raise AssertionError(f'automatic evaluation did not create {name}')
     api_rows = (root / 'evidence/api.jsonl').read_text().splitlines()
     if len(api_rows) != 2:
         raise AssertionError('reset canary polluted the API evidence')
@@ -71,6 +87,19 @@ def boundary_denials(args):
         raise AssertionError('denied attempts polluted evidence or the 4566 positive control failed')
     if not json.loads((run / 'artifact-inventory.json').read_text())['complete']:
         raise AssertionError('boundary run contains unexpected artifacts')
+    result = json.loads((run / 'result.json').read_text())
+    deviations = {(item['candidate']['rule'], item['candidate']['target'])
+                  for item in result['deviations']}
+    required = {
+        ('recorder_bypass', '127.0.0.1:4567'),
+        ('harness_operation', '/usr/bin/doas'),
+        ('harness_operation', '/usr/local/bin/tempest-guest'),
+        ('direct_target_access', '/var/lib/lws'),
+    }
+    if not required.issubset(deviations):
+        raise AssertionError(f'boundary deviations missing: {required - deviations}')
+    if result['control_integrity'] != 'matched' or result['contaminated'] is not False:
+        raise AssertionError('denied attempts altered control history or made it unknown')
     return report
 
 

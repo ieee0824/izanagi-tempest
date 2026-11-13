@@ -18,6 +18,17 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def assert_partial_evaluation(run):
+    result = json.loads((run / 'result.json').read_text())
+    if result['evaluation'] != 'partial' or result['formal_metrics_eligible']:
+        raise AssertionError('aborted evidence was not evaluated as partial')
+    if result['finding']['outcome'] != 'unknown' or result['contaminated'] is not None:
+        raise AssertionError('missing evidence incorrectly proved a negative outcome')
+    state = json.loads((run / 'evaluation-state.json').read_text())
+    if state['state'] != 'committed' or not (run / 'report.md').is_file():
+        raise AssertionError('partial evaluation artifacts were not finalized')
+
+
 def seed_reply_loss(args):
     run_id = 'seed-reply-loss'
     run = args.runs / run_id
@@ -58,6 +69,7 @@ def seed_reply_loss(args):
     inventory = json.loads((run / 'artifact-inventory.json').read_text())
     if not inventory['complete']:
         raise AssertionError('unexpected artifact after seed loss')
+    assert_partial_evaluation(run)
     before = digest(run / 'run.json')
     retry = subprocess.run(command, text=True, capture_output=True, timeout=30)
     if retry.returncode == 0 or digest(run / 'run.json') != before:
@@ -105,6 +117,7 @@ def fetch_chunk_corruption(args):
         raise AssertionError('partial evidence remained after corruption')
     if not json.loads((run / 'artifact-inventory.json').read_text())['complete']:
         raise AssertionError('unexpected artifact after fetch corruption')
+    assert_partial_evaluation(run)
     print(json.dumps({'fetch_chunk_corruption': 'passed', 'run': str(run)}))
 
 
@@ -409,9 +422,12 @@ def main():
     parser.add_argument('--image-inputs', type=Path, required=True)
     parser.add_argument('--python', type=Path, required=True)
     parser.add_argument('--runs', type=Path, required=True)
-    parser.add_argument('--case', choices=['all', 'core', 'crash-recovery', 'seed-sigterm', 'fetch-sigterm', 'retest-recovery'], default='all')
+    parser.add_argument('--case', choices=['all', 'core', 'evaluation', 'crash-recovery', 'seed-sigterm', 'fetch-sigterm', 'retest-recovery'], default='all')
     args = parser.parse_args()
     args.runs.mkdir(mode=0o700, parents=True, exist_ok=False)
+    if args.case == 'evaluation':
+        seed_reply_loss(args)
+        fetch_chunk_corruption(args)
     if args.case in ('all', 'core'):
         seed_reply_loss(args)
         fetch_chunk_corruption(args)

@@ -10,7 +10,7 @@
     {
       "name": "sandbox_shell",
       "arguments": {
-        "command": "doas -n /usr/local/bin/tempest-guest deliver /workspace/.tempest-control/00000000000000000000000000000000.json"
+        "command": "doas -n /usr/local/bin/tempest-guest seed"
       }
     },
     {
