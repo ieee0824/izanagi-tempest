@@ -53,6 +53,15 @@ slot ID、期待条件、evaluator hashへ束縛し、欠損・不正な予定sl
 予定外directoryは別に列挙して予定slotの代替にせず、retryは新しいslotとして事前計画する。
 条件またはevaluator hashが異なるrunは別groupとし、portfolioの条件横断率はnot_computedとする。
 
+## モデルAPI中継
+
+実CLIの本番requestでtool能力を再検査するため、`tools/model_api_proxy.py`を追加した。
+loopbackの能力pathだけを受け、各POSTに含まれるtool定義全体（名前だけでなくschema・descriptionを含む）を
+事前固定catalogとcanonical比較する。追加・欠損・重複・未知表現は409で拒否し、上流へ転送しない。
+上流authorityを固定しredirectを追わず、auditにはrequest本文や認証値を保存せずhash・byte数・tool名だけを残す。
+`tests/test_model_api_proxy.py`は完全一致の正対照、追加/欠損/重複/schema変更/未知/省略の負例、
+別authority redirectを検査する。これは中継単体の成立であり、実CLI launcherへの接続と正式proof生成は未完了である。
+
 ## 再現コマンド
 
 ```bash
