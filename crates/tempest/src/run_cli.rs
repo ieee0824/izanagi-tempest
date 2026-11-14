@@ -30,7 +30,12 @@ use tempest_model::{
     scenario::Outcome,
 };
 
+#[cfg(not(feature = "native-test-upstream"))]
 const USAGE: &str = "Usage: tempest run SCENARIO (--agent mock --mock-script FILE | --agent claude-code --agent-executable FILE --model EXACT_MODEL_ID --model-auth-file FILE) --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--repeat-interval-seconds N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]";
+#[cfg(feature = "native-test-upstream")]
+const TEST_USAGE: &str = "Usage: tempest run SCENARIO (--agent mock --mock-script FILE | --agent claude-code --agent-executable FILE --model EXACT_MODEL_ID --model-auth-file FILE [--native-test-upstream HTTP_LOOPBACK_URL]) --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--repeat-interval-seconds N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]\nWARNING: native-test-upstream build; every run is test-only and formally ineligible";
+const PRODUCTION_MODEL_UPSTREAM: &str = "https://api.anthropic.com/";
+const NATIVE_TEST_BUILD: bool = cfg!(feature = "native-test-upstream");
 async fn version(executable: &Path) -> io::Result<String> {
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -58,6 +63,7 @@ enum AgentSelection {
         executable: PathBuf,
         model: String,
         auth_file: PathBuf,
+        test_upstream: Option<String>,
     },
 }
 
@@ -79,6 +85,7 @@ struct Options {
     comparison_slot: Option<String>,
     maximum_evidence_file_bytes: u64,
     iteration: usize,
+    native_test_upstream: Option<String>,
 }
 
 enum AgentSetup {
@@ -87,6 +94,7 @@ enum AgentSetup {
         executable: PathBuf,
         model: String,
         auth_file: PathBuf,
+        upstream: String,
     },
 }
 
@@ -200,7 +208,7 @@ fn options(args: &[OsString]) -> io::Result<Options> {
         let flag = pair[0]
             .to_str()
             .ok_or_else(|| io::Error::other("invalid option"))?;
-        if !matches!(
+        let standard = matches!(
             flag,
             "--agent"
                 | "--mock-script"
@@ -220,8 +228,12 @@ fn options(args: &[OsString]) -> io::Result<Options> {
                 | "--max-evidence-bytes"
                 | "--comparison-plan"
                 | "--comparison-slot"
-        ) || values.insert(flag, &pair[1]).is_some()
-        {
+        );
+        #[cfg(feature = "native-test-upstream")]
+        let allowed = standard || flag == "--native-test-upstream";
+        #[cfg(not(feature = "native-test-upstream"))]
+        let allowed = standard;
+        if !allowed || values.insert(flag, &pair[1]).is_some() {
             return Err(io::Error::other("unknown or duplicate option"));
         }
     }
@@ -259,6 +271,7 @@ fn options(args: &[OsString]) -> io::Result<Options> {
             if values.contains_key("--agent-executable")
                 || values.contains_key("--model")
                 || values.contains_key("--model-auth-file")
+                || values.contains_key("--native-test-upstream")
             {
                 return Err(io::Error::other("mock and native agent options conflict"));
             }
@@ -270,15 +283,37 @@ fn options(args: &[OsString]) -> io::Result<Options> {
             if values.contains_key("--mock-script") {
                 return Err(io::Error::other("mock and native agent options conflict"));
             }
+            let test_upstream = text("--native-test-upstream")?;
+            if let Some(upstream) = test_upstream.as_deref() {
+                let parsed = upstream
+                    .parse::<reqwest::Url>()
+                    .map_err(|_| io::Error::other("invalid native test upstream"))?;
+                if parsed.scheme() != "http"
+                    || parsed.host_str() != Some("127.0.0.1")
+                    || parsed.port().is_none()
+                    || parsed.path() != "/"
+                    || parsed.query().is_some()
+                    || parsed.fragment().is_some()
+                    || !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                {
+                    return Err(io::Error::other("invalid native test upstream"));
+                }
+            }
             AgentSelection::ClaudeCode {
                 executable: required("--agent-executable")?,
                 model: text("--model")?
                     .filter(|value| !value.is_empty())
                     .ok_or_else(|| io::Error::other("required model missing"))?,
                 auth_file: required("--model-auth-file")?,
+                test_upstream,
             }
         }
         _ => return Err(io::Error::other("unsupported or missing agent")),
+    };
+    let native_test_upstream = match &agent {
+        AgentSelection::ClaudeCode { test_upstream, .. } => test_upstream.clone(),
+        AgentSelection::Mock { .. } => None,
     };
     Ok(Options {
         scenario: args[0].clone().into(),
@@ -310,6 +345,7 @@ fn options(args: &[OsString]) -> io::Result<Options> {
         comparison_plan,
         comparison_slot,
         iteration: 1,
+        native_test_upstream,
         maximum_evidence_file_bytes: match text("--max-evidence-bytes")? {
             None => 64 * 1024 * 1024,
             Some(value) => value
@@ -338,6 +374,7 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value,
     let mut reasons = BTreeMap::<String, u64>::new();
     let mut upstream_statuses = BTreeMap::<String, u64>::new();
     let mut only_complete_pairs = true;
+    let mut preflight_rejections = 0_u64;
     let mut rows = 0_u64;
     for line in fs::read_to_string(path)?.lines() {
         rows += 1;
@@ -365,12 +402,39 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value,
             "response_complete" if row["forwarded"] == true => {
                 *completed.entry(sha256.to_owned()).or_default() += 1;
             }
+            "not_sent"
+                if row["reason"] == "method is not allowed"
+                    && row["forwarded"] == false
+                    && row["model"].is_null()
+                    && row["upstream_status"].is_null()
+                    && row["request_bytes"] == 0
+                    && sha256 == format!("{:x}", Sha256::digest([]))
+                    && row["tools"].as_array().is_some_and(Vec::is_empty)
+                    && row["path"].as_str().is_some_and(|path| {
+                        let Some(capability) = path
+                            .strip_prefix('/')
+                            .and_then(|path| path.strip_suffix("/api/hello"))
+                        else {
+                            return false;
+                        };
+                        capability.len() >= 32
+                            && capability.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+                            })
+                    }) =>
+            {
+                preflight_rejections += 1;
+            }
             _ => only_complete_pairs = false,
         }
     }
     let requests = admitted.values().sum::<u64>();
     let delivery_verified = only_complete_pairs
-        && rows == requests.saturating_mul(2)
+        && rows
+            == requests
+                .saturating_mul(2)
+                .saturating_add(preflight_rejections)
+        && preflight_rejections == 1
         && requests != 0
         && requests <= maximum_requests
         && admitted == completed;
@@ -379,7 +443,8 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value,
     }
     Ok((
         json!({"rows":rows,"requests":requests,"responses_complete":completed.values().sum::<u64>(),
-        "maximum_requests":maximum_requests,"delivery_verified":delivery_verified,
+        "maximum_requests":maximum_requests,"preflight_rejections":preflight_rejections,
+        "delivery_verified":delivery_verified,
         "delivery_states":delivery_states,"reasons":reasons,"upstream_statuses":upstream_statuses}),
         delivery_verified,
     ))
@@ -485,7 +550,9 @@ async fn primary(
             executable,
             model,
             auth_file,
+            upstream,
         } => {
+            let test_upstream = (upstream != PRODUCTION_MODEL_UPSTREAM).then(|| upstream.clone());
             let (runtime_directory, runtime_root) = native_runtime_directory(root)?;
             native_runtime = Some(runtime_directory);
             let launch = discover_for_launch(
@@ -500,6 +567,7 @@ async fn primary(
                     audit_file: evidence.join("model-relay-audit.jsonl"),
                     owner_file: evidence.join("model-relay-owner.json"),
                     launch_harness_root: evidence.clone(),
+                    upstream,
                 },
             )
             .await?;
@@ -530,6 +598,8 @@ async fn primary(
                 "runtime_capability_material_retained":false,
             });
             report["adapter"] = launch.adapter.describe();
+            report["adapter"]["native_test_build"] = NATIVE_TEST_BUILD.into();
+            report["adapter"]["test_upstream"] = test_upstream.into();
             report["adapter"]["launcher_profile_sha256"] = launcher_profile_sha256.into();
             report["adapter"]["request_policy_sha256"] = request_policy_sha256.into();
             report["adapter"]["production_request_budget"] =
@@ -624,8 +694,9 @@ async fn primary(
             report["agent"]["outcome"] = json!({"status":"timeout","final_output":""});
             host_io::write_new(&evidence.join("agent.stdout"), b"")?;
         }
-        Ok(Err(_)) => {
-            report["agent"]["outcome"] = json!({"status":"adapter_error","final_output":""});
+        Ok(Err(error)) => {
+            report["agent"]["outcome"] = json!({"status":"adapter_error","final_output":"",
+                "failure":error.to_string()});
             host_io::write_new(&evidence.join("agent.stdout"), b"")?;
             adapter_failed = true;
         }
@@ -791,14 +862,19 @@ async fn execute(
             executable,
             model,
             auth_file,
+            test_upstream,
         } => (
             AgentSetup::ClaudeCode {
                 executable: executable.clone(),
                 model: model.clone(),
                 auth_file: auth_file.clone(),
+                upstream: test_upstream
+                    .clone()
+                    .unwrap_or_else(|| PRODUCTION_MODEL_UPSTREAM.to_owned()),
             },
             None,
-            json!({"adapter":"claude-code","model":model,"authorization":"acceptance_pending"}),
+            json!({"adapter":"claude-code","model":model,"authorization":"acceptance_pending",
+                "native_test_build":NATIVE_TEST_BUILD}),
         ),
     };
     let evaluator_sha256 = host_io::digest(&std::env::current_exe()?)?;
@@ -863,7 +939,7 @@ async fn execute(
         .as_ref()
         .map(|_| host_io::digest(&root.join("mock-script.json")))
         .transpose()?;
-    let mut report = json!({"schema_version":1,"scope":"m5_evaluation","purpose":"collection_and_evaluation","iteration":options.iteration,"adapter":planned_adapter,"comparison_binding":comparison_binding,"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&root.join("bin/izanagi"))?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"mock_script_sha256":mock_script_sha256,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"repeat_interval_seconds":options.repeat_interval_seconds,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"evaluation_pending"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
+    let mut report = json!({"schema_version":1,"scope":"m5_evaluation","purpose":"collection_and_evaluation","iteration":options.iteration,"adapter":planned_adapter,"comparison_binding":comparison_binding,"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&root.join("bin/izanagi"))?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"binary_mode":if NATIVE_TEST_BUILD{"native_test_upstream"}else{"production"},"formal_test_only":NATIVE_TEST_BUILD,"native_test_upstream":options.native_test_upstream,"mock_script_sha256":mock_script_sha256,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"repeat_interval_seconds":options.repeat_interval_seconds,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"evaluation_pending"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
     report["conditions"]["izanagi_version"] = version(&izanagi).await?.into();
     report["conditions"]["tempest_version"] = env!("CARGO_PKG_VERSION").into();
     report["conditions"]["host_utc_offset_seconds"] = host_io::utc_offset_seconds()?.into();
@@ -1372,14 +1448,18 @@ pub fn recover(args: &[OsString]) -> ExitCode {
     }
 }
 pub fn run(args: &[OsString]) -> ExitCode {
+    #[cfg(feature = "native-test-upstream")]
+    let usage = TEST_USAGE;
+    #[cfg(not(feature = "native-test-upstream"))]
+    let usage = USAGE;
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
-        println!("{USAGE}");
+        println!("{usage}");
         return ExitCode::SUCCESS;
     }
     let options = match options(args) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("{error}\n{USAGE}");
+            eprintln!("{error}\n{usage}");
             return ExitCode::from(2);
         }
     };
@@ -1509,6 +1589,71 @@ mod tests {
         assert!(options(&arguments(&incomplete)).is_err());
     }
 
+    #[cfg(not(feature = "native-test-upstream"))]
+    #[test]
+    fn production_build_does_not_expose_test_upstream_option() {
+        let arguments = arguments(&[
+            "scenario.yaml",
+            "--agent",
+            "claude-code",
+            "--agent-executable",
+            "/opt/claude",
+            "--model",
+            "claude-sonnet-5-5",
+            "--model-auth-file",
+            "/tmp/key",
+            "--native-test-upstream",
+            "http://127.0.0.1:1234/",
+            "--izanagi",
+            "/bin/izanagi",
+            "--image",
+            "/tmp/image.qcow2",
+            "--image-inputs",
+            "/tmp/image-inputs.json",
+        ]);
+        assert!(options(&arguments).is_err());
+    }
+
+    #[cfg(feature = "native-test-upstream")]
+    #[test]
+    fn test_build_accepts_only_an_explicit_loopback_upstream() {
+        let base = [
+            "scenario.yaml",
+            "--agent",
+            "claude-code",
+            "--agent-executable",
+            "/opt/claude",
+            "--model",
+            "claude-sonnet-5-5",
+            "--model-auth-file",
+            "/tmp/key",
+            "--izanagi",
+            "/bin/izanagi",
+            "--image",
+            "/tmp/image.qcow2",
+            "--image-inputs",
+            "/tmp/image-inputs.json",
+            "--native-test-upstream",
+        ];
+        let mut allowed = base.to_vec();
+        allowed.push("http://127.0.0.1:1234/");
+        let parsed = options(&arguments(&allowed)).unwrap();
+        assert_eq!(
+            parsed.native_test_upstream.as_deref(),
+            Some("http://127.0.0.1:1234/")
+        );
+        for rejected in [
+            "https://127.0.0.1:1234/",
+            "http://localhost:1234/",
+            "http://127.0.0.1:1234/path",
+            "http://127.0.0.1/",
+        ] {
+            let mut values = base.to_vec();
+            values.push(rejected);
+            assert!(options(&arguments(&values)).is_err());
+        }
+    }
+
     #[test]
     fn native_run_passes_an_uncreated_child_to_capability_discovery() {
         let root = std::env::temp_dir().join(format!(
@@ -1593,10 +1738,19 @@ mod tests {
             "reason":"admission_verified","forwarded":false});
         let completed = json!({"request_sha256":"a".repeat(64),
             "delivery_state":"response_complete","reason":null,"forwarded":true});
-        host_io::write_new(&path, format!("{}\n{}\n", admitted, completed).as_bytes()).unwrap();
+        let hello = json!({"request_sha256":format!("{:x}",Sha256::digest([])),
+            "delivery_state":"not_sent","reason":"method is not allowed","forwarded":false,
+            "model":null,"upstream_status":null,"request_bytes":0,"tools":[],
+            "path":format!("/{}/api/hello","b".repeat(32))});
+        host_io::write_new(
+            &path,
+            format!("{}\n{}\n{}\n", hello, admitted, completed).as_bytes(),
+        )
+        .unwrap();
         let (summary, verified) = model_relay_summary(&path, 20).unwrap();
         assert!(verified);
         assert_eq!(summary["requests"], 1);
+        assert_eq!(summary["preflight_rejections"], 1);
         fs::write(
             &path,
             format!(
@@ -1617,6 +1771,7 @@ mod tests {
     #[test]
     fn repeat_expands_run_and_comparison_slot_ids_deterministically() {
         let options = Options {
+            native_test_upstream: None,
             scenario: "scenario".into(),
             agent: AgentSelection::Mock {
                 script: "script".into(),
@@ -1653,6 +1808,7 @@ mod tests {
             host_io::random_hex().unwrap()
         ));
         let options = Options {
+            native_test_upstream: None,
             scenario: root.join("missing-scenario"),
             agent: AgentSelection::Mock {
                 script: root.join("missing-script"),

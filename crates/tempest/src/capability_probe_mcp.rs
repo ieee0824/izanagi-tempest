@@ -10,14 +10,17 @@ const LIMIT: usize = 1024 * 1024;
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"sandbox_status","description":"Return the fixed capability probe status.",
-         "inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"sandbox_exec","description":"Execute an argv vector inside the Izanagi guest.",
-         "inputSchema":{"type":"object","properties":{"command":{"type":"string"},
-          "args":{"type":"array","items":{"type":"string"}}},"required":["command"],
+        {"name":"sandbox_status","description":"Returns the current sandbox status.",
+         "inputSchema":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
+        {"name":"sandbox_exec","description":"Executes a command inside the sandbox and returns its output.",
+         "inputSchema":{"type":"object","properties":{
+          "command":{"type":"string","description":"The command to execute."},
+          "args":{"type":"array","description":"Arguments to pass to the command.",
+          "items":{"type":"string"}}},"required":["command"],
           "additionalProperties":false}},
-        {"name":"sandbox_shell","description":"Execute a shell command inside the Izanagi guest.",
-         "inputSchema":{"type":"object","properties":{"command":{"type":"string"}},
+        {"name":"sandbox_shell","description":"Executes a shell command inside the sandbox via /bin/sh -c and returns its output.",
+         "inputSchema":{"type":"object","properties":{"command":{"type":"string",
+          "description":"The shell command to execute."}},
           "required":["command"],"additionalProperties":false}}
     ]})
 }

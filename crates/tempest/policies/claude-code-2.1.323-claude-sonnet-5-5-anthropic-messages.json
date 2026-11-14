@@ -21,17 +21,19 @@
   "schema_version": 1,
   "tools": [
     {
-      "description": "Execute an argv vector inside the Izanagi guest.",
+      "description": "Executes a command inside the sandbox and returns its output.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
           "args": {
+          "description": "Arguments to pass to the command.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "command": {
+          "description": "The command to execute.",
             "type": "string"
           }
         },
@@ -43,11 +45,12 @@
       "name": "mcp__tempest__sandbox_exec"
     },
     {
-      "description": "Execute a shell command inside the Izanagi guest.",
+      "description": "Executes a shell command inside the sandbox via /bin/sh -c and returns its output.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
           "command": {
+          "description": "The shell command to execute.",
             "type": "string"
           }
         },
@@ -59,10 +62,11 @@
       "name": "mcp__tempest__sandbox_shell"
     },
     {
-      "description": "Return the fixed capability probe status.",
+      "description": "Returns the current sandbox status.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {},
+      "required": [],
         "type": "object"
       },
       "name": "mcp__tempest__sandbox_status"

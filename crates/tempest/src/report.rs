@@ -910,6 +910,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         .collect();
     let retest = retest_result(scenario.validated.scenario().retest.is_some(), &run);
     let test_image_fixture = is_test_image_fixture(&run);
+    let native_test_build = run.pointer("/conditions/formal_test_only") == Some(&Value::Bool(true));
     let comparison_conditions = comparison_conditions(&run);
     let comparison_binding = if run["comparison_binding"].is_object() {
         let expected_conditions_match =
@@ -930,6 +931,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
     };
     let eligible = run.pointer("/adapter/adapter").and_then(Value::as_str) != Some("mock")
         && !test_image_fixture
+        && !native_test_build
         && complete
         && execution_complete
         && route_coverage_verified
@@ -937,7 +939,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         && !contamination_unresolved
         && attempts["unresolved_deviations"].as_u64() == Some(0)
         && run["status"] == "completed";
-    let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"comparison_conditions":comparison_conditions,"comparison_binding":comparison_binding,"evidence":{"complete":complete,"execution_complete":execution_complete,"route_coverage":if route_coverage_verified{"verified"}else{"unverified"},"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"formal_metrics_exclusions":{"test_image_fixture":test_image_fixture,"route_coverage_unverified":!route_coverage_verified,"execution_incomplete":!execution_complete},"evaluation":if complete && execution_complete{"performed"}else{"partial"}});
+    let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"comparison_conditions":comparison_conditions,"comparison_binding":comparison_binding,"evidence":{"complete":complete,"execution_complete":execution_complete,"route_coverage":if route_coverage_verified{"verified"}else{"unverified"},"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"formal_metrics_exclusions":{"test_image_fixture":test_image_fixture,"native_test_build":native_test_build,"route_coverage_unverified":!route_coverage_verified,"execution_incomplete":!execution_complete},"evaluation":if complete && execution_complete{"performed"}else{"partial"}});
     let mut result = result;
     result["control_integrity"] = control_integrity.into();
     result["control_request_integrity"] = request_integrity.into();
@@ -1119,6 +1121,9 @@ pub(crate) fn comparison_conditions(run: &Value) -> Value {
             "image_sha256":run.pointer("/conditions/image_sha256").cloned().unwrap_or(Value::Null),
             "izanagi_sha256":run.pointer("/conditions/izanagi_sha256").cloned().unwrap_or(Value::Null),
             "tempest_sha256":run.pointer("/conditions/tempest_sha256").cloned().unwrap_or(Value::Null),
+            "binary_mode":run.pointer("/conditions/binary_mode").cloned().unwrap_or(Value::Null),
+            "formal_test_only":run.pointer("/conditions/formal_test_only").cloned().unwrap_or(Value::Null),
+            "native_test_upstream":run.pointer("/conditions/native_test_upstream").cloned().unwrap_or(Value::Null),
             "agent_input_sha256":run.pointer("/conditions/mock_script_sha256").cloned().unwrap_or(Value::Null),
             "companion_sha256":run.pointer("/conditions/companion_sha256").cloned().unwrap_or(Value::Null),
             "codec_sha256":run.pointer("/conditions/codec_sha256").cloned().unwrap_or(Value::Null),
@@ -1698,6 +1703,14 @@ mod tests {
         assert_ne!(
             comparison_conditions(&base),
             comparison_conditions(&another_run)
+        );
+        let mut test_build = base.clone();
+        test_build["conditions"]["binary_mode"] = "native_test_upstream".into();
+        test_build["conditions"]["formal_test_only"] = true.into();
+        test_build["conditions"]["native_test_upstream"] = "http://127.0.0.1:1234/".into();
+        assert_ne!(
+            comparison_conditions(&base),
+            comparison_conditions(&test_build)
         );
     }
 }

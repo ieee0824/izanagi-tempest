@@ -216,6 +216,30 @@ acceptance失敗、relay予算超過、adapter失敗は成功へ昇格せず、�
 正式な比較planを固定する前に、plan外の1 runだけを低額preflightとしてowner承認の上で実行し、
 固定`anthropic-beta` headerを転送しない現在のpolicyを実APIが受理するか確認します。拒否された場合は、
 必要なheader値をmodel別policyへ固定して再review・再acceptanceしてから比較run数と順序を確定します。
+
+途中SSE切断を課金・外部通信なしでnative CLIから集計まで再現する場合だけ、専用feature binaryを使います。
+default buildには`--native-test-upstream`が存在せず、feature binaryが生成する全runは
+`binary_mode=native_test_upstream`、`formal_test_only=true`としてresult/aggregateでも正式指標から除外されます。
+fixtureが差し替えるのはproduction relayのloopback upstreamだけで、acceptance、Permit、Seatbelt、auth隔離、
+policy・予算、実CLI、VM、report/aggregateは本番経路を共有します。
+
+```bash
+cargo build --release --locked -p tempest --features native-test-upstream
+python3 integration/native_test_upstream.py \
+  --tempest target/release/tempest \
+  --claude /absolute/path/to/claude \
+  --izanagi /absolute/path/to/izanagi \
+  --image /absolute/path/to/debian-aarch64.qcow2 \
+  --image-inputs /absolute/path/to/inputs.json \
+  --python /absolute/path/to/python3 \
+  --output /private/tmp/tempest-native-test-upstream-001
+```
+
+scriptはnormal対照と、`message_start`・`content_block_delta`後かつ`message_stop`前に切断するslotを
+同じ固定planへ予約し、partial raw stream、relay delivery failure、cleanup、Uの分母保持まで検査します。
+出力directoryにはplan、run artifacts、aggregate、fixture request logsを残します。この試験は固定Anthropic
+authority、TLS、beta header、実API互換性を証明しないため、owner承認が必要な実API preflightの代替にはしません。
+
 1ファイルの回収上限は`--max-evidence-bytes`（既定64 MiB）で変更できます。
 `--repeat N`（1〜100）は各試行を独立VMで順次実行し、複数回ではrun IDを
 `<run-id>-001`から展開します。comparison planを併用する場合はslot IDも同じ規則で展開するため、

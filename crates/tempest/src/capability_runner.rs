@@ -61,6 +61,36 @@ pub(crate) struct ProductionLaunchConfig {
     pub(crate) audit_file: PathBuf,
     pub(crate) owner_file: PathBuf,
     pub(crate) launch_harness_root: PathBuf,
+    pub(crate) upstream: String,
+}
+
+struct CapabilitySocketDirectory {
+    path: PathBuf,
+    remove_on_drop: bool,
+}
+
+impl Drop for CapabilitySocketDirectory {
+    fn drop(&mut self) {
+        if self.remove_on_drop {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+fn capability_socket_directory(root: &Path) -> io::Result<CapabilitySocketDirectory> {
+    if cfg!(target_os = "macos") {
+        let path = PathBuf::from("/private/tmp").join(format!("tc-{}", host_io::random_hex()?));
+        host_io::directory(&path)?;
+        Ok(CapabilitySocketDirectory {
+            path,
+            remove_on_drop: true,
+        })
+    } else {
+        Ok(CapabilitySocketDirectory {
+            path: root.join("socket"),
+            remove_on_drop: false,
+        })
+    }
 }
 
 fn strict_tempest_catalog(agent: CapabilityAgent, catalog: &[Value]) -> bool {
@@ -727,6 +757,7 @@ fn reviewed_system_configuration() -> io::Result<Vec<Value>> {
 fn prepare_claude_proof(
     root: &Path,
     source: &Path,
+    source_sha256: &str,
     cli_version: &str,
     model: &str,
     request_policy: &Path,
@@ -763,7 +794,7 @@ fn prepare_claude_proof(
         "prompt_policy":"tempest_generated_only","real_authentication_owner":"model_api_relay_only",
         "system_configuration":system_configuration,
         "code_closure":[
-            {"role":"agent_executable","path":source,"sha256":host_io::digest(source)?},
+            {"role":"agent_executable","path":source,"sha256":source_sha256},
             {"role":"mcp_bridge","path":runner,"sha256":runner_sha256},
             {"role":"model_api_relay","path":runner,"sha256":runner_sha256}]
     });
@@ -990,8 +1021,12 @@ async fn discover_inner(
             "capability probe requires a native CLI file",
         ));
     }
+    // Hash the large native CLI before the launch challenge starts. Rehashing
+    // after permit issuance can consume most of its 60-second lifetime.
+    let source_sha256 = host_io::digest(&source)?;
     host_io::directory(&config.output)?;
     let root = config.output.canonicalize()?;
+    let socket_directory = capability_socket_directory(&root)?;
     for directory in [
         "jail",
         "jail/bin",
@@ -1012,7 +1047,7 @@ async fn discover_inner(
     private_file(&sandbox_profile, include_bytes!("darwin-agent.sb"))?;
     let host_canary = root.join("host-canary");
     let hmac_file = root.join("host-hmac");
-    let control_socket = root.join("host-control");
+    let control_socket = socket_directory.path.join("control-discovery");
     let write_canary = root.join("host-write-canary");
     let canary_value = host_io::random_hex()?;
     private_file(&host_canary, canary_value.as_bytes())?;
@@ -1034,7 +1069,7 @@ async fn discover_inner(
         &hmac_file,
     )
     .await?;
-    let socket = root.join("socket/mcp");
+    let socket = socket_directory.path.join("mcp-discovery");
     let control_listener = prove_control_socket_denied(
         &control_socket,
         &sandbox_profile,
@@ -1193,6 +1228,7 @@ async fn discover_inner(
         let prepared_proof = prepare_claude_proof(
             &root,
             &source,
+            &source_sha256,
             &cli_version,
             &config.model,
             &policy_path,
@@ -1200,7 +1236,7 @@ async fn discover_inner(
         )?;
         let challenge = ProbeChallenge::generate()?;
         let acceptance_capability = challenge.probe_id().to_owned();
-        let acceptance_control_socket = root.join("host-control-acceptance");
+        let acceptance_control_socket = socket_directory.path.join("control-acceptance");
         let acceptance_provider = ProbeProvider::start_with_sse_delay(
             ProbeIdentity {
                 agent: provider_agent,
@@ -1224,7 +1260,7 @@ async fn discover_inner(
             &root.join("harness/model-relay-audit.jsonl"),
         )
         .await?;
-        let acceptance_socket = root.join("socket/mcp-acceptance");
+        let acceptance_socket = socket_directory.path.join("mcp-acceptance");
         let control_started_ns = host_io::now_ns()?;
         let acceptance_control_listener = prove_control_socket_denied(
             &acceptance_control_socket,
@@ -1367,7 +1403,7 @@ async fn discover_inner(
                     model_api_relay::start_production_relay(
                         model_api_relay::ProductionRelayConfig {
                             executable: &staged_code.join("host/model-api-relay"),
-                            upstream: "https://api.anthropic.com/",
+                            upstream: &production.upstream,
                             policy_file: &policy_path,
                             auth_file: &production.auth_file,
                             auth_header: "x-api-key",
@@ -1431,7 +1467,7 @@ async fn discover_inner(
             agent: config.agent,
             cli_version,
             model: config.model,
-            executable_sha256: host_io::digest(&source)?,
+            executable_sha256: source_sha256,
             catalogs,
             tool_outputs,
             request_fields,
@@ -1468,6 +1504,21 @@ pub(crate) async fn discover_for_launch(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn capability_sockets_stay_below_the_darwin_unix_path_limit() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-capability-long-output-{}/nested/discovery",
+            "x".repeat(120)
+        ));
+        let directory = capability_socket_directory(&root).unwrap();
+        if cfg!(target_os = "macos") {
+            assert!(directory.path.join("control-acceptance").as_os_str().len() < 104);
+            assert!(!directory.path.starts_with(&root));
+        } else {
+            assert_eq!(directory.path, root.join("socket"));
+        }
+    }
 
     fn codex_outputs() -> Vec<Vec<Value>> {
         let mut outputs = (0..5)

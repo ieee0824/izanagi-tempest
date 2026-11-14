@@ -87,6 +87,17 @@ open後のFIFO identityを再検査し、期限付きhandshakeが成立してか
 signalを送らず消滅だけを確認し、PGID再利用時に無関係なprocess groupを停止しない。
 FIFOはhandshake直後にunlinkするが、それまでの短い区間はowner-private directoryへアクセスできる同一UIDのprocessが
 追加writerを開ける。同一UIDのhost processを攻撃者境界には含めず、異なるUIDやguestからはpathへ到達できない前提とする。
+
+本番契約の途中SSE切断は、compile-time feature `native-test-upstream`を有効にした専用binaryだけで検査する。
+default buildは上流差替えoptionを公開せず、feature binaryが生成する全runへ
+`binary_mode=native_test_upstream`と`formal_test_only=true`をbinary自身が付与する。report/aggregateはこのrunを
+正式指標から必ず除外し、比較条件にもtest upstreamを含める。差替え対象はproduction relayの上流authorityだけで、
+acceptance、LaunchPermit、Seatbelt、認証隔離、policy・予算、実CLI、VM、primary、report/aggregateは同じ経路を使う。
+normal対照と、validな`message_start`・`content_block_delta`後かつ`message_stop`前に切断するslotを事前固定planへ予約し、
+後者がbounded retry、部分responseのbyte数・hash、delivery failure、cleanup、分母1のUとして残ることを
+`integration/native_test_upstream.py`で検査する。このfixtureは固定Anthropic authority、TLS、beta header、
+実API互換性を証明しないため、owner承認が必要な実API preflightと2model比較を置き換えない。
+
 一時capabilityとauthorized codeはrun後に削除する一方、非秘密のlauncher profile、proof、policy、
 check別evidence、acceptance relay/MCP auditは`evidence/native-acceptance/`へ保存して後日監査できるようにする。
 macOS launcherは固定hashの`/usr/bin/sandbox-exec`と同梱Seatbelt profileを必須にする。agent executable、

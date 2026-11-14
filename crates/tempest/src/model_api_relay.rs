@@ -566,12 +566,39 @@ fn audit(
     admission: Option<&Admission>,
     upstream_status: Option<u16>,
 ) -> io::Result<()> {
+    audit_with_response(
+        state,
+        forwarded,
+        body,
+        reason,
+        path,
+        admission,
+        upstream_status,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn audit_with_response(
+    state: &State,
+    forwarded: bool,
+    body: &[u8],
+    reason: Option<&str>,
+    path: &str,
+    admission: Option<&Admission>,
+    upstream_status: Option<u16>,
+    response_observation: Option<(usize, String)>,
+) -> io::Result<()> {
     let model = admission.map(|value| value.model.as_str());
     let tools = admission.map(|value| value.tools.as_slice()).unwrap_or(&[]);
     let delivery_state = delivery_state(forwarded, reason);
+    let (response_bytes, response_sha256) = response_observation
+        .map(|(bytes, sha256)| (Some(bytes), Some(sha256)))
+        .unwrap_or((None, None));
     let event = json!({"forwarded":forwarded,"request_sha256":format!("{:x}",Sha256::digest(body)),
         "request_bytes":body.len(),"path":path,"model":model,"tools":tools,"reason":reason,
-        "upstream_status":upstream_status,"delivery_state":delivery_state});
+        "upstream_status":upstream_status,"delivery_state":delivery_state,
+        "response_bytes":response_bytes,"response_sha256":response_sha256});
     let mut file = state
         .audit
         .lock()
@@ -771,12 +798,13 @@ async fn handle(
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     tokio::spawn(async move {
         let mut total = 0usize;
+        let mut response_digest = Sha256::new();
         let mut downstream_open = true;
         while let Some(chunk) = upstream.next().await {
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(_) => {
-                    let _ = audit(
+                    let _ = audit_with_response(
                         &state,
                         false,
                         &body,
@@ -784,6 +812,7 @@ async fn handle(
                         &suffix,
                         Some(&admission),
                         Some(status.as_u16()),
+                        Some((total, format!("{:x}", response_digest.finalize()))),
                     );
                     if downstream_open {
                         let _ = sender
@@ -794,8 +823,9 @@ async fn handle(
                 }
             };
             total = total.saturating_add(chunk.len());
+            response_digest.update(&chunk);
             if total > MAX_RESPONSE {
-                let _ = audit(
+                let _ = audit_with_response(
                     &state,
                     false,
                     &body,
@@ -803,6 +833,7 @@ async fn handle(
                     &suffix,
                     Some(&admission),
                     Some(status.as_u16()),
+                    Some((total, format!("{:x}", response_digest.finalize()))),
                 );
                 if downstream_open {
                     let _ = sender
@@ -816,7 +847,7 @@ async fn handle(
             }
         }
         let reason = (!downstream_open).then_some("downstream response closed");
-        let audited = audit(
+        let audited = audit_with_response(
             &state,
             downstream_open,
             &body,
@@ -824,6 +855,7 @@ async fn handle(
             &suffix,
             Some(&admission),
             Some(status.as_u16()),
+            Some((total, format!("{:x}", response_digest.finalize()))),
         );
         if audited.is_err() && downstream_open {
             let _ = sender
@@ -952,7 +984,14 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
         .ok_or_else(|| invalid("invalid upstream URL"))?
         .parse::<reqwest::Url>()
         .map_err(|error| invalid(error.to_string()))?;
-    if upstream.scheme() != "https"
+    let production_upstream = upstream.scheme() == "https";
+    #[cfg(feature = "native-test-upstream")]
+    let test_upstream = upstream.scheme() == "http"
+        && upstream.host_str() == Some("127.0.0.1")
+        && upstream.port().is_some();
+    #[cfg(not(feature = "native-test-upstream"))]
+    let test_upstream = false;
+    if (!production_upstream && !test_upstream)
         || upstream.host_str().is_none()
         || !upstream.username().is_empty()
         || upstream.password().is_some()
@@ -1467,6 +1506,8 @@ mod tests {
             row["forwarded"] == false
                 && row["reason"] == "upstream response failed"
                 && row["delivery_state"] == "request_sent_response_failed"
+                && row["response_bytes"] == 8
+                && row["response_sha256"] == format!("{:x}", Sha256::digest(b"partial\n"))
         }));
         fs::remove_dir_all(root).unwrap();
     }

@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# Builds a formally ineligible runtime that can replace only the production
+# model relay authority with an owner-selected loopback fixture.
+native-test-upstream = []
+
 [dependencies]
 tempest-model.workspace = true
 serde.workspace = true
