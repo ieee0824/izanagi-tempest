@@ -68,7 +68,14 @@ struct Policy {
     request_value_types: Vec<String>,
     request_headers: BTreeMap<String, String>,
     maximum_requests: u64,
+    mcp_catalog_source: McpCatalogSource,
     tools: Vec<Value>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpCatalogSource {
+    executable_sha256: String,
+    version: String,
 }
 struct ValidatedPolicy {
     paths: BTreeSet<String>,
@@ -415,6 +422,14 @@ fn validate_policy(value: Value) -> io::Result<ValidatedPolicy> {
         || policy.tools.is_empty()
         || !(1..=policy.maximum_requests).contains(&policy.acceptance_requests)
         || !(1..=1000).contains(&policy.maximum_requests)
+        || policy.mcp_catalog_source.version.is_empty()
+        || policy.mcp_catalog_source.version.len() > 256
+        || policy.mcp_catalog_source.executable_sha256.len() != 64
+        || !policy
+            .mcp_catalog_source
+            .executable_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
     {
         return Err(invalid("invalid model relay policy"));
     }
@@ -542,6 +557,10 @@ fn response(status: StatusCode, reason: &str) -> Response<RelayBody> {
         .unwrap()
 }
 
+fn reviewed_preflight(method: &hyper::Method, request_target: &str, capability: &str) -> bool {
+    method == hyper::Method::HEAD && request_target == format!("/{capability}/api/hello")
+}
+
 fn delivery_state(forwarded: bool, reason: Option<&str>) -> &'static str {
     match (forwarded, reason) {
         (true, _) => "response_complete",
@@ -557,8 +576,10 @@ fn delivery_state(forwarded: bool, reason: Option<&str>) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn audit(
     state: &State,
+    method: &str,
     forwarded: bool,
     body: &[u8],
     reason: Option<&str>,
@@ -568,6 +589,7 @@ fn audit(
 ) -> io::Result<()> {
     audit_with_response(
         state,
+        method,
         forwarded,
         body,
         reason,
@@ -581,6 +603,7 @@ fn audit(
 #[allow(clippy::too_many_arguments)]
 fn audit_with_response(
     state: &State,
+    method: &str,
     forwarded: bool,
     body: &[u8],
     reason: Option<&str>,
@@ -596,7 +619,7 @@ fn audit_with_response(
         .map(|(bytes, sha256)| (Some(bytes), Some(sha256)))
         .unwrap_or((None, None));
     let event = json!({"forwarded":forwarded,"request_sha256":format!("{:x}",Sha256::digest(body)),
-        "request_bytes":body.len(),"path":path,"model":model,"tools":tools,"reason":reason,
+        "request_bytes":body.len(),"method":method,"path":path,"model":model,"tools":tools,"reason":reason,
         "upstream_status":upstream_status,"delivery_state":delivery_state,
         "response_bytes":response_bytes,"response_sha256":response_sha256});
     let mut file = state
@@ -611,34 +634,41 @@ async fn handle(
     request: Request<Incoming>,
     state: Arc<State>,
 ) -> Result<Response<RelayBody>, std::convert::Infallible> {
-    if request.method() != hyper::Method::POST {
-        let _ = audit(
-            &state,
-            false,
-            &[],
-            Some("method is not allowed"),
-            request.uri().path(),
-            None,
-            None,
-        );
-        return Ok(response(
-            StatusCode::METHOD_NOT_ALLOWED,
-            "method is not allowed",
-        ));
-    }
-    let prefix = format!("/{}", state.path_capability);
     let request_target = request
         .uri()
         .path_and_query()
         .map(|value| value.as_str())
-        .unwrap_or_else(|| request.uri().path());
+        .unwrap_or_else(|| request.uri().path())
+        .to_owned();
+    if request.method() != hyper::Method::POST {
+        let reviewed_hello =
+            reviewed_preflight(request.method(), &request_target, &state.path_capability);
+        let reason = if reviewed_hello {
+            "reviewed preflight rejected"
+        } else {
+            "method is not allowed"
+        };
+        let _ = audit(
+            &state,
+            request.method().as_str(),
+            false,
+            &[],
+            Some(reason),
+            &request_target,
+            None,
+            None,
+        );
+        return Ok(response(StatusCode::METHOD_NOT_ALLOWED, reason));
+    }
+    let prefix = format!("/{}", state.path_capability);
     let Some(suffix) = request_target.strip_prefix(&prefix).map(str::to_owned) else {
         let _ = audit(
             &state,
+            "POST",
             false,
             &[],
             Some("invalid relay capability"),
-            request_target,
+            &request_target,
             None,
             None,
         );
@@ -647,10 +677,11 @@ async fn handle(
     if !suffix.starts_with('/') {
         let _ = audit(
             &state,
+            "POST",
             false,
             &[],
             Some("invalid relay path"),
-            request_target,
+            &request_target,
             None,
             None,
         );
@@ -665,6 +696,7 @@ async fn handle(
     {
         let _ = audit(
             &state,
+            "POST",
             false,
             &[],
             Some("invalid request length"),
@@ -689,6 +721,7 @@ async fn handle(
         Err(error) => {
             let _ = audit(
                 &state,
+                "POST",
                 false,
                 &body,
                 Some(&error.to_string()),
@@ -702,6 +735,7 @@ async fn handle(
     if state.requests.fetch_add(1, Ordering::SeqCst) >= state.policy.maximum_requests {
         let _ = audit(
             &state,
+            "POST",
             false,
             &body,
             Some("model request budget exhausted"),
@@ -725,6 +759,7 @@ async fn handle(
         _ => {
             let _ = audit(
                 &state,
+                "POST",
                 false,
                 &body,
                 Some("upstream authority changed"),
@@ -740,6 +775,7 @@ async fn handle(
     };
     if audit(
         &state,
+        "POST",
         false,
         &body,
         Some("admission_verified"),
@@ -764,6 +800,7 @@ async fn handle(
         Err(_) => {
             let _ = audit(
                 &state,
+                "POST",
                 false,
                 &body,
                 Some("upstream transport failed"),
@@ -780,6 +817,7 @@ async fn handle(
     if upstream.status().is_redirection() {
         let _ = audit(
             &state,
+            "POST",
             false,
             &body,
             Some(&format!("upstream redirect {}", upstream.status())),
@@ -806,6 +844,7 @@ async fn handle(
                 Err(_) => {
                     let _ = audit_with_response(
                         &state,
+                        "POST",
                         false,
                         &body,
                         Some("upstream response failed"),
@@ -827,6 +866,7 @@ async fn handle(
             if total > MAX_RESPONSE {
                 let _ = audit_with_response(
                     &state,
+                    "POST",
                     false,
                     &body,
                     Some("upstream response too large"),
@@ -849,6 +889,7 @@ async fn handle(
         let reason = (!downstream_open).then_some("downstream response closed");
         let audited = audit_with_response(
             &state,
+            "POST",
             downstream_open,
             &body,
             reason,
@@ -1216,7 +1257,8 @@ mod tests {
         "paths":["/v1/messages"],"models":["model-1"],
         "top_level_fields":["model","prompt","tools"],"request_value_types":["text"],
         "request_headers":{"content-type":"application/json","x-tempest-profile":"fixed"},
-        "maximum_requests":20,
+        "maximum_requests":20,"mcp_catalog_source":{"version":"izanagi 0.2.7",
+        "executable_sha256":"a".repeat(64)},
         "tools":[{"type":"function","name":"mcp__tempest__status","description":"fixed","input_schema":{"type":"object"}}]})
     }
 
@@ -1227,6 +1269,28 @@ mod tests {
 
     fn policy() -> ValidatedPolicy {
         validate_policy(policy_value()).unwrap()
+    }
+    #[test]
+    fn reviewed_preflight_requires_head_exact_capability_and_no_query() {
+        let capability = "c".repeat(32);
+        assert!(reviewed_preflight(
+            &hyper::Method::HEAD,
+            &format!("/{capability}/api/hello"),
+            &capability
+        ));
+        for (method, target) in [
+            (hyper::Method::GET, format!("/{capability}/api/hello")),
+            (
+                hyper::Method::HEAD,
+                format!("/{capability}/api/hello?extra=1"),
+            ),
+            (
+                hyper::Method::HEAD,
+                format!("/{}/api/hello", "x".repeat(32)),
+            ),
+        ] {
+            assert!(!reviewed_preflight(&method, &target, &capability));
+        }
     }
     #[test]
     fn exact_request_is_admitted_and_expansion_is_rejected() {
@@ -1242,6 +1306,7 @@ mod tests {
             "paths":["/v1/messages?beta=true"],"models":["model-1"],
             "top_level_fields":["model","prompt","tools"],
             "request_value_types":["text"],"request_headers":{},"maximum_requests":1,
+            "mcp_catalog_source":{"version":"izanagi 0.2.7","executable_sha256":"a".repeat(64)},
             "tools":[{"type":"function","name":"mcp__tempest__status",
                 "description":"fixed","input_schema":{"type":"object"}}]}))
         .unwrap();

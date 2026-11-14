@@ -63,7 +63,10 @@ loopbackの能力pathと許可pathへのPOSTだけを受け、model、top-level 
 tool以外の`type`付きrequest blockもpolicyの許可typeと照合する。agent由来headerは転送せず、policyで固定した
 headerとrelay所有の認証headerだけを上流へ送る。query付きpathとContent-Lengthのないrequestは拒否する。
 上流authorityを固定し、上流の全3xxをLocationなしの502へ変換する。auditにはrequest本文や認証値を保存せず
-hash・byte数・model・path・tool名・判定・上流statusだけを残す。Rust testは完全一致の正対照、各負例、
+hash・byte数・method・request target・model・tool名・判定・上流statusだけを残す。Claudeの事前helloは
+実測したHEAD、queryなし、実capabilityと一致する完全pathを満たす1件だけを専用理由で監査済み拒否として扱い、
+GET/DELETE、偽capability、query付き、重複はdelivery検証を失敗させる。この事前拒否はmodel request予算を消費しない。
+Rust testは完全一致の正対照、各負例、
 302を追うclientでも別authority sink到達0を検査する。native runは同じ実行内でdiscovery、acceptance、
 正式proof、計測済みrelay、LaunchPermitを接続し、CLI processの直接egressをSeatbeltでrelay portだけに制限する。
 上流認証値はowner-private fileから中継だけが読み、agentが付けたAuthorization/x-api-keyは破棄して
@@ -120,6 +123,10 @@ harness rootとの包含・重複、余分なsecret file、root jailを拒否す
 上流authority、request policy hash、引数template、環境変数ごとの値の出どころ、空HOME/cwd、prompt源、
 実行code closureを固定する。code closureのagent executable、MCP bridge、API relayをlive file hashで再照合する。
 本物の認証はrelayだけが所有し、agentには固定placeholderだけを与える。
+review済みrequest policyはtool catalogの写し元となるIzanagiのversionとbinary hashも固定する。本番CLI起動前に
+同じIzanagi binaryの別MCP processへread-onlyなinitialize/tools/listを行い、実catalogをprovider表現へ変換して
+policyと完全一致比較する。source identityまたはcatalogが違えばmodel requestを送らずrunを中止し、比較hashを
+`evidence/production-mcp-catalog.json`へ残す。したがって受入用MCPの写しだけで本番catalog一致を主張しない。
 script/shimやPATH解決は正式profileで認めず、Codexは同梱native binary、Claude Codeはnative binaryの
 canonical targetを指定する。検証後はclosureの各fileをrun私有directoryへコピーし、copyのhashを再照合して
 そのcopyだけを実行する。API relayも最終的に同じnative `tempest` binaryへ統合し、Python prototypeを正式launcherで使わない。

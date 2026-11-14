@@ -183,6 +183,9 @@ def main():
             raise AssertionError('truncated SSE run unexpectedly completed')
 
     cut_root = runs / 'sse-cut'
+    normal_root = runs / 'normal'
+    normal_report = json.loads((normal_root / 'run.json').read_text())
+    normal_result = json.loads((normal_root / 'result.json').read_text())
     cut_report = json.loads((cut_root / 'run.json').read_text())
     cut_result = json.loads((cut_root / 'result.json').read_text())
     if cut_report['status'] != 'aborted' or cut_result['finding']['outcome'] != 'unknown':
@@ -195,9 +198,22 @@ def main():
     raw = (cut_root / 'evidence/agent.events.jsonl').read_text()
     failures = [row for row in audit_rows
                 if row['delivery_state'] == 'request_sent_response_failed']
-    if not failures or not all(row['reason'] == 'upstream response failed'
-                               and row['response_bytes'] > 0
-                               and len(row['response_sha256']) == 64 for row in failures) \
+    admitted = [row for row in audit_rows if row['reason'] == 'admission_verified']
+    expected_partial = response(False)
+    expected_partial_sha256 = hashlib.sha256(expected_partial).hexdigest()
+    cut_requests = [json.loads(line) for line in cut_log.read_text().splitlines()]
+    budget = cut_report['primary']['native_acceptance']['production_request_budget']
+    if not failures or len(failures) > budget or len(failures) != len(cut_requests) \
+            or len(admitted) != len(failures) \
+            or [row['request_sha256'] for row in failures] != \
+            [row['body_sha256'] for row in cut_requests] \
+            or [row['request_sha256'] for row in admitted] != \
+            [row['body_sha256'] for row in cut_requests] \
+            or not all(row['reason'] == 'upstream response failed'
+                       and row['upstream_status'] == 200
+                       and row['response_bytes'] == len(expected_partial)
+                       and row['response_sha256'] == expected_partial_sha256
+                       for row in failures) \
             or 'api_retry' not in raw or 'message_stop' in raw:
         raise AssertionError('partial stream or delivery failure evidence is missing')
     cleanup = cut_report['primary']['cleanup']
@@ -208,6 +224,15 @@ def main():
     if aggregate.returncode:
         raise AssertionError(f'aggregate failed: {aggregate.stdout} {aggregate.stderr}')
     value = json.loads((runs / 'aggregate.json').read_text())
+    if normal_report['status'] != 'completed' or normal_result['status'] != 'completed' \
+            or normal_result['formal_metrics_eligible'] is not False \
+            or normal_result['formal_metrics_exclusions']['native_test_build'] is not True \
+            or normal_report['primary']['model_relay_audit']['summary']['delivery_verified'] is not True:
+        raise AssertionError('normal control was not completed and formally excluded')
+    if value['selection'] != {'rule': 'precommitted_plan_slots', 'planned': 2,
+                              'discovered_directories': 2, 'committed': 2,
+                              'unavailable': 0, 'unplanned': 0}:
+        raise AssertionError('aggregate did not retain exactly the two planned slots')
     cut_group = next(group for group in value['groups']
                      if group['conditions']['run'] == cut_conditions)
     if cut_group['finding']['denominator'] != 1 \
@@ -216,7 +241,9 @@ def main():
         raise AssertionError('fault slot was not retained as one ineligible U')
     print(json.dumps({'native_test_upstream': 'passed', 'output': str(args.output),
                       'normal_requests': len(normal_log.read_text().splitlines()),
-                      'cut_requests': len(cut_log.read_text().splitlines())}))
+                      'cut_requests': len(cut_requests),
+                      'partial_bytes': len(expected_partial),
+                      'partial_sha256': expected_partial_sha256}))
 
 
 if __name__ == '__main__':

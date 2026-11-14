@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "scope": "native_test_upstream_non_formal_evidence",
+  "output": "/private/tmp/tempest-native-test-upstream-012",
+  "feature_binary_sha256": "df5d1dc691563b85cbfdc9ebc61500b3f881844769fb16674d121ade5b8e3225",
+  "mcp_catalog": {
+    "source_version": "izanagi 0.2.7",
+    "source_executable_sha256": "41a43bfe3c37bbbd7e2f0fa9f0fc51a1ac628045401da612984ebc894aad802b",
+    "expected_sha256": "2ad8bdf05412b99d5cf6e19321c048555da6d84e21b4b0d4855e04ce0d451b33",
+    "observed_sha256": "2ad8bdf05412b99d5cf6e19321c048555da6d84e21b4b0d4855e04ce0d451b33",
+    "tool_count": 3,
+    "verified": true
+  },
+  "normal": {
+    "status": "completed",
+    "formal_test_only": true,
+    "model_requests": 1,
+    "responses_complete": 1,
+    "preflight_rejections": 1,
+    "cleanup_verified": true,
+    "run_sha256": "25bcdc575bab82159a9a86771c00d14685ad11063243fb2daa3cb93f6edc39f7",
+    "result_sha256": "4d500db3c4574379c90228d5952114d0af051c85b49eadb9c85b55b2f213d175",
+    "relay_audit_sha256": "f935120a0c73d73ba3177ea3b17279a1c9ad14461ea045dd5d7e5829b3d93e53",
+    "mcp_catalog_evidence_sha256": "f700fd63104e114b25b5fb2bc1283f2f09f5a8ffc8b95a04628859e776c55d89"
+  },
+  "sse_cut": {
+    "status": "aborted",
+    "finding": "unknown",
+    "formal_test_only": true,
+    "model_requests": 12,
+    "request_budget": 20,
+    "request_sent_response_failed": 12,
+    "upstream_status": 200,
+    "partial_response_bytes": 631,
+    "partial_response_sha256": "8cc7fd46fe6f49bd8081283c313bef3caf45177d284ef994b53dd89b8be99ce8",
+    "preflight_rejections": 1,
+    "cleanup_verified": true,
+    "run_sha256": "20c214ab5bab278e93a913a8b7eb15c808b20be40b077681ee27d51ec4ff668c",
+    "result_sha256": "8059e0dfb9e40fc27581e9c81e1001d843b93747ef162034f07c62b25c4472ad",
+    "relay_audit_sha256": "a1dc750fc258b4b22175a6938e820b7c8f3e2b6d3fe9113bdbea4ee4350dee95",
+    "mcp_catalog_evidence_sha256": "f700fd63104e114b25b5fb2bc1283f2f09f5a8ffc8b95a04628859e776c55d89"
+  },
+  "aggregate": {
+    "planned": 2,
+    "discovered": 2,
+    "committed": 2,
+    "unavailable": 0,
+    "unplanned": 0,
+    "fault_denominator": 1,
+    "fault_unknown": 1,
+    "fault_formal_ineligible": 1,
+    "sha256": "59f47a821117ca27963ab9b5c0a67d2bde213a6833c0085a502aadae62cc759b"
+  },
+  "limitations": [
+    "The feature binary is not the production binary.",
+    "The loopback fixture does not prove the fixed Anthropic authority, TLS, beta header, or real API compatibility.",
+    "The agent event stream exposes retries but not provider partial SSE bytes; the relay audit binds the partial byte count and digest."
+  ]
+}

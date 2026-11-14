@@ -239,6 +239,8 @@ scriptはnormal対照と、`message_start`・`content_block_delta`後かつ`mess
 同じ固定planへ予約し、partial raw stream、relay delivery failure、cleanup、Uの分母保持まで検査します。
 出力directoryにはplan、run artifacts、aggregate、fixture request logsを残します。この試験は固定Anthropic
 authority、TLS、beta header、実API互換性を証明しないため、owner承認が必要な実API preflightの代替にはしません。
+最新の非秘密な実測要約と成果物hashは
+[M6-NATIVE-TEST-EVIDENCE.json](docs/M6-NATIVE-TEST-EVIDENCE.json) に固定しています。
 
 1ファイルの回収上限は`--max-evidence-bytes`（既定64 MiB）で変更できます。
 `--repeat N`（1〜100）は各試行を独立VMで順次実行し、複数回ではrun IDを

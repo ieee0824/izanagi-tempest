@@ -8,6 +8,7 @@ use crate::{
     plan::{ExecutionPlan, Stage},
     relay::RelayConfig,
     report as evaluation_report,
+    rpc::Rpc,
     scenario::load,
     seed_controller::SeedController,
     supervisor::{Supervisor, SupervisorConfig},
@@ -29,6 +30,7 @@ use tempest_model::{
     guest::{AccessKeys, ProbeOutcome, ProbeResult},
     scenario::Outcome,
 };
+use tokio::io::AsyncWriteExt;
 
 #[cfg(not(feature = "native-test-upstream"))]
 const USAGE: &str = "Usage: tempest run SCENARIO (--agent mock --mock-script FILE | --agent claude-code --agent-executable FILE --model EXACT_MODEL_ID --model-auth-file FILE) --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--repeat-interval-seconds N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]";
@@ -403,7 +405,8 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value,
                 *completed.entry(sha256.to_owned()).or_default() += 1;
             }
             "not_sent"
-                if row["reason"] == "method is not allowed"
+                if row["reason"] == "reviewed preflight rejected"
+                    && row["method"] == "HEAD"
                     && row["forwarded"] == false
                     && row["model"].is_null()
                     && row["upstream_status"].is_null()
@@ -448,6 +451,123 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value,
         "delivery_states":delivery_states,"reasons":reasons,"upstream_statuses":upstream_statuses}),
         delivery_verified,
     ))
+}
+
+fn provider_catalog(tools: &[Value]) -> io::Result<Vec<Value>> {
+    let mut catalog = tools
+        .iter()
+        .map(|tool| {
+            let object = tool
+                .as_object()
+                .filter(|object| {
+                    object.len() == 3
+                        && object.contains_key("name")
+                        && object.contains_key("description")
+                        && object.contains_key("inputSchema")
+                })
+                .ok_or_else(|| io::Error::other("unexpected production MCP tool shape"))?;
+            let name = object["name"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| io::Error::other("production MCP tool name missing"))?;
+            Ok(json!({
+                "name":format!("mcp__tempest__{name}"),
+                "description":object["description"],
+                "input_schema":object["inputSchema"],
+            }))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    catalog.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+    if catalog
+        .windows(2)
+        .any(|pair| pair[0]["name"] == pair[1]["name"])
+    {
+        return Err(io::Error::other("duplicate production MCP tool"));
+    }
+    Ok(catalog)
+}
+
+async fn verify_production_mcp_catalog(
+    izanagi: &Path,
+    cwd: &Path,
+    hmac: &Path,
+    policy: &Value,
+    evidence: &Path,
+) -> io::Result<Value> {
+    let expected_version = policy
+        .pointer("/mcp_catalog_source/version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("MCP catalog source version missing"))?;
+    let expected_executable = policy
+        .pointer("/mcp_catalog_source/executable_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("MCP catalog source hash missing"))?;
+    let observed_version = version(izanagi).await?;
+    let observed_executable = host_io::digest(izanagi)?;
+    if observed_version != expected_version || observed_executable != expected_executable {
+        return Err(io::Error::other("production MCP catalog source mismatch"));
+    }
+    let hmac_file = crate::proxy_cli::secret_reference(hmac)?;
+    let cursor = hmac_file.try_clone()?;
+    let stderr = crate::proxy_cli::private_new(&evidence.join("mcp-catalog.stderr"))?;
+    let mut command = host_io::command(izanagi);
+    command
+        .arg("mcp")
+        .current_dir(cwd)
+        .env_clear()
+        .env("TERM", "dumb")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(stderr))
+        .kill_on_drop(true);
+    for name in ["HOME", "PATH", "TZ"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    crate::proxy_cli::inherit_secret(&mut command, hmac_file);
+    let mut child = command.spawn()?;
+    let stdout = child.stdout.take().expect("piped");
+    let stdin = child.stdin.take().expect("piped");
+    let mut rpc = Rpc::new(
+        stdout,
+        crate::proxy_cli::SecretWriter::new(stdin, Some(cursor)),
+    );
+    let timeout = Duration::from_secs(10);
+    let initialized = rpc.request("initialize", json!({}), timeout).await?;
+    if initialized.get("error").is_some() {
+        return Err(io::Error::other("production MCP initialize rejected"));
+    }
+    let tools = rpc.request("tools/list", json!({}), timeout).await?;
+    let observed = tools
+        .pointer("/result/tools")
+        .and_then(Value::as_array)
+        .ok_or_else(|| io::Error::other("production MCP tools/list rejected"))?;
+    let observed = provider_catalog(observed)?;
+    let mut expected = policy["tools"]
+        .as_array()
+        .cloned()
+        .ok_or_else(|| io::Error::other("request policy tool catalog missing"))?;
+    expected.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+    let observed_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&observed)?));
+    let expected_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&expected)?));
+    let result = json!({
+        "verified":observed == expected,
+        "source":{"version":observed_version,"executable_sha256":observed_executable},
+        "observed_sha256":observed_sha256,
+        "expected_sha256":expected_sha256,
+        "tool_count":observed.len(),
+    });
+    host_io::json_new(&evidence.join("production-mcp-catalog.json"), &result)?;
+    rpc.writer.shutdown().await?;
+    drop(rpc);
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .map_err(|_| io::Error::other("production MCP catalog process deadline"))??;
+    if !status.success() || result["verified"] != true {
+        return Err(io::Error::other("production MCP tool catalog mismatch"));
+    }
+    Ok(result)
 }
 fn seed_error(_: io::Error) -> Diagnostic {
     Diagnostic::new("runtime.seed", "seed response unavailable; discard VM")
@@ -575,6 +695,14 @@ async fn primary(
             let request_policy: Value = serde_json::from_slice(&fs::read(
                 runtime_root.join("harness/request-policy.json"),
             )?)?;
+            let production_mcp_catalog = verify_production_mcp_catalog(
+                vm.izanagi_path(),
+                &vm.workspace,
+                &vm.hmac,
+                &request_policy,
+                &evidence,
+            )
+            .await?;
             let launcher_profile_sha256 =
                 host_io::digest(&runtime_root.join("acceptance-proof/launcher-profile.json"))?;
             let capability_proof_sha256 =
@@ -594,6 +722,7 @@ async fn primary(
                 "request_policy_sha256":request_policy_sha256,
                 "acceptance_request_count":request_policy["acceptance_requests"],
                 "production_request_budget":request_policy["maximum_requests"],
+                "production_mcp_catalog":production_mcp_catalog,
                 "preserved_evidence_root":"evidence/native-acceptance",
                 "runtime_capability_material_retained":false,
             });
@@ -1151,8 +1280,10 @@ fn allowed_artifact(path: &str) -> bool {
             | "evidence/mcp.jsonl"
             | "evidence/mcp-owner.json"
             | "evidence/mcp.stderr"
+            | "evidence/mcp-catalog.stderr"
             | "evidence/model-relay-audit.jsonl"
             | "evidence/model-relay-owner.json"
+            | "evidence/production-mcp-catalog.json"
             | "image-inputs.json"
             | "mock-script.json"
             | "primary-seed-attempt.json"
@@ -1726,6 +1857,28 @@ mod tests {
     }
 
     #[test]
+    fn production_mcp_catalog_is_translated_to_the_provider_contract_exactly() {
+        let observed = vec![json!({
+            "name":"sandbox_status",
+            "description":"Returns the current sandbox status.",
+            "inputSchema":{"type":"object","properties":{},"required":[],
+                "additionalProperties":false},
+        })];
+        assert_eq!(
+            provider_catalog(&observed).unwrap(),
+            [json!({
+                "name":"mcp__tempest__sandbox_status",
+                "description":"Returns the current sandbox status.",
+                "input_schema":{"type":"object","properties":{},"required":[],
+                    "additionalProperties":false},
+            })]
+        );
+        let mut expanded = observed[0].clone();
+        expanded["annotations"] = json!({});
+        assert!(provider_catalog(&[expanded]).is_err());
+    }
+
+    #[test]
     fn production_relay_audit_requires_paired_completed_deliveries() {
         let root = std::env::temp_dir().join(format!(
             "tempest-production-relay-audit-{}",
@@ -1739,7 +1892,7 @@ mod tests {
         let completed = json!({"request_sha256":"a".repeat(64),
             "delivery_state":"response_complete","reason":null,"forwarded":true});
         let hello = json!({"request_sha256":format!("{:x}",Sha256::digest([])),
-            "delivery_state":"not_sent","reason":"method is not allowed","forwarded":false,
+            "delivery_state":"not_sent","reason":"reviewed preflight rejected","method":"HEAD","forwarded":false,
             "model":null,"upstream_status":null,"request_bytes":0,"tools":[],
             "path":format!("/{}/api/hello","b".repeat(32))});
         host_io::write_new(

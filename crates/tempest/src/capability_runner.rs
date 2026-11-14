@@ -462,11 +462,15 @@ fn frozen_request_policy(
 
 fn approved_observation(policy: &Value) -> io::Result<Value> {
     let mut observation = policy.clone();
-    observation
+    let object = observation
         .as_object_mut()
-        .ok_or_else(|| io::Error::other("reviewed request policy is not an object"))?
+        .ok_or_else(|| io::Error::other("reviewed request policy is not an object"))?;
+    object
         .remove("maximum_requests")
         .ok_or_else(|| io::Error::other("reviewed production request budget missing"))?;
+    object
+        .remove("mcp_catalog_source")
+        .ok_or_else(|| io::Error::other("reviewed MCP catalog source missing"))?;
     Ok(observation)
 }
 
@@ -509,6 +513,7 @@ fn validate_relay_audit(
     path: &Path,
     expected_requests: usize,
     expected_rejections: usize,
+    expected_hello_path: &str,
 ) -> io::Result<()> {
     let text = fs::read_to_string(path)?;
     let rows = text
@@ -527,10 +532,9 @@ fn validate_relay_audit(
         .iter()
         .filter(|row| {
             row["forwarded"] == false
-                && row["reason"] == "method is not allowed"
-                && row["path"]
-                    .as_str()
-                    .is_some_and(|path| path.ends_with("/api/hello"))
+                && row["reason"] == "reviewed preflight rejected"
+                && row["method"] == "HEAD"
+                && row["path"] == expected_hello_path
                 && row["model"].is_null()
                 && row["tools"].as_array().is_some_and(Vec::is_empty)
                 && row["upstream_status"].is_null()
@@ -1372,7 +1376,19 @@ async fn discover_inner(
         );
         let relay_audit = root.join("harness/model-relay-audit.jsonl");
         validate_relay_rejections(&relay_audit, &relay_rejections)?;
-        validate_relay_audit(&relay_audit, requests.len(), relay_rejections.len())?;
+        let expected_hello_path = format!(
+            "{}/api/hello",
+            reqwest::Url::parse(relay.endpoint())
+                .map_err(io::Error::other)?
+                .path()
+                .trim_end_matches('/')
+        );
+        validate_relay_audit(
+            &relay_audit,
+            requests.len(),
+            relay_rejections.len(),
+            &expected_hello_path,
+        )?;
         if !drained.verified_rpc_drain()
             || acceptance.status != "finished"
             || acceptance_requests.len() != requests.len()
