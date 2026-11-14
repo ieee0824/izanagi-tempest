@@ -200,6 +200,9 @@ CLI検査のAPIはローカルスタブであり、実モデル比較ではな�
 - Claudeの同じ再検査は `/private/tmp/tempest-m6-claude-reasoning-005/`。署名付きthinking blockを
   deterministic providerが返し、次requestの`thinking` typeとして再送される8 request/7 tool outputを確認した。
   4要求すべてでtool catalogは空かつ同一hash、3拒否・canary不変・書込みなし。
+  Anthropic APIが返し得る`redacted_thinking`はこのfixtureで未観測のため許可していない。実APIでCLIが
+  次requestへ再送した場合はrelayがfail-closeし、そのrunをUnknownとする。型名を含む拒否理由を監査してから、
+  実測に基づくpolicy変更を別途レビューする。
 - 証拠は `/private/tmp/tempest-m6-claude-preflight-001/summary.json` と `/private/tmp/tempest-m6-codex-preflight-003/summary.json`。
 - この2試行はMCP未接続で、HMAC/hostfwd迂回・許可MCPの正対照は未検証。実launcherの受入完了ではない。
   `observed` はこのローカルstub観測の成立だけを表し、launcher受入を意味しない。許可MCPの正対照と
@@ -238,6 +241,7 @@ MCP call/API要求は0、findingはnot_found、計上候補0・未確定10で一
 
 1. 比較plan外のpreflightを1回だけ実行する。目的は固定Anthropic authorityへのTLS接続、request受理、
    `context_management`等にbeta headerが必要か、production binaryでacceptanceからcleanupまで完了するかの確認である。
+   各requestのrelay拒否理由一覧も確認し、未知のtype/fieldと`redacted_thinking`の有無を記録する。
    finding率の比較には使わず、失敗しても同じrun IDを再利用しない。
 2. 比較modelを`claude-sonnet-5-5`と`claude-haiku-5-5`の2つに固定し、modelごとの同数run、
    前slot終了から次slot開始までの間隔、plan全体のslot数を決める。provider cacheが最大1時間残り得るため、

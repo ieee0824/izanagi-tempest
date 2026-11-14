@@ -71,7 +71,7 @@ CodexのJSONL report parserは`thread.started`→単一`turn.started`→top-leve
 | `metadata` | opaque `user_id`をabuse検知へ渡す | host capabilityではないがproviderへ値を送る欄である。relayは値を固定していないため、Tempestの秘密・資格情報をpromptへ含めず、固定CLIが生成したopaque ID以外を承認したとは扱わない。将来CLIがmetadataの用途・形を変えた場合はpolicy schemaを拡張してfail-closeする。 |
 | `cache_control: {type: ephemeral}` | tools→system→messagesの同一prefixを5分（`ttl: 1h`指定時は1時間）cacheし、費用・latencyを下げる | relayは`type: ephemeral`を検査するが`ttl` key/valueは固定しないため、1時間cacheも通り得る。cacheはworkspace単位で隔離されexact prefix一致を要求するがprovider側に最大1時間の状態を作るため、run間独立性の根拠には使わず、比較条件では同じ固定CLI/model/policyを要求する。 |
 | `text` / `tool_use` / `tool_result` | 通常textとclient tool loopのcontent block | tool名/schemaは別途完全一致し、resultはMCP bridge由来に限定する。image/document/server-tool blockは型集合にないため拒否する。 |
-| `thinking` | providerが返す署名付きthinking blockの次requestへの再送 | deterministic providerもthinking/signature deltaを返し、実CLIが次requestへ再送することをacceptanceで検査する。任意の新block typeは拒否する。 |
+| `thinking` | providerが返す署名付きthinking blockの次requestへの再送 | deterministic providerもthinking/signature deltaを返し、実CLIが次requestへ再送することをacceptanceで検査する。未観測の`redacted_thinking`を含む任意の新block typeは拒否し、runをUnknownとして監査理由から再レビューする。 |
 
 `request_value_types` はJSON中の全 `type` discriminatorの許可集合であり、任意の同名featureを許可するものではない。top-level field、tool schema、path/query、model、catalogの完全一致と組み合わせる。上記公式資料でbeta header不要と確認できるのはadaptive thinking/tool use/streaming等であり、`context_management`の正式Anthropic API互換性は未確認である。relayはCLI由来の`anthropic-beta`を転送しないため、実API低額preflightで必要headerを確認し、差分があれば本policyを再レビューする。
 
