@@ -108,11 +108,12 @@ fn push_pair(args: &mut Vec<OsString>, flag: &str, value: &OsStr) {
 }
 
 fn validate_models(models: &[String]) -> io::Result<()> {
-    if models.iter().collect::<BTreeSet<_>>().len() != 2
+    if models.len() % 2 != 0
+        || models.iter().collect::<BTreeSet<_>>().len() != 2
         || models.windows(2).any(|pair| pair[0] == pair[1])
     {
         return Err(io::Error::other(
-            "comparison plan must alternate exactly two models",
+            "comparison plan must alternate exactly two models equally",
         ));
     }
     Ok(())
@@ -192,11 +193,18 @@ fn execute(options: Options) -> io::Result<Value> {
         "resume":"forbidden_new_plan_and_runs_root_required","events":[]});
     host_io::json_new(&journal_path, &journal)?;
     for (index, (slot, model)) in loaded.plan.slots.iter().zip(models).enumerate() {
-        if comparison_plan::load(&snapshot)?.sha256 != loaded.sha256
-            || comparison_plan::load(&options.plan)?.sha256 != loaded.sha256
-        {
+        let snapshot_matches =
+            comparison_plan::load(&snapshot).is_ok_and(|value| value.sha256 == loaded.sha256);
+        let source_matches =
+            comparison_plan::load(&options.plan).is_ok_and(|value| value.sha256 == loaded.sha256);
+        if !snapshot_matches || !source_matches {
             journal["state"] = "stopped".into();
-            journal["failure"] = "plan_snapshot_changed".into();
+            journal["failure"] = if !snapshot_matches {
+                "plan_snapshot_unreadable_or_changed"
+            } else {
+                "source_plan_unreadable_or_changed"
+            }
+            .into();
             journal["finished_ns"] = host_io::now_ns()?.into();
             host_io::json_replace(&journal_path, &journal)?;
             return Err(io::Error::other("comparison plan snapshot changed"));
@@ -251,14 +259,23 @@ fn execute(options: Options) -> io::Result<Value> {
         if run["started_ns"]
             .as_u64()
             .is_none_or(|value| value < slot_started_ns)
-            || !binding_matches(&result, &loaded, &slot.slot_id)
         {
             journal["state"] = "stopped".into();
-            journal["failure"] = "slot_invocation_binding_failed".into();
+            journal["failure"] = "slot_started_before_invocation".into();
             journal["finished_ns"] = host_io::now_ns()?.into();
             host_io::json_replace(&journal_path, &journal)?;
             return Err(io::Error::other(format!(
-                "slot {} invocation binding failed; comparison stopped",
+                "slot {} invocation timestamp failed; comparison stopped",
+                slot.slot_id
+            )));
+        }
+        if !binding_matches(&result, &loaded, &slot.slot_id) {
+            journal["state"] = "stopped".into();
+            journal["failure"] = "slot_comparison_binding_failed".into();
+            journal["finished_ns"] = host_io::now_ns()?.into();
+            host_io::json_replace(&journal_path, &journal)?;
+            return Err(io::Error::other(format!(
+                "slot {} comparison binding failed; comparison stopped",
                 slot.slot_id
             )));
         }
@@ -367,7 +384,8 @@ mod tests {
 
     #[test]
     fn comparison_models_must_alternate() {
-        assert!(validate_models(&["a".into(), "b".into(), "a".into()]).is_ok());
+        assert!(validate_models(&["a".into(), "b".into()]).is_ok());
+        assert!(validate_models(&["a".into(), "b".into(), "a".into()]).is_err());
         assert!(validate_models(&["a".into(), "a".into(), "b".into()]).is_err());
         assert!(validate_models(&["a".into(), "b".into(), "c".into()]).is_err());
     }

@@ -17,7 +17,7 @@
 3. 実launcherをstdio bridgeへ接続する。controller/supervisorはagent groupから分離し、
    promptはstdin経由、最終出力・CLI結果・終了理由を私有runへ保存する。
    CLIのモデル名・version・binary hashをdescribe結果へ記録する。
-4. `tempest compare`で事前固定planのslot順に2modelを交互実行し、repeatと集計を接続する。
+4. `tempest compare`で事前固定planのslot順に2modelを同数・交互実行し、repeatと集計を接続する。
 
 `tempest compare`の最小間隔は前slot終了から次slot開始までとする。課金前に全予定run IDが未使用であることを検査し、
 planのowner-private snapshotを作る。各slotはsnapshot hash、slot ID、今回の開始時刻へ束縛し、開始・commit・停止を

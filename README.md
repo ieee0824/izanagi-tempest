@@ -252,7 +252,7 @@ planには`<comparison-slot>-001`以降と対応するrun IDを事前登録し�
 中断後に同じbaseを再開することは認めず、予約済みslotをUのまま残します。signal後は未予約slotを消費しません。
 run内で確定した不成立は後続を継続し、起動前のplan/image/code契約不一致だけがbatchを停止します。
 
-2 modelの正式な順序は、両modelを交互に並べた事前固定planから実行します。runnerはplanのslot順・run ID・
+2 modelの正式な順序は、両modelを同数かつ交互に並べた事前固定planから実行します。runnerはplanのslot順・run ID・
 model・最小間隔を変更せず、評価がcommitされなかったslotで停止します。abortedでも評価がcommitされたslotは
 Uまたは成立済みの信頼済み成功として残し、次の予約slotへ進みます。
 最小間隔は前slotの終了から次slotの開始までと定義します。開始前に全slotのrun directoryが存在しないことを検査し、
