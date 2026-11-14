@@ -1,0 +1,11 @@
+(version 1)
+(deny default)
+(import "system.sb")
+(allow process*)
+(deny process-exec (literal "/usr/bin/security"))
+(deny user-preference-read
+       (preference-domain "com.anthropic.claudecode"))
+(allow file-read-metadata)
+(allow file-read* (subpath (param "JAIL")) (subpath (param "AUTH_DIR")))
+(allow file-write* (literal "/dev/null") (subpath (param "JAIL")) (subpath (param "AUTH_DIR")))
+(allow network*)
