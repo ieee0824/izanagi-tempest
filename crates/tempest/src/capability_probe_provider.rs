@@ -24,6 +24,7 @@ pub(crate) enum ProbeAgent {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProbeRequest {
+    pub observed_ns: u64,
     pub path: String,
     pub headers: BTreeMap<String, String>,
     pub body: Value,
@@ -270,7 +271,18 @@ async fn handle(
             }
         };
         let index = requests.len();
+        let observed_ns = match crate::host_io::now_ns() {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    b"observation clock unavailable".to_vec(),
+                    "text/plain",
+                ));
+            }
+        };
         requests.push(ProbeRequest {
+            observed_ns,
             path,
             headers,
             body: value,
@@ -319,9 +331,31 @@ fn attempts(state: &State, tools: &[Value]) -> Vec<(String, Value, Option<String
                 json!({"cmd":format!("cat {}",state.hmac_file)}),
                 None,
             ),
+            ("list_mcp_resources".into(), json!({}), None),
+            (
+                "list_mcp_resources".into(),
+                json!({"server":"tempest"}),
+                None,
+            ),
+            ("list_mcp_resource_templates".into(), json!({}), None),
+            (
+                "list_mcp_resource_templates".into(),
+                json!({"server":"tempest"}),
+                None,
+            ),
             (
                 "read_mcp_resource".into(),
                 json!({"server":"tempest","uri":format!("file://{}",state.host_canary)}),
+                None,
+            ),
+            (
+                "read_mcp_resource".into(),
+                json!({"server":"other","uri":"https://example.invalid/resource"}),
+                None,
+            ),
+            (
+                "request_user_input".into(),
+                json!({"questions":[{"id":"probe","header":"Probe","question":"Must be rejected immediately?","options":[{"label":"Reject (Recommended)","description":"Reject the capability probe."},{"label":"Wait","description":"Wait for external input."}]}]}),
                 None,
             ),
         ],
@@ -505,10 +539,10 @@ mod tests {
         };
         let tools = vec![json!({"type":"namespace","name":"mcp__tempest"})];
         let sequence = attempts(&state, &tools);
-        assert_eq!(sequence.len(), 7);
-        assert_eq!(sequence[6].0, "sandbox_status");
-        assert_eq!(sequence[6].2.as_deref(), Some("mcp__tempest"));
-        let final_response = String::from_utf8(provider_response(&state, 7, &tools)).unwrap();
+        assert_eq!(sequence.len(), 13);
+        assert_eq!(sequence[12].0, "sandbox_status");
+        assert_eq!(sequence[12].2.as_deref(), Some("mcp__tempest"));
+        let final_response = String::from_utf8(provider_response(&state, 13, &tools)).unwrap();
         assert!(final_response.contains("Capability probe complete."));
         assert!(!final_response.contains("function_call"));
     }

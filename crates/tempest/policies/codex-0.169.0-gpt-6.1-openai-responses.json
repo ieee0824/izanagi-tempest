@@ -1,0 +1,142 @@
+{
+  "acceptance_requests": 14,
+  "maximum_requests": 19,
+  "mcp_catalog_source": {
+    "executable_sha256": "41a43bfe3c37bbbd7e2f0fa9f0fc51a1ac628045401da612984ebc894aad802b",
+    "host_arch": "aarch64",
+    "host_os": "macos",
+    "version": "izanagi 0.2.7"
+  },
+  "models": ["gpt-6.1"],
+  "paths": ["/responses"],
+  "request_headers": {"content-type": "application/json"},
+  "request_value_types": ["function_call", "function_call_output", "input_text", "message"],
+  "schema_version": 1,
+  "tools": [
+    {
+      "description": "Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.",
+      "name": "list_mcp_resources",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {"description": "Opaque cursor from a previous list_mcp_resources call; omit for the first page.", "type": "string"},
+          "server": {"description": "MCP server name. Omit to list resources from every configured server.", "type": "string"}
+        },
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.",
+      "name": "list_mcp_resource_templates",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {"description": "Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page.", "type": "string"},
+          "server": {"description": "MCP server name. Omit to list resource templates from every configured server.", "type": "string"}
+        },
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Read a specific resource from an MCP server given the server name and resource URI.",
+      "name": "read_mcp_resource",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "server": {"description": "MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources.", "type": "string"},
+          "uri": {"description": "Resource URI to read. Must be one of the URIs returned by list_mcp_resources.", "type": "string"}
+        },
+        "required": ["server", "uri"],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.",
+      "name": "request_user_input",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "questions": {
+            "description": "Questions to show the user. Prefer 1 and do not exceed 3",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "header": {"description": "Short header label shown in the UI (12 or fewer chars).", "type": "string"},
+                "id": {"description": "Stable identifier for mapping answers (snake_case).", "type": "string"},
+                "options": {
+                  "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.",
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "description": {"description": "One short sentence explaining impact/tradeoff if selected.", "type": "string"},
+                      "label": {"description": "User-facing label (1-5 words).", "type": "string"}
+                    },
+                    "required": ["label", "description"],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "question": {"description": "Single-sentence prompt shown to the user.", "type": "string"}
+              },
+              "required": ["id", "header", "question", "options"],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": ["questions"],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Tools in the mcp__tempest namespace.",
+      "name": "mcp__tempest",
+      "tools": [
+        {
+          "description": "Executes a command inside the sandbox and returns its output.",
+          "name": "sandbox_exec",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "args": {"description": "Arguments to pass to the command.", "items": {"type": "string"}, "type": "array"},
+              "command": {"description": "The command to execute.", "type": "string"}
+            },
+            "required": ["command"],
+            "type": "object"
+          },
+          "strict": false,
+          "type": "function"
+        },
+        {
+          "description": "Executes a shell command inside the sandbox via /bin/sh -c and returns its output.",
+          "name": "sandbox_shell",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {"command": {"description": "The shell command to execute.", "type": "string"}},
+            "required": ["command"],
+            "type": "object"
+          },
+          "strict": false,
+          "type": "function"
+        },
+        {
+          "description": "Returns the current sandbox status.",
+          "name": "sandbox_status",
+          "parameters": {"additionalProperties": false, "properties": {}, "required": [], "type": "object"},
+          "strict": false,
+          "type": "function"
+        }
+      ],
+      "type": "namespace"
+    }
+  ],
+  "top_level_fields": ["client_metadata", "include", "input", "model", "parallel_tool_calls", "prompt_cache_key", "reasoning", "store", "stream", "tool_choice", "tools"]
+}

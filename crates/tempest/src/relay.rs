@@ -23,6 +23,7 @@ pub struct RelayConfig {
     pub max_upstream_frame: usize,
     pub max_queue_bytes: usize,
     pub max_queue_frames: usize,
+    pub max_policy_rejections: u64,
 }
 impl Default for RelayConfig {
     fn default() -> Self {
@@ -35,6 +36,7 @@ impl Default for RelayConfig {
             max_upstream_frame: 8 * 1024 * 1024,
             max_queue_bytes: 8 * 1024 * 1024,
             max_queue_frames: 32,
+            max_policy_rejections: 32,
         }
     }
 }
@@ -46,6 +48,7 @@ pub struct RelayOutcome {
     pub pending_calls: usize,
     pub uncertain: bool,
     pub queue_rejections: u64,
+    pub policy_rejections: u64,
     pub unforwarded_attempts: Vec<u64>,
 }
 struct Queued {
@@ -127,6 +130,14 @@ fn error(id: Value, code: i64, message: &str) -> Value {
 }
 fn is_call(value: &Value) -> bool {
     value.get("method").and_then(Value::as_str) == Some("tools/call")
+}
+fn allowed_agent_request(value: &Value) -> bool {
+    let method = value.get("method").and_then(Value::as_str);
+    if value.get("id").is_some() {
+        matches!(method, Some("initialize" | "tools/list" | "tools/call"))
+    } else {
+        method == Some("notifications/initialized")
+    }
 }
 fn valid_request(value: &Value) -> bool {
     value.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
@@ -247,6 +258,7 @@ where
     let mut drain_started = None;
     let mut attempts = 0u64;
     let mut queue_rejections = 0u64;
+    let mut policy_rejections = 0u64;
     let mut timer = tokio::time::interval(Duration::from_millis(10));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -402,6 +414,34 @@ where
                     deliver(&mut agent_write, &error(value.get("id").filter(|id|RequestId::parse(id).is_some()).cloned().unwrap_or(Value::Null), -32600, "invalid MCP request"), &mut agent_write_open, &mut gate, config.io_timeout).await;
                     continue;
                 }
+                if !allowed_agent_request(&value) {
+                    policy_rejections = policy_rejections
+                        .checked_add(1)
+                        .ok_or_else(|| io::Error::other("policy rejection counter overflow"))?;
+                    audit(
+                        &mut log,
+                        "policy_rejected",
+                        json!({"method":value["method"],"has_id":value.get("id").is_some(),
+                            "rejection":policy_rejections,"limit":config.max_policy_rejections}),
+                        config.io_timeout,
+                    )
+                    .await?;
+                    if let Some(id) = value.get("id") {
+                        deliver(
+                            &mut agent_write,
+                            &error(id.clone(), -32601, "MCP method not allowed"),
+                            &mut agent_write_open,
+                            &mut gate,
+                            config.io_timeout,
+                        )
+                        .await;
+                    }
+                    if policy_rejections >= config.max_policy_rejections {
+                        agent_read_open = false;
+                        gate.close(CloseReason::Cancelled, Instant::now());
+                    }
+                    continue;
+                }
                 let attempt = if is_call(&value) {
                     attempts = attempts.checked_add(1).ok_or_else(|| io::Error::other("attempt counter overflow"))?;
                     Some(attempts)
@@ -442,14 +482,10 @@ where
                     }
                 };
                 if value.get("method").is_some() {
-                    // The pinned server sends no server requests; notifications may pass unchanged.
-                    if value.get("id").is_some() || !valid_request(&value) {
-                        gate.upstream_lost(Instant::now());
-                        audit(&mut log, "upstream_error", json!({"reason":"unexpected_server_request_or_notification"}), config.io_timeout).await?;
-                        break;
-                    }
-                    deliver(&mut agent_write, &value, &mut agent_write_open, &mut gate, config.io_timeout).await;
-                    continue;
+                    // The pinned server sends no server requests or notifications.
+                    gate.upstream_lost(Instant::now());
+                    audit(&mut log, "upstream_error", json!({"reason":"unexpected_server_request_or_notification"}), config.io_timeout).await?;
+                    break;
                 }
                 let Some(inflight) = active.take() else {
                     gate.upstream_lost(Instant::now());
@@ -479,6 +515,7 @@ where
         pending_calls: gate.pending_calls(),
         uncertain: gate.is_uncertain(),
         queue_rejections,
+        policy_rejections,
         unforwarded_attempts: queue.iter().filter_map(|q| q.attempt).collect(),
     };
     audit(

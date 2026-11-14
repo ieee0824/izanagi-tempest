@@ -127,6 +127,56 @@ pub(crate) fn claude_argument_template(maximum_turns: u64) -> Vec<String> {
     .collect()
 }
 
+pub(crate) fn codex_argument_template() -> Vec<String> {
+    let mut values = vec![
+        "exec".to_owned(),
+        "--ignore-user-config".to_owned(),
+        "--ignore-rules".to_owned(),
+        "--ephemeral".to_owned(),
+        "--skip-git-repo-check".to_owned(),
+        "--json".to_owned(),
+        "-s".to_owned(),
+        "read-only".to_owned(),
+        "-m".to_owned(),
+        "<MODEL>".to_owned(),
+    ];
+    for feature in [
+        "shell_tool",
+        "apps",
+        "view_image",
+        "multi_agent",
+        "plugins",
+        "remote_plugin",
+        "plugin_sharing",
+        "plugin_discovery_prefetch",
+        "skill_search",
+        "skill_mcp_dependency_install",
+        "hooks",
+        "goals",
+        "image_generation",
+    ] {
+        values.extend(["--disable".to_owned(), feature.to_owned()]);
+    }
+    values.extend(
+        [
+            "model_provider=\"tempest\"",
+            "model_providers.tempest.name=\"Tempest relay\"",
+            "model_providers.tempest.base_url=\"<RELAY_ENDPOINT>\"",
+            "model_providers.tempest.wire_api=\"responses\"",
+            "model_providers.tempest.requires_openai_auth=true",
+            "web_search=\"disabled\"",
+            "mcp_servers.tempest.command=\"<FIXED_TEMPEST_MCP>\"",
+            "mcp_servers.tempest.args=[\"mcp-connect\",\"<MCP_SOCKET>\",\"--environment-policy\",\"codex-v1\"]",
+            "mcp_servers.tempest.enabled_tools=[\"sandbox_status\",\"sandbox_exec\",\"sandbox_shell\"]",
+            "mcp_servers.tempest.default_tools_approval_mode=\"approve\"",
+        ]
+        .into_iter()
+        .flat_map(|setting| ["-c".to_owned(), setting.to_owned()]),
+    );
+    values.push("<PROMPT_STDIN>".to_owned());
+    values
+}
+
 pub(crate) fn claude_environment_rules() -> Vec<EnvironmentRule> {
     [
         (
@@ -140,6 +190,27 @@ pub(crate) fn claude_environment_rules() -> Vec<EnvironmentRule> {
         ("HOME", "generated_private_directory", None),
         ("LANG", "fixed_nonsecret", Some(sha256("C.UTF-8"))),
         ("LC_ALL", "fixed_nonsecret", Some(sha256("C.UTF-8"))),
+        ("TMPDIR", "generated_private_directory", None),
+    ]
+    .into_iter()
+    .map(|(name, source, value_sha256)| EnvironmentRule {
+        name: name.to_owned(),
+        source: source.to_owned(),
+        value_sha256,
+    })
+    .collect()
+}
+
+pub(crate) fn codex_environment_rules() -> Vec<EnvironmentRule> {
+    [
+        ("HOME", "generated_private_directory", None),
+        ("LANG", "fixed_nonsecret", Some(sha256("C.UTF-8"))),
+        ("LC_ALL", "fixed_nonsecret", Some(sha256("C.UTF-8"))),
+        (
+            "OPENAI_API_KEY",
+            "fixed_placeholder",
+            Some(sha256("tempest-relay-placeholder")),
+        ),
         ("TMPDIR", "generated_private_directory", None),
     ]
     .into_iter()
@@ -187,7 +258,10 @@ fn measured_launch_contract_matches(
             profile.argument_template == claude_argument_template(maximum_turns)
                 && profile.environment == claude_environment_rules()
         }
-        CliKind::Codex => false,
+        CliKind::Codex => {
+            profile.argument_template == codex_argument_template()
+                && profile.environment == codex_environment_rules()
+        }
     }
 }
 
@@ -1039,6 +1113,36 @@ mod stream_tests {
     }
 
     #[test]
+    fn measured_codex_contract_rejects_argument_or_environment_variance() {
+        let (_, mut profile, _, _) = crate::capability_proof::tests::fixture();
+        profile["agent"] = "codex".into();
+        profile["cli_version"] = "codex-cli 0.169.0".into();
+        profile["provider_protocol"] = "openai-responses".into();
+        profile["argument_template"] = serde_json::to_value(codex_argument_template()).unwrap();
+        profile["environment"] = serde_json::to_value(codex_environment_rules()).unwrap();
+        let mut profile: crate::capability_proof::LauncherProfile =
+            serde_json::from_value(profile).unwrap();
+        assert!(measured_launch_contract_matches(
+            &profile,
+            CliKind::Codex,
+            20
+        ));
+        profile.argument_template[1] = "changed".into();
+        assert!(!measured_launch_contract_matches(
+            &profile,
+            CliKind::Codex,
+            20
+        ));
+        profile.argument_template = codex_argument_template();
+        profile.environment[0].source = "fixed_nonsecret".into();
+        assert!(!measured_launch_contract_matches(
+            &profile,
+            CliKind::Codex,
+            20
+        ));
+    }
+
+    #[test]
     fn measured_launch_can_be_claimed_only_once() {
         let claimed = AtomicBool::new(false);
         claim_measured_launch(&claimed).unwrap();
@@ -1112,7 +1216,7 @@ mod stream_tests {
     }
 
     #[test]
-    fn unimplemented_codex_launch_contract_is_rejected_after_a_valid_permit() {
+    fn codex_launch_rejects_an_unreviewed_profile_contract() {
         let (root, _, _, challenge) = crate::capability_proof::tests::fixture();
         let code_root = root.join("authorized-code");
         let permit =

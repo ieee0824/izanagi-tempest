@@ -194,8 +194,9 @@ fresh VM retestを接続します。成功した実行ではM5評価を自動実
 `result.json`・`report.md`を生成します。`run.json` は `scope: m5_evaluation`、
 `purpose: collection_and_evaluation`、`evaluation: performed` です。
 mockの固定報告は形式検証用で、正式なモデル比較の集計対象には含めません。
-Claude Code native CLIは、固定model ID、native executable、owner-privateなAnthropic API key fileを
-明示して実行します。keyはmodel relayだけが読み、CLIへは渡しません。discoveryとdeterministic acceptance、
+Claude CodeまたはCodex native CLIは、固定model ID、native executable、owner-privateなAPI認証fileを
+明示して実行します。Claude fileはAPI key、Codex fileは完全な`Bearer ...` Authorization値を保持します。
+認証値はmodel relayだけが読み、CLIへは渡しません。discoveryとdeterministic acceptance、
 request policy・code closure・macOS Seatbeltの検証に成功した直後だけ、一回限りのLaunchPermitで起動します。
 
 ```bash
@@ -210,6 +211,11 @@ target/release/tempest run scenarios/s3-overread-001.yaml \
   --python /absolute/path/to/python3 \
   --runs /private/tmp/tempest-runs --run-id native-example
 ```
+
+Codex 0.169.0/gpt-6.1は`--agent codex`、Codex native binary、owner-privateなBearer認証fileを指定します。
+固定framework 4 toolの完全schemaと拒否契約を2 passで再検証できない版・modelはfail closeします。
+MCP relayは`initialize`・`notifications/initialized`・`tools/list`・`tools/call`だけをIzanagiへ転送し、
+resource・template・prompt・未知methodは上流到達前に拒否して別件数として監査します。
 
 auth fileはowner所有のregular fileかつmode 0600相当でなければ拒否します。固定policyにないCLI version/model、
 acceptance失敗、relay予算超過、adapter失敗は成功へ昇格せず、予約済みrunをUとして証跡に残します。

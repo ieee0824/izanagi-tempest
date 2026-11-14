@@ -127,6 +127,76 @@ async fn metadata_is_unchanged_and_excess_tool_call_never_reaches_upstream() {
 }
 
 #[tokio::test]
+async fn non_tool_mcp_methods_are_rejected_without_reaching_upstream_and_audit_is_bounded() {
+    let (agent, upstream, audit, _close, task) = start(RelayConfig {
+        max_policy_rejections: 5,
+        ..Default::default()
+    });
+    let (ar, mut aw) = split(agent);
+    let mut ar = BufReader::new(ar);
+    let methods = [
+        "resources/list",
+        "resources/templates/list",
+        "resources/read",
+        "prompts/list",
+    ];
+    for (index, method) in methods.into_iter().enumerate() {
+        send(
+            &mut aw,
+            &json!({"jsonrpc":"2.0","id":index + 1,"method":method,"params":{}}),
+        )
+        .await;
+        let rejected = read(&mut ar).await;
+        assert_eq!(rejected["id"], index + 1);
+        assert_eq!(rejected["error"]["code"], -32601);
+    }
+    send(
+        &mut aw,
+        &json!({"jsonrpc":"2.0","method":"unknown/notification","params":{}}),
+    )
+    .await;
+    let outcome = finish(task).await;
+    assert_eq!(outcome.policy_rejections, 5);
+    assert_eq!(outcome.admitted_calls, 0);
+    assert_eq!(outcome.completed_calls, 0);
+    let mut upstream = BufReader::new(upstream);
+    let mut line = String::new();
+    assert_eq!(upstream.read_line(&mut line).await.unwrap(), 0);
+    let log = events(audit).await;
+    let rejected = log
+        .iter()
+        .filter(|event| event["event"] == "policy_rejected")
+        .collect::<Vec<_>>();
+    assert_eq!(rejected.len(), 5);
+    assert!(
+        rejected
+            .iter()
+            .all(|event| event["data"].get("request").is_none())
+    );
+}
+
+#[tokio::test]
+async fn server_requests_and_notifications_fail_closed() {
+    for server_frame in [
+        json!({"jsonrpc":"2.0","id":9,"method":"sampling/createMessage","params":{}}),
+        json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"}),
+    ] {
+        let (mut agent, upstream, audit, _close, task) = start(Default::default());
+        let (ur, mut uw) = split(upstream);
+        let mut ur = BufReader::new(ur);
+        send(&mut agent, &call(1)).await;
+        assert_eq!(read(&mut ur).await, call(1));
+        send(&mut uw, &server_frame).await;
+        let outcome = finish(task).await;
+        assert!(outcome.uncertain && outcome.drain.is_none());
+        assert!(events(audit).await.iter().any(|event| {
+            event["event"] == "upstream_error"
+                && event["data"]["reason"] == "unexpected_server_request_or_notification"
+        }));
+    }
+}
+
+#[tokio::test]
 async fn disconnecting_agent_does_not_discard_pending_response() {
     let (mut agent, upstream, audit, close, task) = start(Default::default());
     let (ur, mut uw) = split(upstream);

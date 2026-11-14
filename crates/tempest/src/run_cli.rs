@@ -34,12 +34,19 @@ use tempest_model::{
 use tokio::io::AsyncWriteExt;
 
 #[cfg(not(feature = "native-test-upstream"))]
-const USAGE: &str = "Usage: tempest run SCENARIO (--agent mock --mock-script FILE | --agent claude-code --agent-executable FILE --model EXACT_MODEL_ID --model-auth-file FILE) --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--repeat-interval-seconds N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]";
+const USAGE: &str = "Usage: tempest run SCENARIO (--agent mock --mock-script FILE | --agent claude-code|codex --agent-executable FILE --model EXACT_MODEL_ID --model-auth-file FILE) --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--repeat-interval-seconds N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]";
 #[cfg(feature = "native-test-upstream")]
-const TEST_USAGE: &str = "Usage: tempest run SCENARIO (--agent mock --mock-script FILE | --agent claude-code --agent-executable FILE --model EXACT_MODEL_ID --model-auth-file FILE [--native-test-upstream HTTP_LOOPBACK_URL]) --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--repeat-interval-seconds N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]\nWARNING: native-test-upstream build; every run is test-only and formally ineligible";
-const PRODUCTION_MODEL_UPSTREAM: &str = "https://api.anthropic.com/";
+const TEST_USAGE: &str = "Usage: tempest run SCENARIO (--agent mock --mock-script FILE | --agent claude-code|codex --agent-executable FILE --model EXACT_MODEL_ID --model-auth-file FILE [--native-test-upstream HTTP_LOOPBACK_URL]) --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--repeat-interval-seconds N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]\nWARNING: native-test-upstream build; every run is test-only and formally ineligible";
+const CLAUDE_PRODUCTION_UPSTREAM: &str = "https://api.anthropic.com/";
+const CODEX_PRODUCTION_UPSTREAM: &str = "https://api.openai.com/v1/";
 const MAX_FOREIGN_CAPABILITY_AUDIT_ROWS: u64 = 32;
 const NATIVE_TEST_BUILD: bool = cfg!(feature = "native-test-upstream");
+fn production_model_upstream(agent: CapabilityAgent) -> &'static str {
+    match agent {
+        CapabilityAgent::Codex => CODEX_PRODUCTION_UPSTREAM,
+        CapabilityAgent::ClaudeCode => CLAUDE_PRODUCTION_UPSTREAM,
+    }
+}
 async fn version(executable: &Path) -> io::Result<String> {
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -63,7 +70,8 @@ enum AgentSelection {
     Mock {
         script: PathBuf,
     },
-    ClaudeCode {
+    Native {
+        agent: CapabilityAgent,
         executable: PathBuf,
         model: String,
         auth_file: PathBuf,
@@ -94,7 +102,8 @@ struct Options {
 
 enum AgentSetup {
     Mock(MockAdapter),
-    ClaudeCode {
+    Native {
+        agent: CapabilityAgent,
         executable: PathBuf,
         model: String,
         auth_file: PathBuf,
@@ -283,7 +292,7 @@ fn options(args: &[OsString]) -> io::Result<Options> {
                 script: required("--mock-script")?,
             }
         }
-        Some("claude-code") => {
+        Some(agent @ ("claude-code" | "codex")) => {
             if values.contains_key("--mock-script") {
                 return Err(io::Error::other("mock and native agent options conflict"));
             }
@@ -304,7 +313,12 @@ fn options(args: &[OsString]) -> io::Result<Options> {
                     return Err(io::Error::other("invalid native test upstream"));
                 }
             }
-            AgentSelection::ClaudeCode {
+            AgentSelection::Native {
+                agent: if agent == "codex" {
+                    CapabilityAgent::Codex
+                } else {
+                    CapabilityAgent::ClaudeCode
+                },
                 executable: required("--agent-executable")?,
                 model: text("--model")?
                     .filter(|value| !value.is_empty())
@@ -316,7 +330,7 @@ fn options(args: &[OsString]) -> io::Result<Options> {
         _ => return Err(io::Error::other("unsupported or missing agent")),
     };
     let native_test_upstream = match &agent {
-        AgentSelection::ClaudeCode { test_upstream, .. } => test_upstream.clone(),
+        AgentSelection::Native { test_upstream, .. } => test_upstream.clone(),
         AgentSelection::Mock { .. } => None,
     };
     Ok(Options {
@@ -532,6 +546,37 @@ fn provider_catalog(tools: &[Value]) -> io::Result<Vec<Value>> {
     Ok(catalog)
 }
 
+fn expected_production_mcp_catalog(policy: &Value) -> io::Result<Vec<Value>> {
+    let tools = policy["tools"]
+        .as_array()
+        .ok_or_else(|| io::Error::other("request policy tool catalog missing"))?;
+    let mut expected = if let Some(namespace) = tools
+        .iter()
+        .find(|tool| tool["type"] == "namespace" && tool["name"] == "mcp__tempest")
+    {
+        namespace["tools"]
+            .as_array()
+            .ok_or_else(|| io::Error::other("Tempest namespace tools missing"))?
+            .iter()
+            .map(|tool| {
+                let name = tool["name"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| io::Error::other("Tempest namespace tool name missing"))?;
+                Ok(json!({
+                    "name":format!("mcp__tempest__{name}"),
+                    "description":tool["description"],
+                    "input_schema":tool["parameters"],
+                }))
+            })
+            .collect::<io::Result<Vec<_>>>()?
+    } else {
+        tools.clone()
+    };
+    expected.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+    Ok(expected)
+}
+
 async fn verify_production_mcp_catalog(
     izanagi: &Path,
     cwd: &Path,
@@ -601,11 +646,7 @@ async fn verify_production_mcp_catalog(
         .and_then(Value::as_array)
         .ok_or_else(|| io::Error::other("production MCP tools/list rejected"))?;
     let observed = provider_catalog(observed)?;
-    let mut expected = policy["tools"]
-        .as_array()
-        .cloned()
-        .ok_or_else(|| io::Error::other("request policy tool catalog missing"))?;
-    expected.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+    let expected = expected_production_mcp_catalog(policy)?;
     let observed_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&observed)?));
     let expected_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&expected)?));
     let result = json!({
@@ -724,21 +765,19 @@ async fn primary(
     let mut native_authorized_ns = None;
     let adapter = match setup {
         AgentSetup::Mock(adapter) => RuntimeAdapter::Mock(adapter),
-        AgentSetup::ClaudeCode {
+        AgentSetup::Native {
+            agent,
             executable,
             model,
             auth_file,
             upstream,
         } => {
-            let test_upstream = (upstream != PRODUCTION_MODEL_UPSTREAM).then(|| upstream.clone());
+            let production_upstream = production_model_upstream(agent);
+            let test_upstream = (upstream != production_upstream).then(|| upstream.clone());
             let (runtime_directory, runtime_root) = native_runtime_directory(root)?;
             native_runtime = Some(runtime_directory);
             let reviewed_cli_version = version(&executable).await?;
-            let request_policy = reviewed_request_policy(
-                CapabilityAgent::ClaudeCode,
-                &reviewed_cli_version,
-                &model,
-            )?;
+            let request_policy = reviewed_request_policy(agent, &reviewed_cli_version, &model)?;
             let production_mcp_catalog = verify_production_mcp_catalog(
                 vm.izanagi_path(),
                 &vm.workspace,
@@ -749,7 +788,7 @@ async fn primary(
             .await?;
             let launch = discover_for_launch(
                 CapabilityDiscoveryConfig {
-                    agent: CapabilityAgent::ClaudeCode,
+                    agent,
                     executable: executable.canonicalize()?,
                     model,
                     output: runtime_root.clone(),
@@ -781,11 +820,12 @@ async fn primary(
             let request_policy_sha256 =
                 host_io::digest(&runtime_root.join("harness/request-policy.json"))?;
             report["primary"]["native_acceptance"] = json!({
-                "agent":"claude-code",
+                "agent":match agent {CapabilityAgent::Codex=>"codex", CapabilityAgent::ClaudeCode=>"claude-code"},
                 "model":discovery.model,
                 "cli_version":discovery.cli_version,
                 "executable_sha256":discovery.executable_sha256,
                 "strict_tempest_only":discovery.strict_tempest_only,
+                "codex_framework_exception_verified":discovery.codex_framework_exception_verified,
                 "acceptance_relay_verified":discovery.acceptance_relay_verified,
                 "launch_permit_verified":discovery.launch_permit_verified,
                 "launcher_profile_sha256":launcher_profile_sha256,
@@ -1058,22 +1098,24 @@ async fn execute(
             let description = adapter.describe();
             (AgentSetup::Mock(adapter), Some(bytes), description)
         }
-        AgentSelection::ClaudeCode {
+        AgentSelection::Native {
+            agent,
             executable,
             model,
             auth_file,
             test_upstream,
         } => (
-            AgentSetup::ClaudeCode {
+            AgentSetup::Native {
+                agent: *agent,
                 executable: executable.clone(),
                 model: model.clone(),
                 auth_file: auth_file.clone(),
                 upstream: test_upstream
                     .clone()
-                    .unwrap_or_else(|| PRODUCTION_MODEL_UPSTREAM.to_owned()),
+                    .unwrap_or_else(|| production_model_upstream(*agent).to_owned()),
             },
             None,
-            json!({"adapter":"claude-code","model":model,"authorization":"acceptance_pending",
+            json!({"adapter":match agent {CapabilityAgent::Codex=>"codex", CapabilityAgent::ClaudeCode=>"claude-code"},"model":model,"authorization":"acceptance_pending",
                 "native_test_build":NATIVE_TEST_BUILD}),
         ),
     };
@@ -1756,6 +1798,14 @@ mod tests {
 
     #[test]
     fn run_options_separate_mock_and_native_authority() {
+        assert_eq!(
+            production_model_upstream(CapabilityAgent::Codex),
+            "https://api.openai.com/v1/"
+        );
+        assert_eq!(
+            production_model_upstream(CapabilityAgent::ClaudeCode),
+            "https://api.anthropic.com/"
+        );
         let base = [
             "scenario.yaml",
             "--izanagi",
@@ -1779,7 +1829,25 @@ mod tests {
         let parsed = options(&arguments(&native)).unwrap();
         assert!(matches!(
             parsed.agent,
-            AgentSelection::ClaudeCode { ref model, .. } if model == "claude-sonnet-5-5"
+            AgentSelection::Native { agent: CapabilityAgent::ClaudeCode, ref model, .. }
+                if model == "claude-sonnet-5-5"
+        ));
+
+        let mut codex = base.to_vec();
+        codex.extend([
+            "--agent",
+            "codex",
+            "--agent-executable",
+            "/opt/codex",
+            "--model",
+            "gpt-6.1",
+            "--model-auth-file",
+            "/tmp/openai-key",
+        ]);
+        assert!(matches!(
+            options(&arguments(&codex)).unwrap().agent,
+            AgentSelection::Native { agent: CapabilityAgent::Codex, ref model, .. }
+                if model == "gpt-6.1"
         ));
 
         let mut mixed = native;
@@ -1947,6 +2015,18 @@ mod tests {
         let mut expanded = observed[0].clone();
         expanded["annotations"] = json!({});
         assert!(provider_catalog(&[expanded]).is_err());
+        let codex_policy =
+            reviewed_request_policy(CapabilityAgent::Codex, "codex-cli 0.169.0", "gpt-6.1")
+                .unwrap();
+        let expected = expected_production_mcp_catalog(&codex_policy).unwrap();
+        assert_eq!(expected.len(), 3);
+        assert_eq!(expected[0]["name"], "mcp__tempest__sandbox_exec");
+        assert_eq!(expected[2]["name"], "mcp__tempest__sandbox_status");
+        assert!(
+            expected
+                .iter()
+                .all(|tool| !tool["name"].as_str().unwrap().starts_with("list_mcp_"))
+        );
     }
 
     #[test]

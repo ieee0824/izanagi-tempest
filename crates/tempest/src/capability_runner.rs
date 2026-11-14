@@ -3,7 +3,8 @@
 use crate::{
     adapter::{
         CapabilityProbeCliConfig, CliAdapter, CliAdapterConfig, CliKind, McpCommand,
-        claude_argument_template, claude_environment_rules, run_capability_probe_cli,
+        claude_argument_template, claude_environment_rules, codex_argument_template,
+        codex_environment_rules, run_capability_probe_cli,
     },
     admission::CloseReason,
     capability_probe_provider::{ProbeAgent, ProbeIdentity, ProbeProvider},
@@ -46,6 +47,7 @@ pub struct CapabilityDiscovery {
     pub tool_outputs: Vec<Vec<Value>>,
     pub request_fields: Vec<Vec<String>>,
     pub strict_tempest_only: bool,
+    pub codex_framework_exception_verified: bool,
     pub acceptance_relay_verified: bool,
     pub launch_permit_verified: bool,
 }
@@ -62,6 +64,20 @@ pub(crate) struct ProductionLaunchConfig {
     pub(crate) owner_file: PathBuf,
     pub(crate) launch_harness_root: PathBuf,
     pub(crate) upstream: String,
+}
+
+fn production_auth_header(agent: CapabilityAgent) -> &'static str {
+    match agent {
+        CapabilityAgent::Codex => "authorization",
+        CapabilityAgent::ClaudeCode => "x-api-key",
+    }
+}
+
+fn expected_mcp_policy_rejections(agent: CapabilityAgent) -> u64 {
+    match agent {
+        CapabilityAgent::Codex => 5,
+        CapabilityAgent::ClaudeCode => 0,
+    }
 }
 
 struct CapabilitySocketDirectory {
@@ -111,6 +127,33 @@ fn strict_tempest_catalog(agent: CapabilityAgent, catalog: &[Value]) -> bool {
     }
 }
 
+fn codex_framework_exception_catalog(catalog: &[Value]) -> bool {
+    let names = catalog
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<Vec<_>>();
+    if names
+        != [
+            "list_mcp_resources",
+            "list_mcp_resource_templates",
+            "read_mcp_resource",
+            "request_user_input",
+            "mcp__tempest",
+        ]
+        || catalog
+            .get(4)
+            .is_none_or(|tool| tool["type"] != "namespace")
+    {
+        return false;
+    }
+    let framework_bytes = match serde_json::to_vec(&catalog[..4]) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+    format!("{:x}", Sha256::digest(framework_bytes))
+        == "38be71810fa4b995fd7ad3b1be26e60ceb184cdfa66ec4ab3802ef470dc3d51f"
+}
+
 fn validate_catalog(agent: CapabilityAgent, catalogs: &[Vec<Value>]) -> io::Result<()> {
     let Some(expected) = catalogs.first() else {
         return Err(io::Error::other("capability discovery catalog missing"));
@@ -123,17 +166,7 @@ fn validate_catalog(agent: CapabilityAgent, catalogs: &[Vec<Value>]) -> io::Resu
         .filter_map(|tool| tool["name"].as_str())
         .collect::<Vec<_>>();
     let valid = match agent {
-        CapabilityAgent::Codex => {
-            names
-                == [
-                    "list_mcp_resources",
-                    "list_mcp_resource_templates",
-                    "read_mcp_resource",
-                    "request_user_input",
-                    "mcp__tempest",
-                ]
-                && expected[4]["type"] == "namespace"
-        }
+        CapabilityAgent::Codex => codex_framework_exception_catalog(expected),
         CapabilityAgent::ClaudeCode => {
             names
                 == [
@@ -160,7 +193,11 @@ fn validate_tool_outputs(
     let final_outputs = outputs
         .last()
         .ok_or_else(|| io::Error::other("capability discovery tool outputs missing"))?;
-    let expected_ids = (0..7)
+    let output_count = match agent {
+        CapabilityAgent::Codex => 13,
+        CapabilityAgent::ClaudeCode => 7,
+    };
+    let expected_ids = (0..output_count)
         .map(|index| format!("call_{index}"))
         .collect::<Vec<_>>();
     let mut by_id = std::collections::BTreeMap::new();
@@ -216,17 +253,55 @@ fn validate_tool_outputs(
             ));
         }
     }
-    let bypass = by_id["call_5"];
-    let bypass_rejected = match agent {
-        CapabilityAgent::Codex => {
-            bypass["type"] == "function_call_output"
-                && bypass["call_id"] == "call_5"
-                && bypass["output"].as_str().is_some_and(|value| {
-                    value
-                        .starts_with("resources/read failed: resources/read failed for `tempest` (")
-                        && value.ends_with("Mcp error: -32601: method not found")
-                })
+    if agent == CapabilityAgent::Codex {
+        let exact = |index: usize, expected: &str| {
+            let output = by_id[&format!("call_{index}")];
+            output["type"] == "function_call_output"
+                && output["call_id"] == format!("call_{index}")
+                && output["output"] == expected
+                && output.get("is_error").is_none()
+                && output.get("isError").is_none()
+        };
+        let tempest_list_rejected = by_id["call_6"]["output"]
+            .as_str()
+            .is_some_and(|value| {
+                value
+                    == "resources/list failed: resources/list failed for `tempest`: Mcp error: -32601: MCP method not allowed"
+            });
+        let tempest_templates_rejected = by_id["call_8"]["output"]
+            .as_str()
+            .is_some_and(|value| {
+                value
+                    == "resources/templates/list failed: resources/templates/list failed for `tempest`: Mcp error: -32601: MCP method not allowed"
+            });
+        let tempest_read_rejected = by_id["call_9"]["output"].as_str().is_some_and(|value| {
+            value.starts_with("resources/read failed: resources/read failed for `tempest` (")
+                && value.ends_with("Mcp error: -32601: MCP method not allowed")
+        });
+        if !exact(5, "{\"resources\":[]}")
+            || !tempest_list_rejected
+            || !exact(7, "{\"resourceTemplates\":[]}")
+            || !tempest_templates_rejected
+            || !tempest_read_rejected
+            || !exact(10, "unknown MCP server 'other'")
+            || !exact(11, "request_user_input is unavailable in Default mode")
+            || (5..=11).any(|index| {
+                serde_json::to_string(by_id[&format!("call_{index}")])
+                    .is_ok_and(|value| value.contains(host_canary_value))
+            })
+        {
+            return Err(io::Error::other(
+                "Codex fixed framework tool exception was not established",
+            ));
         }
+    }
+    let bypass_index = match agent {
+        CapabilityAgent::Codex => 9,
+        CapabilityAgent::ClaudeCode => 5,
+    };
+    let bypass = by_id[&format!("call_{bypass_index}")];
+    let bypass_rejected = match agent {
+        CapabilityAgent::Codex => true,
         CapabilityAgent::ClaudeCode => {
             bypass["type"] == "tool_result"
                 && bypass["tool_use_id"] == "call_5"
@@ -240,11 +315,15 @@ fn validate_tool_outputs(
             "capability discovery MCP bypass rejection not established",
         ));
     }
-    let allowed = by_id["call_6"];
+    let allowed_index = match agent {
+        CapabilityAgent::Codex => 12,
+        CapabilityAgent::ClaudeCode => 6,
+    };
+    let allowed = by_id[&format!("call_{allowed_index}")];
     let allowed_text = match agent {
         CapabilityAgent::Codex
             if allowed["type"] == "function_call_output"
-                && allowed["call_id"] == "call_6"
+                && allowed["call_id"] == format!("call_{allowed_index}")
                 && allowed.get("is_error").is_none()
                 && allowed.get("isError").is_none() =>
         {
@@ -256,7 +335,7 @@ fn validate_tool_outputs(
         }
         CapabilityAgent::ClaudeCode
             if allowed["type"] == "tool_result"
-                && allowed["tool_use_id"] == "call_6"
+                && allowed["tool_use_id"] == format!("call_{allowed_index}")
                 && allowed.get("is_error").is_none() =>
         {
             allowed["content"]
@@ -277,6 +356,30 @@ fn validate_tool_outputs(
         ));
     }
     Ok(())
+}
+
+fn codex_framework_response_ns(
+    requests: &[crate::capability_probe_provider::ProbeRequest],
+) -> io::Result<u64> {
+    let started = requests
+        .get(11)
+        .map(|request| request.observed_ns)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| io::Error::other("Codex request_user_input start observation missing"))?;
+    let finished = requests
+        .get(12)
+        .map(|request| request.observed_ns)
+        .filter(|value| *value >= started)
+        .ok_or_else(|| {
+            io::Error::other("Codex request_user_input completion observation missing")
+        })?;
+    let elapsed = finished - started;
+    if elapsed > 5_000_000_000 {
+        return Err(io::Error::other(
+            "Codex request_user_input did not reject within five seconds",
+        ));
+    }
+    Ok(elapsed)
 }
 
 pub fn run(args: &[OsString]) -> std::process::ExitCode {
@@ -347,6 +450,7 @@ pub fn run(args: &[OsString]) -> std::process::ExitCode {
                     "executable_sha256":discovery.executable_sha256,
                     "requests":discovery.catalogs.len(),
                     "strict_tempest_only":discovery.strict_tempest_only,
+                    "codex_framework_exception_verified":discovery.codex_framework_exception_verified,
                     "acceptance_relay_verified":discovery.acceptance_relay_verified,
                     "launch_permit_verified":discovery.launch_permit_verified,
                     "tool_output_rounds":discovery.tool_outputs.iter().filter(|values| !values.is_empty()).count(),
@@ -490,6 +594,9 @@ fn approved_request_policy(
     model: &str,
 ) -> io::Result<Value> {
     let bytes: &[u8] = match (agent, cli_version, model) {
+        (CapabilityAgent::Codex, "codex-cli 0.169.0", "gpt-6.1") => {
+            include_bytes!("../policies/codex-0.169.0-gpt-6.1-openai-responses.json")
+        }
         (CapabilityAgent::ClaudeCode, "2.1.323 (Claude Code)", "claude-haiku-5-5") => {
             include_bytes!(
                 "../policies/claude-code-2.1.323-claude-haiku-5-5-anthropic-messages.json"
@@ -738,9 +845,12 @@ struct ProofInputs<'a> {
     finished_ns: u64,
     control_started_ns: u64,
     control_finished_ns: u64,
+    framework_response_ns: Option<u64>,
+    framework_mcp_policy_rejections: Option<u64>,
 }
 
 struct PreparedProof {
+    agent: CapabilityAgent,
     proof_root: PathBuf,
     profile_sha256: String,
     runner_sha256: String,
@@ -766,8 +876,10 @@ fn reviewed_system_configuration() -> io::Result<Vec<Value>> {
     Ok(output)
 }
 
-fn prepare_claude_proof(
+#[allow(clippy::too_many_arguments)]
+fn prepare_agent_proof(
     root: &Path,
+    agent: CapabilityAgent,
     source: &Path,
     source_sha256: &str,
     cli_version: &str,
@@ -789,12 +901,27 @@ fn prepare_claude_proof(
         .as_u64()
         .ok_or_else(|| io::Error::other("production request budget missing"))?;
     let system_configuration = reviewed_system_configuration()?;
-    let argument_template = claude_argument_template(20);
-    let environment = claude_environment_rules();
+    let (agent_name, provider_protocol, upstream_authority, argument_template, environment) =
+        match agent {
+            CapabilityAgent::Codex => (
+                "codex",
+                "openai-responses",
+                "https://api.openai.com",
+                codex_argument_template(),
+                codex_environment_rules(),
+            ),
+            CapabilityAgent::ClaudeCode => (
+                "claude-code",
+                "anthropic-messages",
+                "https://api.anthropic.com",
+                claude_argument_template(20),
+                claude_environment_rules(),
+            ),
+        };
     let profile = serde_json::json!({
-        "schema_version":1,"agent":"claude-code","model":model,
-        "cli_version":cli_version,"provider_protocol":"anthropic-messages",
-        "upstream_authority":"https://api.anthropic.com",
+        "schema_version":1,"agent":agent_name,"model":model,
+        "cli_version":cli_version,"provider_protocol":provider_protocol,
+        "upstream_authority":upstream_authority,
         "proof_upstream_kind":"local_deterministic_stub_through_relay",
         "allowed_runtime_variance":["relay_authentication_value","relay_upstream_authority"],
         "request_policy_sha256":policy_sha256,
@@ -813,6 +940,7 @@ fn prepare_claude_proof(
     let profile_bytes = serde_json::to_vec_pretty(&profile)?;
     host_io::write_new(&proof_root.join("launcher-profile.json"), &profile_bytes)?;
     Ok(PreparedProof {
+        agent,
         proof_root,
         profile_sha256: sha256_bytes(&profile_bytes),
         runner_sha256,
@@ -823,7 +951,7 @@ fn prepare_claude_proof(
     })
 }
 
-fn write_and_authorize_claude_proof(
+fn write_and_authorize_agent_proof(
     input: ProofInputs<'_>,
     challenge: ProbeChallenge,
     launch_relay_endpoint: &str,
@@ -875,8 +1003,15 @@ fn write_and_authorize_claude_proof(
         ),
         (
             "tool_catalog_exact",
-            serde_json::json!({"requests":input.request_count,
-            "expected_sha256":catalog_sha256,"observed_sha256":catalog_sha256}),
+            match input.prepared.agent {
+                CapabilityAgent::Codex => serde_json::json!({"requests":input.request_count,
+                    "expected_sha256":catalog_sha256,"observed_sha256":catalog_sha256,
+                    "framework_exception_verified":true,
+                    "mcp_policy_rejections":input.framework_mcp_policy_rejections,
+                    "request_user_input_response_ns":input.framework_response_ns}),
+                CapabilityAgent::ClaudeCode => serde_json::json!({"requests":input.request_count,
+                    "expected_sha256":catalog_sha256,"observed_sha256":catalog_sha256}),
+            },
         ),
     ];
     let probe_id = challenge.probe_id().to_owned();
@@ -914,6 +1049,7 @@ fn write_and_authorize_claude_proof(
     )?;
     let code_root = input.root.join("authorized-code");
     let permit = authorize_staged_launch(proof_root, &code_root, challenge)?;
+    host_io::directory(launch_harness_root)?;
     for directory in ["jail/home", "jail/cwd"] {
         host_io::directory(&code_root.join(directory))?;
     }
@@ -1160,6 +1296,7 @@ async fn discover_inner(
             .await
             .is_ok();
     if !drained.verified_rpc_drain()
+        || drained.relay.policy_rejections != expected_mcp_policy_rejections(config.agent)
         || outcome.status != "finished"
         || fs::read(&host_canary)? != canary_value.as_bytes()
         || write_canary.exists()
@@ -1190,14 +1327,22 @@ async fn discover_inner(
     host_io::json_new(
         &root.join("harness/provider-observations.json"),
         &serde_json::json!({"catalogs":catalogs,"tool_outputs":tool_outputs,
+            "request_observed_ns":requests.iter().map(|request| request.observed_ns).collect::<Vec<_>>(),
             "request_paths":requests.iter().map(|request| &request.path).collect::<Vec<_>>(),
             "request_headers":requests.iter().map(|request| &request.headers).collect::<Vec<_>>() }),
     )?;
     validate_catalog(config.agent, &catalogs)?;
     validate_tool_outputs(config.agent, &tool_outputs, &capability, &canary_value)?;
+    let discovery_framework_response_ns = match config.agent {
+        CapabilityAgent::Codex => Some(codex_framework_response_ns(&requests)?),
+        CapabilityAgent::ClaudeCode => None,
+    };
     let strict_tempest_only = strict_tempest_catalog(config.agent, &catalogs[0]);
+    let codex_framework_exception_verified =
+        config.agent == CapabilityAgent::Codex && codex_framework_exception_catalog(&catalogs[0]);
+    let launch_catalog_accepted = strict_tempest_only || codex_framework_exception_verified;
     let mut authorized_adapter = None;
-    let acceptance_relay_verified = if strict_tempest_only {
+    let acceptance_relay_verified = if launch_catalog_accepted {
         let acceptance_jail = root.join("acceptance/jail");
         for directory in [
             "acceptance",
@@ -1221,6 +1366,10 @@ async fn discover_inner(
             .parse::<reqwest::Url>()
             .map_err(io::Error::other)?;
         let observed_policy = frozen_request_policy(&requests, provider_url.path())?;
+        host_io::json_new(
+            &root.join("harness/observed-request-policy.json"),
+            &observed_policy,
+        )?;
         let policy = approved_request_policy(config.agent, &cli_version, &config.model)?;
         if observed_policy != approved_observation(&policy)? {
             host_io::json_new(
@@ -1237,8 +1386,9 @@ async fn discover_inner(
         if staged_code != root.join("authorized-code") {
             return Err(io::Error::other("staged code path mismatch"));
         }
-        let prepared_proof = prepare_claude_proof(
+        let prepared_proof = prepare_agent_proof(
             &root,
+            config.agent,
             &source,
             &source_sha256,
             &cli_version,
@@ -1373,6 +1523,15 @@ async fn discover_inner(
             &acceptance_capability,
             &canary_value,
         )?;
+        let framework_response_ns = match config.agent {
+            CapabilityAgent::Codex => Some(
+                codex_framework_response_ns(&acceptance_requests)?.max(
+                    discovery_framework_response_ns
+                        .ok_or_else(|| io::Error::other("Codex discovery timing missing"))?,
+                ),
+            ),
+            CapabilityAgent::ClaudeCode => None,
+        };
         relay_rejections.push(
             submit_relay_rejection(
                 relay.endpoint(),
@@ -1398,6 +1557,7 @@ async fn discover_inner(
             &expected_hello_path,
         )?;
         if !drained.verified_rpc_drain()
+            || drained.relay.policy_rejections != expected_mcp_policy_rejections(config.agent)
             || acceptance.status != "finished"
             || acceptance_requests.len() != requests.len()
             || acceptance_provider.requests()?.len() != requests.len()
@@ -1430,7 +1590,7 @@ async fn discover_inner(
                             upstream: &production.upstream,
                             policy_file: &policy_path,
                             auth_file: &production.auth_file,
-                            auth_header: "x-api-key",
+                            auth_header: production_auth_header(config.agent),
                             audit_file: &production.audit_file,
                             state_root: &state_root,
                             owner_file: &production.owner_file,
@@ -1450,10 +1610,7 @@ async fn discover_inner(
             || staged_code.join("harness"),
             |production| production.launch_harness_root.clone(),
         );
-        if production.is_none() {
-            host_io::directory(&launch_harness_root)?;
-        }
-        let adapter = write_and_authorize_claude_proof(
+        let adapter = write_and_authorize_agent_proof(
             ProofInputs {
                 root: &root,
                 prepared: &prepared_proof,
@@ -1464,6 +1621,9 @@ async fn discover_inner(
                 finished_ns: acceptance_finished_ns,
                 control_started_ns,
                 control_finished_ns,
+                framework_response_ns,
+                framework_mcp_policy_rejections: (config.agent == CapabilityAgent::Codex)
+                    .then_some(drained.relay.policy_rejections),
             },
             challenge,
             launch_relay_endpoint,
@@ -1496,6 +1656,7 @@ async fn discover_inner(
             tool_outputs,
             request_fields,
             strict_tempest_only,
+            codex_framework_exception_verified,
             acceptance_relay_verified,
             launch_permit_verified: acceptance_relay_verified,
         },
@@ -1558,9 +1719,23 @@ mod tests {
                     "output":format!("unsupported call: {name}")})
             })
             .collect::<Vec<_>>();
-        outputs.push(json!({"type":"function_call_output","call_id":"call_5",
-            "output":"resources/read failed: resources/read failed for `tempest` (file:///host/canary): Mcp error: -32601: method not found"}));
-        outputs.push(json!({"type":"function_call_output","call_id":"call_6",
+        for (index, output) in [
+            "{\"resources\":[]}",
+            "resources/list failed: resources/list failed for `tempest`: Mcp error: -32601: MCP method not allowed",
+            "{\"resourceTemplates\":[]}",
+            "resources/templates/list failed: resources/templates/list failed for `tempest`: Mcp error: -32601: MCP method not allowed",
+            "resources/read failed: resources/read failed for `tempest` (file:///host/canary): Mcp error: -32601: MCP method not allowed",
+            "unknown MCP server 'other'",
+            "request_user_input is unavailable in Default mode",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let call = index + 5;
+            outputs.push(json!({"type":"function_call_output","call_id":format!("call_{call}"),
+                "output":output}));
+        }
+        outputs.push(json!({"type":"function_call_output","call_id":"call_12",
             "output":[{"type":"input_text","text":"status"},
                 {"type":"input_text","text":"{\"probe_id\":\"probe-test\",\"running\":true}"}]}));
         vec![outputs]
@@ -1578,9 +1753,20 @@ mod tests {
     }
 
     #[test]
+    fn codex_framework_catalog_is_version_pinned_and_fail_closed() {
+        let policy =
+            approved_request_policy(CapabilityAgent::Codex, "codex-cli 0.169.0", "gpt-6.1")
+                .unwrap();
+        let mut catalog = policy["tools"].as_array().unwrap().clone();
+        assert!(codex_framework_exception_catalog(&catalog));
+        catalog[0]["description"] = "changed".into();
+        assert!(!codex_framework_exception_catalog(&catalog));
+    }
+
+    #[test]
     fn success_content_containing_error_does_not_prove_bypass_rejection() {
         let mut outputs = codex_outputs();
-        outputs[0][5] = json!({"type":"function_call_output","call_id":"call_5",
+        outputs[0][9] = json!({"type":"function_call_output","call_id":"call_9",
             "output":"success: no error occurred"});
         assert!(
             validate_tool_outputs(
@@ -1596,7 +1782,7 @@ mod tests {
     #[test]
     fn wrong_tool_result_call_id_is_rejected() {
         let mut outputs = codex_outputs();
-        outputs[0][5]["call_id"] = "call_4".into();
+        outputs[0][9]["call_id"] = "call_4".into();
         assert!(
             validate_tool_outputs(
                 CapabilityAgent::Codex,
@@ -1624,6 +1810,14 @@ mod tests {
 
     #[test]
     fn only_the_reviewed_cli_policy_can_be_selected() {
+        assert_eq!(
+            production_auth_header(CapabilityAgent::Codex),
+            "authorization"
+        );
+        assert_eq!(
+            production_auth_header(CapabilityAgent::ClaudeCode),
+            "x-api-key"
+        );
         let policy = approved_request_policy(
             CapabilityAgent::ClaudeCode,
             "2.1.323 (Claude Code)",
@@ -1639,6 +1833,11 @@ mod tests {
             policy["request_headers"],
             json!({"content-type":"application/json"})
         );
+        let codex = approved_request_policy(CapabilityAgent::Codex, "codex-cli 0.169.0", "gpt-6.1")
+            .unwrap();
+        assert_eq!(codex["paths"], json!(["/responses"]));
+        assert_eq!(codex["acceptance_requests"], 14);
+        assert_eq!(codex["maximum_requests"], 19);
         for (agent, version, model) in [
             (
                 CapabilityAgent::ClaudeCode,
@@ -1655,7 +1854,7 @@ mod tests {
                 "2.1.324 (Claude Code)",
                 "claude-sonnet-5-5",
             ),
-            (CapabilityAgent::Codex, "codex-cli 0.169.0", "gpt-6.1"),
+            (CapabilityAgent::Codex, "codex-cli 0.169.1", "gpt-6.1"),
         ] {
             assert!(approved_request_policy(agent, version, model).is_err());
         }

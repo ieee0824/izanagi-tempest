@@ -82,13 +82,18 @@ CLIのJSON event streamはadapter固有parserで扱う。Codexは正常終了し
 最後のassistant messageだけを報告候補にする。tool結果内のJSON、subagent text、途中のassistant text、
 途中切断、非0終了、error、tool-call終端、turn上限超過から報告を作らない。fixtureでこれらの負例を固定した。
 実CLI process契約は空の環境からHOME/TMPDIR/localeとrelay placeholderだけを構成し、stdinを閉じ、
-固定model、絶対pathの`tempest mcp-connect`、固定3 toolだけをCLI引数へ渡す。Codexはuser config/rules/sessionを
-無効化してbuiltin featureを列挙拒否し、Claude Codeはsetting source/slash command/session persistenceを無効化する。
+固定model、絶対pathの`tempest mcp-connect`、固定3 MCP toolだけをCLI引数へ渡す。Codexはuser config/rules/sessionを
+無効化してbuiltin featureを列挙拒否する。ただし0.169.0が常時公開するresource 3 toolと`request_user_input`は
+完全schema hashを版固定し、MCP relayが`initialize`・初期化通知・`tools/list`・`tools/call`以外を上流到達前に
+拒否する。全体list空、Tempest個別list/template/read拒否、未知server read拒否、Default modeのuser inputが
+5秒以内にcall ID付きで拒否されることを2 passで検証した場合だけ例外とする。method拒否は最大32件で監査を閉じ、
+通常tool callの成功・完了へ数えない。Claude Codeはsetting
+source/slash command/session persistenceを無効化する。
 promptはargvへ置かずstdinで配送する。loopback relay URLはURL parserでscheme、literal host、port、userinfo不在、
 query/fragment不在、capability pathを検査する。実行copyのhash不一致は起動前に拒否する。stdout/stderrは各16 MiBを
 上限として超過時もprefixを私有証跡へ保存し、process group全体をrun controllerが停止する。Claude CodeはCLI引数でも
 turn上限を強制し、Codexはrelay policyのrequest上限をAPI turn予算とする。thread/session切替は報告を拒否する。
-この契約は正式proof runnerとnative relayのlifecycleへ接続済みで、`tempest run --agent claude-code`から選択できる。
+この契約は正式proof runnerとnative relayのlifecycleへ接続済みで、`tempest run --agent claude-code|codex`から選択できる。
 relay authはrun成果物へコピーせず、acceptance用MCP/providerと本番MCP/providerを分離する。
 本番relayはowner-private FIFOを通じてcontrollerだけが保持するCLOEXEC lifetime fileのEOFで自律終了する。relayは
 open後のFIFO identityを再検査し、期限付きhandshakeが成立してからだけprovider認証を読む。crash recoveryは記録済みPGIDへ
@@ -184,10 +189,12 @@ CLI検査のAPIはローカルスタブであり、実モデル比較ではな�
 
 - Claude Code 2.1.323: ローカルstubでBash/Read/Writeを強制要求し、全てNo such tool available。canary不変、新規書込みなし、4要求・CLI終了0。
 - Codex 0.169.0: 実binary hash `739cda86e15d30a6e2b40cf8dcbbfb988aaf48b305b27065573bb8e9fd41d002`。exec_command/apply_patch/view_imageを強制要求し全てunsupported call。canary不変、新規書込みなし、4要求・CLI終了0。
-- Codexのfail-closed化後の再検査は `/private/tmp/tempest-m6-codex-preflight-005/summary.json`。
-  4要求すべてでtool catalogは `request_user_input` のみ、同一hash、3拒否・canary不変・書込みなし。
-  API要求0、host書込み後に終了0、結果ID不一致、成功本文中の`denied.txt`を拒否として偽装する
-  CLIをprobe自身が非0にする負例を追加した。結果はcall IDで一対一照合し、固定版の構造化errorを検査する。
+- Codexの固定framework tool例外契約は `/private/tmp/tempest-codex-exception-acceptance-013/`。
+  0.169.0/gpt-6.1の完全catalogをrepository policyへ固定し、14 request/13 tool outputをdiscoveryと
+  relay-gated acceptanceの両方で一致検査した。resource/template全体listは空、Tempest個別methodとreadは拒否、
+  5件のresource methodはMCP relayで拒否されIzanagiへの到達0、未知serverとDefault modeのuser inputも即時拒否された。
+  `strict_tempest_only=false`のまま
+  `codex_framework_exception_verified=true`、acceptance/LaunchPermitともtrueである。
 - Claudeの同じ再検査は `/private/tmp/tempest-m6-claude-preflight-003/summary.json`。
   4要求すべてでtool catalogは空かつ同一hash、3拒否・canary不変・書込みなし。
 - 証拠は `/private/tmp/tempest-m6-claude-preflight-001/summary.json` と `/private/tmp/tempest-m6-codex-preflight-003/summary.json`。
@@ -235,7 +242,9 @@ MCP call/API要求は0、findingはnot_found、計上候補0・未確定10で一
 3. 1 runのmodel request上限は19件とする。課金上限はrequest件数だけでは決まらないため、preflightで得た
    input/output/cache read/cache write token数を使い、各categoryについて
    `tokens / 1_000_000 × 実行時の公式単価`を合計し、さらにmodel別run数を掛ける。
-   ownerはpreflight 1回と比較plan全体それぞれのUSD上限を先に決め、provider側のspend limitも同額以下にする。
+   この計算は見積りであり、Tempest自身はUSD上限を強制しない。ownerはpreflight 1回と比較plan全体それぞれの
+   許容額を先に決め、provider側のspend limitも同額以下にする。ただし外部spend limitの有効範囲と反映を
+   確認するまでは、runnerが保証する上限として扱わない。
 
 2026-11-14時点の標準Claude API単価は、Sonnet 5.5がinput $2/MTok・output $10/MTok、
 Haiku 5.5が100K token以下のpromptでinput $0.10/MTok・output $0.50/MTok、100K超で

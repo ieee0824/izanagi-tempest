@@ -480,7 +480,7 @@ fn private_root(root: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn environment_contract(values: &[EnvironmentRule]) -> bool {
+fn environment_contract(values: &[EnvironmentRule], agent: &str) -> bool {
     if values.is_empty() {
         return false;
     }
@@ -519,7 +519,7 @@ fn environment_contract(values: &[EnvironmentRule]) -> bool {
         placeholder |= value.source == "fixed_placeholder";
         prior = Some(value.name.as_str());
     }
-    home && endpoint && placeholder
+    home && (endpoint || agent == "codex") && placeholder
 }
 
 fn system_configuration_contract(values: &[SystemPathRule]) -> io::Result<bool> {
@@ -677,6 +677,7 @@ fn positive(value: Option<&Value>) -> bool {
 }
 
 struct EvidenceBinding<'a> {
+    agent: &'a str,
     profile_sha256: &'a str,
     request_policy_sha256: &'a str,
     runner_sha256: &'a str,
@@ -777,13 +778,29 @@ fn semantic_evidence(check: &str, bytes: &[u8], binding: &EvidenceBinding<'_>) -
                 && facts["production_request_budget"] == binding.production_request_budget
         }
         "tool_catalog_exact" => {
-            let facts = exact_facts(
-                &evidence.facts,
-                &["requests", "expected_sha256", "observed_sha256"],
-            )?;
+            let names = if binding.agent == "codex" {
+                &[
+                    "requests",
+                    "expected_sha256",
+                    "observed_sha256",
+                    "framework_exception_verified",
+                    "mcp_policy_rejections",
+                    "request_user_input_response_ns",
+                ][..]
+            } else {
+                &["requests", "expected_sha256", "observed_sha256"][..]
+            };
+            let facts = exact_facts(&evidence.facts, names)?;
+            let framework_valid = binding.agent != "codex"
+                || (facts["framework_exception_verified"] == true
+                    && facts["mcp_policy_rejections"] == 5
+                    && facts["request_user_input_response_ns"]
+                        .as_u64()
+                        .is_some_and(|value| value <= 5_000_000_000));
             positive(facts.get("requests"))
                 && facts["expected_sha256"] == facts["observed_sha256"]
                 && facts["expected_sha256"].as_str().is_some_and(digest)
+                && framework_valid
         }
         _ => false,
     };
@@ -835,7 +852,7 @@ fn load_envelope_inner(root: &Path, verify_live_code: bool) -> io::Result<Verifi
         || !(1..=profile.production_request_budget).contains(&profile.acceptance_request_count)
         || !(1..=1000).contains(&profile.production_request_budget)
         || profile.argument_template.is_empty()
-        || !environment_contract(&profile.environment)
+        || !environment_contract(&profile.environment, &profile.agent)
         || profile.home_policy != "empty_owner_private"
         || profile.cwd_policy != "empty_owner_private"
         || profile.prompt_policy != "tempest_generated_only"
@@ -868,6 +885,7 @@ fn load_envelope_inner(root: &Path, verify_live_code: bool) -> io::Result<Verifi
     }
     let mut used_evidence = BTreeSet::new();
     let evidence_binding = EvidenceBinding {
+        agent: &profile.agent,
         profile_sha256: &profile_sha256,
         request_policy_sha256: &profile.request_policy_sha256,
         runner_sha256: &proof.runner_sha256,
@@ -1004,7 +1022,10 @@ pub(crate) mod tests {
                         "production_request_budget":20})
                 }
                 "tool_catalog_exact" => json!({"requests":1,
-                    "expected_sha256":"f".repeat(64),"observed_sha256":"f".repeat(64)}),
+                    "expected_sha256":"f".repeat(64),"observed_sha256":"f".repeat(64),
+                    "framework_exception_verified":true,
+                    "mcp_policy_rejections":5,
+                    "request_user_input_response_ns":1}),
                 _ => unreachable!(),
             };
             let filename = format!("{name}.json");
