@@ -94,12 +94,10 @@ fn new_directory(path: &Path) -> io::Result<PathBuf> {
         .ok_or_else(|| invalid("Claude auth config parent missing"))?
         .canonicalize()?;
     let parent_metadata = parent.symlink_metadata()?;
-    let mode = parent_metadata.permissions().mode();
-    let owner_private_parent =
-        parent_metadata.uid() == unsafe { libc::geteuid() } && mode & 0o022 == 0;
-    let root_sticky_temporary_parent =
-        parent_metadata.uid() == 0 && mode & libc::S_ISVTX as u32 != 0 && mode & 0o002 != 0;
-    if !parent_metadata.is_dir() || (!owner_private_parent && !root_sticky_temporary_parent) {
+    if !parent_metadata.is_dir()
+        || parent_metadata.uid() != unsafe { libc::geteuid() }
+        || parent_metadata.permissions().mode() & 0o022 != 0
+    {
         return Err(invalid("Claude auth config parent is not trusted"));
     }
     fs::DirBuilder::new().mode(0o700).create(path)?;
@@ -232,19 +230,6 @@ mod tests {
         assert_eq!(executable, Path::new("/private/tmp/claude"));
         assert_eq!(config, Path::new("/private/tmp/auth"));
         assert!(options(&args[..4]).is_err());
-    }
-
-    #[test]
-    fn auth_directory_can_be_created_in_the_system_temporary_directory() {
-        let requested = std::env::temp_dir().join(format!(
-            "tempest-claude-auth-directory-{}",
-            host_io::random_hex().unwrap()
-        ));
-        let created = new_directory(&requested).unwrap();
-        let metadata = created.symlink_metadata().unwrap();
-        assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
-        fs::remove_dir(&created).unwrap();
     }
 
     #[cfg(target_os = "macos")]
