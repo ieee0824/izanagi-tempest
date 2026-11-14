@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "scope": "native_test_upstream_non_formal_evidence",
-  "output": "/private/tmp/tempest-native-test-upstream-013",
-  "feature_binary_sha256": "336d2e43a8c3f9c864abcf1697522689c86bff6dcb0faa8a58d9c78e82f927f4",
+  "output": "/private/tmp/tempest-native-test-upstream-014",
+  "feature_binary_sha256": "2e719252712bcf4f3174fcffa7ed5e996af50cf377d9c374774476f1e7b8312b",
   "mcp_catalog": {
     "source_version": "izanagi 0.2.7",
     "source_executable_sha256": "41a43bfe3c37bbbd7e2f0fa9f0fc51a1ac628045401da612984ebc894aad802b",
@@ -19,10 +19,12 @@
     "model_requests": 1,
     "responses_complete": 1,
     "preflight_rejections": 1,
+    "foreign_capability_requests": 0,
+    "foreign_capability_overflow": false,
     "cleanup_verified": true,
-    "run_sha256": "242e8683f3125fbb97b732a75da5394489ef82c4c446c0b80f71c35dd488bfef",
-    "result_sha256": "1413774f44be350a84984500c1c9895e0496b97b44a1f96453cec6bf41985c90",
-    "relay_audit_sha256": "e814fd48a248c5e41aa95945a7e946aedea3b580c98a754b8ce46e84d936208d",
+    "run_sha256": "5172ee2fdc930f7e72671783b46694d175e29240a4a23106f04dcbd5bfaad7b6",
+    "result_sha256": "0f8a264f05de05c8b5e7e7da76d317e496ff4397029d1ac9b1486dc7860e7217",
+    "relay_audit_sha256": "9d3d356e32573361f2ae45ae6232a8447be7ff0e649444d351a6bac7d123b65a",
     "mcp_catalog_evidence_sha256": "39ffd2c760f930363a8dd9426f33e53a3311bcbd77a1b6a392a94f19809133bd"
   },
   "sse_cut": {
@@ -36,10 +38,12 @@
     "partial_response_bytes": 631,
     "partial_response_sha256": "8cc7fd46fe6f49bd8081283c313bef3caf45177d284ef994b53dd89b8be99ce8",
     "preflight_rejections": 1,
+    "foreign_capability_requests": 0,
+    "foreign_capability_overflow": false,
     "cleanup_verified": true,
-    "run_sha256": "c0e67c849c07ab42c5a6e30f620504cc62202d960b2aa14aefa40a50c2ead54d",
-    "result_sha256": "295c9e5d2ddfa2d7edcb6b3e120fc981edadfafc31fab8dddd3fcf59b6828c02",
-    "relay_audit_sha256": "c6f2ba107a5eb5a1b0f7c26e0c04d7781eb845da71c241458f054e51dda4ac59",
+    "run_sha256": "5c83917160bba8f671fc7d385ddaa8f01261d5677320e0273570f7789af9bb60",
+    "result_sha256": "85c19ae7196eeae57721a7b3cd8af7f0bc05c6d0178c94dd4df5b0a8852057aa",
+    "relay_audit_sha256": "ba914516be810b36ba65a547574c46747219d4b91142eeeaea29888fb785bd77",
     "mcp_catalog_evidence_sha256": "39ffd2c760f930363a8dd9426f33e53a3311bcbd77a1b6a392a94f19809133bd"
   },
   "aggregate": {
@@ -51,7 +55,7 @@
     "fault_denominator": 1,
     "fault_unknown": 1,
     "fault_formal_ineligible": 1,
-    "sha256": "4a606e420b8a05ab69c7a2b4f119c49b1f58749a79ae43e577d664404d2cde18"
+    "sha256": "ae1ac5199bd5447610a74dc38676f210ddfb706da80463c69e8f03c311797a39"
   },
   "limitations": [
     "The feature binary is not the production binary.",

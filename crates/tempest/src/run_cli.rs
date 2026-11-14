@@ -38,6 +38,7 @@ const USAGE: &str = "Usage: tempest run SCENARIO (--agent mock --mock-script FIL
 #[cfg(feature = "native-test-upstream")]
 const TEST_USAGE: &str = "Usage: tempest run SCENARIO (--agent mock --mock-script FILE | --agent claude-code --agent-executable FILE --model EXACT_MODEL_ID --model-auth-file FILE [--native-test-upstream HTTP_LOOPBACK_URL]) --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--repeat-interval-seconds N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]\nWARNING: native-test-upstream build; every run is test-only and formally ineligible";
 const PRODUCTION_MODEL_UPSTREAM: &str = "https://api.anthropic.com/";
+const MAX_FOREIGN_CAPABILITY_AUDIT_ROWS: u64 = 32;
 const NATIVE_TEST_BUILD: bool = cfg!(feature = "native-test-upstream");
 async fn version(executable: &Path) -> io::Result<String> {
     let output = tokio::time::timeout(
@@ -378,7 +379,8 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value,
     let mut upstream_statuses = BTreeMap::<String, u64>::new();
     let mut only_complete_pairs = true;
     let mut preflight_rejections = 0_u64;
-    let mut invalid_capability_requests = 0_u64;
+    let mut foreign_capability_requests = 0_u64;
+    let mut foreign_capability_overflow = 0_u64;
     let mut rows = 0_u64;
     for line in fs::read_to_string(path)?.lines() {
         rows += 1;
@@ -430,9 +432,34 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value,
             {
                 preflight_rejections += 1;
             }
-            "not_sent" if row["reason"] == "invalid relay capability" => {
-                invalid_capability_requests += 1;
-                only_complete_pairs = false;
+            "not_sent"
+                if row["reason"] == "foreign relay capability"
+                    && row["forwarded"] == false
+                    && row["model"].is_null()
+                    && row["upstream_status"].is_null()
+                    && row["request_bytes"] == 0
+                    && sha256 == format!("{:x}", Sha256::digest([]))
+                    && row["tools"].as_array().is_some_and(Vec::is_empty)
+                    && row["path"].as_str().is_some_and(|path| {
+                        path.strip_prefix("sha256:").is_some_and(|digest| {
+                            digest.len() == 64
+                                && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        })
+                    }) =>
+            {
+                foreign_capability_requests += 1;
+            }
+            "not_sent"
+                if row["reason"] == "foreign relay capability overflow"
+                    && row["forwarded"] == false
+                    && row["model"].is_null()
+                    && row["upstream_status"].is_null()
+                    && row["request_bytes"] == 0
+                    && sha256 == format!("{:x}", Sha256::digest([]))
+                    && row["tools"].as_array().is_some_and(Vec::is_empty)
+                    && row["path"] == "bounded" =>
+            {
+                foreign_capability_overflow += 1;
             }
             _ => only_complete_pairs = false,
         }
@@ -443,17 +470,28 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value,
             == requests
                 .saturating_mul(2)
                 .saturating_add(preflight_rejections)
+                .saturating_add(foreign_capability_requests)
+                .saturating_add(foreign_capability_overflow)
         && preflight_rejections == 1
+        && foreign_capability_requests <= MAX_FOREIGN_CAPABILITY_AUDIT_ROWS
+        && foreign_capability_overflow <= 1
         && requests != 0
         && requests <= maximum_requests
         && admitted == completed;
-    if rows == 0 || rows > maximum_requests.saturating_mul(3) || requests > maximum_requests {
+    if rows == 0
+        || rows
+            > maximum_requests
+                .saturating_mul(3)
+                .saturating_add(MAX_FOREIGN_CAPABILITY_AUDIT_ROWS + 1)
+        || requests > maximum_requests
+    {
         return Err(io::Error::other("model relay audit sequence out of bounds"));
     }
     Ok((
         json!({"rows":rows,"requests":requests,"responses_complete":completed.values().sum::<u64>(),
         "maximum_requests":maximum_requests,"preflight_rejections":preflight_rejections,
-        "invalid_capability_requests":invalid_capability_requests,
+        "foreign_capability_requests":foreign_capability_requests,
+        "foreign_capability_overflow":foreign_capability_overflow == 1,
         "delivery_verified":delivery_verified,
         "delivery_states":delivery_states,"reasons":reasons,"upstream_statuses":upstream_statuses}),
         delivery_verified,
@@ -1956,14 +1994,15 @@ mod tests {
             format!(
                 "{}\n",
                 json!({"request_sha256":format!("{:x}",Sha256::digest([])),
-                    "delivery_state":"not_sent","reason":"invalid relay capability",
-                    "forwarded":false})
+                    "delivery_state":"not_sent","reason":"foreign relay capability",
+                    "forwarded":false,"model":null,"upstream_status":null,"request_bytes":0,
+                    "tools":[],"path":format!("sha256:{}","a".repeat(64))})
             ),
         )
         .unwrap();
         let (summary, verified) = model_relay_summary(&path, 20).unwrap();
         assert!(!verified);
-        assert_eq!(summary["invalid_capability_requests"], 1);
+        assert_eq!(summary["foreign_capability_requests"], 1);
         fs::remove_dir_all(root).unwrap();
     }
 

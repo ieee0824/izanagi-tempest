@@ -29,6 +29,7 @@ use tokio::task::JoinHandle;
 
 const MAX_REQUEST: usize = 16 * 1024 * 1024;
 const MAX_RESPONSE: usize = 64 * 1024 * 1024;
+const MAX_FOREIGN_CAPABILITY_AUDIT_ROWS: u64 = 32;
 const HOP_HEADERS: &[&str] = &[
     "connection",
     "content-length",
@@ -113,6 +114,7 @@ struct State {
     auth_value: reqwest::header::HeaderValue,
     client: reqwest::Client,
     requests: AtomicU64,
+    foreign_capability_requests: AtomicU64,
 }
 
 pub(crate) struct ProbeRelay {
@@ -634,6 +636,36 @@ fn audit_with_response(
     file.write_all(b"\n")?;
     file.sync_all()
 }
+
+fn audit_foreign_capability(state: &State, method: &str, request_target: &str) {
+    let index = state
+        .foreign_capability_requests
+        .fetch_add(1, Ordering::SeqCst);
+    if index < MAX_FOREIGN_CAPABILITY_AUDIT_ROWS {
+        let target = format!("sha256:{:x}", Sha256::digest(request_target.as_bytes()));
+        let _ = audit(
+            state,
+            method,
+            false,
+            &[],
+            Some("foreign relay capability"),
+            &target,
+            None,
+            None,
+        );
+    } else if index == MAX_FOREIGN_CAPABILITY_AUDIT_ROWS {
+        let _ = audit(
+            state,
+            method,
+            false,
+            &[],
+            Some("foreign relay capability overflow"),
+            "bounded",
+            None,
+            None,
+        );
+    }
+}
 async fn handle(
     request: Request<Incoming>,
     state: Arc<State>,
@@ -644,6 +676,15 @@ async fn handle(
         .map(|value| value.as_str())
         .unwrap_or_else(|| request.uri().path())
         .to_owned();
+    let prefix = format!("/{}", state.path_capability);
+    let Some(suffix) = request_target
+        .strip_prefix(&prefix)
+        .filter(|suffix| suffix.starts_with('/'))
+        .map(str::to_owned)
+    else {
+        audit_foreign_capability(&state, request.method().as_str(), &request_target);
+        return Ok(response(StatusCode::NOT_FOUND, "invalid relay capability"));
+    };
     if request.method() != hyper::Method::POST {
         let reviewed_hello =
             reviewed_preflight(request.method(), &request_target, &state.path_capability);
@@ -663,33 +704,6 @@ async fn handle(
             None,
         );
         return Ok(response(StatusCode::METHOD_NOT_ALLOWED, reason));
-    }
-    let prefix = format!("/{}", state.path_capability);
-    let Some(suffix) = request_target.strip_prefix(&prefix).map(str::to_owned) else {
-        let _ = audit(
-            &state,
-            "POST",
-            false,
-            &[],
-            Some("invalid relay capability"),
-            &request_target,
-            None,
-            None,
-        );
-        return Ok(response(StatusCode::NOT_FOUND, "invalid relay capability"));
-    };
-    if !suffix.starts_with('/') {
-        let _ = audit(
-            &state,
-            "POST",
-            false,
-            &[],
-            Some("invalid relay path"),
-            &request_target,
-            None,
-            None,
-        );
-        return Ok(response(StatusCode::NOT_FOUND, "invalid relay path"));
     }
     if request
         .headers()
@@ -969,6 +983,7 @@ pub(crate) async fn start_probe_relay(
             .build()
             .map_err(|error| invalid(error.to_string()))?,
         requests: AtomicU64::new(0),
+        foreign_capability_requests: AtomicU64::new(0),
     });
     let listener =
         tokio::net::TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await?;
@@ -1126,6 +1141,7 @@ async fn serve(options: Options) -> io::Result<()> {
             .build()
             .map_err(|error| invalid(error.to_string()))?,
         requests: AtomicU64::new(0),
+        foreign_capability_requests: AtomicU64::new(0),
     });
     let listener =
         tokio::net::TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await?;
@@ -1298,6 +1314,59 @@ mod tests {
         }
     }
     #[test]
+    fn foreign_capability_audit_is_bounded_and_hashes_the_target() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-foreign-relay-audit-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        let audit_path = root.join("audit.jsonl");
+        let state = State {
+            upstream: "https://api.example.invalid/".parse().unwrap(),
+            path_capability: "c".repeat(32),
+            policy: policy(),
+            audit: Mutex::new(
+                fs::OpenOptions::new()
+                    .append(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&audit_path)
+                    .unwrap(),
+            ),
+            auth_header: reqwest::header::HeaderName::from_static("x-api-key"),
+            auth_value: reqwest::header::HeaderValue::from_static("fixture"),
+            client: reqwest::Client::new(),
+            requests: AtomicU64::new(0),
+            foreign_capability_requests: AtomicU64::new(0),
+        };
+        for index in 0..100 {
+            audit_foreign_capability(&state, "DELETE", &format!("/foreign/{index}"));
+        }
+        let rows = fs::read_to_string(&audit_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), MAX_FOREIGN_CAPABILITY_AUDIT_ROWS as usize + 1);
+        assert!(
+            rows[..MAX_FOREIGN_CAPABILITY_AUDIT_ROWS as usize]
+                .iter()
+                .all(|row| row["reason"] == "foreign relay capability"
+                    && row["method"] == "DELETE"
+                    && row["path"].as_str().is_some_and(|path| path.len() == 71))
+        );
+        assert_eq!(
+            rows.last().unwrap()["reason"],
+            "foreign relay capability overflow"
+        );
+        assert_eq!(rows.last().unwrap()["path"], "bounded");
+        assert_eq!(
+            state.foreign_capability_requests.load(Ordering::SeqCst),
+            100
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn exact_request_is_admitted_and_expansion_is_rejected() {
         let policy = policy();
         let valid=serde_json::to_vec(&json!({"model":"model-1","prompt":"secret","tools":[{"description":"fixed","input_schema":{"type":"object"},"name":"mcp__tempest__status","type":"function"}]})).unwrap();
@@ -1398,6 +1467,7 @@ mod tests {
                 .build()
                 .unwrap(),
             requests: AtomicU64::new(0),
+            foreign_capability_requests: AtomicU64::new(0),
         });
         let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let relay_address = relay.local_addr().unwrap();
