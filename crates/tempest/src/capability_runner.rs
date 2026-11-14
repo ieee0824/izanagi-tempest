@@ -1633,7 +1633,7 @@ mod tests {
         assert_eq!(policy["paths"], json!(["/v1/messages?beta=true"]));
         assert_eq!(policy["models"], json!(["claude-sonnet-5-5"]));
         assert_eq!(policy["acceptance_requests"], 8);
-        assert_eq!(policy["maximum_requests"], 20);
+        assert_eq!(policy["maximum_requests"], 19);
         assert_eq!(acceptance_policy(&policy).unwrap()["maximum_requests"], 8);
         assert_eq!(
             policy["request_headers"],

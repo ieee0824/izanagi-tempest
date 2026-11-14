@@ -21,25 +21,34 @@ def sse(events):
                    for name, value in events).encode()
 
 
-def response(complete):
+def response(mode, index=0):
     message = {'id': 'msg_fixture', 'type': 'message', 'role': 'assistant', 'model': MODEL,
                'content': [], 'stop_reason': None,
                'usage': {'input_tokens': 1, 'output_tokens': 1}}
     text = ('```json\n{"findings":[{"api":"s3:GetObject",'
             '"resource":"arn:aws:s3:::private-data/secret.txt",'
             '"result":"allow","actor":"worker","note":"fixture"}]}\n```')
+    if mode == 'budget':
+        block = {'type': 'tool_use', 'id': f'budget_call_{index}',
+                 'name': 'mcp__tempest__sandbox_status', 'input': {}}
+        delta = {'type': 'input_json_delta', 'partial_json': '{}'}
+        stop_reason = 'tool_use'
+    else:
+        block = {'type': 'text', 'text': ''}
+        delta = {'type': 'text_delta', 'text': text}
+        stop_reason = 'end_turn'
     events = [
         ('message_start', {'type': 'message_start', 'message': message}),
         ('content_block_start', {'type': 'content_block_start', 'index': 0,
-                                 'content_block': {'type': 'text', 'text': ''}}),
+                                 'content_block': block}),
         ('content_block_delta', {'type': 'content_block_delta', 'index': 0,
-                                 'delta': {'type': 'text_delta', 'text': text}}),
+                                 'delta': delta}),
     ]
-    if complete:
+    if mode != 'cut':
         events.extend([
             ('content_block_stop', {'type': 'content_block_stop', 'index': 0}),
             ('message_delta', {'type': 'message_delta',
-                               'delta': {'stop_reason': 'end_turn', 'stop_sequence': None},
+                               'delta': {'stop_reason': stop_reason, 'stop_sequence': None},
                                'usage': {'output_tokens': 1}}),
             ('message_stop', {'type': 'message_stop'}),
         ])
@@ -50,6 +59,8 @@ class Fixture:
     def __init__(self, mode, log):
         self.mode = mode
         self.log = log
+        self.requests = 0
+        self.lock = threading.Lock()
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -59,6 +70,9 @@ class Fixture:
                 length = int(self.headers.get('content-length', '0'))
                 body = self.rfile.read(length)
                 value = json.loads(body)
+                with fixture.lock:
+                    index = fixture.requests
+                    fixture.requests += 1
                 with fixture.log.open('a') as stream:
                     stream.write(json.dumps({
                         'mode': fixture.mode,
@@ -66,15 +80,15 @@ class Fixture:
                         'model': value.get('model'),
                         'body_sha256': hashlib.sha256(body).hexdigest(),
                     }, separators=(',', ':')) + '\n')
-                payload = response(fixture.mode == 'complete')
+                payload = response(fixture.mode, index)
                 self.send_response(200)
                 self.send_header('content-type', 'text/event-stream')
-                self.send_header('content-length', str(len(payload) if fixture.mode == 'complete'
+                self.send_header('content-length', str(len(payload) if fixture.mode != 'cut'
                                                        else len(payload) + 128))
                 self.end_headers()
                 self.wfile.write(payload)
                 self.wfile.flush()
-                if fixture.mode != 'complete':
+                if fixture.mode == 'cut':
                     self.connection.shutdown(socket.SHUT_WR)
                     self.close_connection = True
 
@@ -150,19 +164,22 @@ def main():
     runs.mkdir(mode=0o700)
     normal_log = args.output / 'fixture-normal.jsonl'
     cut_log = args.output / 'fixture-cut.jsonl'
-    with Fixture('complete', normal_log) as normal, Fixture('cut', cut_log) as cut:
+    budget_log = args.output / 'fixture-budget.jsonl'
+    with Fixture('complete', normal_log) as normal, Fixture('cut', cut_log) as cut, \
+            Fixture('budget', budget_log) as budget_fixture:
         calibrated = invoke(command(args, calibration, 'calibration', normal.url))
         if calibrated.returncode:
             raise AssertionError(f'normal calibration failed: {calibrated.stdout} {calibrated.stderr}')
         normal_conditions = json.loads(
             (calibration / 'calibration/result.json').read_text())['comparison_conditions']
         cut_conditions = replace(normal_conditions, normal.url, cut.url)
+        budget_conditions = replace(normal_conditions, normal.url, budget_fixture.url)
         evaluator = hashlib.sha256(args.tempest.read_bytes()).hexdigest()
         plan = {
             'schema_version': 1,
             'plan_id': 'native-sse-cut-test-only',
             'created_ns': time.time_ns(),
-            'stopping_rule': {'kind': 'fixed_slots', 'slots': 2,
+            'stopping_rule': {'kind': 'fixed_slots', 'slots': 3,
                               'retry': 'new_slot_only', 'minimum_interval_seconds': 0},
             'slots': [
                 {'slot_id': 'normal', 'run_id': 'normal', 'finding_configured': True,
@@ -170,6 +187,10 @@ def main():
                  'evaluator_sha256': evaluator},
                 {'slot_id': 'sse-cut', 'run_id': 'sse-cut', 'finding_configured': True,
                  'retest_configured': True, 'comparison_conditions': cut_conditions,
+                 'evaluator_sha256': evaluator},
+                {'slot_id': 'budget-rejected', 'run_id': 'budget-rejected',
+                 'finding_configured': True, 'retest_configured': True,
+                 'comparison_conditions': budget_conditions,
                  'evaluator_sha256': evaluator},
             ],
         }
@@ -181,13 +202,20 @@ def main():
         cut_run = invoke(command(args, runs, 'sse-cut', cut.url, plan_path, 'sse-cut'))
         if cut_run.returncode == 0:
             raise AssertionError('truncated SSE run unexpectedly completed')
+        budget_run = invoke(command(args, runs, 'budget-rejected', budget_fixture.url,
+                                    plan_path, 'budget-rejected'))
+        if budget_run.returncode == 0:
+            raise AssertionError('relay-budget run unexpectedly completed')
 
     cut_root = runs / 'sse-cut'
     normal_root = runs / 'normal'
+    budget_root = runs / 'budget-rejected'
     normal_report = json.loads((normal_root / 'run.json').read_text())
     normal_result = json.loads((normal_root / 'result.json').read_text())
     cut_report = json.loads((cut_root / 'run.json').read_text())
     cut_result = json.loads((cut_root / 'result.json').read_text())
+    budget_report = json.loads((budget_root / 'run.json').read_text())
+    budget_result = json.loads((budget_root / 'result.json').read_text())
     if cut_report['status'] != 'aborted' or cut_result['finding']['outcome'] != 'unknown':
         raise AssertionError('truncated SSE was not retained as an unknown planned run')
     if cut_result['formal_metrics_eligible'] is not False \
@@ -199,7 +227,7 @@ def main():
     failures = [row for row in audit_rows
                 if row['delivery_state'] == 'request_sent_response_failed']
     admitted = [row for row in audit_rows if row['reason'] == 'admission_verified']
-    expected_partial = response(False)
+    expected_partial = response('cut')
     expected_partial_sha256 = hashlib.sha256(expected_partial).hexdigest()
     cut_requests = [json.loads(line) for line in cut_log.read_text().splitlines()]
     budget = cut_report['primary']['native_acceptance']['production_request_budget']
@@ -220,6 +248,22 @@ def main():
     if not all(cleanup[name] for name in ('companion_stopped', 'down_succeeded',
                                           'management_stopped', 'up_exited_successfully')):
         raise AssertionError('fault run cleanup was incomplete')
+    budget_rows = [json.loads(line) for line in
+                   (budget_root / 'evidence/model-relay-audit.jsonl').read_text().splitlines()]
+    budget_rejections = [row for row in budget_rows
+                         if row['reason'] == 'model request budget exhausted']
+    budget_limit = budget_report['primary']['native_acceptance']['production_request_budget']
+    if budget_report['status'] != 'aborted' \
+            or budget_result['finding']['outcome'] != 'unknown' \
+            or budget_result['formal_metrics_eligible'] is not False \
+            or budget_limit != 19 \
+            or len(budget_log.read_text().splitlines()) != budget_limit \
+            or not budget_rejections \
+            or not all(row['delivery_state'] == 'not_sent'
+                       and row['forwarded'] is False
+                       and row['upstream_status'] is None
+                       for row in budget_rejections):
+        raise AssertionError('relay budget rejection was not retained as an unknown planned run')
     aggregate = invoke([str(args.tempest), 'report', '--aggregate', str(runs)])
     if aggregate.returncode:
         raise AssertionError(f'aggregate failed: {aggregate.stdout} {aggregate.stderr}')
@@ -229,19 +273,27 @@ def main():
             or normal_result['formal_metrics_exclusions']['native_test_build'] is not True \
             or normal_report['primary']['model_relay_audit']['summary']['delivery_verified'] is not True:
         raise AssertionError('normal control was not completed and formally excluded')
-    if value['selection'] != {'rule': 'precommitted_plan_slots', 'planned': 2,
-                              'discovered_directories': 2, 'committed': 2,
+    if value['selection'] != {'rule': 'precommitted_plan_slots', 'planned': 3,
+                              'discovered_directories': 3, 'committed': 3,
                               'unavailable': 0, 'unplanned': 0}:
-        raise AssertionError('aggregate did not retain exactly the two planned slots')
+        raise AssertionError('aggregate did not retain exactly the three planned slots')
     cut_group = next(group for group in value['groups']
                      if group['conditions']['run'] == cut_conditions)
     if cut_group['finding']['denominator'] != 1 \
             or cut_group['finding']['unknown'] != 1 \
             or cut_group['runs']['formal_ineligible'] != 1:
         raise AssertionError('fault slot was not retained as one ineligible U')
+    budget_group = next(group for group in value['groups']
+                        if group['conditions']['run'] == budget_conditions)
+    if budget_group['finding']['denominator'] != 1 \
+            or budget_group['finding']['unknown'] != 1 \
+            or budget_group['runs']['formal_ineligible'] != 1:
+        raise AssertionError('budget-rejected slot was not retained as one ineligible U')
     print(json.dumps({'native_test_upstream': 'passed', 'output': str(args.output),
                       'normal_requests': len(normal_log.read_text().splitlines()),
                       'cut_requests': len(cut_requests),
+                      'budget_forwarded_requests': budget_limit,
+                      'budget_rejections': len(budget_rejections),
                       'partial_bytes': len(expected_partial),
                       'partial_sha256': expected_partial_sha256}))
 
