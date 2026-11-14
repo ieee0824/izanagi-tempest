@@ -3,7 +3,10 @@ use sha2::{Digest, Sha256};
 use std::{
     ffi::{OsStr, OsString},
     fs, io,
-    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+    os::{
+        unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+        unix::process::CommandExt,
+    },
     path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
 };
@@ -152,7 +155,8 @@ fn login(executable: &Path, requested_config: &Path) -> io::Result<()> {
         .env("TMPDIR", jail.join("tmp"))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::inherit())
+        .process_group(0);
     let status = command.status()?;
     if !status.success() {
         return Err(invalid("Claude subscription login failed"));
