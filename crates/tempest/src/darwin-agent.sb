@@ -1,0 +1,14 @@
+(version 1)
+(deny default)
+(import "system.sb")
+(allow process*)
+(deny user-preference-read
+       (preference-domain "com.anthropic.claudecode"))
+(deny user-preference-read
+       (preference-domain "com.openai.codex"))
+(allow file-read-metadata)
+(allow file-read* (subpath (param "JAIL")))
+(allow file-write* (literal "/dev/null") (subpath (param "JAIL")))
+(deny network*)
+(allow network-outbound (remote ip (param "RELAY")))
+(allow network-outbound (literal (param "MCP_SOCKET")))

@@ -288,11 +288,17 @@ impl Vm {
         if let Some(authorization) = &self.authorization {
             fields["authorization"] = authorization.clone().into();
         }
+        let control_path = self.directory.join("evidence/control.jsonl");
         let result = guest_transport::call(
             self.companion.as_mut().unwrap(),
             self.management.as_mut().unwrap(),
             operation,
             fields,
+            |mut row| {
+                row["id"] = audit_id.clone().into();
+                row["operation"] = operation.into();
+                host_io::json_append(&control_path, &row)
+            },
         )
         .await;
         if let Err(error) = self.audit_control(
@@ -318,20 +324,12 @@ impl Vm {
         Ok(result)
     }
     fn audit_control(&self, id: &str, operation: &str, state: &str) -> io::Result<()> {
-        use std::{io::Write, os::unix::fs::OpenOptionsExt};
-        let mut file = fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(self.directory.join("evidence/control.jsonl"))?;
-        serde_json::to_writer(
-            &mut file,
+        host_io::json_append(
+            &self.directory.join("evidence/control.jsonl"),
             &json!({"id":id,"operation":operation,"state":state,"host_ns":host_io::now_ns()?}),
-        )?;
-        file.write_all(b"\n")?;
-        file.sync_all()
+        )
     }
+
     pub async fn clock(&mut self, group: &str, file: &mut fs::File) -> io::Result<()> {
         self.ensure_alive()?;
         if let Err(error) =

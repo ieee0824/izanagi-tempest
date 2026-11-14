@@ -101,7 +101,8 @@ cargo test --workspace --locked
 検証エラーはフィールド経路と理由を stderr に出し、パーサー由来の行・列があれば併記します。
 
 `crates/tempest-model` が共有型と静的検証、`crates/tempest` が YAML 読み込みと CLI、
-`crates/tempest-guest` は次節のゲストヘルパーです。ホストの `tempest run` はまだありません。
+`crates/tempest-guest` は次節のゲストヘルパーです。ホストの `tempest run` はmockと
+proof-gatedなClaude Code native CLIを選択できます。
 API 対応表は [capability.rs](crates/tempest-model/src/capability.rs) に固定ソースの根拠を集約し、
 未知・strict 未対応・現入力形式では必要条件を表せない操作を区別します。
 ポリシーの wildcard は保持し、IAM の認可評価は実装しません。
@@ -185,7 +186,7 @@ target/release/tempest run scenarios/s3-overread-001.yaml \
   --image /absolute/path/to/debian-aarch64.qcow2 \
   --image-inputs /absolute/path/to/inputs.json \
   --python /absolute/path/to/python3 \
-  --runs /private/tmp/tempest-runs --run-id example-001
+  --runs /private/tmp/tempest-runs --run-id example --repeat 3
 ```
 
 controllerはMCP管理経路だけでone-shot seed、self-check、agent admission、quiesce/export、
@@ -193,12 +194,96 @@ fresh VM retestを接続します。成功した実行ではM5評価を自動実
 `result.json`・`report.md`を生成します。`run.json` は `scope: m5_evaluation`、
 `purpose: collection_and_evaluation`、`evaluation: performed` です。
 mockの固定報告は形式検証用で、正式なモデル比較の集計対象には含めません。
+Claude CodeまたはCodex native CLIは、固定model ID、native executable、owner-privateなAPI認証fileを
+明示して実行します。Claude fileはAPI key、Codex fileは完全な`Bearer ...` Authorization値を保持します。
+認証値はmodel relayだけが読み、CLIへは渡しません。discoveryとdeterministic acceptance、
+request policy・code closure・macOS Seatbeltの検証に成功した直後だけ、一回限りのLaunchPermitで起動します。
+
+```bash
+target/release/tempest run scenarios/s3-overread-001.yaml \
+  --agent claude-code \
+  --agent-executable /absolute/path/to/claude \
+  --model claude-sonnet-5-5 \
+  --model-auth-file /absolute/path/to/owner-private-anthropic-key \
+  --izanagi /absolute/path/to/izanagi \
+  --image /absolute/path/to/debian-aarch64.qcow2 \
+  --image-inputs /absolute/path/to/inputs.json \
+  --python /absolute/path/to/python3 \
+  --runs /private/tmp/tempest-runs --run-id native-example
+```
+
+Codex 0.169.0/gpt-6.1は`--agent codex`、Codex native binary、owner-privateなBearer認証fileを指定します。
+固定framework 4 toolの完全schemaと拒否契約を2 passで再検証できない版・modelはfail closeします。
+`gpt-6.1`はCodex 0.169.0の組込みIDであり、公開OpenAI API一覧での利用可能性は未確認です。
+本物APIの低額preflightとownerの明示採用までは正式比較へ使用しません。
+MCP relayは`initialize`・`notifications/initialized`・`tools/list`・`tools/call`だけをIzanagiへ転送し、
+resource・template・prompt・未知methodは上流到達前に拒否して別件数として監査します。
+
+auth fileはowner所有のregular fileかつmode 0600相当でなければ拒否します。固定policyにないCLI version/model、
+acceptance失敗、relay予算超過、adapter失敗は成功へ昇格せず、予約済みrunをUとして証跡に残します。
+正式な比較planを固定する前に、plan外の1 runだけを低額preflightとしてowner承認の上で実行し、
+固定`anthropic-beta` headerを転送しない現在のpolicyを実APIが受理するか確認します。拒否された場合は、
+必要なheader値をmodel別policyへ固定して再review・再acceptanceしてから比較run数と順序を確定します。
+
+途中SSE切断を課金・外部通信なしでnative CLIから集計まで再現する場合だけ、専用feature binaryを使います。
+default buildには`--native-test-upstream`が存在せず、feature binaryが生成する全runは
+`binary_mode=native_test_upstream`、`formal_test_only=true`としてresult/aggregateでも正式指標から除外されます。
+fixtureが差し替えるのはproduction relayのloopback upstreamだけで、acceptance、Permit、Seatbelt、auth隔離、
+policy・予算、実CLI、VM、report/aggregateは本番経路を共有します。
+
+```bash
+cargo build --release --locked -p tempest --features native-test-upstream
+python3 integration/native_test_upstream.py \
+  --tempest target/release/tempest \
+  --claude /absolute/path/to/claude \
+  --izanagi /absolute/path/to/izanagi \
+  --image /absolute/path/to/debian-aarch64.qcow2 \
+  --image-inputs /absolute/path/to/inputs.json \
+  --python /absolute/path/to/python3 \
+  --output /private/tmp/tempest-native-test-upstream-001
+```
+
+scriptはnormal対照、実CLIがtoolを呼ばず終了するno-op対照、
+`message_start`・`content_block_delta`後かつ`message_stop`前に切断するslot、request budget拒否slotを
+同じ固定planへ予約し、partial raw stream、relay delivery failure、cleanup、Uの分母保持まで検査します。
+出力directoryにはplan、run artifacts、aggregate、fixture request logsを残します。この試験は固定Anthropic
+authority、TLS、beta header、実API互換性を証明しないため、owner承認が必要な実API preflightの代替にはしません。
+最新の非秘密な実測要約と成果物hashは
+[M6-NATIVE-TEST-EVIDENCE.json](docs/M6-NATIVE-TEST-EVIDENCE.json) に固定しています。
+
 1ファイルの回収上限は`--max-evidence-bytes`（既定64 MiB）で変更できます。
+`--repeat N`（1〜100）は各試行を独立VMで順次実行し、複数回ではrun IDを
+`<run-id>-001`から展開します。comparison planを併用する場合はslot IDも同じ規則で展開するため、
+planには`<comparison-slot>-001`以降と対応するrun IDを事前登録します。`--repeat-interval-seconds`は
+試行間隔を固定し、planの`stopping_rule.minimum_interval_seconds`と一致しなければ拒否します。
+`--repeat`は単一条件の連続反復用であり、複数modelの比較順序にはplanのslot順を実行する別runnerを使います。
+中断後に同じbaseを再開することは認めず、予約済みslotをUのまま残します。signal後は未予約slotを消費しません。
+run内で確定した不成立は後続を継続し、起動前のplan/image/code契約不一致だけがbatchを停止します。
+
+2 modelの正式な順序は、両modelを同数かつ交互に並べた事前固定planから実行します。runnerはplanのslot順・run ID・
+model・最小間隔を変更せず、評価がcommitされなかったslotで停止します。abortedでも評価がcommitされたslotは
+Uまたは成立済みの信頼済み成功として残し、次の予約slotへ進みます。
+最小間隔は前slotの終了から次slotの開始までと定義します。開始前に全slotのrun directoryが存在しないことを検査し、
+planをowner-private snapshotへ固定します。各slotの開始・commit時刻、model、run ID、停止理由は
+`comparison-execution.json`へ逐次保存し、過去runや途中で差し替えたplanを今回の結果として採用しません。
+停止後の再開は行わず、残りslotをUとして集計します。再試行には新しいplanとruns rootが必要です。
+
+```bash
+target/release/tempest compare /absolute/path/to/runs/aggregate-plan.json \
+  scenarios/s3-overread-001.yaml \
+  --agent-executable /absolute/path/to/claude \
+  --model-auth-file /absolute/path/to/owner-private-key \
+  --izanagi /absolute/path/to/izanagi \
+  --image /absolute/path/to/debian-aarch64.qcow2 \
+  --image-inputs /absolute/path/to/inputs.json \
+  --runs /absolute/path/to/runs
+```
 
 回収済みrunをM5で再評価し、`result.json`と`report.md`を原子的に生成するには次を実行します。
 
 ```bash
 cargo run --locked -p tempest -- report runs/<run-id>
+cargo run --locked -p tempest -- report --aggregate /absolute/path/to/runs
 ```
 
 mockの結果は形式・E2E検証用であり、生成後も正式なモデル比較指標の対象外です。
@@ -207,6 +292,12 @@ mockの結果は形式・E2E検証用であり、生成後も正式なモデル�
 接続元を確定できないログ候補は`unresolved_backend_or_bypass`として保持します。
 `evidence/api.jsonl`はcredential claimのAccessKeyIdを平文で含む私有証跡ですが、
 `run.json`・`result.json`・`report.md`には値を複製しません。
+集計には実行前に固定した`runs/aggregate-plan.json`が必要です。各slotはrun ID、比較条件、
+evaluator hash、finding/retestの設定有無を固定し、`tempest run`には
+`--comparison-plan FILE --comparison-slot ID`を渡します。集計時はplan hashへの束縛、committed marker、
+成果物hash、evaluation IDを照合します。欠損・読取不能な予定slotは期待groupのunknown/unavailableに残し、
+予定外directoryは代替せず別件数にします。条件とevaluator hashが同じrunだけをgroup化し、条件横断率は
+計算せず、`aggregate.json`と`aggregate.md`を私有runs直下へ生成します。
 
 実VMの連続実行と故障注入はopt-inです。
 
@@ -214,6 +305,8 @@ mockの結果は形式・E2E検証用であり、生成後も正式なモデル�
 python3 integration/runtime_smoke.py --help
 python3 integration/runtime_faults.py --help
 python3 integration/runtime_presence.py --help
+python3 integration/runtime_noop.py --help
+python3 integration/runtime_delivery_race.py --help
 ```
 
 前者は同一scenarioの2回実行でsnapshot reset、4つのVM namespace、資格情報の非再利用を確認します。
@@ -228,6 +321,9 @@ target/release/tempest recover /absolute/path/to/runs/<run-id>
 `runtime_presence.py`はfinding/retestの4通りを実行し、
 未設定の処理を生成せず、M5評価を成功扱いしないことを確認します。
 
+
+`runtime_noop.py`はtoolを呼ばないmockを同じ固定VMで反復し、背景未確定候補を記録します。
+再現コマンドと実CLI/集計の残作業は [M6計画](docs/M6-PLAN.md) を参照してください。
 
 MCP中継の単体起動例（実行中のIzanagi sessionと同じcwdを指定）:
 

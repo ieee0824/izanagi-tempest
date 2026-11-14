@@ -116,3 +116,32 @@ M4用派生イメージは `attest` とidentity付き `export` により、daemo
 測定GETを独立MCP supervisor/bridgeへ流し、予算未転送とRPC drainからexportまでを確認する。
 専用dummy HMACとbinary snapshotをrun内に保持する。成功・失敗例と制約は
 [M4 supervisor](../docs/M4-SUPERVISOR.md)を参照。
+
+## export配送競合の専用試験イメージ
+
+`image/prepare.py` の通常引数に `--delivery-race-fixture` を追加すると、通常イメージとは別に、
+実root `deliver` の待機をquiesceが確認してからfreezeする試験用イメージを導出する。
+fixtureの有無と実際に導出したscriptのhashをinputs/image metadataへ記録する。
+通常buildに待機やrendezvousは追加しない。試験イメージを通常のモデル評価へ用いない。
+
+ビルド後、同じ専用flagで実VM試験を行う。
+
+```bash
+python3 integration/image_smoke.py --izanagi /absolute/path/to/izanagi --image /private/tmp/tempest-delivery-race-build-001/packer/output-debian/debian-aarch64.qcow2 --build-inputs /private/tmp/tempest-delivery-race-build-001/inputs.json --output /private/tmp/tempest-delivery-race-run-001 --delivery-race-fixture
+```
+
+実root readerのPIDがquiesceの`moved_pids`へ含まれること、読取失敗を観測した後に同じ要求IDの
+認証済み応答を取得できることを検査する。要求の再投入は行わない。失敗応答は本文を転記せず
+種別・終了コード・stdout/stderr hashだけを記録する。これは配送障害の再現試験であり、
+本番controllerの再試行契約や期限・監査の検証を代替しない。
+
+host controllerの回復と失敗上限は、同じfixtureで次を実行する。
+`--expect aborted` は修正前のhost binaryの基準確認用である。
+
+```bash
+python3 integration/runtime_delivery_race.py --tempest /absolute/path/to/tempest --izanagi /absolute/path/to/izanagi --image /private/tmp/tempest-delivery-race-build-001/packer/output-debian/debian-aarch64.qcow2 --image-inputs /private/tmp/tempest-delivery-race-build-001/inputs.json --python /absolute/path/to/python3 --runs /private/tmp/tempest-delivery-race-fixed-001 --expect completed
+python3 integration/runtime_delivery_race.py --tempest /absolute/path/to/tempest --izanagi /absolute/path/to/izanagi --image /private/tmp/tempest-delivery-race-build-001/packer/output-debian/debian-aarch64.qcow2 --image-inputs /private/tmp/tempest-delivery-race-build-001/inputs.json --python /absolute/path/to/python3 --runs /private/tmp/tempest-delivery-race-large-001 --expect completed --large-evidence
+```
+
+大証跡caseは1MiBのローカルdummy objectを29回読み、64MiBのhost上限に近いPCAPを作る。
+上限付近のサイズ・29要求の保持・認証済みexport・freeze時間・安全回収を検査する。

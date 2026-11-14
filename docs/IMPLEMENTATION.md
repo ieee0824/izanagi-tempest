@@ -3,7 +3,8 @@
 ステータス: M0 の実測、M1 の workspace・`tempest validate`、M2 のゲストヘルパーを実装済み。
 M3 の派生 VM イメージ・私有 mailbox を実装し、固定VMで権限・配送・記録を検証済み。
 M4 の `mock` 実行、MCP予算、one-shot seed、quiesce/export、fresh VM retestを実装済み。
-M5の判定・レポートは実装・検証中。M6の実モデルアダプタは未実装。M3の範囲は [M3-IMAGE.md](M3-IMAGE.md) を参照。
+M5の判定・レポートを実装済み。M6はClaude Codeのproof-gated native adapterと集計を実装し、
+実APIによる2model比較を検証中。M3の範囲は [M3-IMAGE.md](M3-IMAGE.md) を参照。
 M2 の具体的な入力・状態・検証範囲は [M2-GUEST.md](M2-GUEST.md) を参照。
 M0 の収集手順は [tools/m0/README.md](../tools/m0/README.md)、実測状況は [M0-RESULTS.md](M0-RESULTS.md) を参照。
 
@@ -510,6 +511,10 @@ snapshot自体も確定markerの成果物hashに含め、現在の評価世代�
 
 `metric_assessment`はfindingの観測結果と正式採用状態、逸脱候補の観測状態を分ける。
 確定汚染はfindingの観測事実を残したまま採用状態をunknownにする。
+export/collectionの完全性とroute coverageを分ける。schema 1には証明主体・対象経路・観測区間・
+根拠hashを同じrunへ結ぶ契約がないため、manifestの文字列claimだけではverifiedへ昇格しない。
+構造化証明が実装されるまでは、帰属済みの正の成功と実観測allow/denyだけを保持する。
+NotFound、false positive、未試行、run全体の逸脱なしはunknown、正式採用は不可とする。
 背景の帰属未解決などが残る場合、逸脱候補指標はunknownとし、全体の
 `formal_metrics_eligible`もfalseにする。これは対象runを分母から削除する指示ではない。
 M6集計は対象runのunknownを分母に残し、`not_configured`と区別する。
@@ -530,7 +535,15 @@ M6集計は対象runのunknownを分母に残し、`not_configured`と区別す�
 }
 ```
 
-モデル比較(DESIGN.md 5.4)は、複数の `result.json` を `tempest report --aggregate` で集計して作る。
+モデル比較(DESIGN.md 5.4)は、複数の確定済み `result.json` を
+`tempest report --aggregate RUNS_DIRECTORY` で集計して作る。実行前の`aggregate-plan.json`で固定したslotを
+対象とし、各runはplan hashとslot IDへ束縛する。shared lock、committed marker、必須成果物hash、
+evaluation IDを検証する。欠損・読取不能slotは期待groupのunknown/unavailableに残し、予定外directoryは
+代替に使わない。scenario/actor/policy/image/tempest/Izanagi/adapter・model・binary/budget等の条件と
+evaluator hashが一致するrunだけを
+同一groupにし、条件をまたぐ率は計算しない。findingの分母はS+F+Uでnot_configuredを分離し、
+下限S/N・上限(S+U)/Nを出す。retest、false positive claim、試行・候補数も単位とunknownを分ける。
+portfolioはpresenceの設定済み分母とnot_configured件数だけを条件横断で示す。
 
 ## 8. ソース構成
 
@@ -561,11 +574,13 @@ tests/                           結合テスト
 M1 の依存は `serde` / `serde_json`、`serde_path_to_error`、`yaml_serde=0.10.7`、`sha2`。
 後続の依存候補は `tokio`、`hyper`(recorder)、`clap`、`regex`、`anyhow` / `thiserror`。
 
-CLI（`validate` のみ実装済み。他は予定）:
+主要CLI:
 
 ```bash
 tempest validate scenarios/s3-overread-001.yaml
-tempest run scenarios/s3-overread-001.yaml --agent claude-code --model <model> --repeat 5
+tempest run scenarios/s3-overread-001.yaml --agent claude-code \
+  --agent-executable /absolute/path/to/claude --model <model> \
+  --model-auth-file /absolute/path/to/owner-private-key --repeat 5
 tempest report runs/<run-id>
 tempest report --aggregate runs/
 ```

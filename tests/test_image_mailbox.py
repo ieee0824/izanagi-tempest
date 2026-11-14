@@ -68,10 +68,10 @@ class MailboxTests(unittest.TestCase):
                         if mode == 'barrier_failure':
                             raise dispatcher.Rejected('barrier_failed')
                         frozen = True
-                        return {'descendants_empty': True, 'service_frozen': True}
+                        return {'descendants_empty': True, 'service_frozen': True, 'frozen_monotonic_ns': 100}
                     self.assertEqual(operation, 'thaw')
                     frozen = False
-                    return {'thawed': True}
+                    return {'thawed': True, 'thawed_monotonic_ns': 175, 'thawed_guest_ns': 1000}
                 def native(command, **kwargs):
                     calls.append('native_export')
                     self.assertTrue(frozen, 'native export ran outside frozen boundary')
@@ -94,6 +94,8 @@ class MailboxTests(unittest.TestCase):
                     if mode == 'success':
                         result = dispatcher.dispatch('d' * 32, payload)
                         self.assertTrue(result['quiesce']['descendants_empty'])
+                        self.assertEqual(result['quiesce']['frozen_duration_ns'], 75)
+                        self.assertEqual(result['quiesce']['thawed_guest_ns'], 1000)
                     else:
                         with self.assertRaises((dispatcher.Rejected, subprocess.TimeoutExpired)):
                             dispatcher.dispatch('d' * 32, payload)

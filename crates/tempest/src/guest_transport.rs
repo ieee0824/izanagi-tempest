@@ -210,11 +210,64 @@ impl Management {
     }
 }
 
+fn execution_failure_kind(text: &str) -> &'static str {
+    if text.starts_with("exec failed:") {
+        "exec_failed"
+    } else if text.ends_with("(exit code: -1)") {
+        "exit_minus_one"
+    } else if text.ends_with("(exit code: 137)") {
+        "exit_137"
+    } else {
+        "unexpected_error_response"
+    }
+}
+
 pub(crate) async fn call(
     companion: &mut Companion,
     management: &mut Management,
     operation: &str,
     fields: Value,
+    audit: impl FnMut(Value) -> io::Result<()>,
+) -> io::Result<Value> {
+    call_with_deadline(
+        companion,
+        management,
+        operation,
+        fields,
+        audit,
+        Duration::from_secs(if operation == "export" { 320 } else { 260 }),
+    )
+    .await
+}
+
+async fn call_with_deadline(
+    companion: &mut Companion,
+    management: &mut Management,
+    operation: &str,
+    fields: Value,
+    mut audit: impl FnMut(Value) -> io::Result<()>,
+    deadline: Duration,
+) -> io::Result<Value> {
+    match tokio::time::timeout(
+        deadline,
+        call_inner(companion, management, operation, fields, &mut audit),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            audit(json!({"state":"delivery_deadline","host_ns":host_io::now_ns()?}))?;
+            Err(io::Error::other("guest response deadline; discard VM"))
+        }
+    }
+}
+
+async fn call_inner(
+    companion: &mut Companion,
+    management: &mut Management,
+    operation: &str,
+    fields: Value,
+    mut audit: impl FnMut(Value) -> io::Result<()>,
 ) -> io::Result<Value> {
     let prepared = companion
         .exchange(json!({"command":"prepare","operation":operation,"fields":fields}))
@@ -223,18 +276,45 @@ pub(crate) async fn call(
         .as_str()
         .ok_or_else(|| io::Error::other("missing mailbox reference"))?;
     let started = Instant::now();
-    let timeout = Duration::from_secs(260);
+    // Freeze also stops the RPC daemon. Allow a read already dispatched while
+    // frozen to wait through native export (240s) and the 20s barrier operations.
+    // Keep each RPC below the pinned MCP server's independent 300s timeout.
+    let timeout = Duration::from_secs(if operation == "export" { 320 } else { 260 });
+    let mut attempt = 0_u64;
+    let mut failed_reads = 0_u32;
     loop {
         let remaining = timeout
             .checked_sub(started.elapsed())
             .ok_or_else(|| io::Error::other("guest response lost; discard VM"))?;
-        let (text, error) = management
+        if attempt >= 3200 {
+            return Err(io::Error::other("delivery read limit; discard VM"));
+        }
+        attempt += 1;
+        audit(
+            json!({"state":"delivery_read_started","attempt":attempt,"host_ns":host_io::now_ns()?}),
+        )?;
+        let response = management
             .exec(
                 "/usr/bin/doas",
                 &["-n", "/usr/local/bin/tempest-guest", "deliver", path],
-                remaining,
+                remaining.min(Duration::from_secs(290)),
             )
-            .await?;
+            .await;
+        let (text, error) = match response {
+            Ok(value) => value,
+            Err(error) => {
+                audit(
+                    json!({"state":"delivery_read_observed","attempt":attempt,"category":"rpc_uncertain","host_ns":host_io::now_ns()?}),
+                )?;
+                return Err(error);
+            }
+        };
+        let pending = text.strip_suffix("\n(exit code: 1)").map(str::trim)
+            == Some("{\"ok\":false,\"error\":\"reply_unavailable\"}");
+        let execution_kind = (error && !pending).then(|| execution_failure_kind(&text));
+        audit(
+            json!({"state":"delivery_read_observed","attempt":attempt,"category":if !error {"ciphertext_received"} else if pending {"reply_unavailable"} else {"execution_error"},"execution_kind":execution_kind,"host_ns":host_io::now_ns()?}),
+        )?;
         if !error {
             let reply = companion
                 .exchange(json!({"command":"decode","frame":text}))
@@ -247,12 +327,24 @@ pub(crate) async fn call(
                 .cloned()
                 .ok_or_else(|| io::Error::other("invalid guest response"));
         }
-        if text.strip_suffix("\n(exit code: 1)").map(str::trim)
-            != Some("{\"ok\":false,\"error\":\"reply_unavailable\"}")
-        {
-            return Err(io::Error::other(
-                "management execution uncertain; discard VM",
-            ));
+        if !pending {
+            let category = execution_kind.unwrap_or("unexpected_error_response");
+            if operation == "export" && category != "unexpected_error_response" {
+                failed_reads += 1;
+                let retry = failed_reads < 3;
+                audit(
+                    json!({"state":"delivery_read_retry","attempt":attempt,"failed_reads":failed_reads,"retry_scheduled":retry,"host_ns":host_io::now_ns()?}),
+                )?;
+                if retry {
+                    // Only re-read the same saved response. The root operation
+                    // was submitted once, before this loop; never prepare again.
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    continue;
+                }
+            }
+            return Err(io::Error::other(format!(
+                "management execution uncertain ({category}); discard VM"
+            )));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -287,4 +379,149 @@ pub(crate) async fn clock(
         file.write_all(b"\n")?;
     }
     file.sync_all()
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    async fn peer(source: &str, mode: &str) -> Child {
+        tokio::process::Command::new("python3")
+            .args(["-u", "-c", source, mode])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+    }
+
+    async fn exercise(operation: &str, mode: &str) -> (io::Result<Value>, Vec<Value>) {
+        let mut child = peer(
+            r#"import sys,json
+prepared=False
+for line in sys.stdin:
+ m=json.loads(line)
+ if m['command']=='prepare':
+  assert not prepared
+  prepared=True
+  result={'guest_path':'/workspace/.tempest-control/'+'a'*32+'.json'}
+ else:
+  if sys.argv[1]=='auth':
+   print(json.dumps({'ok':False}),flush=True)
+   continue
+  result={'ok':sys.argv[1]!='rejected','result':{'complete':True}}
+ print(json.dumps({'ok':True,'result':result}),flush=True)
+"#,
+            mode,
+        )
+        .await;
+        let mut companion = Companion {
+            info: json!({}),
+            reader: BufReader::new(child.stdout.take().unwrap()),
+            writer: child.stdin.take().unwrap(),
+            child,
+        };
+        let mut child = peer(
+            r#"import sys,json,time
+count=0
+for line in sys.stdin:
+ m=json.loads(line);count+=1
+ mode=sys.argv[1]
+ if mode=='silence': time.sleep(10)
+ failed=mode in ('always','unknown') or (count==1 and mode=='recover')
+ text='unclassified error' if mode=='unknown' else '\n(exit code: -1)' if failed else 'CIPHERTEXT'
+ result={'isError':failed,'content':[{'type':'text','text':text}]}
+ print(json.dumps({'jsonrpc':'2.0','id':m['id']+(1 if mode=='mismatch' else 0),'result':result}),flush=True)
+"#,
+            mode,
+        )
+        .await;
+        let mut management = Management {
+            rpc: Rpc::new(
+                child.stdout.take().unwrap(),
+                SecretWriter::new(child.stdin.take().unwrap(), None),
+            ),
+            child,
+        };
+        let mut rows = Vec::new();
+        let result = call_with_deadline(
+            &mut companion,
+            &mut management,
+            operation,
+            json!({}),
+            |row| {
+                rows.push(row);
+                Ok(())
+            },
+            Duration::from_millis(if mode == "silence" { 1000 } else { 5000 }),
+        )
+        .await;
+        companion.stop().await.unwrap();
+        if mode == "silence" {
+            management.child.kill().await.unwrap();
+            management.child.wait().await.unwrap();
+        } else {
+            management.stop().await.unwrap();
+        }
+        (result, rows)
+    }
+
+    #[tokio::test]
+    async fn export_retries_only_saved_response_reads_with_a_failure_limit() {
+        let (result, rows) = exercise("export", "recover").await;
+        assert_eq!(result.unwrap(), json!({"complete":true}));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["state"] == "delivery_read_started")
+                .count(),
+            2
+        );
+        assert!(rows.iter().any(|row| row["retry_scheduled"] == true));
+        let (result, rows) = exercise("export", "always").await;
+        assert!(result.is_err());
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["state"] == "delivery_read_started")
+                .count(),
+            3
+        );
+        assert_eq!(rows.last().unwrap()["retry_scheduled"], false);
+    }
+
+    #[tokio::test]
+    async fn unobserved_response_hits_the_overall_deadline_without_a_retry() {
+        let (result, rows) = exercise("export", "silence").await;
+        assert!(result.is_err());
+        assert_eq!(rows.last().unwrap()["state"], "delivery_deadline");
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["state"] == "delivery_read_started")
+                .count(),
+            1
+        );
+        assert!(!rows.iter().any(|row| row["retry_scheduled"] == true));
+    }
+
+    #[tokio::test]
+    async fn seed_uncertain_rpc_authentication_and_operation_errors_are_terminal() {
+        for (operation, mode) in [
+            ("seed", "recover"),
+            ("export", "mismatch"),
+            ("export", "auth"),
+            ("export", "rejected"),
+            ("export", "unknown"),
+        ] {
+            let (result, rows) = exercise(operation, mode).await;
+            assert!(result.is_err(), "{operation}/{mode}");
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row["state"] == "delivery_read_started")
+                    .count(),
+                1,
+                "{operation}/{mode}"
+            );
+            assert!(!rows.iter().any(|row| row["retry_scheduled"] == true));
+        }
+    }
 }

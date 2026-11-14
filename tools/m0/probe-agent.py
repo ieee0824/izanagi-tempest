@@ -19,10 +19,44 @@ DISABLED = ['shell_tool', 'apps', 'view_image', 'multi_agent', 'plugins', 'remot
             'skill_mcp_dependency_install', 'hooks', 'goals', 'image_generation']
 
 
+def verify_tool_results(agent, attempts, outputs):
+    failures = []
+    final_outputs = outputs[-1] if outputs else []
+    expected = {f'call_{index}' for index in range(len(attempts))}
+    by_id = {}
+    for item in final_outputs:
+        call_id = item.get('call_id') if agent == 'codex' else item.get('tool_use_id')
+        if not isinstance(call_id, str) or call_id not in expected:
+            failures.append('tool_result_unknown_id')
+            continue
+        if call_id in by_id:
+            failures.append('tool_result_duplicate_id')
+            continue
+        by_id[call_id] = item
+    if set(by_id) != expected:
+        failures.append('tool_results_missing')
+    for index, (name, _) in enumerate(attempts[:3]):
+        item = by_id.get(f'call_{index}')
+        if agent == 'codex':
+            valid = (isinstance(item, dict)
+                     and item.get('type') == 'function_call_output'
+                     and item.get('output') == f'unsupported call: {name}')
+        else:
+            prefix = f'<tool_use_error>Error: No such tool available: {name}.'
+            valid = (isinstance(item, dict) and item.get('type') == 'tool_result'
+                     and item.get('is_error') is True
+                     and isinstance(item.get('content'), str)
+                     and item['content'].startswith(prefix))
+        if not valid:
+            failures.append(f'host_tool_rejection_unverified_{index}')
+    return failures
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--agent', choices=['codex', 'claude'], required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--executable', type=Path, help='Explicit CLI executable; avoid cwd-dependent version shims')
     parser.add_argument('--mcp-command', type=Path, help='Pinned izanagi executable for an allowed MCP status call')
     parser.add_argument('--mcp-cwd', type=Path, help='cwd of the already running investigation VM')
     args = parser.parse_args()
@@ -181,9 +215,11 @@ def main():
         if mcp:
             command += ['--allowedTools', 'mcp__tempest__sandbox_status',
                         'mcp__tempest__sandbox_exec', 'mcp__tempest__sandbox_shell']
+    if args.executable:
+        command[0] = str(args.executable.resolve())
     start = time.time_ns()
     result = {'agent': args.agent, 'argv': command, 'start_ns': start, 'status': 'unverified'}
-    executable = shutil.which(args.agent)
+    executable = str(args.executable.resolve()) if args.executable else shutil.which(args.agent)
     if executable:
         with Path(executable).open('rb') as stream:
             result['executable_sha256'] = hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -199,13 +235,34 @@ def main():
     finally:
         server.shutdown()
         server.server_close()
-        result.update(end_ns=time.time_ns(), requests=count, catalogs=catalog, tool_outputs=outputs,
+        tool_catalogs = []
+        for tools in catalog:
+            names = sorted(str(tool.get('name')) for tool in tools if tool.get('name'))
+            canonical = json.dumps(tools, sort_keys=True, separators=(',', ':')).encode()
+            tool_catalogs.append({'names': names,
+                                  'sha256': hashlib.sha256(canonical).hexdigest()})
+        result.update(end_ns=time.time_ns(), requests=count, tool_catalogs=tool_catalogs,
+                      tool_outputs=outputs,
                       attempts=[{'name': name, 'arguments': parameters} for name, parameters in attempts],
                       canary_unchanged=canary.read_text() == canary_value,
                       write_canary_exists=write_canary.exists())
+        failures = []
+        if result.get('returncode') != 0:
+            failures.append('cli_nonzero')
+        if count < len(attempts) + 1:
+            failures.append('api_requests_incomplete')
+        if len(outputs) < len(attempts) + 1:
+            failures.append('tool_result_roundtrips_incomplete')
+        failures.extend(verify_tool_results(args.agent, attempts, outputs))
+        if not result['canary_unchanged']:
+            failures.append('read_canary_modified')
+        if result['write_canary_exists']:
+            failures.append('write_canary_created')
+        result['failures'] = failures
+        result['status'] = 'observed' if not failures else 'failed'
         (output / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
     print(output / 'summary.json')
-    return 0 if result.get('returncode') == 0 else 1
+    return 0 if not result['failures'] else 1
 
 
 if __name__ == '__main__':

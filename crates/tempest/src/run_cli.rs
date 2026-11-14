@@ -1,10 +1,15 @@
 use crate::{
-    adapter::{AgentAdapter, McpCommand, MockAdapter},
+    adapter::{AgentAdapter, CliAdapter, McpCommand, MockAdapter},
     admission::CloseReason,
+    capability_runner::{
+        CapabilityAgent, CapabilityDiscoveryConfig, ProductionLaunchConfig, discover_for_launch,
+        reviewed_request_policy,
+    },
     host_io,
     plan::{ExecutionPlan, Stage},
     relay::RelayConfig,
     report as evaluation_report,
+    rpc::Rpc,
     scenario::load,
     seed_controller::SeedController,
     supervisor::{Supervisor, SupervisorConfig},
@@ -13,7 +18,7 @@ use crate::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     ffi::OsString,
     fs, io,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -26,8 +31,22 @@ use tempest_model::{
     guest::{AccessKeys, ProbeOutcome, ProbeResult},
     scenario::Outcome,
 };
+use tokio::io::AsyncWriteExt;
 
-const USAGE: &str = "Usage: tempest run SCENARIO --agent mock --mock-script FILE --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--actor NAME] [--max-evidence-bytes BYTES]";
+#[cfg(not(feature = "native-test-upstream"))]
+const USAGE: &str = "Usage: tempest run SCENARIO (--agent mock --mock-script FILE | --agent claude-code|codex --agent-executable FILE --model EXACT_MODEL_ID --model-auth-file FILE) --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--repeat-interval-seconds N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]";
+#[cfg(feature = "native-test-upstream")]
+const TEST_USAGE: &str = "Usage: tempest run SCENARIO (--agent mock --mock-script FILE | --agent claude-code|codex --agent-executable FILE --model EXACT_MODEL_ID --model-auth-file FILE [--native-test-upstream HTTP_LOOPBACK_URL]) --izanagi FILE --image FILE --image-inputs FILE [--mailbox-bridge FILE] [--python FILE] [--runs DIR] [--run-id ID] [--repeat N] [--repeat-interval-seconds N] [--actor NAME] [--max-evidence-bytes BYTES] [--comparison-plan FILE --comparison-slot ID]\nWARNING: native-test-upstream build; every run is test-only and formally ineligible";
+const CLAUDE_PRODUCTION_UPSTREAM: &str = "https://api.anthropic.com/";
+const CODEX_PRODUCTION_UPSTREAM: &str = "https://api.openai.com/v1/";
+const MAX_FOREIGN_CAPABILITY_AUDIT_ROWS: u64 = 32;
+const NATIVE_TEST_BUILD: bool = cfg!(feature = "native-test-upstream");
+fn production_model_upstream(agent: CapabilityAgent) -> &'static str {
+    match agent {
+        CapabilityAgent::Codex => CODEX_PRODUCTION_UPSTREAM,
+        CapabilityAgent::ClaudeCode => CLAUDE_PRODUCTION_UPSTREAM,
+    }
+}
 async fn version(executable: &Path) -> io::Result<String> {
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -46,9 +65,24 @@ async fn version(executable: &Path) -> io::Result<String> {
         .trim()
         .to_owned())
 }
+#[derive(Clone)]
+enum AgentSelection {
+    Mock {
+        script: PathBuf,
+    },
+    Native {
+        agent: CapabilityAgent,
+        executable: PathBuf,
+        model: String,
+        auth_file: PathBuf,
+        test_upstream: Option<String>,
+    },
+}
+
+#[derive(Clone)]
 struct Options {
     scenario: PathBuf,
-    script: PathBuf,
+    agent: AgentSelection,
     izanagi: PathBuf,
     image: PathBuf,
     inputs: PathBuf,
@@ -56,8 +90,127 @@ struct Options {
     python: PathBuf,
     runs: PathBuf,
     id: String,
+    repeat: usize,
+    repeat_interval_seconds: u64,
     actor: Option<String>,
+    comparison_plan: Option<PathBuf>,
+    comparison_slot: Option<String>,
     maximum_evidence_file_bytes: u64,
+    iteration: usize,
+    native_test_upstream: Option<String>,
+}
+
+enum AgentSetup {
+    Mock(MockAdapter),
+    Native {
+        agent: CapabilityAgent,
+        executable: PathBuf,
+        model: String,
+        auth_file: PathBuf,
+        upstream: String,
+    },
+}
+
+enum RuntimeAdapter {
+    Mock(MockAdapter),
+    Native(Box<CliAdapter>),
+}
+
+impl AgentAdapter for RuntimeAdapter {
+    fn describe(&self) -> Value {
+        match self {
+            Self::Mock(adapter) => adapter.describe(),
+            Self::Native(adapter) => adapter.describe(),
+        }
+    }
+
+    async fn run<'a>(
+        &'a self,
+        prompt: &'a str,
+        endpoint: &'a McpCommand,
+        cwd: &'a Path,
+    ) -> io::Result<crate::adapter::AgentOutcome> {
+        match self {
+            Self::Mock(adapter) => adapter.run(prompt, endpoint, cwd).await,
+            Self::Native(adapter) => adapter.run(prompt, endpoint, cwd).await,
+        }
+    }
+}
+
+impl RuntimeAdapter {
+    fn mcp_bridge(&self, mock_bridge: &Path) -> PathBuf {
+        match self {
+            Self::Mock(_) => mock_bridge.to_owned(),
+            Self::Native(adapter) => adapter.mcp_bridge_path().to_owned(),
+        }
+    }
+
+    fn working_directory(&self, mock_cwd: &Path) -> PathBuf {
+        match self {
+            Self::Mock(_) => mock_cwd.to_owned(),
+            Self::Native(adapter) => adapter.sandbox_cwd_path(),
+        }
+    }
+}
+
+struct NativeRuntimeDirectory(PathBuf);
+
+impl Drop for NativeRuntimeDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn native_runtime_directory(root: &Path) -> io::Result<(NativeRuntimeDirectory, PathBuf)> {
+    let parent = root.join(".native-runtime");
+    host_io::directory(&parent)?;
+    let output = parent.join("discovery");
+    if output.exists() {
+        return Err(io::Error::other("native discovery output already exists"));
+    }
+    Ok((NativeRuntimeDirectory(parent), output))
+}
+
+fn preserve_native_acceptance(runtime_root: &Path, evidence: &Path) -> io::Result<()> {
+    let destination = evidence.join("native-acceptance");
+    host_io::directory(&destination)?;
+    host_io::directory(&destination.join("evidence"))?;
+    for (source, target) in [
+        (
+            "acceptance-proof/launcher-profile.json",
+            "launcher-profile.json",
+        ),
+        (
+            "acceptance-proof/capability-proof.json",
+            "capability-proof.json",
+        ),
+        ("harness/request-policy.json", "request-policy.json"),
+        (
+            "harness/model-relay-audit.jsonl",
+            "acceptance-relay-audit.jsonl",
+        ),
+        ("harness/acceptance-mcp.jsonl", "acceptance-mcp.jsonl"),
+    ] {
+        host_io::private_copy(&runtime_root.join(source), &destination.join(target))?;
+    }
+    for check in [
+        "allowed_mcp_succeeded",
+        "control_socket_unavailable",
+        "hmac_unavailable",
+        "host_canary_read_denied",
+        "host_canary_write_denied",
+        "host_tools_rejected",
+        "mcp_child_env_sanitized",
+        "provider_request_policy",
+        "tool_catalog_exact",
+    ] {
+        let name = format!("{check}.json");
+        host_io::private_copy(
+            &runtime_root.join("acceptance-proof/evidence").join(&name),
+            &destination.join("evidence").join(name),
+        )?;
+    }
+    Ok(())
 }
 fn options(args: &[OsString]) -> io::Result<Options> {
     if args.is_empty() || args.len() % 2 == 0 {
@@ -68,10 +221,13 @@ fn options(args: &[OsString]) -> io::Result<Options> {
         let flag = pair[0]
             .to_str()
             .ok_or_else(|| io::Error::other("invalid option"))?;
-        if !matches!(
+        let standard = matches!(
             flag,
             "--agent"
                 | "--mock-script"
+                | "--agent-executable"
+                | "--model"
+                | "--model-auth-file"
                 | "--izanagi"
                 | "--image"
                 | "--image-inputs"
@@ -79,18 +235,20 @@ fn options(args: &[OsString]) -> io::Result<Options> {
                 | "--python"
                 | "--runs"
                 | "--run-id"
+                | "--repeat"
+                | "--repeat-interval-seconds"
                 | "--actor"
                 | "--max-evidence-bytes"
-        ) || values.insert(flag, &pair[1]).is_some()
-        {
+                | "--comparison-plan"
+                | "--comparison-slot"
+        );
+        #[cfg(feature = "native-test-upstream")]
+        let allowed = standard || flag == "--native-test-upstream";
+        #[cfg(not(feature = "native-test-upstream"))]
+        let allowed = standard;
+        if !allowed || values.insert(flag, &pair[1]).is_some() {
             return Err(io::Error::other("unknown or duplicate option"));
         }
-    }
-    if values
-        .get("--agent")
-        .is_none_or(|v| v.as_os_str() != "mock")
-    {
-        return Err(io::Error::other("only the mock adapter is implemented"));
     }
     let required = |key| {
         values
@@ -114,9 +272,70 @@ fn options(args: &[OsString]) -> io::Result<Options> {
             })
             .transpose()
     };
+    let comparison_plan = values.get("--comparison-plan").map(PathBuf::from);
+    let comparison_slot = text("--comparison-slot")?;
+    if comparison_plan.is_some() != comparison_slot.is_some() {
+        return Err(io::Error::other(
+            "comparison plan and slot must be provided together",
+        ));
+    }
+    let agent = match values.get("--agent").and_then(|value| value.to_str()) {
+        Some("mock") => {
+            if values.contains_key("--agent-executable")
+                || values.contains_key("--model")
+                || values.contains_key("--model-auth-file")
+                || values.contains_key("--native-test-upstream")
+            {
+                return Err(io::Error::other("mock and native agent options conflict"));
+            }
+            AgentSelection::Mock {
+                script: required("--mock-script")?,
+            }
+        }
+        Some(agent @ ("claude-code" | "codex")) => {
+            if values.contains_key("--mock-script") {
+                return Err(io::Error::other("mock and native agent options conflict"));
+            }
+            let test_upstream = text("--native-test-upstream")?;
+            if let Some(upstream) = test_upstream.as_deref() {
+                let parsed = upstream
+                    .parse::<reqwest::Url>()
+                    .map_err(|_| io::Error::other("invalid native test upstream"))?;
+                if parsed.scheme() != "http"
+                    || parsed.host_str() != Some("127.0.0.1")
+                    || parsed.port().is_none()
+                    || parsed.path() != "/"
+                    || parsed.query().is_some()
+                    || parsed.fragment().is_some()
+                    || !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                {
+                    return Err(io::Error::other("invalid native test upstream"));
+                }
+            }
+            AgentSelection::Native {
+                agent: if agent == "codex" {
+                    CapabilityAgent::Codex
+                } else {
+                    CapabilityAgent::ClaudeCode
+                },
+                executable: required("--agent-executable")?,
+                model: text("--model")?
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| io::Error::other("required model missing"))?,
+                auth_file: required("--model-auth-file")?,
+                test_upstream,
+            }
+        }
+        _ => return Err(io::Error::other("unsupported or missing agent")),
+    };
+    let native_test_upstream = match &agent {
+        AgentSelection::Native { test_upstream, .. } => test_upstream.clone(),
+        AgentSelection::Mock { .. } => None,
+    };
     Ok(Options {
         scenario: args[0].clone().into(),
-        script: required("--mock-script")?,
+        agent,
         izanagi: required("--izanagi")?,
         image: required("--image")?,
         inputs: required("--image-inputs")?,
@@ -124,7 +343,27 @@ fn options(args: &[OsString]) -> io::Result<Options> {
         python: optional("--python", "python3"),
         runs: optional("--runs", "runs"),
         id: text("--run-id")?.unwrap_or(host_io::random_hex()?),
+        repeat: match text("--repeat")? {
+            None => 1,
+            Some(value) => value
+                .parse::<usize>()
+                .ok()
+                .filter(|value| (1..=100).contains(value))
+                .ok_or_else(|| io::Error::other("invalid repeat count"))?,
+        },
+        repeat_interval_seconds: match text("--repeat-interval-seconds")? {
+            None => 0,
+            Some(value) => value
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value <= 3600)
+                .ok_or_else(|| io::Error::other("invalid repeat interval"))?,
+        },
         actor: text("--actor")?,
+        comparison_plan,
+        comparison_slot,
+        iteration: 1,
+        native_test_upstream,
         maximum_evidence_file_bytes: match text("--max-evidence-bytes")? {
             None => 64 * 1024 * 1024,
             Some(value) => value
@@ -137,6 +376,297 @@ fn options(args: &[OsString]) -> io::Result<Options> {
 }
 fn not_performed(configured: bool, reason: &str) -> Value {
     json!({"configured":configured,"performed":false,"outcome":"not_performed","reason":reason})
+}
+fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value, bool)> {
+    let metadata = path.symlink_metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.len() > 1024 * 1024
+    {
+        return Err(io::Error::other("unsafe model relay audit"));
+    }
+    let mut admitted = HashMap::<String, u64>::new();
+    let mut completed = HashMap::<String, u64>::new();
+    let mut delivery_states = BTreeMap::<String, u64>::new();
+    let mut reasons = BTreeMap::<String, u64>::new();
+    let mut upstream_statuses = BTreeMap::<String, u64>::new();
+    let mut only_complete_pairs = true;
+    let mut preflight_rejections = 0_u64;
+    let mut foreign_capability_requests = 0_u64;
+    let mut foreign_capability_overflow = 0_u64;
+    let mut rows = 0_u64;
+    for line in fs::read_to_string(path)?.lines() {
+        rows += 1;
+        let row: Value = serde_json::from_str(line)?;
+        let sha256 = row["request_sha256"]
+            .as_str()
+            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or_else(|| io::Error::other("invalid model relay audit request binding"))?;
+        let delivery_state = row["delivery_state"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("invalid model relay delivery state"))?;
+        *delivery_states
+            .entry(delivery_state.to_owned())
+            .or_default() += 1;
+        let reason = row["reason"].as_str().unwrap_or("none");
+        *reasons.entry(reason.to_owned()).or_default() += 1;
+        let upstream_status = row["upstream_status"]
+            .as_u64()
+            .map_or_else(|| "none".to_owned(), |status| status.to_string());
+        *upstream_statuses.entry(upstream_status).or_default() += 1;
+        match delivery_state {
+            "not_sent" if row["reason"] == "admission_verified" => {
+                *admitted.entry(sha256.to_owned()).or_default() += 1;
+            }
+            "response_complete" if row["forwarded"] == true => {
+                *completed.entry(sha256.to_owned()).or_default() += 1;
+            }
+            "not_sent"
+                if row["reason"] == "reviewed preflight rejected"
+                    && row["method"] == "HEAD"
+                    && row["forwarded"] == false
+                    && row["model"].is_null()
+                    && row["upstream_status"].is_null()
+                    && row["request_bytes"] == 0
+                    && sha256 == format!("{:x}", Sha256::digest([]))
+                    && row["tools"].as_array().is_some_and(Vec::is_empty)
+                    && row["path"].as_str().is_some_and(|path| {
+                        let Some(capability) = path
+                            .strip_prefix('/')
+                            .and_then(|path| path.strip_suffix("/api/hello"))
+                        else {
+                            return false;
+                        };
+                        capability.len() >= 32
+                            && capability.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+                            })
+                    }) =>
+            {
+                preflight_rejections += 1;
+            }
+            "not_sent"
+                if row["reason"] == "foreign relay capability"
+                    && row["forwarded"] == false
+                    && row["model"].is_null()
+                    && row["upstream_status"].is_null()
+                    && row["request_bytes"] == 0
+                    && sha256 == format!("{:x}", Sha256::digest([]))
+                    && row["tools"].as_array().is_some_and(Vec::is_empty)
+                    && row["path"].as_str().is_some_and(|path| {
+                        path.strip_prefix("sha256:").is_some_and(|digest| {
+                            digest.len() == 64
+                                && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        })
+                    }) =>
+            {
+                foreign_capability_requests += 1;
+            }
+            "not_sent"
+                if row["reason"] == "foreign relay capability overflow"
+                    && row["forwarded"] == false
+                    && row["model"].is_null()
+                    && row["upstream_status"].is_null()
+                    && row["request_bytes"] == 0
+                    && sha256 == format!("{:x}", Sha256::digest([]))
+                    && row["tools"].as_array().is_some_and(Vec::is_empty)
+                    && row["path"] == "bounded" =>
+            {
+                foreign_capability_overflow += 1;
+            }
+            _ => only_complete_pairs = false,
+        }
+    }
+    let requests = admitted.values().sum::<u64>();
+    let delivery_verified = only_complete_pairs
+        && rows
+            == requests
+                .saturating_mul(2)
+                .saturating_add(preflight_rejections)
+                .saturating_add(foreign_capability_requests)
+                .saturating_add(foreign_capability_overflow)
+        && preflight_rejections == 1
+        && foreign_capability_requests <= MAX_FOREIGN_CAPABILITY_AUDIT_ROWS
+        && foreign_capability_overflow <= 1
+        && requests != 0
+        && requests <= maximum_requests
+        && admitted == completed;
+    if rows == 0
+        || rows
+            > maximum_requests
+                .saturating_mul(3)
+                .saturating_add(MAX_FOREIGN_CAPABILITY_AUDIT_ROWS + 1)
+        || requests > maximum_requests
+    {
+        return Err(io::Error::other("model relay audit sequence out of bounds"));
+    }
+    Ok((
+        json!({"rows":rows,"requests":requests,"responses_complete":completed.values().sum::<u64>(),
+        "maximum_requests":maximum_requests,"preflight_rejections":preflight_rejections,
+        "foreign_capability_requests":foreign_capability_requests,
+        "foreign_capability_overflow":foreign_capability_overflow == 1,
+        "delivery_verified":delivery_verified,
+        "delivery_states":delivery_states,"reasons":reasons,"upstream_statuses":upstream_statuses}),
+        delivery_verified,
+    ))
+}
+
+fn provider_catalog(tools: &[Value]) -> io::Result<Vec<Value>> {
+    let mut catalog = tools
+        .iter()
+        .map(|tool| {
+            let object = tool
+                .as_object()
+                .filter(|object| {
+                    object.len() == 3
+                        && object.contains_key("name")
+                        && object.contains_key("description")
+                        && object.contains_key("inputSchema")
+                })
+                .ok_or_else(|| io::Error::other("unexpected production MCP tool shape"))?;
+            let name = object["name"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| io::Error::other("production MCP tool name missing"))?;
+            Ok(json!({
+                "name":format!("mcp__tempest__{name}"),
+                "description":object["description"],
+                "input_schema":object["inputSchema"],
+            }))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    catalog.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+    if catalog
+        .windows(2)
+        .any(|pair| pair[0]["name"] == pair[1]["name"])
+    {
+        return Err(io::Error::other("duplicate production MCP tool"));
+    }
+    Ok(catalog)
+}
+
+fn expected_production_mcp_catalog(policy: &Value) -> io::Result<Vec<Value>> {
+    let tools = policy["tools"]
+        .as_array()
+        .ok_or_else(|| io::Error::other("request policy tool catalog missing"))?;
+    let mut expected = if let Some(namespace) = tools
+        .iter()
+        .find(|tool| tool["type"] == "namespace" && tool["name"] == "mcp__tempest")
+    {
+        namespace["tools"]
+            .as_array()
+            .ok_or_else(|| io::Error::other("Tempest namespace tools missing"))?
+            .iter()
+            .map(|tool| {
+                let name = tool["name"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| io::Error::other("Tempest namespace tool name missing"))?;
+                Ok(json!({
+                    "name":format!("mcp__tempest__{name}"),
+                    "description":tool["description"],
+                    "input_schema":tool["parameters"],
+                }))
+            })
+            .collect::<io::Result<Vec<_>>>()?
+    } else {
+        tools.clone()
+    };
+    expected.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+    Ok(expected)
+}
+
+async fn verify_production_mcp_catalog(
+    izanagi: &Path,
+    cwd: &Path,
+    hmac: &Path,
+    policy: &Value,
+    evidence: &Path,
+) -> io::Result<Value> {
+    let expected_version = policy
+        .pointer("/mcp_catalog_source/version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("MCP catalog source version missing"))?;
+    let expected_executable = policy
+        .pointer("/mcp_catalog_source/executable_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("MCP catalog source hash missing"))?;
+    let expected_host_os = policy
+        .pointer("/mcp_catalog_source/host_os")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("MCP catalog source OS missing"))?;
+    let expected_host_arch = policy
+        .pointer("/mcp_catalog_source/host_arch")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("MCP catalog source architecture missing"))?;
+    let observed_version = version(izanagi).await?;
+    let observed_executable = host_io::digest(izanagi)?;
+    if observed_version != expected_version
+        || observed_executable != expected_executable
+        || std::env::consts::OS != expected_host_os
+        || std::env::consts::ARCH != expected_host_arch
+    {
+        return Err(io::Error::other("production MCP catalog source mismatch"));
+    }
+    let hmac_file = crate::proxy_cli::secret_reference(hmac)?;
+    let cursor = hmac_file.try_clone()?;
+    let stderr = crate::proxy_cli::private_new(&evidence.join("mcp-catalog.stderr"))?;
+    let mut command = host_io::command(izanagi);
+    command
+        .arg("mcp")
+        .current_dir(cwd)
+        .env_clear()
+        .env("TERM", "dumb")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(stderr))
+        .kill_on_drop(true);
+    for name in ["HOME", "PATH", "TZ"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    crate::proxy_cli::inherit_secret(&mut command, hmac_file);
+    let mut child = command.spawn()?;
+    let stdout = child.stdout.take().expect("piped");
+    let stdin = child.stdin.take().expect("piped");
+    let mut rpc = Rpc::new(
+        stdout,
+        crate::proxy_cli::SecretWriter::new(stdin, Some(cursor)),
+    );
+    let timeout = Duration::from_secs(10);
+    let initialized = rpc.request("initialize", json!({}), timeout).await?;
+    if initialized.get("error").is_some() {
+        return Err(io::Error::other("production MCP initialize rejected"));
+    }
+    let tools = rpc.request("tools/list", json!({}), timeout).await?;
+    let observed = tools
+        .pointer("/result/tools")
+        .and_then(Value::as_array)
+        .ok_or_else(|| io::Error::other("production MCP tools/list rejected"))?;
+    let observed = provider_catalog(observed)?;
+    let expected = expected_production_mcp_catalog(policy)?;
+    let observed_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&observed)?));
+    let expected_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&expected)?));
+    let result = json!({
+        "verified":observed == expected,
+        "source":{"version":observed_version,"executable_sha256":observed_executable,
+            "host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH},
+        "observed_sha256":observed_sha256,
+        "expected_sha256":expected_sha256,
+        "tool_count":observed.len(),
+    });
+    host_io::json_new(&evidence.join("production-mcp-catalog.json"), &result)?;
+    rpc.writer.shutdown().await?;
+    drop(rpc);
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .map_err(|_| io::Error::other("production MCP catalog process deadline"))??;
+    if !status.success() || result["verified"] != true {
+        return Err(io::Error::other("production MCP tool catalog mismatch"));
+    }
+    Ok(result)
 }
 fn seed_error(_: io::Error) -> Diagnostic {
     Diagnostic::new("runtime.seed", "seed response unavailable; discard VM")
@@ -197,7 +727,7 @@ async fn primary(
     vm: &mut Vm,
     plan: &ExecutionPlan,
     controller: &mut SeedController,
-    adapter: &MockAdapter,
+    setup: AgentSetup,
     budget: &tempest_model::scenario::Budget,
     report: &mut Value,
     root: &Path,
@@ -229,11 +759,110 @@ async fn primary(
         }
     }
     let evidence = root.join("evidence");
+    let mut native_runtime = None;
+    let mut production_request_budget = None;
+    let mut production_relay = None;
+    let mut native_authorized_ns = None;
+    let adapter = match setup {
+        AgentSetup::Mock(adapter) => RuntimeAdapter::Mock(adapter),
+        AgentSetup::Native {
+            agent,
+            executable,
+            model,
+            auth_file,
+            upstream,
+        } => {
+            let production_upstream = production_model_upstream(agent);
+            let test_upstream = (upstream != production_upstream).then(|| upstream.clone());
+            let (runtime_directory, runtime_root) = native_runtime_directory(root)?;
+            native_runtime = Some(runtime_directory);
+            let reviewed_cli_version = version(&executable).await?;
+            let request_policy = reviewed_request_policy(agent, &reviewed_cli_version, &model)?;
+            let production_mcp_catalog = verify_production_mcp_catalog(
+                vm.izanagi_path(),
+                &vm.workspace,
+                &vm.hmac,
+                &request_policy,
+                &evidence,
+            )
+            .await?;
+            let launch = discover_for_launch(
+                CapabilityDiscoveryConfig {
+                    agent,
+                    executable: executable.canonicalize()?,
+                    model,
+                    output: runtime_root.clone(),
+                },
+                ProductionLaunchConfig {
+                    auth_file: auth_file.canonicalize()?,
+                    audit_file: evidence.join("model-relay-audit.jsonl"),
+                    owner_file: evidence.join("model-relay-owner.json"),
+                    launch_harness_root: evidence.clone(),
+                    upstream,
+                },
+            )
+            .await?;
+            let discovery = &launch.discovery;
+            let staged_request_policy: Value = serde_json::from_slice(&fs::read(
+                runtime_root.join("harness/request-policy.json"),
+            )?)?;
+            if staged_request_policy != request_policy
+                || discovery.cli_version != reviewed_cli_version
+            {
+                return Err(io::Error::other(
+                    "reviewed request policy changed during capability acceptance",
+                ));
+            }
+            let launcher_profile_sha256 =
+                host_io::digest(&runtime_root.join("acceptance-proof/launcher-profile.json"))?;
+            let capability_proof_sha256 =
+                host_io::digest(&runtime_root.join("acceptance-proof/capability-proof.json"))?;
+            let request_policy_sha256 =
+                host_io::digest(&runtime_root.join("harness/request-policy.json"))?;
+            report["primary"]["native_acceptance"] = json!({
+                "agent":match agent {CapabilityAgent::Codex=>"codex", CapabilityAgent::ClaudeCode=>"claude-code"},
+                "model":discovery.model,
+                "cli_version":discovery.cli_version,
+                "executable_sha256":discovery.executable_sha256,
+                "strict_tempest_only":discovery.strict_tempest_only,
+                "codex_framework_exception_verified":discovery.codex_framework_exception_verified,
+                "acceptance_relay_verified":discovery.acceptance_relay_verified,
+                "launch_permit_verified":discovery.launch_permit_verified,
+                "launcher_profile_sha256":launcher_profile_sha256,
+                "capability_proof_sha256":capability_proof_sha256,
+                "request_policy_sha256":request_policy_sha256,
+                "acceptance_request_count":request_policy["acceptance_requests"],
+                "production_request_budget":request_policy["maximum_requests"],
+                "production_mcp_catalog":production_mcp_catalog,
+                "preserved_evidence_root":"evidence/native-acceptance",
+                "runtime_capability_material_retained":false,
+            });
+            report["adapter"] = launch.adapter.describe();
+            report["adapter"]["native_test_build"] = NATIVE_TEST_BUILD.into();
+            report["adapter"]["test_upstream"] = test_upstream.into();
+            report["adapter"]["launcher_profile_sha256"] = launcher_profile_sha256.into();
+            report["adapter"]["request_policy_sha256"] = request_policy_sha256.into();
+            report["adapter"]["production_request_budget"] =
+                request_policy["maximum_requests"].clone();
+            preserve_native_acceptance(&runtime_root, &evidence)?;
+            native_authorized_ns = Some(host_io::now_ns()?);
+            production_request_budget = request_policy["maximum_requests"].as_u64();
+            production_relay = Some(launch.relay);
+            RuntimeAdapter::Native(Box::new(launch.adapter))
+        }
+    };
     let mut clock = crate::proxy_cli::private_new(&evidence.join("clock.jsonl"))?;
     vm.clock("pre_seal", &mut clock).await?;
+    let seal_started_ns = host_io::now_ns()?;
     vm.call("seal", json!({})).await?;
-    let agent_cwd = root.join("agent-cwd");
-    host_io::directory(&agent_cwd)?;
+    let seal_finished_ns = host_io::now_ns()?;
+    report["primary"]["seal"] = json!({"started_ns":seal_started_ns,
+        "finished_ns":seal_finished_ns,"duration_ns":seal_finished_ns-seal_started_ns});
+    let mock_agent_cwd = root.join("agent-cwd");
+    let agent_cwd = adapter.working_directory(&mock_agent_cwd);
+    if matches!(&adapter, RuntimeAdapter::Mock(_)) {
+        host_io::directory(&agent_cwd)?;
+    }
     // Darwin socket paths are bounded by sockaddr_un; keep this private owner
     // endpoint short and outside every guest share.
     let socket_base = if cfg!(target_os = "macos") {
@@ -260,11 +889,21 @@ async fn primary(
         },
     })?;
     let prompt = controller.agent_prompt().map_err(diagnostic)?;
-    report["agent"] = json!({"configured":true,"performed":true,"started_ns":host_io::now_ns()?,"description":adapter.describe()});
+    let agent_started_ns = host_io::now_ns()?;
+    report["agent"] = json!({"configured":true,"performed":true,"started_ns":agent_started_ns,"description":adapter.describe()});
+    if let Some(authorized_ns) = native_authorized_ns {
+        report["primary"]["native_launch_timing"] = json!({
+            "authorized_ns":authorized_ns,"agent_run_invoked_ns":agent_started_ns,
+            "authorization_to_run_ns":agent_started_ns.saturating_sub(authorized_ns),
+            "permit_deadline_ns":60_000_000_000_u64,
+        });
+    }
     let endpoint = McpCommand {
-        executable: root.join("bin/tempest"),
+        executable: adapter.mcp_bridge(&root.join("bin/tempest")),
         socket,
         owner_file: evidence.join("agent-owner.json"),
+        raw_stdout: evidence.join("agent.events.jsonl"),
+        raw_stderr: evidence.join("agent.stderr"),
     };
     let outcome = tokio::time::timeout(
         budget.timeout.0,
@@ -295,11 +934,56 @@ async fn primary(
             report["agent"]["outcome"] = json!({"status":"timeout","final_output":""});
             host_io::write_new(&evidence.join("agent.stdout"), b"")?;
         }
-        Ok(Err(_)) => {
-            report["agent"]["outcome"] = json!({"status":"adapter_error","final_output":""});
+        Ok(Err(error)) => {
+            report["agent"]["outcome"] = json!({"status":"adapter_error","final_output":"",
+                "failure":error.to_string()});
             host_io::write_new(&evidence.join("agent.stdout"), b"")?;
             adapter_failed = true;
         }
+    }
+    let relay_stopped = match production_relay.take() {
+        Some(relay) => match relay.shutdown().await {
+            Ok(()) => true,
+            Err(error) => {
+                adapter_failed = true;
+                report["primary"]["model_relay_shutdown"] = json!({
+                    "verified":false,"failure":error.to_string(),
+                });
+                false
+            }
+        },
+        None => true,
+    };
+    let model_relay_audit = evidence.join("model-relay-audit.jsonl");
+    if model_relay_audit.is_file() && relay_stopped {
+        match production_request_budget
+            .ok_or_else(|| io::Error::other("model relay budget binding missing"))
+            .and_then(|budget| model_relay_summary(&model_relay_audit, budget))
+        {
+            Ok((summary, delivery_verified)) => {
+                report["primary"]["model_relay_audit"] = json!({
+                    "path":"evidence/model-relay-audit.jsonl",
+                    "sha256":host_io::digest(&model_relay_audit)?,
+                    "summary":summary,
+                });
+                if !delivery_verified {
+                    adapter_failed = true;
+                }
+            }
+            Err(error) => {
+                adapter_failed = true;
+                report["primary"]["model_relay_audit"] = json!({
+                    "path":"evidence/model-relay-audit.jsonl",
+                    "sha256":host_io::digest(&model_relay_audit)?,
+                    "delivery_verified":false,
+                    "failure":error.to_string(),
+                });
+            }
+        }
+    } else if production_request_budget.is_some() {
+        adapter_failed = true;
+        report["primary"]["model_relay_audit"] = json!({"delivery_verified":false,
+            "failure":if relay_stopped{"model relay audit missing"}else{"model relay shutdown unverified; audit snapshot forbidden"}});
     }
     if !drained.verified_rpc_drain() {
         vm.discard_only();
@@ -319,6 +1003,7 @@ async fn primary(
     if adapter_failed {
         return Err(io::Error::other("agent adapter failed; evidence retained"));
     }
+    drop(native_runtime);
     Ok(())
 }
 async fn retest(
@@ -377,21 +1062,89 @@ async fn cancelled(
         Err(_) => "owner_lost",
     }
 }
+fn iteration_options(options: &Options, iteration: usize) -> Options {
+    let mut value = options.clone();
+    value.repeat = 1;
+    if options.repeat > 1 {
+        value.id = format!("{}-{iteration:03}", options.id);
+        value.comparison_slot = options
+            .comparison_slot
+            .as_ref()
+            .map(|slot| format!("{slot}-{iteration:03}"));
+    }
+    value.iteration = iteration;
+    value
+}
 async fn execute(
     options: Options,
     mut cancel: tokio::sync::watch::Receiver<Option<&'static str>>,
 ) -> io::Result<(PathBuf, bool)> {
+    if cancel.borrow().is_some() {
+        return Err(io::Error::other("run cancelled before reservation"));
+    }
     let raw = fs::read(&options.scenario)?;
     let loaded = load(&raw).map_err(|_| {
         io::Error::other("scenario validation failed; use tempest validate for diagnostics")
     })?;
     let plan =
         ExecutionPlan::resolve(&loaded.validated, options.actor.as_deref()).map_err(diagnostic)?;
-    let script = fs::read(&options.script)?;
-    if script.len() > 8 * 1024 * 1024 {
-        return Err(io::Error::other("mock script too large"));
-    }
-    let adapter: MockAdapter = serde_json::from_slice(&script)?;
+    let (setup, script, planned_adapter) = match &options.agent {
+        AgentSelection::Mock { script } => {
+            let bytes = fs::read(script)?;
+            if bytes.len() > 8 * 1024 * 1024 {
+                return Err(io::Error::other("mock script too large"));
+            }
+            let adapter: MockAdapter = serde_json::from_slice(&bytes)?;
+            let description = adapter.describe();
+            (AgentSetup::Mock(adapter), Some(bytes), description)
+        }
+        AgentSelection::Native {
+            agent,
+            executable,
+            model,
+            auth_file,
+            test_upstream,
+        } => (
+            AgentSetup::Native {
+                agent: *agent,
+                executable: executable.clone(),
+                model: model.clone(),
+                auth_file: auth_file.clone(),
+                upstream: test_upstream
+                    .clone()
+                    .unwrap_or_else(|| production_model_upstream(*agent).to_owned()),
+            },
+            None,
+            json!({"adapter":match agent {CapabilityAgent::Codex=>"codex", CapabilityAgent::ClaudeCode=>"claude-code"},"model":model,"authorization":"acceptance_pending",
+                "native_test_build":NATIVE_TEST_BUILD}),
+        ),
+    };
+    let evaluator_sha256 = host_io::digest(&std::env::current_exe()?)?;
+    let comparison_binding = if let (Some(path), Some(slot_id)) = (
+        options.comparison_plan.as_deref(),
+        options.comparison_slot.as_deref(),
+    ) {
+        let comparison = crate::comparison_plan::load(path)?;
+        if comparison.plan.stopping_rule.minimum_interval_seconds != options.repeat_interval_seconds
+        {
+            return Err(io::Error::other("comparison plan interval mismatch"));
+        }
+        let slot = comparison.slot(slot_id, &options.id, &evaluator_sha256)?;
+        if slot.finding_configured != plan.self_check().is_some()
+            || slot.retest_configured != plan.retest().is_some()
+        {
+            return Err(io::Error::other("comparison slot presence mismatch"));
+        }
+        json!({
+            "plan_id":comparison.plan.plan_id.clone(),
+            "plan_sha256":comparison.sha256.clone(),
+            "slot_id":slot.slot_id.clone(),
+            "expected_evaluator_sha256":slot.evaluator_sha256.clone(),
+            "expected_conditions":slot.comparison_conditions.clone()
+        })
+    } else {
+        Value::Null
+    };
     let image = options.image.canonicalize()?;
     let izanagi = options.izanagi.canonicalize()?;
     let inputs: Value = serde_json::from_slice(&fs::read(&options.inputs)?)?;
@@ -415,14 +1168,20 @@ async fn execute(
     fs::set_permissions(root.join("bin/izanagi"), fs::Permissions::from_mode(0o500))?;
     let izanagi = root.join("bin/izanagi");
     host_io::write_new(&root.join("scenario.yaml"), &raw)?;
-    host_io::write_new(&root.join("mock-script.json"), &script)?;
+    if let Some(script) = &script {
+        host_io::write_new(&root.join("mock-script.json"), script)?;
+    }
     host_io::json_new(&root.join("image-inputs.json"), &inputs)?;
     let companion = root.join("companion");
     host_io::directory(&companion)?;
     host_io::private_copy(&bridge, &companion.join("host_bridge.py"))?;
     host_io::private_copy(&transport, &companion.join("transport.py"))?;
     let budget = &loaded.validated.scenario().budget;
-    let mut report = json!({"schema_version":1,"scope":"m5_evaluation","purpose":"collection_and_evaluation","iteration":1,"adapter":adapter.describe(),"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&izanagi)?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"mock_script_sha256":host_io::digest(&root.join("mock-script.json"))?,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"evaluation_pending"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
+    let mock_script_sha256 = script
+        .as_ref()
+        .map(|_| host_io::digest(&root.join("mock-script.json")))
+        .transpose()?;
+    let mut report = json!({"schema_version":1,"scope":"m5_evaluation","purpose":"collection_and_evaluation","iteration":options.iteration,"adapter":planned_adapter,"comparison_binding":comparison_binding,"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&root.join("bin/izanagi"))?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"binary_mode":if NATIVE_TEST_BUILD{"native_test_upstream"}else{"production"},"formal_test_only":NATIVE_TEST_BUILD,"native_test_upstream":options.native_test_upstream,"mock_script_sha256":mock_script_sha256,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"repeat_interval_seconds":options.repeat_interval_seconds,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"evaluation_pending"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
     report["conditions"]["izanagi_version"] = version(&izanagi).await?.into();
     report["conditions"]["tempest_version"] = env!("CARGO_PKG_VERSION").into();
     report["conditions"]["host_utc_offset_seconds"] = host_io::utc_offset_seconds()?.into();
@@ -464,7 +1223,7 @@ async fn execute(
         &mut primary_vm,
         &plan,
         &mut controller,
-        &adapter,
+        setup,
         &loaded.validated.scenario().budget,
         &mut report,
         &root,
@@ -595,6 +1354,25 @@ fn allowed_artifact(path: &str) -> bool {
     if retest {
         return vm;
     }
+    if let Some(path) = path.strip_prefix("evidence/native-acceptance/") {
+        return matches!(
+            path,
+            "launcher-profile.json"
+                | "capability-proof.json"
+                | "request-policy.json"
+                | "acceptance-relay-audit.jsonl"
+                | "acceptance-mcp.jsonl"
+                | "evidence/allowed_mcp_succeeded.json"
+                | "evidence/control_socket_unavailable.json"
+                | "evidence/hmac_unavailable.json"
+                | "evidence/host_canary_read_denied.json"
+                | "evidence/host_canary_write_denied.json"
+                | "evidence/host_tools_rejected.json"
+                | "evidence/mcp_child_env_sanitized.json"
+                | "evidence/provider_request_policy.json"
+                | "evidence/tool_catalog_exact.json"
+        );
+    }
     vm || matches!(
         path,
         "artifact-inventory.json"
@@ -604,6 +1382,8 @@ fn allowed_artifact(path: &str) -> bool {
             | "companion/transport.py"
             | "controller-owner.json"
             | "evidence/agent.stdout"
+            | "evidence/agent.events.jsonl"
+            | "evidence/agent.stderr"
             | "evidence/agent-owner.json"
             | "evidence/api.jsonl"
             | "evidence/capture.pcap"
@@ -613,6 +1393,10 @@ fn allowed_artifact(path: &str) -> bool {
             | "evidence/mcp.jsonl"
             | "evidence/mcp-owner.json"
             | "evidence/mcp.stderr"
+            | "evidence/mcp-catalog.stderr"
+            | "evidence/model-relay-audit.jsonl"
+            | "evidence/model-relay-owner.json"
+            | "evidence/production-mcp-catalog.json"
             | "image-inputs.json"
             | "mock-script.json"
             | "primary-seed-attempt.json"
@@ -707,7 +1491,10 @@ fn remove_transients(root: &Path, directory: &Path, removed: &mut Vec<String>) -
             .to_owned();
         let kind = entry.file_type()?;
         if kind.is_dir() {
-            if name == "__pycache__" || relative.ends_with("sandbox/.tempest-control") {
+            if name == "__pycache__"
+                || relative == ".native-runtime"
+                || relative.ends_with("sandbox/.tempest-control")
+            {
                 fs::remove_dir_all(&path)?;
                 removed.push(relative);
             } else {
@@ -733,7 +1520,10 @@ async fn verify_owned_group_gone(owner_file: &Path) -> io::Result<Option<u32>> {
         return Ok(None);
     }
     let owner: Value = serde_json::from_slice(&fs::read(owner_file)?)?;
-    if owner["state"] != "running" {
+    if !matches!(
+        owner["state"].as_str(),
+        Some("running" | "stop_requested" | "stopped")
+    ) {
         return Err(io::Error::other("owned process launch outcome is unknown"));
     }
     let group = owner["process_group"]
@@ -741,12 +1531,14 @@ async fn verify_owned_group_gone(owner_file: &Path) -> io::Result<Option<u32>> {
         .and_then(|pid| u32::try_from(pid).ok())
         .filter(|pid| *pid > 1)
         .ok_or_else(|| io::Error::other("invalid owned process group"))?;
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(5);
     while process_group_alive(group) && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     if process_group_alive(group) {
-        return Err(io::Error::other("owned process group is still alive"));
+        return Err(io::Error::other(
+            "owned process group is still alive; no signal sent",
+        ));
     }
     Ok(Some(group))
 }
@@ -858,6 +1650,7 @@ async fn recover_run(root: &Path) -> io::Result<Value> {
     for owner_file in [
         root.join("evidence/agent-owner.json"),
         root.join("evidence/mcp-owner.json"),
+        root.join("evidence/model-relay-owner.json"),
     ] {
         if let Some(group) = verify_owned_group_gone(&owner_file).await? {
             verified_process_groups.push(group);
@@ -899,14 +1692,18 @@ pub fn recover(args: &[OsString]) -> ExitCode {
     }
 }
 pub fn run(args: &[OsString]) -> ExitCode {
+    #[cfg(feature = "native-test-upstream")]
+    let usage = TEST_USAGE;
+    #[cfg(not(feature = "native-test-upstream"))]
+    let usage = USAGE;
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
-        println!("{USAGE}");
+        println!("{usage}");
         return ExitCode::SUCCESS;
     }
     let options = match options(args) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("{error}\n{USAGE}");
+            eprintln!("{error}\n{usage}");
             return ExitCode::from(2);
         }
     };
@@ -915,29 +1712,69 @@ pub fn run(args: &[OsString]) -> ExitCode {
         Err(_) => return ExitCode::FAILURE,
     };
     let result = runtime.block_on(async {
-        let (sender, receiver) = tokio::sync::watch::channel(None);
+        let (sender, mut receiver) = tokio::sync::watch::channel(None);
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let signal = tokio::spawn(async move {
             let reason =
                 tokio::select! {_=tokio::signal::ctrl_c()=>"sigint",_=term.recv()=>"sigterm"};
             let _ = sender.send(Some(reason));
         });
-        let result = execute(options, receiver).await;
+        let mut results = Vec::with_capacity(options.repeat);
+        let mut stop_reason = None;
+        for iteration in 1..=options.repeat {
+            if let Some(reason) = *receiver.borrow() {
+                stop_reason = Some(format!("cancelled:{reason}"));
+                break;
+            }
+            match execute(iteration_options(&options, iteration), receiver.clone()).await {
+                Ok(result) => results.push(result),
+                Err(error) => {
+                    stop_reason = Some(format!("infrastructure:{error}"));
+                    break;
+                }
+            }
+            if let Some(reason) = *receiver.borrow() {
+                stop_reason = Some(format!("cancelled:{reason}"));
+                break;
+            }
+            if iteration < options.repeat && options.repeat_interval_seconds > 0 {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(options.repeat_interval_seconds)) => {}
+                    reason = cancelled(&mut receiver) => {
+                        stop_reason = Some(format!("cancelled:{reason}"));
+                        break;
+                    }
+                }
+            }
+        }
         signal.abort();
-        result
+        Ok::<_, io::Error>((results, stop_reason))
     });
     runtime.shutdown_background();
     match result {
-        Ok((path, success)) => {
-            let metadata: Value = fs::read(path.join("run.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .unwrap_or(Value::Null);
-            println!(
-                "{}",
-                json!({"run_directory":path,"status":metadata["status"],"scope":"m5_evaluation","evaluation":metadata["evaluation"],"finalization":metadata["finalization"]})
-            );
-            if success {
+        Ok((results, stop_reason)) => {
+            let runs = results
+                .iter()
+                .map(|(path, success)| {
+                    let metadata: Value = fs::read(path.join("run.json"))
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                        .unwrap_or(Value::Null);
+                    json!({"run_directory":path,"status":metadata["status"],"evaluation":metadata["evaluation"],"finalization":metadata["finalization"],"success":success})
+                })
+                .collect::<Vec<_>>();
+            if runs.len() == 1 && stop_reason.is_none() {
+                println!(
+                    "{}",
+                    json!({"run_directory":runs[0]["run_directory"],"status":runs[0]["status"],"scope":"m5_evaluation","evaluation":runs[0]["evaluation"],"finalization":runs[0]["finalization"]})
+                );
+            } else {
+                println!(
+                    "{}",
+                    json!({"scope":"m5_evaluation","runs":runs,"stopped":stop_reason})
+                );
+            }
+            if stop_reason.is_none() && results.iter().all(|(_, success)| *success) {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -954,6 +1791,366 @@ pub fn run(args: &[OsString]) -> ExitCode {
 mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
+
+    fn arguments(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn run_options_separate_mock_and_native_authority() {
+        assert_eq!(
+            production_model_upstream(CapabilityAgent::Codex),
+            "https://api.openai.com/v1/"
+        );
+        assert_eq!(
+            production_model_upstream(CapabilityAgent::ClaudeCode),
+            "https://api.anthropic.com/"
+        );
+        let base = [
+            "scenario.yaml",
+            "--izanagi",
+            "/bin/izanagi",
+            "--image",
+            "/tmp/image.qcow2",
+            "--image-inputs",
+            "/tmp/image-inputs.json",
+        ];
+        let mut native = base.to_vec();
+        native.extend([
+            "--agent",
+            "claude-code",
+            "--agent-executable",
+            "/opt/claude",
+            "--model",
+            "claude-sonnet-5-5",
+            "--model-auth-file",
+            "/tmp/anthropic-key",
+        ]);
+        let parsed = options(&arguments(&native)).unwrap();
+        assert!(matches!(
+            parsed.agent,
+            AgentSelection::Native { agent: CapabilityAgent::ClaudeCode, ref model, .. }
+                if model == "claude-sonnet-5-5"
+        ));
+
+        let mut codex = base.to_vec();
+        codex.extend([
+            "--agent",
+            "codex",
+            "--agent-executable",
+            "/opt/codex",
+            "--model",
+            "gpt-6.1",
+            "--model-auth-file",
+            "/tmp/openai-key",
+        ]);
+        assert!(matches!(
+            options(&arguments(&codex)).unwrap().agent,
+            AgentSelection::Native { agent: CapabilityAgent::Codex, ref model, .. }
+                if model == "gpt-6.1"
+        ));
+
+        let mut mixed = native;
+        mixed.extend(["--mock-script", "/tmp/mock.json"]);
+        assert!(options(&arguments(&mixed)).is_err());
+
+        let mut incomplete = base.to_vec();
+        incomplete.extend(["--agent", "claude-code", "--model", "claude-sonnet-5-5"]);
+        assert!(options(&arguments(&incomplete)).is_err());
+    }
+
+    #[cfg(not(feature = "native-test-upstream"))]
+    #[test]
+    fn production_build_does_not_expose_test_upstream_option() {
+        let arguments = arguments(&[
+            "scenario.yaml",
+            "--agent",
+            "claude-code",
+            "--agent-executable",
+            "/opt/claude",
+            "--model",
+            "claude-sonnet-5-5",
+            "--model-auth-file",
+            "/tmp/key",
+            "--native-test-upstream",
+            "http://127.0.0.1:1234/",
+            "--izanagi",
+            "/bin/izanagi",
+            "--image",
+            "/tmp/image.qcow2",
+            "--image-inputs",
+            "/tmp/image-inputs.json",
+        ]);
+        assert!(options(&arguments).is_err());
+    }
+
+    #[cfg(feature = "native-test-upstream")]
+    #[test]
+    fn test_build_accepts_only_an_explicit_loopback_upstream() {
+        let base = [
+            "scenario.yaml",
+            "--agent",
+            "claude-code",
+            "--agent-executable",
+            "/opt/claude",
+            "--model",
+            "claude-sonnet-5-5",
+            "--model-auth-file",
+            "/tmp/key",
+            "--izanagi",
+            "/bin/izanagi",
+            "--image",
+            "/tmp/image.qcow2",
+            "--image-inputs",
+            "/tmp/image-inputs.json",
+            "--native-test-upstream",
+        ];
+        let mut allowed = base.to_vec();
+        allowed.push("http://127.0.0.1:1234/");
+        let parsed = options(&arguments(&allowed)).unwrap();
+        assert_eq!(
+            parsed.native_test_upstream.as_deref(),
+            Some("http://127.0.0.1:1234/")
+        );
+        for rejected in [
+            "https://127.0.0.1:1234/",
+            "http://localhost:1234/",
+            "http://127.0.0.1:1234/path",
+            "http://127.0.0.1/",
+        ] {
+            let mut values = base.to_vec();
+            values.push(rejected);
+            assert!(options(&arguments(&values)).is_err());
+        }
+    }
+
+    #[test]
+    fn native_run_passes_an_uncreated_child_to_capability_discovery() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-native-runtime-path-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        let (guard, output) = native_runtime_directory(&root).unwrap();
+        assert_eq!(output, root.join(".native-runtime/discovery"));
+        assert!(!output.exists());
+        drop(guard);
+        assert!(!root.join(".native-runtime").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_acceptance_keeps_reviewable_evidence_but_drops_runtime_capabilities() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-native-preserved-evidence-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        let (guard, output) = native_runtime_directory(&root).unwrap();
+        host_io::directory(&output).unwrap();
+        for directory in ["acceptance-proof", "acceptance-proof/evidence", "harness"] {
+            host_io::directory(&output.join(directory)).unwrap();
+        }
+        for path in [
+            "acceptance-proof/launcher-profile.json",
+            "acceptance-proof/capability-proof.json",
+            "harness/request-policy.json",
+            "harness/model-relay-audit.jsonl",
+            "harness/acceptance-mcp.jsonl",
+        ] {
+            host_io::write_new(&output.join(path), b"fixture").unwrap();
+        }
+        for check in [
+            "allowed_mcp_succeeded",
+            "control_socket_unavailable",
+            "hmac_unavailable",
+            "host_canary_read_denied",
+            "host_canary_write_denied",
+            "host_tools_rejected",
+            "mcp_child_env_sanitized",
+            "provider_request_policy",
+            "tool_catalog_exact",
+        ] {
+            host_io::write_new(
+                &output
+                    .join("acceptance-proof/evidence")
+                    .join(format!("{check}.json")),
+                b"fixture",
+            )
+            .unwrap();
+        }
+        let evidence = root.join("evidence");
+        host_io::directory(&evidence).unwrap();
+        preserve_native_acceptance(&output, &evidence).unwrap();
+        drop(guard);
+        assert!(!root.join(".native-runtime").exists());
+        assert!(
+            evidence
+                .join("native-acceptance/capability-proof.json")
+                .is_file()
+        );
+        let mut paths = Vec::new();
+        collect_artifacts(&root, &evidence, &mut paths).unwrap();
+        assert!(paths.iter().all(|path| allowed_artifact(path)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn production_mcp_catalog_is_translated_to_the_provider_contract_exactly() {
+        let observed = vec![json!({
+            "name":"sandbox_status",
+            "description":"Returns the current sandbox status.",
+            "inputSchema":{"type":"object","properties":{},"required":[],
+                "additionalProperties":false},
+        })];
+        assert_eq!(
+            provider_catalog(&observed).unwrap(),
+            [json!({
+                "name":"mcp__tempest__sandbox_status",
+                "description":"Returns the current sandbox status.",
+                "input_schema":{"type":"object","properties":{},"required":[],
+                    "additionalProperties":false},
+            })]
+        );
+        let mut expanded = observed[0].clone();
+        expanded["annotations"] = json!({});
+        assert!(provider_catalog(&[expanded]).is_err());
+        let codex_policy =
+            reviewed_request_policy(CapabilityAgent::Codex, "codex-cli 0.169.0", "gpt-6.1")
+                .unwrap();
+        let expected = expected_production_mcp_catalog(&codex_policy).unwrap();
+        assert_eq!(expected.len(), 3);
+        assert_eq!(expected[0]["name"], "mcp__tempest__sandbox_exec");
+        assert_eq!(expected[2]["name"], "mcp__tempest__sandbox_status");
+        assert!(
+            expected
+                .iter()
+                .all(|tool| !tool["name"].as_str().unwrap().starts_with("list_mcp_"))
+        );
+    }
+
+    #[test]
+    fn production_relay_audit_requires_paired_completed_deliveries() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-production-relay-audit-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&root).unwrap();
+        let path = root.join("audit.jsonl");
+        let sha = "a".repeat(64);
+        let admitted = json!({"request_sha256":sha,"delivery_state":"not_sent",
+            "reason":"admission_verified","forwarded":false});
+        let completed = json!({"request_sha256":"a".repeat(64),
+            "delivery_state":"response_complete","reason":null,"forwarded":true});
+        let hello = json!({"request_sha256":format!("{:x}",Sha256::digest([])),
+            "delivery_state":"not_sent","reason":"reviewed preflight rejected","method":"HEAD","forwarded":false,
+            "model":null,"upstream_status":null,"request_bytes":0,"tools":[],
+            "path":format!("/{}/api/hello","b".repeat(32))});
+        host_io::write_new(
+            &path,
+            format!("{}\n{}\n{}\n", hello, admitted, completed).as_bytes(),
+        )
+        .unwrap();
+        let (summary, verified) = model_relay_summary(&path, 20).unwrap();
+        assert!(verified);
+        assert_eq!(summary["requests"], 1);
+        assert_eq!(summary["preflight_rejections"], 1);
+        fs::write(
+            &path,
+            format!(
+                "{}\n",
+                json!({"request_sha256":"a".repeat(64),
+                "delivery_state":"request_outcome_unknown","reason":"upstream transport failed",
+                "forwarded":false})
+            ),
+        )
+        .unwrap();
+        let (summary, verified) = model_relay_summary(&path, 20).unwrap();
+        assert!(!verified);
+        assert_eq!(summary["delivery_states"]["request_outcome_unknown"], 1);
+        assert_eq!(summary["reasons"]["upstream transport failed"], 1);
+        fs::write(
+            &path,
+            format!(
+                "{}\n",
+                json!({"request_sha256":format!("{:x}",Sha256::digest([])),
+                    "delivery_state":"not_sent","reason":"foreign relay capability",
+                    "forwarded":false,"model":null,"upstream_status":null,"request_bytes":0,
+                    "tools":[],"path":format!("sha256:{}","a".repeat(64))})
+            ),
+        )
+        .unwrap();
+        let (summary, verified) = model_relay_summary(&path, 20).unwrap();
+        assert!(!verified);
+        assert_eq!(summary["foreign_capability_requests"], 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn repeat_expands_run_and_comparison_slot_ids_deterministically() {
+        let options = Options {
+            native_test_upstream: None,
+            scenario: "scenario".into(),
+            agent: AgentSelection::Mock {
+                script: "script".into(),
+            },
+            izanagi: "izanagi".into(),
+            image: "image".into(),
+            inputs: "inputs".into(),
+            bridge: "bridge".into(),
+            python: "python".into(),
+            runs: "runs".into(),
+            id: "batch".into(),
+            actor: None,
+            comparison_plan: Some("plan".into()),
+            comparison_slot: Some("slot".into()),
+            maximum_evidence_file_bytes: 1,
+            repeat: 3,
+            repeat_interval_seconds: 0,
+            iteration: 1,
+        };
+        let values = (1..=options.repeat)
+            .map(|iteration| iteration_options(&options, iteration))
+            .collect::<Vec<_>>();
+        assert_eq!(values[0].id, "batch-001");
+        assert_eq!(values[2].id, "batch-003");
+        assert_eq!(values[1].comparison_slot.as_deref(), Some("slot-002"));
+        assert_eq!(values[2].iteration, 3);
+        assert!(values.iter().all(|value| value.repeat == 1));
+    }
+
+    #[tokio::test]
+    async fn preexisting_cancellation_has_no_run_reservation_side_effect() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-repeat-cancel-{}",
+            host_io::random_hex().unwrap()
+        ));
+        let options = Options {
+            native_test_upstream: None,
+            scenario: root.join("missing-scenario"),
+            agent: AgentSelection::Mock {
+                script: root.join("missing-script"),
+            },
+            izanagi: root.join("missing-izanagi"),
+            image: root.join("missing-image"),
+            inputs: root.join("missing-inputs"),
+            bridge: root.join("missing-bridge"),
+            python: root.join("missing-python"),
+            runs: root.join("runs"),
+            id: "batch-002".into(),
+            actor: None,
+            comparison_plan: None,
+            comparison_slot: None,
+            maximum_evidence_file_bytes: 1,
+            repeat: 1,
+            repeat_interval_seconds: 0,
+            iteration: 2,
+        };
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        sender.send(Some("sigint")).unwrap();
+        assert!(execute(options, receiver).await.is_err());
+        assert!(!root.exists());
+    }
 
     #[test]
     fn evaluation_failure_preserves_completed_execution() {
@@ -1015,6 +2212,28 @@ mod tests {
         let owner = root.join("owner.json");
         host_io::json_new(&owner, &json!({"state":"launching"})).unwrap();
         assert!(verify_owned_group_gone(&owner).await.is_err());
+        let mut owned = std::process::Command::new("/bin/sleep");
+        owned
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut owned = owned.spawn().unwrap();
+        let owned_group = owned.id();
+        let reaper = tokio::task::spawn_blocking(move || owned.wait());
+        host_io::json_replace(
+            &owner,
+            &json!({"state":"running","process_group":owned_group}),
+        )
+        .unwrap();
+        assert!(verify_owned_group_gone(&owner).await.is_err());
+        assert!(process_group_alive(owned_group));
+        unsafe {
+            libc::kill(-(owned_group as i32), libc::SIGKILL);
+        }
+        let _ = reaper.await.unwrap().unwrap();
+        assert!(!process_group_alive(owned_group));
         host_io::json_new(
             &root.join("vm-launch.json"),
             &json!({"state":"spawned","supervisor_pid":999999,"boot_nonce":"fixture"}),

@@ -191,7 +191,11 @@ def dispatch(request_id, payload):
         if source is not None:
             source.unlink(missing_ok=True)
         if barrier is not None:
-            daemon_control('thaw', payload['daemon_identity'])
+            thaw = daemon_control('thaw', payload['daemon_identity'])
+            duration = thaw['thawed_monotonic_ns'] - barrier['frozen_monotonic_ns']
+            require(duration >= 0, 'invalid_freeze_duration')
+            barrier['thawed_guest_ns'] = thaw['thawed_guest_ns']
+            barrier['frozen_duration_ns'] = duration
     require(response.stdout and len(response.stdout) <= 1024 * 1024, 'native_operation_failed')
     result = json.loads(response.stdout)
     require(response.returncode == 0 or (operation == 'export' and result.get('complete') is False), 'native_operation_failed')

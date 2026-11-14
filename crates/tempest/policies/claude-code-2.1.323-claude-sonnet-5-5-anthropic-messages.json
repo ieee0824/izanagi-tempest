@@ -1,0 +1,96 @@
+{
+  "acceptance_requests": 8,
+  "maximum_requests": 19,
+  "mcp_catalog_source": {
+    "executable_sha256": "41a43bfe3c37bbbd7e2f0fa9f0fc51a1ac628045401da612984ebc894aad802b",
+    "host_arch": "aarch64",
+    "host_os": "macos",
+    "version": "izanagi 0.2.7"
+  },
+  "models": [
+    "claude-sonnet-5-5"
+  ],
+  "paths": [
+    "/v1/messages?beta=true"
+  ],
+  "request_headers": {
+    "content-type": "application/json"
+  },
+  "required_request_values": {"stream": true},
+  "dynamic_request_values": {},
+  "request_value_types": [
+    "adaptive",
+    "clear_thinking_20251015",
+    "ephemeral",
+    "text",
+    "thinking",
+    "tool_result",
+    "tool_use"
+  ],
+  "schema_version": 1,
+  "tools": [
+    {
+      "description": "Executes a command inside the sandbox and returns its output.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+          "description": "Arguments to pass to the command.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+          "description": "The command to execute.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "name": "mcp__tempest__sandbox_exec"
+    },
+    {
+      "description": "Executes a shell command inside the sandbox via /bin/sh -c and returns its output.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+          "description": "The shell command to execute.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "name": "mcp__tempest__sandbox_shell"
+    },
+    {
+      "description": "Returns the current sandbox status.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+      "required": [],
+        "type": "object"
+      },
+      "name": "mcp__tempest__sandbox_status"
+    }
+  ],
+  "top_level_fields": [
+    "context_management",
+    "max_tokens",
+    "messages",
+    "metadata",
+    "model",
+    "output_config",
+    "stream",
+    "system",
+    "thinking",
+    "tools"
+  ]
+}

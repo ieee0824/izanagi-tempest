@@ -33,6 +33,7 @@ def main():
     parser.add_argument('--build-inputs', type=Path, help='prepare.py inputs.json; defaults to the standard build layout')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--tempest', type=Path, help='exercise the independent Rust MCP supervisor/bridge for measured GETs')
+    parser.add_argument('--delivery-race-fixture', action='store_true', help='Require forced root deliver PID in quiesce kill evidence')
     args = parser.parse_args()
     os.umask(0o077)
     output = args.output.resolve()
@@ -53,6 +54,8 @@ def main():
     environment['IZANAGI_SECRET_FILE'] = str(hmac_path)
     inputs_path = (args.build_inputs or args.image.resolve().parents[2] / 'inputs.json').resolve()
     build_inputs = json.loads(inputs_path.read_bytes())
+    if args.delivery_race_fixture and build_inputs.get('delivery_race_fixture') is not True:
+        parser.error('--delivery-race-fixture requires the explicitly instrumented test image')
     box = Mailbox(output / 'workspace')
     # Agent-readable, deliberately writable mode: actual write must still be EROFS.
     public = box.workspace / 'readonly-check'
@@ -89,6 +92,15 @@ def main():
         try:
             while time.monotonic() < deadline:
                 result = execute('/usr/bin/doas', '-n', '/usr/local/bin/tempest-guest', 'deliver', request.guest_path)
+                if operation == 'export':
+                    category = ('reply' if result.returncode == 0 else
+                                'reply_unavailable' if result.stdout.strip() == '{"ok":false,"error":"reply_unavailable"}' else
+                                'execution_error')
+                    report.setdefault('export_delivery_reads', {}).setdefault(request.id, []).append({
+                        'returncode': result.returncode, 'category': category,
+                        'stdout_sha256': hashlib.sha256(result.stdout.encode()).hexdigest(),
+                        'stderr_sha256': hashlib.sha256(result.stderr.encode()).hexdigest()})
+                    save()
                 if result.returncode == 0:
                     value = request.decode(result.stdout)
                     if operation in {'claim', 'seed', 'export'}:
@@ -180,6 +192,9 @@ def main():
         assert image_manifest['installed_sha256']['/usr/local/libexec/tempest-guest-native'] == build_inputs['input_sha256']['guest']
         assert image_manifest['installed_sha256']['/usr/local/bin/lws'] == build_inputs['input_sha256']['lws']
         assert image_manifest['installed_sha256']['/usr/local/bin/tempest-guest'] == build_inputs['derivation_sha256']['dispatcher.py']
+        assert image_manifest['installed_sha256']['/usr/local/libexec/tempest-quiesce'] == build_inputs['derivation_sha256']['quiesce.py']
+        if args.delivery_race_fixture:
+            assert image_manifest.get('delivery_race_fixture') is True, 'guest is not the instrumented fixture'
         report['checks']['build_guest_binding'] = {'passed': True}
         metadata_code = ("import json,os,hashlib,stat; from pathlib import Path; "
                          "m=json.loads(Path('/etc/tempest/image.json').read_bytes()); "
@@ -392,6 +407,14 @@ def main():
         check('escaped_live_before_export', 'kill -0 ' + str(escaped_pid))
         exported = call('export', credential, daemon_identity=daemon_identity)
         assert exported['complete'], 'recorder finalization incomplete'
+        if args.delivery_race_fixture:
+            forced_pid = exported['quiesce']['forced_reader_pid']
+            assert forced_pid in exported['quiesce']['moved_pids'], 'held root deliver was not killed by barrier'
+            reads = report['export_delivery_reads'][exported['export_id']]
+            assert any(row['category'] == 'execution_error' for row in reads), 'forced kill did not produce a failed retrieval'
+            report['checks']['forced_delivery_race'] = {'passed': True, 'forced_reader_pid': forced_pid,
+                                                       'operation_submissions': 1}
+
         assert exported['quiesce']['descendants_empty'] and exported['quiesce']['service_frozen']
         stopped = execute('/usr/bin/python3', '-c',
                           "from pathlib import Path; p=Path('/proc/" + str(escaped_pid) + "/stat'); assert not p.exists() or p.read_text().rsplit(')',1)[1].split()[0]=='Z'")
