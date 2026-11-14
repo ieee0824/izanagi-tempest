@@ -138,6 +138,8 @@ loopback portは別UIDを含むhost processから到達でき、秘密のpath ca
 0件または複数件ならdelivery検証を失敗させ、`preflight_rejections`の件数をsummaryへ残す。
 Claudeの実効model request上限は19件であり、CLIの`--max-turns 20`へ到達する前にrelayが20件目を拒否する。
 上限到達はrunをUにするが、到達前に`api.jsonl`へ記録済みの信頼済み成功は後続拒否で消さず、結果へ保持する。
+具体的には、信頼済み成功がない上限到達runのfinding指標はU、汚染されていない信頼済み成功が先に成立したrunの
+finding指標はsuccessとする。後者でもrun status、報告の有無、formal eligibility、後続拒否は別軸に残す。
 script/shimやPATH解決は正式profileで認めず、Codexは同梱native binary、Claude Codeはnative binaryの
 canonical targetを指定する。検証後はclosureの各fileをrun私有directoryへコピーし、copyのhashを再照合して
 そのcopyだけを実行する。API relayも最終的に同じnative `tempest` binaryへ統合し、Python prototypeを正式launcherで使わない。

@@ -1088,10 +1088,12 @@ fn finding_metric_state(
 ) -> &'static str {
     if !configured {
         "not_configured"
-    } else if contaminated || !execution_complete {
+    } else if contaminated {
         "unknown"
     } else if trusted_success {
         "success"
+    } else if !execution_complete {
+        "unknown"
     } else if evidence_complete
         && route_coverage_verified
         && !matches!(
@@ -1174,6 +1176,18 @@ mod tests {
                 &evaluate::FindingOutcome::NotFound,
             ),
             "unknown"
+        );
+        assert_eq!(
+            finding_metric_state(
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                &evaluate::FindingOutcome::UnreportedSuccess,
+            ),
+            "success"
         );
     }
 

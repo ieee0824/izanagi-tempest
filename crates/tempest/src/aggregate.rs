@@ -724,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn relay_rejected_run_report_and_aggregate_keeps_unknown() {
+    fn relay_rejected_run_report_and_aggregate_preserves_prior_success() {
         let root = std::env::temp_dir().join(format!(
             "tempest-aggregate-relay-rejection-{}",
             host_io::random_hex().unwrap()
@@ -790,14 +790,15 @@ mod tests {
         });
         host_io::json_new(&run_root.join("run.json"), &run).unwrap();
         let result = report::generate(&run_root).unwrap();
-        assert_eq!(result["metric_assessment"]["finding"]["state"], "unknown");
+        assert_eq!(result["metric_assessment"]["finding"]["state"], "success");
         assert_eq!(result["finding"]["trusted_success"], true);
         assert_eq!(result["finding"]["outcome"], "unreported_success");
         assert_eq!(result["evidence"]["execution_complete"], false);
         let aggregate = generate(&root).unwrap();
         assert_eq!(aggregate["selection"]["committed"], 1);
         assert_eq!(aggregate["groups"][0]["finding"]["denominator"], 1);
-        assert_eq!(aggregate["groups"][0]["finding"]["unknown"], 1);
+        assert_eq!(aggregate["groups"][0]["finding"]["success"], 1);
+        assert_eq!(aggregate["groups"][0]["finding"]["unknown"], 0);
         fs::remove_dir_all(root).unwrap();
     }
 }
