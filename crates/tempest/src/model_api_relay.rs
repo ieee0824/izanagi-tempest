@@ -97,6 +97,14 @@ struct Admission {
     model: String,
     tools: Vec<String>,
 }
+#[derive(Clone)]
+enum UpstreamAuth {
+    Fixed {
+        header: reqwest::header::HeaderName,
+        value: reqwest::header::HeaderValue,
+    },
+    ForwardBearer,
+}
 type RelayBody = UnsyncBoxBody<Bytes, io::Error>;
 struct Options {
     upstream: reqwest::Url,
@@ -104,8 +112,7 @@ struct Options {
     policy: ValidatedPolicy,
     audit: PathBuf,
     ready: PathBuf,
-    auth_header: reqwest::header::HeaderName,
-    auth_value: reqwest::header::HeaderValue,
+    auth: UpstreamAuth,
     timeout: std::time::Duration,
     lifetime: File,
 }
@@ -114,8 +121,7 @@ struct State {
     path_capability: String,
     policy: ValidatedPolicy,
     audit: Mutex<File>,
-    auth_header: reqwest::header::HeaderName,
-    auth_value: reqwest::header::HeaderValue,
+    auth: UpstreamAuth,
     client: reqwest::Client,
     requests: AtomicU64,
     foreign_capability_requests: AtomicU64,
@@ -172,12 +178,20 @@ pub(crate) struct ProductionRelayConfig<'a> {
     pub(crate) executable: &'a Path,
     pub(crate) upstream: &'a str,
     pub(crate) policy_file: &'a Path,
-    pub(crate) auth_file: &'a Path,
-    pub(crate) auth_header: &'a str,
+    pub(crate) auth: ProductionRelayAuth<'a>,
     pub(crate) audit_file: &'a Path,
     pub(crate) state_root: &'a Path,
     pub(crate) owner_file: &'a Path,
     pub(crate) timeout_seconds: u64,
+}
+
+pub(crate) enum ProductionRelayAuth<'a> {
+    Fixed {
+        file: &'a Path,
+        header: &'a str,
+    },
+    #[allow(dead_code)]
+    ForwardBearer,
 }
 
 fn create_lifetime_fifo(path: &Path) -> io::Result<()> {
@@ -278,30 +292,41 @@ pub(crate) async fn start_production_relay(
         config.owner_file,
         &json!({"state":"launching","role":"model_api_relay"}),
     )?;
-    let mut child = host_io::command(config.executable)
-        .args([
-            OsString::from("model-api-relay"),
-            OsString::from("--upstream"),
-            OsString::from(config.upstream),
-            OsString::from("--capability-file"),
-            capability_file.as_os_str().to_owned(),
-            OsString::from("--policy-file"),
-            config.policy_file.as_os_str().to_owned(),
-            OsString::from("--audit"),
-            config.audit_file.as_os_str().to_owned(),
-            OsString::from("--ready-file"),
-            ready_file.as_os_str().to_owned(),
+    let mut arguments = vec![
+        OsString::from("model-api-relay"),
+        OsString::from("--upstream"),
+        OsString::from(config.upstream),
+        OsString::from("--capability-file"),
+        capability_file.as_os_str().to_owned(),
+        OsString::from("--policy-file"),
+        config.policy_file.as_os_str().to_owned(),
+        OsString::from("--audit"),
+        config.audit_file.as_os_str().to_owned(),
+        OsString::from("--ready-file"),
+        ready_file.as_os_str().to_owned(),
+        OsString::from("--timeout-seconds"),
+        OsString::from(config.timeout_seconds.to_string()),
+        OsString::from("--lifetime-file"),
+        lifetime_file.as_os_str().to_owned(),
+        OsString::from("--lifetime-bind-timeout-ms"),
+        OsString::from("10000"),
+    ];
+    match config.auth {
+        ProductionRelayAuth::Fixed { file, header } => arguments.extend([
+            OsString::from("--auth-mode"),
+            OsString::from("fixed"),
             OsString::from("--auth-file"),
-            config.auth_file.as_os_str().to_owned(),
+            file.as_os_str().to_owned(),
             OsString::from("--auth-header"),
-            OsString::from(config.auth_header),
-            OsString::from("--timeout-seconds"),
-            OsString::from(config.timeout_seconds.to_string()),
-            OsString::from("--lifetime-file"),
-            lifetime_file.as_os_str().to_owned(),
-            OsString::from("--lifetime-bind-timeout-ms"),
-            OsString::from("10000"),
-        ])
+            OsString::from(header),
+        ]),
+        ProductionRelayAuth::ForwardBearer => arguments.extend([
+            OsString::from("--auth-mode"),
+            OsString::from("forward-bearer"),
+        ]),
+    }
+    let mut child = host_io::command(config.executable)
+        .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -885,6 +910,46 @@ fn upstream_target(upstream: &reqwest::Url, suffix: &str) -> io::Result<reqwest:
     Ok(target)
 }
 
+fn forwarded_bearer<B>(
+    request: &Request<B>,
+    auth: &UpstreamAuth,
+) -> io::Result<Option<reqwest::header::HeaderValue>> {
+    if matches!(auth, UpstreamAuth::Fixed { .. }) {
+        return Ok(None);
+    }
+    if request.headers().contains_key("x-api-key")
+        || request
+            .headers()
+            .contains_key(hyper::header::PROXY_AUTHORIZATION)
+        || request
+            .headers()
+            .get_all(hyper::header::AUTHORIZATION)
+            .iter()
+            .count()
+            != 1
+    {
+        return Err(invalid("invalid subscription authorization"));
+    }
+    let value = request
+        .headers()
+        .get(hyper::header::AUTHORIZATION)
+        .ok_or_else(|| invalid("subscription authorization missing"))?;
+    let text = value
+        .to_str()
+        .map_err(|_| invalid("invalid subscription authorization"))?;
+    let token = text
+        .strip_prefix("Bearer ")
+        .filter(|token| !token.is_empty() && token.len() <= 8192)
+        .ok_or_else(|| invalid("invalid subscription authorization"))?;
+    if !token.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'+' | b'/' | b'=')
+    }) {
+        return Err(invalid("invalid subscription authorization"));
+    }
+    Ok(Some(value.clone()))
+}
+
 async fn handle(
     request: Request<Incoming>,
     state: Arc<State>,
@@ -937,6 +1002,22 @@ async fn handle(
         );
         return Ok(response(StatusCode::NOT_FOUND, "invalid relay path"));
     }
+    let forwarded_bearer = match forwarded_bearer(&request, &state.auth) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = audit(
+                &state,
+                "POST",
+                false,
+                &[],
+                Some(&error.to_string()),
+                &suffix,
+                None,
+                None,
+            );
+            return Ok(response(StatusCode::UNAUTHORIZED, &error.to_string()));
+        }
+    };
     if request
         .headers()
         .get(hyper::header::CONTENT_LENGTH)
@@ -1038,7 +1119,20 @@ async fn handle(
     for (name, value) in &state.policy.request_headers {
         upstream = upstream.header(name, value);
     }
-    upstream = upstream.header(state.auth_header.clone(), state.auth_value.clone());
+    match (&state.auth, forwarded_bearer) {
+        (UpstreamAuth::Fixed { header, value }, None) => {
+            upstream = upstream.header(header, value);
+        }
+        (UpstreamAuth::ForwardBearer, Some(value)) => {
+            upstream = upstream.header(reqwest::header::AUTHORIZATION, value);
+        }
+        _ => {
+            return Ok(response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid relay auth",
+            ));
+        }
+    }
     let upstream = match upstream.send().await {
         Ok(value) => value,
         Err(_) => {
@@ -1197,10 +1291,12 @@ pub(crate) async fn start_probe_relay(
         path_capability: path_capability.clone(),
         policy: validate_policy(policy)?,
         audit: Mutex::new(audit),
-        auth_header: reqwest::header::AUTHORIZATION,
-        auth_value: "tempest-probe-relay-placeholder"
-            .parse()
-            .expect("fixed header value"),
+        auth: UpstreamAuth::Fixed {
+            header: reqwest::header::AUTHORIZATION,
+            value: "tempest-probe-relay-placeholder"
+                .parse()
+                .expect("fixed header value"),
+        },
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
@@ -1235,7 +1331,7 @@ pub(crate) async fn start_probe_relay(
 }
 
 fn parse_options(args: &[OsString]) -> io::Result<Options> {
-    if args.len() != 20 {
+    if args.len() < 18 || args.len() % 2 != 0 {
         return Err(invalid("invalid model-api-relay arguments"));
     }
     let mut values = HashMap::new();
@@ -1252,6 +1348,7 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
                 | "--ready-file"
                 | "--auth-file"
                 | "--auth-header"
+                | "--auth-mode"
                 | "--timeout-seconds"
                 | "--lifetime-file"
                 | "--lifetime-bind-timeout-ms"
@@ -1293,14 +1390,6 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
         Path::new(&required("--policy-file")?),
         1024 * 1024,
     )?)?)?;
-    let auth_header = required("--auth-header")?
-        .to_str()
-        .ok_or_else(|| invalid("invalid auth header"))?
-        .parse::<reqwest::header::HeaderName>()
-        .map_err(|error| invalid(error.to_string()))?;
-    if !AUTH_HEADERS.contains(&auth_header.as_str()) {
-        return Err(invalid("unsupported auth header"));
-    }
     let timeout = required("--timeout-seconds")?
         .to_str()
         .and_then(|value| value.parse::<u64>().ok())
@@ -1311,24 +1400,46 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| (100..=10_000).contains(value))
         .ok_or_else(|| invalid("invalid relay lifetime bind timeout"))?;
-    // Establish controller liveness before loading the real provider credential.
+    // Establish controller liveness before loading or accepting provider credentials.
     let lifetime = bind_lifetime_fifo(
         Path::new(&required("--lifetime-file")?),
         std::time::Duration::from_millis(lifetime_timeout),
     )?;
-    let auth_value = reqwest::header::HeaderValue::from_bytes(&private_bytes(
-        Path::new(&required("--auth-file")?),
-        8192,
-    )?)
-    .map_err(|error| invalid(error.to_string()))?;
+    let auth = match required("--auth-mode")?.to_str() {
+        Some("fixed") => {
+            let header = required("--auth-header")?
+                .to_str()
+                .ok_or_else(|| invalid("invalid auth header"))?
+                .parse::<reqwest::header::HeaderName>()
+                .map_err(|error| invalid(error.to_string()))?;
+            if !AUTH_HEADERS.contains(&header.as_str()) {
+                return Err(invalid("unsupported auth header"));
+            }
+            let value = reqwest::header::HeaderValue::from_bytes(&private_bytes(
+                Path::new(&required("--auth-file")?),
+                8192,
+            )?)
+            .map_err(|error| invalid(error.to_string()))?;
+            UpstreamAuth::Fixed { header, value }
+        }
+        Some("forward-bearer") => {
+            if values.contains_key("--auth-file")
+                || values.contains_key("--auth-header")
+                || upstream.as_str() != "https://api.anthropic.com/"
+            {
+                return Err(invalid("invalid forward-bearer relay contract"));
+            }
+            UpstreamAuth::ForwardBearer
+        }
+        _ => return Err(invalid("invalid auth mode")),
+    };
     Ok(Options {
         upstream,
         path_capability,
         policy,
         audit: required("--audit")?.into(),
         ready: required("--ready-file")?.into(),
-        auth_header,
-        auth_value,
+        auth,
         timeout: std::time::Duration::from_secs(timeout),
         lifetime,
     })
@@ -1345,8 +1456,7 @@ async fn serve(options: Options) -> io::Result<()> {
         path_capability: options.path_capability.clone(),
         policy: options.policy,
         audit: Mutex::new(audit),
-        auth_header: options.auth_header,
-        auth_value: options.auth_value,
+        auth: options.auth,
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
@@ -1421,7 +1531,7 @@ async fn serve(options: Options) -> io::Result<()> {
     Ok(())
 }
 pub fn run(args: &[OsString]) -> ExitCode {
-    const USAGE: &str = "Usage: tempest model-api-relay --upstream URL --capability-file FILE --policy-file FILE --audit FILE --ready-file FILE --auth-file FILE --auth-header NAME --timeout-seconds N --lifetime-file FIFO --lifetime-bind-timeout-ms N";
+    const USAGE: &str = "Usage: tempest model-api-relay --upstream URL --capability-file FILE --policy-file FILE --audit FILE --ready-file FILE --auth-mode fixed --auth-file FILE --auth-header NAME --timeout-seconds N --lifetime-file FIFO --lifetime-bind-timeout-ms N\n       tempest model-api-relay --upstream https://api.anthropic.com/ --capability-file FILE --policy-file FILE --audit FILE --ready-file FILE --auth-mode forward-bearer --timeout-seconds N --lifetime-file FIFO --lifetime-bind-timeout-ms N";
     let options = match parse_options(args) {
         Ok(value) => value,
         Err(error) => {
@@ -1443,6 +1553,46 @@ mod tests {
     use super::*;
     use std::os::fd::{FromRawFd, OwnedFd};
 
+    #[test]
+    fn subscription_auth_accepts_only_one_bearer_header() {
+        let valid = Request::builder()
+            .header(
+                hyper::header::AUTHORIZATION,
+                "Bearer oauth_fixture-1.2_3~4+5/6=",
+            )
+            .body(())
+            .unwrap();
+        assert_eq!(
+            forwarded_bearer(&valid, &UpstreamAuth::ForwardBearer)
+                .unwrap()
+                .unwrap(),
+            "Bearer oauth_fixture-1.2_3~4+5/6="
+        );
+        for invalid in [
+            Request::builder().body(()).unwrap(),
+            Request::builder()
+                .header(hyper::header::AUTHORIZATION, "Basic fixture")
+                .body(())
+                .unwrap(),
+            Request::builder()
+                .header(hyper::header::AUTHORIZATION, "Bearer contains space")
+                .body(())
+                .unwrap(),
+            Request::builder()
+                .header(hyper::header::AUTHORIZATION, "Bearer fixture")
+                .header("x-api-key", "must-not-coexist")
+                .body(())
+                .unwrap(),
+            Request::builder()
+                .header(hyper::header::AUTHORIZATION, "Bearer first")
+                .header(hyper::header::AUTHORIZATION, "Bearer second")
+                .body(())
+                .unwrap(),
+        ] {
+            assert!(forwarded_bearer(&invalid, &UpstreamAuth::ForwardBearer).is_err());
+        }
+    }
+
     #[tokio::test]
     async fn production_relay_closes_idle_keepalive_when_controller_lifetime_closes() {
         let root = std::env::temp_dir().join(format!(
@@ -1460,8 +1610,10 @@ mod tests {
             policy: validate_policy(policy_value()).unwrap(),
             audit: root.join("audit.jsonl"),
             ready: root.join("ready.json"),
-            auth_header: reqwest::header::HeaderName::from_static("x-api-key"),
-            auth_value: reqwest::header::HeaderValue::from_static("fixture"),
+            auth: UpstreamAuth::Fixed {
+                header: reqwest::header::HeaderName::from_static("x-api-key"),
+                value: reqwest::header::HeaderValue::from_static("fixture"),
+            },
             timeout: std::time::Duration::from_secs(1),
             lifetime: read,
         };
@@ -1586,8 +1738,10 @@ mod tests {
                     .open(&audit_path)
                     .unwrap(),
             ),
-            auth_header: reqwest::header::HeaderName::from_static("x-api-key"),
-            auth_value: reqwest::header::HeaderValue::from_static("fixture"),
+            auth: UpstreamAuth::Fixed {
+                header: reqwest::header::HeaderName::from_static("x-api-key"),
+                value: reqwest::header::HeaderValue::from_static("fixture"),
+            },
             client: reqwest::Client::new(),
             requests: AtomicU64::new(0),
             foreign_capability_requests: AtomicU64::new(0),
@@ -1823,8 +1977,10 @@ mod tests {
                 path_capability: "x".repeat(32),
                 policy: policy(),
                 audit: Mutex::new(audit),
-                auth_header: hyper::header::AUTHORIZATION,
-                auth_value: "fixture-value".parse().unwrap(),
+                auth: UpstreamAuth::Fixed {
+                    header: hyper::header::AUTHORIZATION,
+                    value: "fixture-value".parse().unwrap(),
+                },
                 client: reqwest::Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
                     .retry(reqwest::retry::never())

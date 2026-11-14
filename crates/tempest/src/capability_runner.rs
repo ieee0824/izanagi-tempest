@@ -1651,8 +1651,10 @@ async fn discover_inner(
                             executable: &staged_code.join("host/model-api-relay"),
                             upstream: &production.upstream,
                             policy_file: &policy_path,
-                            auth_file: &production.auth_file,
-                            auth_header: production_auth_header(config.agent),
+                            auth: model_api_relay::ProductionRelayAuth::Fixed {
+                                file: &production.auth_file,
+                                header: production_auth_header(config.agent),
+                            },
                             audit_file: &production.audit_file,
                             state_root: &state_root,
                             owner_file: &production.owner_file,
