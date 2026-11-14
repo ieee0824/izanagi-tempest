@@ -413,6 +413,8 @@ fn provider_response(state: &State, index: usize, tools: &[Value]) -> Vec<u8> {
 }
 
 fn codex_response(index: usize, attempt: Option<&(String, Value, Option<String>)>) -> Vec<u8> {
+    let reasoning = json!({"type":"reasoning","id":format!("rs_{index}"),"summary":[],
+        "encrypted_content":format!("fixture-encrypted-reasoning-{index}")});
     let item = attempt.map(|(name, arguments, namespace)| {
         let mut item = json!({"type":"function_call","id":format!("fc_{index}"),
             "call_id":format!("call_{index}"),"name":name,
@@ -425,17 +427,22 @@ fn codex_response(index: usize, attempt: Option<&(String, Value, Option<String>)
     let output = item.clone().into_iter().collect::<Vec<_>>();
     let mut events = vec![json!({"type":"response.created","response":{
         "id":format!("resp_{index}"),"object":"response","status":"in_progress","output":[]}})];
+    events.push(json!({"type":"response.output_item.added","output_index":0,
+        "item":reasoning}));
+    events.push(json!({"type":"response.output_item.done","output_index":0,
+        "item":reasoning}));
     if let Some(item) = item {
-        events.push(json!({"type":"response.output_item.added","output_index":0,"item":item}));
-        events.push(json!({"type":"response.output_item.done","output_index":0,"item":item}));
+        events.push(json!({"type":"response.output_item.added","output_index":1,"item":item}));
+        events.push(json!({"type":"response.output_item.done","output_index":1,"item":item}));
     }
     let final_output = if output.is_empty() {
         vec![
+            reasoning,
             json!({"type":"message","id":format!("msg_{index}"),"role":"assistant",
             "content":[{"type":"output_text","text":"Capability probe complete.","annotations":[]}]}),
         ]
     } else {
-        output
+        std::iter::once(reasoning).chain(output).collect()
     };
     events.push(json!({"type":"response.completed","response":{
         "id":format!("resp_{index}"),"object":"response","status":"completed",
@@ -467,22 +474,41 @@ fn claude_response(
             "end_turn",
         ),
     };
-    let events = [
+    let events = vec![
         (
             "message_start",
             json!({"type":"message_start","message":message}),
         ),
         (
             "content_block_start",
-            json!({"type":"content_block_start","index":0,"content_block":block}),
+            json!({"type":"content_block_start","index":0,
+            "content_block":{"type":"thinking","thinking":"","signature":""}}),
         ),
         (
             "content_block_delta",
-            json!({"type":"content_block_delta","index":0,"delta":delta}),
+            json!({"type":"content_block_delta","index":0,
+            "delta":{"type":"thinking_delta","thinking":"fixture reasoning"}}),
+        ),
+        (
+            "content_block_delta",
+            json!({"type":"content_block_delta","index":0,
+            "delta":{"type":"signature_delta","signature":format!("fixture-signature-{index}")}}),
         ),
         (
             "content_block_stop",
             json!({"type":"content_block_stop","index":0}),
+        ),
+        (
+            "content_block_start",
+            json!({"type":"content_block_start","index":1,"content_block":block}),
+        ),
+        (
+            "content_block_delta",
+            json!({"type":"content_block_delta","index":1,"delta":delta}),
+        ),
+        (
+            "content_block_stop",
+            json!({"type":"content_block_stop","index":1}),
         ),
         (
             "message_delta",

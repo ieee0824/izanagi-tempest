@@ -76,7 +76,9 @@ fn production_auth_header(agent: CapabilityAgent) -> &'static str {
 fn expected_mcp_policy_rejections(agent: CapabilityAgent) -> u64 {
     match agent {
         CapabilityAgent::Codex => 5,
-        CapabilityAgent::ClaudeCode => 0,
+        // Claude Code probes the non-standard `server/discover` method once.
+        // The Tempest MCP allowlist rejects it before Izanagi sees it.
+        CapabilityAgent::ClaudeCode => 1,
     }
 }
 

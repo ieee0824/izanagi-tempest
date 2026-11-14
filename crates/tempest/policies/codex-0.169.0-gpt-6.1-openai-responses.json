@@ -22,7 +22,7 @@
     "client_metadata": "codex_client_metadata_v1",
     "prompt_cache_key": "uuid"
   },
-  "request_value_types": ["function_call", "function_call_output", "input_text", "message"],
+  "request_value_types": ["function_call", "function_call_output", "input_text", "message", "reasoning"],
   "schema_version": 1,
   "tools": [
     {
