@@ -8,6 +8,52 @@ model IDとretirement予定は2026-11-14にClaude Platform公式の[Models overv
 
 field、path/query、value type、tool schema、固定 header のいずれかが変わった場合はfail-closeとし、ファイル更新は差分をレビューしてから行う。
 
+### Codex Responses requestのレビュー記録
+
+`codex-0.169.0-gpt-6.1-openai-responses.json`はCodex CLI 0.169.0が選ぶ`gpt-6.1`を
+exact IDとして固定する。ただし2026-11-14に確認したOpenAI公式の
+[Models](https://developers.openai.com/api/docs/models)と
+[Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)には
+`gpt-6.1-sol`と`gpt-6.1-terra`は掲載されているが、裸の`gpt-6.1`は掲載されていない。
+したがってこれはCLI版に組み込まれたIDのlocal acceptanceであり、公開APIで利用可能な非alias ID、retirement予定なし、
+本番API互換性を証明しない。本物APIでの低額preflightとownerの明示採用までは正式比較へ使用しない。
+試した`gpt-6.1-sol`はこのCLI版のlocal discoveryでtool catalogが空になり、同じadapter契約を満たさなかったため採用しなかった。
+
+2026-11-14時点のOpenAI公式Responses APIとCodex 0.169.0の実requestを照合し、次の値域だけを許可する。
+
+| field | 用途 | Tempestでの制約 |
+| --- | --- | --- |
+| `model` | 応答model | policyのexact `gpt-6.1`だけ。上記の公開API限定を残す。 |
+| `input` | prompt、会話、function output | `message`/`input_text`/`function_call`/`function_call_output` discriminatorだけ。MCP call IDとの対応は別検査する。 |
+| `tools` | client tool catalog | 固定4 framework toolと`mcp__tempest` namespaceの完全schema/hash一致。 |
+| `store` | provider側response保存 | exact `false`。欠落・`true`はrelayが拒否する。 |
+| `stream` | SSE応答 | exact `true`。 |
+| `include` | responseへ追加する内容 | exact `["reasoning.encrypted_content"]`。他のinclude項目は拒否する。 |
+| `reasoning` | reasoning設定 | exact `{"summary":"auto"}`。fieldや値の追加は拒否する。 |
+| `parallel_tool_calls` | tool call並列化 | exact `true`。MCP側のcall予算・監査は並列でも独立に強制する。 |
+| `tool_choice` | tool選択 | exact `"auto"`。 |
+| `prompt_cache_key` | provider cacheのrouting key | UUID形式を要求し、同requestのsession IDと一致させる。provider側状態なのでrun独立性の根拠にはしない。 |
+| `client_metadata` | Codexのsession/turn診断metadata | exact key集合、UUID相互関係、固定`exec`/`seatbelt`/`read-only`/model等を検査する。任意metadata追加や不整合を拒否する。 |
+
+`previous_response_id`、conversation/file/URL/remote MCP系fieldは再帰的に拒否する。
+認証はagentへ渡さず、production relayだけがowner-private fileの完全な`Authorization: Bearer ...`値を保持する。
+upstream base URLはagent種別から`https://api.openai.com/v1/`へ一意に固定し、`/responses`を
+`/v1/responses`へ結合する。実行時option・環境によるauthority/base path変更は許可しない。
+
+`codex-0.169.0-macos-system-paths.json`は、この版の公式sourceにあるUnix system layer
+（`/etc/codex/config.toml`、`requirements.toml`、legacy `managed_config.toml`）とmacOS forced preference
+domain `com.openai.codex`、TempestのSeatbelt依存fileを固定する。起動前にsystem/MDM pathの不在を検査し、
+Seatbeltでも`com.openai.codex`の`user-preference-read`を明示拒否する。空のprivate HOME/CWD、
+`--ignore-user-config`、空環境、固定network先と組み合わせ、user/project/cloud取得を正式契約へ混入させない。
+根拠はOpenAI Codex `rust-v0.169.0`の
+[config loader](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/config/src/loader/mod.rs)と
+[macOS managed preferences loader](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/config/src/loader/macos.rs)である。
+
+CodexのJSONL report parserは`thread.started`→単一`turn.started`→top-level `item.completed`列→
+`turn.completed`の順序だけを受理する。thread/turnの再開始、開始前item、terminal後event、tool ended、
+失敗・欠落を拒否する。ClaudeとのCLI横断比較ではtool catalogとCLI差がmodel差へ交絡するため、
+同一CLI内比較とは別conditionとして表示し、同じ指標と解釈しない。
+
 ### Messages requestのレビュー記録
 
 2026-11-14時点のClaude Platform公式[Messages API](https://platform.claude.com/docs/en/api/messages/create)、[Thinking](https://platform.claude.com/docs/en/build-with-claude/thinking)、[Effort](https://platform.claude.com/docs/en/build-with-claude/effort)、[Context editing](https://platform.claude.com/docs/en/build-with-claude/context-editing)、[Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)と照合した。許可は次の用途に限定する。

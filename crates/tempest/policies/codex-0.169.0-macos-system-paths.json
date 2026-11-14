@@ -1,0 +1,40 @@
+{
+  "agent": "codex",
+  "cli_version": "codex-cli 0.169.0",
+  "os": "macos",
+  "paths": [
+    {
+      "path": "/etc/codex/config.toml",
+      "state": "absent"
+    },
+    {
+      "path": "/etc/codex/managed_config.toml",
+      "state": "absent"
+    },
+    {
+      "path": "/etc/codex/requirements.toml",
+      "state": "absent"
+    },
+    {
+      "path_template": "/Library/Managed Preferences/{USER}/com.openai.codex.plist",
+      "state": "absent"
+    },
+    {
+      "path": "/Library/Managed Preferences/com.openai.codex.plist",
+      "state": "absent"
+    },
+    {
+      "path": "/System/Library/Sandbox/Profiles/dyld-support.sb",
+      "state": "file"
+    },
+    {
+      "path": "/System/Library/Sandbox/Profiles/system.sb",
+      "state": "file"
+    },
+    {
+      "path": "/usr/bin/sandbox-exec",
+      "state": "file"
+    }
+  ],
+  "schema_version": 1
+}

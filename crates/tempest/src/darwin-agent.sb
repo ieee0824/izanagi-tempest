@@ -4,6 +4,8 @@
 (allow process*)
 (deny user-preference-read
        (preference-domain "com.anthropic.claudecode"))
+(deny user-preference-read
+       (preference-domain "com.openai.codex"))
 (allow file-read-metadata)
 (allow file-read* (subpath (param "JAIL")))
 (allow file-write* (literal "/dev/null") (subpath (param "JAIL")))

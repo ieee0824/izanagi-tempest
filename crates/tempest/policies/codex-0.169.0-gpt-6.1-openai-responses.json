@@ -10,6 +10,18 @@
   "models": ["gpt-6.1"],
   "paths": ["/responses"],
   "request_headers": {"content-type": "application/json"},
+  "required_request_values": {
+    "include": ["reasoning.encrypted_content"],
+    "parallel_tool_calls": true,
+    "reasoning": {"summary": "auto"},
+    "store": false,
+    "stream": true,
+    "tool_choice": "auto"
+  },
+  "dynamic_request_values": {
+    "client_metadata": "codex_client_metadata_v1",
+    "prompt_cache_key": "uuid"
+  },
   "request_value_types": ["function_call", "function_call_output", "input_text", "message"],
   "schema_version": 1,
   "tools": [

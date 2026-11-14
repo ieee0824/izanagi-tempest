@@ -79,7 +79,7 @@ pub struct LauncherProfile {
     pub model: String,
     pub cli_version: String,
     pub provider_protocol: String,
-    pub upstream_authority: String,
+    pub upstream_base_url: String,
     pub proof_upstream_kind: String,
     pub allowed_runtime_variance: Vec<String>,
     pub request_policy_sha256: String,
@@ -586,16 +586,27 @@ fn current_username() -> io::Result<String> {
     Ok(username.to_owned())
 }
 
-fn reviewed_claude_system_paths_for(username: &str) -> io::Result<Vec<(PathBuf, String)>> {
+fn reviewed_system_paths_for(
+    agent: &str,
+    cli_version: &str,
+    username: &str,
+) -> io::Result<Vec<(PathBuf, String)>> {
     if username.is_empty() || username.contains('/') {
         return Err(invalid("current username is invalid"));
     }
-    let contract = parse_unique_value(include_bytes!(
-        "../policies/claude-code-2.1.323-macos-system-paths.json"
-    ))?;
+    let bytes: &[u8] = match (agent, cli_version) {
+        ("claude-code", "2.1.323 (Claude Code)") => {
+            include_bytes!("../policies/claude-code-2.1.323-macos-system-paths.json")
+        }
+        ("codex", "codex-cli 0.169.0") => {
+            include_bytes!("../policies/codex-0.169.0-macos-system-paths.json")
+        }
+        _ => return Err(invalid("unsupported reviewed system path contract")),
+    };
+    let contract = parse_unique_value(bytes)?;
     if contract["schema_version"] != 1
-        || contract["agent"] != "claude-code"
-        || contract["cli_version"] != "2.1.323 (Claude Code)"
+        || contract["agent"] != agent
+        || contract["cli_version"] != cli_version
         || contract["os"] != "macos"
     {
         return Err(invalid("invalid reviewed system path contract"));
@@ -614,10 +625,10 @@ fn reviewed_claude_system_paths_for(username: &str) -> io::Result<Vec<(PathBuf, 
             object.get("path_template").and_then(Value::as_str),
         ) {
             (Some(path), None) => PathBuf::from(path),
-            (None, Some("/Library/Managed Preferences/{USER}/com.anthropic.claudecode.plist")) => {
-                PathBuf::from(format!(
-                    "/Library/Managed Preferences/{username}/com.anthropic.claudecode.plist"
-                ))
+            (None, Some(template))
+                if template.starts_with("/Library/Managed Preferences/{USER}/") =>
+            {
+                PathBuf::from(template.replace("{USER}", username))
             }
             _ => return Err(invalid("invalid reviewed system path selector")),
         };
@@ -641,14 +652,19 @@ fn reviewed_claude_system_paths_for(username: &str) -> io::Result<Vec<(PathBuf, 
 }
 
 pub(crate) fn reviewed_claude_system_paths() -> io::Result<Vec<(PathBuf, String)>> {
-    reviewed_claude_system_paths_for(&current_username()?)
+    reviewed_system_paths_for("claude-code", "2.1.323 (Claude Code)", &current_username()?)
+}
+
+pub(crate) fn reviewed_codex_system_paths() -> io::Result<Vec<(PathBuf, String)>> {
+    reviewed_system_paths_for("codex", "codex-cli 0.169.0", &current_username()?)
 }
 
 fn reviewed_system_path_contract(profile: &LauncherProfile) -> io::Result<bool> {
-    if profile.agent != "claude-code" || profile.cli_version != "2.1.323 (Claude Code)" {
-        return Ok(profile.agent == "codex");
-    }
-    let expected = reviewed_claude_system_paths()?;
+    let expected = match profile.agent.as_str() {
+        "claude-code" => reviewed_claude_system_paths()?,
+        "codex" => reviewed_codex_system_paths()?,
+        _ => return Ok(false),
+    };
     Ok(profile.system_configuration.len() == expected.len()
         && profile
             .system_configuration
@@ -841,13 +857,21 @@ fn load_envelope_inner(root: &Path, verify_live_code: bool) -> io::Result<Verifi
             profile.provider_protocol.as_str(),
             "openai-responses" | "anthropic-messages"
         )
-        || profile
-            .upstream_authority
-            .strip_prefix("https://")
-            .is_none_or(|host| host.is_empty() || host.contains(['/', '?', '#', '@']))
+        || !matches!(
+            (
+                profile.agent.as_str(),
+                profile.provider_protocol.as_str(),
+                profile.upstream_base_url.as_str()
+            ),
+            ("codex", "openai-responses", "https://api.openai.com/v1/")
+                | (
+                    "claude-code",
+                    "anthropic-messages",
+                    "https://api.anthropic.com/"
+                )
+        )
         || profile.proof_upstream_kind != "local_deterministic_stub_through_relay"
-        || profile.allowed_runtime_variance
-            != ["relay_authentication_value", "relay_upstream_authority"]
+        || profile.allowed_runtime_variance != ["relay_authentication_value"]
         || !digest(&profile.request_policy_sha256)
         || !(1..=profile.production_request_budget).contains(&profile.acceptance_request_count)
         || !(1..=1000).contains(&profile.production_request_budget)
@@ -969,28 +993,27 @@ pub(crate) mod tests {
         let relay = root.join("relay");
         host_io::write_new(&relay, b"relay").unwrap();
         let closure = |role: &str, path: &Path| json!({"role":role,"path":path,"sha256":host_io::digest(path).unwrap()});
+        let system_configuration = reviewed_codex_system_paths()
+            .unwrap()
+            .into_iter()
+            .map(|(path, state)| {
+                let sha256 = (state == "file").then(|| host_io::digest(&path).unwrap());
+                json!({"path":path,"state":state,"sha256":sha256})
+            })
+            .collect::<Vec<_>>();
         let profile = json!({
-            "schema_version":1,"agent":"codex","model":"model-fixed","cli_version":"1.0",
-            "provider_protocol":"openai-responses","upstream_authority":"https://api.example.invalid",
+            "schema_version":1,"agent":"codex","model":"model-fixed","cli_version":"codex-cli 0.169.0",
+            "provider_protocol":"openai-responses","upstream_base_url":"https://api.openai.com/v1/",
             "proof_upstream_kind":"local_deterministic_stub_through_relay",
-            "allowed_runtime_variance":["relay_authentication_value","relay_upstream_authority"],
+            "allowed_runtime_variance":["relay_authentication_value"],
             "request_policy_sha256":"a".repeat(64),"acceptance_request_count":1,
-            "production_request_budget":20,"argument_template":["exec","<PROMPT>"],
-            "environment":[
-                {"name":"HOME","source":"generated_private_directory","value_sha256":null},
-                {"name":"OPENAI_API_KEY","source":"fixed_placeholder","value_sha256":"b".repeat(64)},
-                {"name":"OPENAI_BASE_URL","source":"relay_endpoint","value_sha256":null},
-                {"name":"PATH","source":"fixed_nonsecret","value_sha256":"c".repeat(64)}],"home_policy":"empty_owner_private",
+            "production_request_budget":20,
+            "argument_template":crate::adapter::codex_argument_template(),
+            "environment":crate::adapter::codex_environment_rules(),
+            "home_policy":"empty_owner_private",
             "cwd_policy":"empty_owner_private","prompt_policy":"tempest_generated_only",
             "real_authentication_owner":"model_api_relay_only",
-            "system_configuration":[
-                {"path":"/System/Library/Sandbox/Profiles/dyld-support.sb","state":"file",
-                    "sha256":host_io::digest(Path::new("/System/Library/Sandbox/Profiles/dyld-support.sb")).unwrap()},
-                {"path":"/System/Library/Sandbox/Profiles/system.sb","state":"file",
-                    "sha256":host_io::digest(Path::new("/System/Library/Sandbox/Profiles/system.sb")).unwrap()},
-                {"path":root.join("absent-managed-config"),"state":"absent","sha256":null},
-                {"path":"/usr/bin/sandbox-exec","state":"file",
-                    "sha256":host_io::digest(Path::new("/usr/bin/sandbox-exec")).unwrap()}],
+            "system_configuration":system_configuration,
             "code_closure":[closure("agent_executable",&executable),closure("mcp_bridge",&bridge),
                 closure("model_api_relay",&relay)]
         });
@@ -1139,9 +1162,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn codex_paths_include_system_requirements_and_managed_preferences() {
+        let paths = reviewed_codex_system_paths().unwrap();
+        for expected in [
+            "/etc/codex/config.toml",
+            "/etc/codex/managed_config.toml",
+            "/etc/codex/requirements.toml",
+        ] {
+            assert!(
+                paths
+                    .iter()
+                    .any(|(path, state)| { path == Path::new(expected) && state == "absent" })
+            );
+        }
+        assert!(paths.iter().any(|(path, state)| {
+            path.starts_with("/Library/Managed Preferences/")
+                && path.ends_with("com.openai.codex.plist")
+                && !path.to_string_lossy().contains("{USER}")
+                && state == "absent"
+        }));
+    }
+
+    #[test]
     fn reviewed_user_path_is_sorted_after_expansion_for_any_username() {
         for username in ["a", "node", "z"] {
-            let paths = reviewed_claude_system_paths_for(username).unwrap();
+            let paths = reviewed_system_paths_for("claude-code", "2.1.323 (Claude Code)", username)
+                .unwrap();
             assert!(paths.windows(2).all(|pair| pair[0].0 < pair[1].0));
             assert!(paths.iter().any(|(path, _)| {
                 path == Path::new(&format!(

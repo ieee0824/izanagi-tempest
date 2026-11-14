@@ -16,7 +16,7 @@ use crate::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fs, io,
     os::unix::fs::PermissionsExt,
@@ -529,6 +529,7 @@ fn frozen_request_policy(
     let mut models = BTreeSet::new();
     let mut fields = BTreeSet::new();
     let mut value_types = BTreeSet::new();
+    let mut required_request_values = BTreeMap::new();
     for request in requests {
         let path = request
             .path
@@ -552,11 +553,41 @@ fn frozen_request_policy(
         without_tools.as_object_mut().unwrap().remove("tools");
         collect_value_types(&without_tools, &mut value_types)?;
     }
+    for name in [
+        "include",
+        "parallel_tool_calls",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+    ] {
+        if let Some(expected) = first.body.get(name) {
+            if requests
+                .iter()
+                .any(|request| request.body.get(name) != Some(expected))
+            {
+                return Err(io::Error::other(format!(
+                    "security-sensitive request value changed: {name}"
+                )));
+            }
+            required_request_values.insert(name.to_owned(), expected.clone());
+        }
+    }
+    let dynamic_request_values = [
+        ("client_metadata", "codex_client_metadata_v1"),
+        ("prompt_cache_key", "uuid"),
+    ]
+    .into_iter()
+    .filter(|(name, _)| first.body.get(*name).is_some())
+    .map(|(name, validator)| (name.to_owned(), validator.to_owned()))
+    .collect::<BTreeMap<_, _>>();
     Ok(serde_json::json!({
         "schema_version":1,
         "paths":paths,
         "models":models,
         "top_level_fields":fields,
+        "required_request_values":required_request_values,
+        "dynamic_request_values":dynamic_request_values,
         "request_value_types":value_types,
         "request_headers":{"content-type":"application/json"},
         "acceptance_requests":requests.len(),
@@ -860,9 +891,13 @@ struct PreparedProof {
     production_request_budget: u64,
 }
 
-fn reviewed_system_configuration() -> io::Result<Vec<Value>> {
+fn reviewed_system_configuration(agent: CapabilityAgent) -> io::Result<Vec<Value>> {
     let mut output = Vec::new();
-    for (path, state) in crate::capability_proof::reviewed_claude_system_paths()? {
+    let paths = match agent {
+        CapabilityAgent::Codex => crate::capability_proof::reviewed_codex_system_paths()?,
+        CapabilityAgent::ClaudeCode => crate::capability_proof::reviewed_claude_system_paths()?,
+    };
+    for (path, state) in paths {
         let sha256 = match state.as_str() {
             "absent" => match path.symlink_metadata() {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Value::Null,
@@ -900,20 +935,20 @@ fn prepare_agent_proof(
     let production_request_budget = policy["maximum_requests"]
         .as_u64()
         .ok_or_else(|| io::Error::other("production request budget missing"))?;
-    let system_configuration = reviewed_system_configuration()?;
-    let (agent_name, provider_protocol, upstream_authority, argument_template, environment) =
+    let system_configuration = reviewed_system_configuration(agent)?;
+    let (agent_name, provider_protocol, upstream_base_url, argument_template, environment) =
         match agent {
             CapabilityAgent::Codex => (
                 "codex",
                 "openai-responses",
-                "https://api.openai.com",
+                "https://api.openai.com/v1/",
                 codex_argument_template(),
                 codex_environment_rules(),
             ),
             CapabilityAgent::ClaudeCode => (
                 "claude-code",
                 "anthropic-messages",
-                "https://api.anthropic.com",
+                "https://api.anthropic.com/",
                 claude_argument_template(20),
                 claude_environment_rules(),
             ),
@@ -921,9 +956,9 @@ fn prepare_agent_proof(
     let profile = serde_json::json!({
         "schema_version":1,"agent":agent_name,"model":model,
         "cli_version":cli_version,"provider_protocol":provider_protocol,
-        "upstream_authority":upstream_authority,
+        "upstream_base_url":upstream_base_url,
         "proof_upstream_kind":"local_deterministic_stub_through_relay",
-        "allowed_runtime_variance":["relay_authentication_value","relay_upstream_authority"],
+        "allowed_runtime_variance":["relay_authentication_value"],
         "request_policy_sha256":policy_sha256,
         "acceptance_request_count":acceptance_request_count,
         "production_request_budget":production_request_budget,
@@ -1324,9 +1359,34 @@ async fn discover_inner(
         .iter()
         .map(|request| request.tool_outputs.clone())
         .collect();
+    let request_contract_values = requests
+        .iter()
+        .map(|request| {
+            [
+                "client_metadata",
+                "include",
+                "parallel_tool_calls",
+                "prompt_cache_key",
+                "reasoning",
+                "store",
+                "stream",
+                "tool_choice",
+            ]
+            .into_iter()
+            .filter_map(|name| {
+                request
+                    .body
+                    .get(name)
+                    .cloned()
+                    .map(|value| (name.to_owned(), value))
+            })
+            .collect::<BTreeMap<_, _>>()
+        })
+        .collect::<Vec<_>>();
     host_io::json_new(
         &root.join("harness/provider-observations.json"),
         &serde_json::json!({"catalogs":catalogs,"tool_outputs":tool_outputs,
+            "request_contract_values":request_contract_values,
             "request_observed_ns":requests.iter().map(|request| request.observed_ns).collect::<Vec<_>>(),
             "request_paths":requests.iter().map(|request| &request.path).collect::<Vec<_>>(),
             "request_headers":requests.iter().map(|request| &request.headers).collect::<Vec<_>>() }),

@@ -66,6 +66,8 @@ struct Policy {
     paths: Vec<String>,
     models: Vec<String>,
     top_level_fields: Vec<String>,
+    required_request_values: BTreeMap<String, Value>,
+    dynamic_request_values: BTreeMap<String, String>,
     request_value_types: Vec<String>,
     request_headers: BTreeMap<String, String>,
     maximum_requests: u64,
@@ -84,6 +86,8 @@ struct ValidatedPolicy {
     paths: BTreeSet<String>,
     models: BTreeSet<String>,
     fields: BTreeSet<String>,
+    required_request_values: BTreeMap<String, Value>,
+    dynamic_request_values: BTreeMap<String, String>,
     request_value_types: BTreeSet<String>,
     request_headers: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
     maximum_requests: u64,
@@ -417,6 +421,19 @@ fn validate_policy(value: Value) -> io::Result<ValidatedPolicy> {
         || !sorted_unique(&policy.top_level_fields)
         || !policy.top_level_fields.iter().any(|value| value == "model")
         || !policy.top_level_fields.iter().any(|value| value == "tools")
+        || policy.required_request_values.is_empty()
+        || policy
+            .required_request_values
+            .keys()
+            .any(|name| !policy.top_level_fields.contains(name))
+        || policy.dynamic_request_values.keys().any(|name| {
+            !policy.top_level_fields.contains(name)
+                || policy.required_request_values.contains_key(name)
+        })
+        || policy
+            .dynamic_request_values
+            .values()
+            .any(|validator| !matches!(validator.as_str(), "uuid" | "codex_client_metadata_v1"))
         || policy.paths.iter().any(|path| {
             !path.starts_with('/')
                 || path.contains('#')
@@ -463,6 +480,8 @@ fn validate_policy(value: Value) -> io::Result<ValidatedPolicy> {
         paths: policy.paths.into_iter().collect(),
         models: policy.models.into_iter().collect(),
         fields: policy.top_level_fields.into_iter().collect(),
+        required_request_values: policy.required_request_values,
+        dynamic_request_values: policy.dynamic_request_values,
         request_value_types: policy.request_value_types.into_iter().collect(),
         request_headers,
         maximum_requests: policy.maximum_requests,
@@ -507,6 +526,136 @@ fn validate_value_types(value: &Value, allowed: &BTreeSet<String>) -> io::Result
     }
     Ok(())
 }
+
+fn uuid_like(value: &Value) -> bool {
+    value.as_str().is_some_and(|text| {
+        text.len() == 36
+            && text.bytes().enumerate().all(|(index, byte)| {
+                if matches!(index, 8 | 13 | 18 | 23) {
+                    byte == b'-'
+                } else {
+                    byte.is_ascii_hexdigit()
+                }
+            })
+    })
+}
+
+fn validate_codex_metadata(value: &Value, request: &serde_json::Map<String, Value>) -> bool {
+    let Some(metadata) = value.as_object() else {
+        return false;
+    };
+    let names = metadata.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if names
+        != [
+            "root_turn_id",
+            "session_id",
+            "thread_id",
+            "turn_id",
+            "x-codex-installation-id",
+            "x-codex-turn-metadata",
+            "x-codex-window-id",
+        ]
+        .into_iter()
+        .collect()
+        || ![
+            "root_turn_id",
+            "session_id",
+            "thread_id",
+            "turn_id",
+            "x-codex-installation-id",
+        ]
+        .into_iter()
+        .all(|name| metadata.get(name).is_some_and(uuid_like))
+        || metadata["root_turn_id"] != metadata["turn_id"]
+        || metadata["session_id"] != metadata["thread_id"]
+        || request.get("prompt_cache_key").and_then(Value::as_str)
+            != metadata["session_id"].as_str()
+    {
+        return false;
+    }
+    let session = metadata["session_id"].as_str().unwrap();
+    if metadata["x-codex-window-id"] != format!("{session}:0") {
+        return false;
+    }
+    let Some(encoded) = metadata["x-codex-turn-metadata"].as_str() else {
+        return false;
+    };
+    let Ok(turn) = parse_unique_value(encoded.as_bytes()) else {
+        return false;
+    };
+    let Some(turn) = turn.as_object() else {
+        return false;
+    };
+    let expected_names = [
+        "agent_name",
+        "analytics_enabled",
+        "auto_review_enabled",
+        "context_window_id",
+        "history_initialization",
+        "installation_id",
+        "model",
+        "node_repl_auto_review_required",
+        "node_repl_disabled",
+        "request_kind",
+        "root_turn_id",
+        "sandbox",
+        "sandbox_mode",
+        "session_id",
+        "thread_id",
+        "thread_source",
+        "turn_id",
+        "turn_started_at_unix_ms",
+        "turn_trigger",
+        "window_id",
+        "window_number",
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    turn.keys().map(String::as_str).collect::<BTreeSet<_>>() == expected_names
+        && turn["installation_id"] == metadata["x-codex-installation-id"]
+        && turn["session_id"] == metadata["session_id"]
+        && turn["thread_id"] == metadata["thread_id"]
+        && turn["turn_id"] == metadata["turn_id"]
+        && turn["root_turn_id"] == metadata["root_turn_id"]
+        && turn["window_id"] == metadata["x-codex-window-id"]
+        && uuid_like(&turn["context_window_id"])
+        && turn["agent_name"] == "/root"
+        && turn["request_kind"] == "turn"
+        && turn["history_initialization"] == "new"
+        && turn["thread_source"] == "user"
+        && turn["turn_trigger"] == "exec"
+        && turn["sandbox"] == "seatbelt"
+        && turn["sandbox_mode"] == "read-only"
+        && turn["window_number"] == 0
+        && turn["auto_review_enabled"] == false
+        && turn["node_repl_auto_review_required"] == false
+        && turn["node_repl_disabled"] == false
+        && turn["analytics_enabled"] == true
+        && turn["turn_started_at_unix_ms"]
+            .as_u64()
+            .is_some_and(|value| value > 0)
+        && turn.get("model") == request.get("model")
+}
+
+fn validate_dynamic_request_values(
+    object: &serde_json::Map<String, Value>,
+    rules: &BTreeMap<String, String>,
+) -> io::Result<()> {
+    for (name, validator) in rules {
+        let value = object
+            .get(name)
+            .ok_or_else(|| invalid(format!("dynamic request value missing: {name}")))?;
+        let valid = match validator.as_str() {
+            "uuid" => uuid_like(value),
+            "codex_client_metadata_v1" => validate_codex_metadata(value, object),
+            _ => false,
+        };
+        if !valid {
+            return Err(invalid(format!("dynamic request value invalid: {name}")));
+        }
+    }
+    Ok(())
+}
 fn admit(body: &[u8], path: &str, policy: &ValidatedPolicy) -> io::Result<Admission> {
     let value = parse_unique_value(body)?;
     let object = value
@@ -527,6 +676,12 @@ fn admit(body: &[u8], path: &str, policy: &ValidatedPolicy) -> io::Result<Admiss
     if object.keys().any(|name| !policy.fields.contains(name)) {
         return Err(invalid("unknown top-level request field"));
     }
+    for (name, expected) in &policy.required_request_values {
+        if object.get(name) != Some(expected) {
+            return Err(invalid(format!("required request value mismatch: {name}")));
+        }
+    }
+    validate_dynamic_request_values(object, &policy.dynamic_request_values)?;
     if let Some(name) = forbidden(&value) {
         return Err(invalid(format!("forbidden request capability: {name}")));
     }
@@ -681,6 +836,55 @@ fn authenticated_suffix<'a>(
         .flatten()
 }
 
+fn production_upstream(upstream: &reqwest::Url) -> bool {
+    matches!(
+        (
+            upstream.scheme(),
+            upstream.host_str(),
+            upstream.port(),
+            upstream.path()
+        ),
+        ("https", Some("api.anthropic.com"), None, "/")
+            | ("https", Some("api.openai.com"), None, "/v1/")
+    ) && upstream.username().is_empty()
+        && upstream.password().is_none()
+        && upstream.query().is_none()
+        && upstream.fragment().is_none()
+}
+
+fn validated_upstream(value: &str, allow_test_upstream: bool) -> io::Result<reqwest::Url> {
+    let upstream = value
+        .parse::<reqwest::Url>()
+        .map_err(|error| invalid(error.to_string()))?;
+    let production = production_upstream(&upstream);
+    let test = allow_test_upstream
+        && upstream.scheme() == "http"
+        && upstream.host_str() == Some("127.0.0.1")
+        && upstream.port().is_some()
+        && upstream.path() == "/"
+        && upstream.username().is_empty()
+        && upstream.password().is_none()
+        && upstream.query().is_none()
+        && upstream.fragment().is_none();
+    if !production && !test {
+        return Err(invalid("invalid upstream URL"));
+    }
+    Ok(upstream)
+}
+
+fn upstream_target(upstream: &reqwest::Url, suffix: &str) -> io::Result<reqwest::Url> {
+    let target = upstream
+        .join(suffix.trim_start_matches('/'))
+        .map_err(|_| invalid("invalid upstream request target"))?;
+    if target.scheme() != upstream.scheme()
+        || target.host_str() != upstream.host_str()
+        || target.port_or_known_default() != upstream.port_or_known_default()
+    {
+        return Err(invalid("upstream request target escaped authority"));
+    }
+    Ok(target)
+}
+
 async fn handle(
     request: Request<Incoming>,
     state: Arc<State>,
@@ -794,14 +998,8 @@ async fn handle(
             "model request budget exhausted",
         ));
     }
-    let target = match state.upstream.join(suffix.trim_start_matches('/')) {
-        Ok(target)
-            if target.scheme() == state.upstream.scheme()
-                && target.host_str() == state.upstream.host_str()
-                && target.port_or_known_default() == state.upstream.port_or_known_default() =>
-        {
-            target
-        }
+    let target = match upstream_target(&state.upstream, &suffix) {
+        Ok(target) => target,
         _ => {
             let _ = audit(
                 &state,
@@ -1067,28 +1265,15 @@ fn parse_options(args: &[OsString]) -> io::Result<Options> {
             .cloned()
             .ok_or_else(|| invalid("required relay option missing"))
     };
-    let upstream = required("--upstream")?
+    let upstream_text = required("--upstream")?;
+    let upstream_text = upstream_text
         .to_str()
-        .ok_or_else(|| invalid("invalid upstream URL"))?
-        .parse::<reqwest::Url>()
-        .map_err(|error| invalid(error.to_string()))?;
-    let production_upstream = upstream.scheme() == "https";
+        .ok_or_else(|| invalid("invalid upstream URL"))?;
     #[cfg(feature = "native-test-upstream")]
-    let test_upstream = upstream.scheme() == "http"
-        && upstream.host_str() == Some("127.0.0.1")
-        && upstream.port().is_some();
+    let allow_test_upstream = true;
     #[cfg(not(feature = "native-test-upstream"))]
-    let test_upstream = false;
-    if (!production_upstream && !test_upstream)
-        || upstream.host_str().is_none()
-        || !upstream.username().is_empty()
-        || upstream.password().is_some()
-        || upstream.path() != "/"
-        || upstream.query().is_some()
-        || upstream.fragment().is_some()
-    {
-        return Err(invalid("invalid upstream URL"));
-    }
+    let allow_test_upstream = false;
+    let upstream = validated_upstream(upstream_text, allow_test_upstream)?;
     let path_capability = String::from_utf8(private_bytes(
         Path::new(&required("--capability-file")?),
         256,
@@ -1303,7 +1488,9 @@ mod tests {
     fn policy_value() -> Value {
         json!({"schema_version":1,"acceptance_requests":1,
         "paths":["/v1/messages"],"models":["model-1"],
-        "top_level_fields":["model","prompt","tools"],"request_value_types":["text"],
+        "top_level_fields":["model","prompt","tools"],
+        "dynamic_request_values":{},
+        "required_request_values":{"model":"model-1"},"request_value_types":["text"],
         "request_headers":{"content-type":"application/json","x-tempest-profile":"fixed"},
         "maximum_requests":20,"mcp_catalog_source":{"version":"izanagi 0.2.7",
         "host_os":"macos","host_arch":"aarch64",
@@ -1440,9 +1627,83 @@ mod tests {
         for invalid in [br#"{"model":"model-1","tools":[],"tools":[{"type":"function","name":"mcp__tempest__status","description":"fixed","input_schema":{"type":"object"}}]}"#.as_slice(),br#"{"model":"model-2","tools":[]}"#.as_slice(),br#"{"model":"model-1","previous_response_id":"old","tools":[]}"#.as_slice(),br#"{"model":"model-1","prompt":{"image_url":"https://example.invalid"},"tools":[]}"#.as_slice(),br#"{"model":"model-1","prompt":{"type":"file_url"},"tools":[]}"#.as_slice()]{assert!(admit(invalid,"/v1/messages",&policy).is_err())}
         assert!(admit(&valid, "/v1/files", &policy).is_err());
 
+        let state_policy = validate_policy(json!({"schema_version":1,"acceptance_requests":1,
+            "paths":["/responses"],"models":["model-1"],
+            "top_level_fields":["model","store","stream","tools"],
+            "dynamic_request_values":{},
+            "required_request_values":{"store":false,"stream":true},
+            "request_value_types":[],"request_headers":{},"maximum_requests":1,
+            "mcp_catalog_source":{"version":"izanagi 0.2.7","host_os":"macos",
+                "host_arch":"aarch64","executable_sha256":"a".repeat(64)},
+            "tools":[{"type":"function","name":"mcp__tempest__status",
+                "description":"fixed","input_schema":{"type":"object"}}]}))
+        .unwrap();
+        let request = |store| {
+            serde_json::to_vec(&json!({"model":"model-1","store":store,
+            "stream":true,"tools":[{"description":"fixed","input_schema":{"type":"object"},
+            "name":"mcp__tempest__status","type":"function"}]}))
+            .unwrap()
+        };
+        assert!(admit(&request(false), "/responses", &state_policy).is_ok());
+        assert!(admit(&request(true), "/responses", &state_policy).is_err());
+
+        let session = "01a1d920-1986-7b52-90de-8ceb2c6ddac3";
+        let turn_id = "01a1d920-19ad-72b3-9d7c-dc469a2fb415";
+        let installation = "e2fd59ba-1156-4b39-a728-bf95e32898a6";
+        let window = format!("{session}:0");
+        let turn_metadata = json!({
+            "installation_id":installation,"session_id":session,"thread_id":session,
+            "agent_name":"/root","turn_id":turn_id,"window_id":window,"window_number":0,
+            "context_window_id":"01a1d920-1987-7261-9e46-2ddc79785e3d",
+            "request_kind":"turn","history_initialization":"new","root_turn_id":turn_id,
+            "thread_source":"user","turn_trigger":"exec","sandbox":"seatbelt",
+            "sandbox_mode":"read-only","auto_review_enabled":false,
+            "node_repl_auto_review_required":false,"node_repl_disabled":false,
+            "turn_started_at_unix_ms":1794644122032_u64,"analytics_enabled":true,
+            "model":"model-1"
+        });
+        let metadata = json!({
+            "root_turn_id":turn_id,"session_id":session,"thread_id":session,"turn_id":turn_id,
+            "x-codex-installation-id":installation,
+            "x-codex-turn-metadata":serde_json::to_string(&turn_metadata).unwrap(),
+            "x-codex-window-id":window
+        });
+        let dynamic_policy = validate_policy(json!({"schema_version":1,"acceptance_requests":1,
+            "paths":["/responses"],"models":["model-1"],
+            "top_level_fields":["client_metadata","model","prompt_cache_key","tools"],
+            "required_request_values":{"model":"model-1"},
+            "dynamic_request_values":{"client_metadata":"codex_client_metadata_v1",
+                "prompt_cache_key":"uuid"},
+            "request_value_types":[],"request_headers":{},"maximum_requests":1,
+            "mcp_catalog_source":{"version":"izanagi 0.2.7","host_os":"macos",
+                "host_arch":"aarch64","executable_sha256":"a".repeat(64)},
+            "tools":[{"type":"function","name":"mcp__tempest__status",
+                "description":"fixed","input_schema":{"type":"object"}}]}))
+        .unwrap();
+        let dynamic_request = |metadata: Value| {
+            serde_json::to_vec(&json!({
+            "client_metadata":metadata,"model":"model-1","prompt_cache_key":session,
+            "tools":[{"description":"fixed","input_schema":{"type":"object"},
+                "name":"mcp__tempest__status","type":"function"}]}))
+            .unwrap()
+        };
+        assert!(
+            admit(
+                &dynamic_request(metadata.clone()),
+                "/responses",
+                &dynamic_policy
+            )
+            .is_ok()
+        );
+        let mut changed = metadata;
+        changed["x-codex-window-id"] = "foreign:0".into();
+        assert!(admit(&dynamic_request(changed), "/responses", &dynamic_policy).is_err());
+
         let query_policy = validate_policy(json!({"schema_version":1,"acceptance_requests":1,
             "paths":["/v1/messages?beta=true"],"models":["model-1"],
             "top_level_fields":["model","prompt","tools"],
+            "dynamic_request_values":{},
+            "required_request_values":{"model":"model-1"},
             "request_value_types":["text"],"request_headers":{},"maximum_requests":1,
             "mcp_catalog_source":{"version":"izanagi 0.2.7","host_os":"macos",
                 "host_arch":"aarch64","executable_sha256":"a".repeat(64)},
@@ -1451,6 +1712,36 @@ mod tests {
         .unwrap();
         assert!(admit(&valid, "/v1/messages?beta=true", &query_policy).is_ok());
         assert!(admit(&valid, "/v1/messages?beta=false", &query_policy).is_err());
+    }
+
+    #[test]
+    fn production_upstreams_and_base_paths_are_exact() {
+        let anthropic: reqwest::Url = "https://api.anthropic.com/".parse().unwrap();
+        let openai: reqwest::Url = "https://api.openai.com/v1/".parse().unwrap();
+        assert!(production_upstream(&anthropic));
+        assert!(production_upstream(&openai));
+        assert_eq!(
+            upstream_target(&anthropic, "/v1/messages")
+                .unwrap()
+                .as_str(),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            validated_upstream("https://api.openai.com/v1/", false).unwrap(),
+            openai
+        );
+        assert_eq!(
+            upstream_target(&openai, "/responses").unwrap().as_str(),
+            "https://api.openai.com/v1/responses"
+        );
+        for invalid in [
+            "https://api.openai.com/",
+            "https://api.openai.com/v1/extra/",
+            "https://example.com/v1/",
+            "https://api.anthropic.com/v1/",
+        ] {
+            assert!(!production_upstream(&invalid.parse().unwrap()));
+        }
     }
 
     #[test]

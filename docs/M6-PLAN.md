@@ -189,12 +189,14 @@ CLI検査のAPIはローカルスタブであり、実モデル比較ではな�
 
 - Claude Code 2.1.323: ローカルstubでBash/Read/Writeを強制要求し、全てNo such tool available。canary不変、新規書込みなし、4要求・CLI終了0。
 - Codex 0.169.0: 実binary hash `739cda86e15d30a6e2b40cf8dcbbfb988aaf48b305b27065573bb8e9fd41d002`。exec_command/apply_patch/view_imageを強制要求し全てunsupported call。canary不変、新規書込みなし、4要求・CLI終了0。
-- Codexの固定framework tool例外契約は `/private/tmp/tempest-codex-exception-acceptance-013/`。
+- Codexの固定framework tool例外契約は `/private/tmp/tempest-codex-exception-acceptance-016/`。
   0.169.0/gpt-6.1の完全catalogをrepository policyへ固定し、14 request/13 tool outputをdiscoveryと
   relay-gated acceptanceの両方で一致検査した。resource/template全体listは空、Tempest個別methodとreadは拒否、
   5件のresource methodはMCP relayで拒否されIzanagiへの到達0、未知serverとDefault modeのuser inputも即時拒否された。
   `strict_tempest_only=false`のまま
   `codex_framework_exception_verified=true`、acceptance/LaunchPermitともtrueである。
+  `gpt-6.1`はCodex 0.169.0組込みIDだが公開OpenAI API model一覧では確認できないため、
+  本物APIのpreflightとowner採用までは正式比較へ使用しない。
 - Claudeの同じ再検査は `/private/tmp/tempest-m6-claude-preflight-003/summary.json`。
   4要求すべてでtool catalogは空かつ同一hash、3拒否・canary不変・書込みなし。
 - 証拠は `/private/tmp/tempest-m6-claude-preflight-001/summary.json` と `/private/tmp/tempest-m6-codex-preflight-003/summary.json`。

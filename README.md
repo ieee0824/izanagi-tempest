@@ -214,6 +214,8 @@ target/release/tempest run scenarios/s3-overread-001.yaml \
 
 Codex 0.169.0/gpt-6.1は`--agent codex`、Codex native binary、owner-privateなBearer認証fileを指定します。
 固定framework 4 toolの完全schemaと拒否契約を2 passで再検証できない版・modelはfail closeします。
+`gpt-6.1`はCodex 0.169.0の組込みIDであり、公開OpenAI API一覧での利用可能性は未確認です。
+本物APIの低額preflightとownerの明示採用までは正式比較へ使用しません。
 MCP relayは`initialize`・`notifications/initialized`・`tools/list`・`tools/call`だけをIzanagiへ転送し、
 resource・template・prompt・未知methodは上流到達前に拒否して別件数として監査します。
 

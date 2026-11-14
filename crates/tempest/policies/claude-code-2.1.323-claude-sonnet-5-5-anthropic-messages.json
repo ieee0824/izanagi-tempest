@@ -16,6 +16,8 @@
   "request_headers": {
     "content-type": "application/json"
   },
+  "required_request_values": {"stream": true},
+  "dynamic_request_values": {},
   "request_value_types": [
     "adaptive",
     "clear_thinking_20251015",

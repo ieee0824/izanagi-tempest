@@ -56,7 +56,7 @@ fn model_relay_process_exits_when_its_controller_lifetime_closes() {
         .args([
             "model-api-relay",
             "--upstream",
-            "https://api.example.invalid/",
+            "https://api.anthropic.com/",
         ])
         .arg("--capability-file")
         .arg(capability)
@@ -163,7 +163,7 @@ fn model_relay_process_exits_when_controller_never_binds_lifetime() {
         .args([
             "model-api-relay",
             "--upstream",
-            "https://api.example.invalid/",
+            "https://api.anthropic.com/",
         ])
         .arg("--capability-file")
         .arg(capability)

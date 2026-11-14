@@ -941,26 +941,34 @@ pub fn codex_final_message(bytes: &[u8], process_success: bool) -> io::Result<St
     }
     let mut thread = None;
     let mut final_message = None;
-    let mut completed = false;
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    enum TurnState {
+        AwaitThread,
+        AwaitTurn,
+        Running,
+        Completed,
+    }
+    let mut state = TurnState::AwaitThread;
     for event in json_lines(bytes)? {
-        if completed
-            && matches!(
-                event["type"].as_str(),
-                Some(
-                    "thread.started" | "item.completed" | "turn.started" | "turn.failed" | "error"
-                )
-            )
-        {
-            return Err(io::Error::other("Codex emitted work after terminal event"));
-        }
         match event["type"].as_str() {
             Some("thread.started") => {
-                if thread.is_some() {
+                if state != TurnState::AwaitThread || thread.is_some() {
                     return Err(io::Error::other("Codex thread changed"));
                 }
                 thread = event["thread_id"].as_str().map(str::to_owned);
+                if thread.as_deref().is_none_or(str::is_empty) {
+                    return Err(io::Error::other("Codex thread ID missing"));
+                }
+                state = TurnState::AwaitTurn;
             }
+            Some("turn.started") if state == TurnState::AwaitTurn => {
+                state = TurnState::Running;
+            }
+            Some("turn.started") => return Err(io::Error::other("Codex turn order changed")),
             Some("item.completed") => {
+                if state != TurnState::Running {
+                    return Err(io::Error::other("Codex item occurred outside the turn"));
+                }
                 let item = event["item"]
                     .as_object()
                     .ok_or_else(|| io::Error::other("invalid Codex completed item"))?;
@@ -977,14 +985,19 @@ pub fn codex_final_message(bytes: &[u8], process_success: bool) -> io::Result<St
                     None => return Err(io::Error::other("Codex item type missing")),
                 }
             }
-            Some("turn.completed") => completed = true,
+            Some("turn.completed") if state == TurnState::Running => {
+                state = TurnState::Completed;
+            }
+            Some("turn.completed") => {
+                return Err(io::Error::other("Codex turn completion order changed"));
+            }
             Some("turn.failed" | "error") => {
                 return Err(io::Error::other("Codex turn failed"));
             }
             _ => {}
         }
     }
-    if thread.as_deref().is_none_or(str::is_empty) || !completed {
+    if thread.as_deref().is_none_or(str::is_empty) || state != TurnState::Completed {
         return Err(io::Error::other("Codex turn did not complete"));
     }
     final_message.ok_or_else(|| io::Error::other("Codex final assistant message missing"))
@@ -1216,7 +1229,7 @@ mod stream_tests {
     }
 
     #[test]
-    fn codex_launch_rejects_an_unreviewed_profile_contract() {
+    fn codex_launch_accepts_the_reviewed_profile_contract() {
         let (root, _, _, challenge) = crate::capability_proof::tests::fixture();
         let code_root = root.join("authorized-code");
         let permit =
@@ -1239,11 +1252,7 @@ mod stream_tests {
                 harness_root: harness.clone(),
             },
         );
-        let error = match result {
-            Ok(_) => panic!("unimplemented Codex launch contract was accepted"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("argv or environment contract"));
+        assert!(result.is_ok());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1407,6 +1416,7 @@ mod stream_tests {
     fn codex_accepts_only_the_last_completed_assistant_item() {
         let valid = lines(&[
             json!({"type":"thread.started","thread_id":"thread-1"}),
+            json!({"type":"turn.started"}),
             json!({"type":"item.completed","item":{"type":"tool_call","output":"```json secret ```"}}),
             json!({"type":"item.completed","item":{"type":"agent_message","text":"final"}}),
             json!({"type":"turn.completed"}),
@@ -1414,6 +1424,7 @@ mod stream_tests {
         assert_eq!(codex_final_message(&valid, true).unwrap(), "final");
         let tool_ended = lines(&[
             json!({"type":"thread.started","thread_id":"thread-1"}),
+            json!({"type":"turn.started"}),
             json!({"type":"item.completed","item":{"type":"agent_message","text":"intermediate"}}),
             json!({"type":"item.completed","item":{"type":"tool_call"}}),
             json!({"type":"turn.completed"}),
@@ -1421,6 +1432,7 @@ mod stream_tests {
         assert!(codex_final_message(&tool_ended, true).is_err());
         let post_terminal = lines(&[
             json!({"type":"thread.started","thread_id":"thread-1"}),
+            json!({"type":"turn.started"}),
             json!({"type":"item.completed","item":{"type":"agent_message","text":"first"}}),
             json!({"type":"turn.completed"}),
             json!({"type":"item.completed","item":{"type":"agent_message","text":"late"}}),
@@ -1432,6 +1444,21 @@ mod stream_tests {
             json!({"type":"turn.completed"}),
         ]);
         assert!(codex_final_message(&changed_thread, true).is_err());
+        let reordered = lines(&[
+            json!({"type":"item.completed","item":{"type":"agent_message","text":"early"}}),
+            json!({"type":"thread.started","thread_id":"thread-1"}),
+            json!({"type":"turn.started"}),
+            json!({"type":"turn.completed"}),
+        ]);
+        assert!(codex_final_message(&reordered, true).is_err());
+        let second_turn = lines(&[
+            json!({"type":"thread.started","thread_id":"thread-1"}),
+            json!({"type":"turn.started"}),
+            json!({"type":"item.completed","item":{"type":"agent_message","text":"first"}}),
+            json!({"type":"turn.completed"}),
+            json!({"type":"turn.started"}),
+        ]);
+        assert!(codex_final_message(&second_turn, true).is_err());
         assert!(codex_final_message(&valid[..valid.len() - 26], true).is_err());
         assert!(codex_final_message(&valid, false).is_err());
     }
