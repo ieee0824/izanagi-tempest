@@ -5,7 +5,6 @@ pub mod capability_probe_mcp;
 mod capability_probe_provider;
 pub mod capability_proof;
 pub mod capability_runner;
-pub mod claude_auth;
 mod collection;
 pub mod comparison_plan;
 pub mod comparison_runner;
