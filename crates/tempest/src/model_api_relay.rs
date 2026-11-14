@@ -75,6 +75,8 @@ struct Policy {
 #[serde(deny_unknown_fields)]
 struct McpCatalogSource {
     executable_sha256: String,
+    host_arch: String,
+    host_os: String,
     version: String,
 }
 struct ValidatedPolicy {
@@ -424,6 +426,8 @@ fn validate_policy(value: Value) -> io::Result<ValidatedPolicy> {
         || !(1..=1000).contains(&policy.maximum_requests)
         || policy.mcp_catalog_source.version.is_empty()
         || policy.mcp_catalog_source.version.len() > 256
+        || policy.mcp_catalog_source.host_os.is_empty()
+        || policy.mcp_catalog_source.host_arch.is_empty()
         || policy.mcp_catalog_source.executable_sha256.len() != 64
         || !policy
             .mcp_catalog_source
@@ -1258,6 +1262,7 @@ mod tests {
         "top_level_fields":["model","prompt","tools"],"request_value_types":["text"],
         "request_headers":{"content-type":"application/json","x-tempest-profile":"fixed"},
         "maximum_requests":20,"mcp_catalog_source":{"version":"izanagi 0.2.7",
+        "host_os":"macos","host_arch":"aarch64",
         "executable_sha256":"a".repeat(64)},
         "tools":[{"type":"function","name":"mcp__tempest__status","description":"fixed","input_schema":{"type":"object"}}]})
     }
@@ -1306,7 +1311,8 @@ mod tests {
             "paths":["/v1/messages?beta=true"],"models":["model-1"],
             "top_level_fields":["model","prompt","tools"],
             "request_value_types":["text"],"request_headers":{},"maximum_requests":1,
-            "mcp_catalog_source":{"version":"izanagi 0.2.7","executable_sha256":"a".repeat(64)},
+            "mcp_catalog_source":{"version":"izanagi 0.2.7","host_os":"macos",
+                "host_arch":"aarch64","executable_sha256":"a".repeat(64)},
             "tools":[{"type":"function","name":"mcp__tempest__status",
                 "description":"fixed","input_schema":{"type":"object"}}]}))
         .unwrap();

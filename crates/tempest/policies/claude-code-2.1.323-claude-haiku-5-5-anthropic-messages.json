@@ -3,6 +3,8 @@
   "maximum_requests": 20,
   "mcp_catalog_source": {
     "executable_sha256": "41a43bfe3c37bbbd7e2f0fa9f0fc51a1ac628045401da612984ebc894aad802b",
+    "host_arch": "aarch64",
+    "host_os": "macos",
     "version": "izanagi 0.2.7"
   },
   "models": [

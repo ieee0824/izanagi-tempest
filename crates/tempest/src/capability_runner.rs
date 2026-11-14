@@ -509,6 +509,14 @@ fn approved_request_policy(
     crate::capability_proof::parse_unique_value(bytes)
 }
 
+pub(crate) fn reviewed_request_policy(
+    agent: CapabilityAgent,
+    version: &str,
+    model: &str,
+) -> io::Result<Value> {
+    approved_request_policy(agent, version, model)
+}
+
 fn validate_relay_audit(
     path: &Path,
     expected_requests: usize,

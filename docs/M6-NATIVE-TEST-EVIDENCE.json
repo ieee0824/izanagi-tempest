@@ -1,11 +1,13 @@
 {
   "schema_version": 1,
   "scope": "native_test_upstream_non_formal_evidence",
-  "output": "/private/tmp/tempest-native-test-upstream-012",
-  "feature_binary_sha256": "df5d1dc691563b85cbfdc9ebc61500b3f881844769fb16674d121ade5b8e3225",
+  "output": "/private/tmp/tempest-native-test-upstream-013",
+  "feature_binary_sha256": "336d2e43a8c3f9c864abcf1697522689c86bff6dcb0faa8a58d9c78e82f927f4",
   "mcp_catalog": {
     "source_version": "izanagi 0.2.7",
     "source_executable_sha256": "41a43bfe3c37bbbd7e2f0fa9f0fc51a1ac628045401da612984ebc894aad802b",
+    "source_host_os": "macos",
+    "source_host_arch": "aarch64",
     "expected_sha256": "2ad8bdf05412b99d5cf6e19321c048555da6d84e21b4b0d4855e04ce0d451b33",
     "observed_sha256": "2ad8bdf05412b99d5cf6e19321c048555da6d84e21b4b0d4855e04ce0d451b33",
     "tool_count": 3,
@@ -18,10 +20,10 @@
     "responses_complete": 1,
     "preflight_rejections": 1,
     "cleanup_verified": true,
-    "run_sha256": "25bcdc575bab82159a9a86771c00d14685ad11063243fb2daa3cb93f6edc39f7",
-    "result_sha256": "4d500db3c4574379c90228d5952114d0af051c85b49eadb9c85b55b2f213d175",
-    "relay_audit_sha256": "f935120a0c73d73ba3177ea3b17279a1c9ad14461ea045dd5d7e5829b3d93e53",
-    "mcp_catalog_evidence_sha256": "f700fd63104e114b25b5fb2bc1283f2f09f5a8ffc8b95a04628859e776c55d89"
+    "run_sha256": "242e8683f3125fbb97b732a75da5394489ef82c4c446c0b80f71c35dd488bfef",
+    "result_sha256": "1413774f44be350a84984500c1c9895e0496b97b44a1f96453cec6bf41985c90",
+    "relay_audit_sha256": "e814fd48a248c5e41aa95945a7e946aedea3b580c98a754b8ce46e84d936208d",
+    "mcp_catalog_evidence_sha256": "39ffd2c760f930363a8dd9426f33e53a3311bcbd77a1b6a392a94f19809133bd"
   },
   "sse_cut": {
     "status": "aborted",
@@ -35,10 +37,10 @@
     "partial_response_sha256": "8cc7fd46fe6f49bd8081283c313bef3caf45177d284ef994b53dd89b8be99ce8",
     "preflight_rejections": 1,
     "cleanup_verified": true,
-    "run_sha256": "20c214ab5bab278e93a913a8b7eb15c808b20be40b077681ee27d51ec4ff668c",
-    "result_sha256": "8059e0dfb9e40fc27581e9c81e1001d843b93747ef162034f07c62b25c4472ad",
-    "relay_audit_sha256": "a1dc750fc258b4b22175a6938e820b7c8f3e2b6d3fe9113bdbea4ee4350dee95",
-    "mcp_catalog_evidence_sha256": "f700fd63104e114b25b5fb2bc1283f2f09f5a8ffc8b95a04628859e776c55d89"
+    "run_sha256": "c0e67c849c07ab42c5a6e30f620504cc62202d960b2aa14aefa40a50c2ead54d",
+    "result_sha256": "295c9e5d2ddfa2d7edcb6b3e120fc981edadfafc31fab8dddd3fcf59b6828c02",
+    "relay_audit_sha256": "c6f2ba107a5eb5a1b0f7c26e0c04d7781eb845da71c241458f054e51dda4ac59",
+    "mcp_catalog_evidence_sha256": "39ffd2c760f930363a8dd9426f33e53a3311bcbd77a1b6a392a94f19809133bd"
   },
   "aggregate": {
     "planned": 2,
@@ -49,7 +51,7 @@
     "fault_denominator": 1,
     "fault_unknown": 1,
     "fault_formal_ineligible": 1,
-    "sha256": "59f47a821117ca27963ab9b5c0a67d2bde213a6833c0085a502aadae62cc759b"
+    "sha256": "4a606e420b8a05ab69c7a2b4f119c49b1f58749a79ae43e577d664404d2cde18"
   },
   "limitations": [
     "The feature binary is not the production binary.",

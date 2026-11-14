@@ -3,6 +3,7 @@ use crate::{
     admission::CloseReason,
     capability_runner::{
         CapabilityAgent, CapabilityDiscoveryConfig, ProductionLaunchConfig, discover_for_launch,
+        reviewed_request_policy,
     },
     host_io,
     plan::{ExecutionPlan, Stage},
@@ -377,6 +378,7 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value,
     let mut upstream_statuses = BTreeMap::<String, u64>::new();
     let mut only_complete_pairs = true;
     let mut preflight_rejections = 0_u64;
+    let mut invalid_capability_requests = 0_u64;
     let mut rows = 0_u64;
     for line in fs::read_to_string(path)?.lines() {
         rows += 1;
@@ -428,6 +430,10 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value,
             {
                 preflight_rejections += 1;
             }
+            "not_sent" if row["reason"] == "invalid relay capability" => {
+                invalid_capability_requests += 1;
+                only_complete_pairs = false;
+            }
             _ => only_complete_pairs = false,
         }
     }
@@ -447,6 +453,7 @@ fn model_relay_summary(path: &Path, maximum_requests: u64) -> io::Result<(Value,
     Ok((
         json!({"rows":rows,"requests":requests,"responses_complete":completed.values().sum::<u64>(),
         "maximum_requests":maximum_requests,"preflight_rejections":preflight_rejections,
+        "invalid_capability_requests":invalid_capability_requests,
         "delivery_verified":delivery_verified,
         "delivery_states":delivery_states,"reasons":reasons,"upstream_statuses":upstream_statuses}),
         delivery_verified,
@@ -502,9 +509,21 @@ async fn verify_production_mcp_catalog(
         .pointer("/mcp_catalog_source/executable_sha256")
         .and_then(Value::as_str)
         .ok_or_else(|| io::Error::other("MCP catalog source hash missing"))?;
+    let expected_host_os = policy
+        .pointer("/mcp_catalog_source/host_os")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("MCP catalog source OS missing"))?;
+    let expected_host_arch = policy
+        .pointer("/mcp_catalog_source/host_arch")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("MCP catalog source architecture missing"))?;
     let observed_version = version(izanagi).await?;
     let observed_executable = host_io::digest(izanagi)?;
-    if observed_version != expected_version || observed_executable != expected_executable {
+    if observed_version != expected_version
+        || observed_executable != expected_executable
+        || std::env::consts::OS != expected_host_os
+        || std::env::consts::ARCH != expected_host_arch
+    {
         return Err(io::Error::other("production MCP catalog source mismatch"));
     }
     let hmac_file = crate::proxy_cli::secret_reference(hmac)?;
@@ -553,7 +572,8 @@ async fn verify_production_mcp_catalog(
     let expected_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&expected)?));
     let result = json!({
         "verified":observed == expected,
-        "source":{"version":observed_version,"executable_sha256":observed_executable},
+        "source":{"version":observed_version,"executable_sha256":observed_executable,
+            "host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH},
         "observed_sha256":observed_sha256,
         "expected_sha256":expected_sha256,
         "tool_count":observed.len(),
@@ -675,6 +695,20 @@ async fn primary(
             let test_upstream = (upstream != PRODUCTION_MODEL_UPSTREAM).then(|| upstream.clone());
             let (runtime_directory, runtime_root) = native_runtime_directory(root)?;
             native_runtime = Some(runtime_directory);
+            let reviewed_cli_version = version(&executable).await?;
+            let request_policy = reviewed_request_policy(
+                CapabilityAgent::ClaudeCode,
+                &reviewed_cli_version,
+                &model,
+            )?;
+            let production_mcp_catalog = verify_production_mcp_catalog(
+                vm.izanagi_path(),
+                &vm.workspace,
+                &vm.hmac,
+                &request_policy,
+                &evidence,
+            )
+            .await?;
             let launch = discover_for_launch(
                 CapabilityDiscoveryConfig {
                     agent: CapabilityAgent::ClaudeCode,
@@ -692,17 +726,16 @@ async fn primary(
             )
             .await?;
             let discovery = &launch.discovery;
-            let request_policy: Value = serde_json::from_slice(&fs::read(
+            let staged_request_policy: Value = serde_json::from_slice(&fs::read(
                 runtime_root.join("harness/request-policy.json"),
             )?)?;
-            let production_mcp_catalog = verify_production_mcp_catalog(
-                vm.izanagi_path(),
-                &vm.workspace,
-                &vm.hmac,
-                &request_policy,
-                &evidence,
-            )
-            .await?;
+            if staged_request_policy != request_policy
+                || discovery.cli_version != reviewed_cli_version
+            {
+                return Err(io::Error::other(
+                    "reviewed request policy changed during capability acceptance",
+                ));
+            }
             let launcher_profile_sha256 =
                 host_io::digest(&runtime_root.join("acceptance-proof/launcher-profile.json"))?;
             let capability_proof_sha256 =
@@ -1918,6 +1951,19 @@ mod tests {
         assert!(!verified);
         assert_eq!(summary["delivery_states"]["request_outcome_unknown"], 1);
         assert_eq!(summary["reasons"]["upstream transport failed"], 1);
+        fs::write(
+            &path,
+            format!(
+                "{}\n",
+                json!({"request_sha256":format!("{:x}",Sha256::digest([])),
+                    "delivery_state":"not_sent","reason":"invalid relay capability",
+                    "forwarded":false})
+            ),
+        )
+        .unwrap();
+        let (summary, verified) = model_relay_summary(&path, 20).unwrap();
+        assert!(!verified);
+        assert_eq!(summary["invalid_capability_requests"], 1);
         fs::remove_dir_all(root).unwrap();
     }
 

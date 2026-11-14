@@ -123,10 +123,17 @@ harness rootとの包含・重複、余分なsecret file、root jailを拒否す
 上流authority、request policy hash、引数template、環境変数ごとの値の出どころ、空HOME/cwd、prompt源、
 実行code closureを固定する。code closureのagent executable、MCP bridge、API relayをlive file hashで再照合する。
 本物の認証はrelayだけが所有し、agentには固定placeholderだけを与える。
-review済みrequest policyはtool catalogの写し元となるIzanagiのversionとbinary hashも固定する。本番CLI起動前に
-同じIzanagi binaryの別MCP processへread-onlyなinitialize/tools/listを行い、実catalogをprovider表現へ変換して
+review済みrequest policyはtool catalogの写し元となるIzanagiのversion、binary hash、host OS/architectureも固定する。
+capability acceptanceとLaunchPermit発行の前に、同じIzanagi binaryの別MCP processへread-onlyな
+initialize/tools/listを行い、実catalogをprovider表現へ変換して
 policyと完全一致比較する。source identityまたはcatalogが違えばmodel requestを送らずrunを中止し、比較hashを
-`evidence/production-mcp-catalog.json`へ残す。したがって受入用MCPの写しだけで本番catalog一致を主張しない。
+`evidence/production-mcp-catalog.json`へ残す。この事前照合は本番Supervisorとは別processだが、本番CLIが送る
+各model requestのcatalogもrelayが同じpolicyへ再照合する二段構成である。したがって受入用MCPの写しや
+別processの結果だけで本番requestのcatalog一致を主張しない。
+
+relayはowner-only host上での実行を前提とする。capability不一致のloopback requestも監査から消さずrunをUにするが、
+summaryの`invalid_capability_requests`へ別計上し、agentのadmission/delivery失敗と区別する。固定CLIのhelloが0件または
+複数件ならdelivery検証を失敗させ、`preflight_rejections`の件数をsummaryへ残す。
 script/shimやPATH解決は正式profileで認めず、Codexは同梱native binary、Claude Codeはnative binaryの
 canonical targetを指定する。検証後はclosureの各fileをrun私有directoryへコピーし、copyのhashを再照合して
 そのcopyだけを実行する。API relayも最終的に同じnative `tempest` binaryへ統合し、Python prototypeを正式launcherで使わない。
