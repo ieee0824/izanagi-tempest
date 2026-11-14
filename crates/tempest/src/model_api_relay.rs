@@ -666,6 +666,21 @@ fn audit_foreign_capability(state: &State, method: &str, request_target: &str) {
         );
     }
 }
+
+fn authenticated_suffix<'a>(
+    path: &str,
+    request_target: &'a str,
+    capability: &str,
+) -> Option<&'a str> {
+    let authenticated = path
+        .strip_prefix('/')
+        .and_then(|path| path.split('/').next())
+        == Some(capability);
+    authenticated
+        .then(|| request_target.strip_prefix(&format!("/{capability}")))
+        .flatten()
+}
+
 async fn handle(
     request: Request<Incoming>,
     state: Arc<State>,
@@ -676,15 +691,15 @@ async fn handle(
         .map(|value| value.as_str())
         .unwrap_or_else(|| request.uri().path())
         .to_owned();
-    let prefix = format!("/{}", state.path_capability);
-    let Some(suffix) = request_target
-        .strip_prefix(&prefix)
-        .filter(|suffix| suffix.starts_with('/'))
-        .map(str::to_owned)
-    else {
+    let Some(suffix) = authenticated_suffix(
+        request.uri().path(),
+        &request_target,
+        &state.path_capability,
+    ) else {
         audit_foreign_capability(&state, request.method().as_str(), &request_target);
         return Ok(response(StatusCode::NOT_FOUND, "invalid relay capability"));
     };
+    let suffix = suffix.to_owned();
     if request.method() != hyper::Method::POST {
         let reviewed_hello =
             reviewed_preflight(request.method(), &request_target, &state.path_capability);
@@ -704,6 +719,19 @@ async fn handle(
             None,
         );
         return Ok(response(StatusCode::METHOD_NOT_ALLOWED, reason));
+    }
+    if !suffix.starts_with('/') {
+        let _ = audit(
+            &state,
+            "POST",
+            false,
+            &[],
+            Some("invalid relay path"),
+            &request_target,
+            None,
+            None,
+        );
+        return Ok(response(StatusCode::NOT_FOUND, "invalid relay path"));
     }
     if request
         .headers()
@@ -1312,6 +1340,42 @@ mod tests {
         ] {
             assert!(!reviewed_preflight(&method, &target, &capability));
         }
+    }
+    #[test]
+    fn capability_authentication_uses_the_first_complete_path_segment() {
+        let capability = "c".repeat(32);
+        assert_eq!(
+            authenticated_suffix(
+                &format!("/{capability}"),
+                &format!("/{capability}"),
+                &capability
+            ),
+            Some("")
+        );
+        assert_eq!(
+            authenticated_suffix(
+                &format!("/{capability}/v1/messages"),
+                &format!("/{capability}/v1/messages"),
+                &capability
+            ),
+            Some("/v1/messages")
+        );
+        assert_eq!(
+            authenticated_suffix(
+                &format!("/{capability}"),
+                &format!("/{capability}?x=1"),
+                &capability
+            ),
+            Some("?x=1")
+        );
+        assert_eq!(
+            authenticated_suffix(
+                &format!("/{capability}extension/v1/messages"),
+                &format!("/{capability}extension/v1/messages"),
+                &capability
+            ),
+            None
+        );
     }
     #[test]
     fn foreign_capability_audit_is_bounded_and_hashes_the_target() {
