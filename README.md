@@ -255,6 +255,10 @@ run内で確定した不成立は後続を継続し、起動前のplan/image/cod
 2 modelの正式な順序は、両modelを交互に並べた事前固定planから実行します。runnerはplanのslot順・run ID・
 model・最小間隔を変更せず、評価がcommitされなかったslotで停止します。abortedでも評価がcommitされたslotは
 Uまたは成立済みの信頼済み成功として残し、次の予約slotへ進みます。
+最小間隔は前slotの終了から次slotの開始までと定義します。開始前に全slotのrun directoryが存在しないことを検査し、
+planをowner-private snapshotへ固定します。各slotの開始・commit時刻、model、run ID、停止理由は
+`comparison-execution.json`へ逐次保存し、過去runや途中で差し替えたplanを今回の結果として採用しません。
+停止後の再開は行わず、残りslotをUとして集計します。再試行には新しいplanとruns rootが必要です。
 
 ```bash
 target/release/tempest compare /absolute/path/to/runs/aggregate-plan.json \

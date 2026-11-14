@@ -19,6 +19,11 @@
    CLIのモデル名・version・binary hashをdescribe結果へ記録する。
 4. `tempest compare`で事前固定planのslot順に2modelを交互実行し、repeatと集計を接続する。
 
+`tempest compare`の最小間隔は前slot終了から次slot開始までとする。課金前に全予定run IDが未使用であることを検査し、
+planのowner-private snapshotを作る。各slotはsnapshot hash、slot ID、今回の開始時刻へ束縛し、開始・commit・停止を
+`comparison-execution.json`へ逐次保存する。commit済みのagent/provider拒否はUまたは成立済み成功として次slotへ進み、
+未commit、binding不一致、cancelは停止する。停止後の同じplan/runs rootでの再開は禁止し、未開始slotはUのまま残す。
+
 ## launcherの受入条件
 
 現在の同UID socketのmodeだけでは測定対象agentを隔離できない。
