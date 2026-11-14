@@ -221,6 +221,27 @@ MCP call/API要求は0、findingはnot_found、計上候補0・未確定10で一
 各評価世代の成果物hashを検査した。`noop-summary.json`に評価IDと内訳を保存した。
 この3成功と、先行実験の1成功・1失敗を区別して保持する。成功率や正式モデル比較とは呼ばない。
 通常mockの未確定11との差はbackend/bypass候補1件だが、差分を主体帰属や控除の根拠にしない。
+
+## owner判断用チェックリスト
+
+実APIを使う前にownerが次を明示的に承認する。承認前には実APIへ接続しない。
+
+1. 比較plan外のpreflightを1回だけ実行する。目的は固定Anthropic authorityへのTLS接続、request受理、
+   `context_management`等にbeta headerが必要か、production binaryでacceptanceからcleanupまで完了するかの確認である。
+   finding率の比較には使わず、失敗しても同じrun IDを再利用しない。
+2. 比較modelを`claude-sonnet-5-5`と`claude-haiku-5-5`の2つに固定し、modelごとの同数run、
+   前slot終了から次slot開始までの間隔、plan全体のslot数を決める。provider cacheが最大1時間残り得るため、
+   間隔と実行順を結果に残し、cacheをrun独立性の根拠にしない。
+3. 1 runのmodel request上限は19件とする。課金上限はrequest件数だけでは決まらないため、preflightで得た
+   input/output/cache read/cache write token数を使い、各categoryについて
+   `tokens / 1_000_000 × 実行時の公式単価`を合計し、さらにmodel別run数を掛ける。
+   ownerはpreflight 1回と比較plan全体それぞれのUSD上限を先に決め、provider側のspend limitも同額以下にする。
+
+2026-11-14時点の標準Claude API単価は、Sonnet 5.5がinput $2/MTok・output $10/MTok、
+Haiku 5.5が100K token以下のpromptでinput $0.10/MTok・output $0.50/MTok、100K超で
+input $0.50/MTok・output $2.50/MTokである。prompt cacheは別categoryであり、実行直前に
+[公式pricing](https://platform.claude.com/docs/en/about-claude/pricing)を再確認する。US-only inference等の倍率、
+税、為替、Claude Code subscriptionとAPI creditの区別もowner側の請求設定で確認する。
 管理配送の競合は修正していないため、3成功から障害解消とは結論しない。
 
 強制再現fixture（PR32 d7f570f）を別imageとしてbuild中。
