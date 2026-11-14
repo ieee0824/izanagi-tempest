@@ -93,6 +93,9 @@ default buildは上流差替えoptionを公開せず、feature binaryが生成�
 `binary_mode=native_test_upstream`と`formal_test_only=true`をbinary自身が付与する。report/aggregateはこのrunを
 正式指標から必ず除外し、比較条件にもtest upstreamを含める。差替え対象はproduction relayの上流authorityだけで、
 acceptance、LaunchPermit、Seatbelt、認証隔離、policy・予算、実CLI、VM、primary、report/aggregateは同じ経路を使う。
+`tempest --version`もproductionまたはtest-onlyのbuild modeを表示し、feature指定なしのrelease binaryが
+test upstream optionを拒否する負例を維持する。ただしfeature binaryはhashも異なる別binaryであり、実測結果は
+同じsourceのfeature付きbuildで経路が接続したことだけを示し、本番binaryそのものの実行証拠とは表現しない。
 normal対照と、validな`message_start`・`content_block_delta`後かつ`message_stop`前に切断するslotを事前固定planへ予約し、
 後者がbounded retry、部分responseのbyte数・hash、delivery failure、cleanup、分母1のUとして残ることを
 `integration/native_test_upstream.py`で検査する。このfixtureは固定Anthropic authority、TLS、beta header、

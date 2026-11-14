@@ -4,6 +4,15 @@ use tempest_model::capability::LWS_COMMIT;
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
+    if args.len() == 1 && (args[0] == "--version" || args[0] == "-V") {
+        let binary_mode = if cfg!(feature = "native-test-upstream") {
+            "native_test_upstream; formal_test_only=true"
+        } else {
+            "production; formal_test_only=false"
+        };
+        println!("tempest {} ({binary_mode})", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     if args.first().is_some_and(|arg| arg == "run") {
         return tempest::run_cli::run(&args[1..]);
     }
@@ -37,7 +46,7 @@ fn main() -> ExitCode {
     if args.first().is_some_and(|arg| arg == "mcp-session") {
         return tempest::supervisor::session_cli(&args[1..]);
     }
-    const USAGE: &str = "Usage: tempest validate <scenario.yaml>\n       tempest plan <scenario.yaml> [--actor NAME]\n       tempest run --help\n       tempest recover RUN_DIRECTORY\n       tempest report RUN_DIRECTORY\n       tempest report --aggregate RUNS_DIRECTORY\n       tempest mcp-proxy --help\n       tempest mcp-session --help\n       tempest mcp-connect --help\n       tempest model-api-relay --help\n       tempest capability-probe-mcp --help\n       tempest capability-discover --help";
+    const USAGE: &str = "Usage: tempest --version\n       tempest validate <scenario.yaml>\n       tempest plan <scenario.yaml> [--actor NAME]\n       tempest run --help\n       tempest recover RUN_DIRECTORY\n       tempest report RUN_DIRECTORY\n       tempest report --aggregate RUNS_DIRECTORY\n       tempest mcp-proxy --help\n       tempest mcp-session --help\n       tempest mcp-connect --help\n       tempest model-api-relay --help\n       tempest capability-probe-mcp --help\n       tempest capability-discover --help";
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;

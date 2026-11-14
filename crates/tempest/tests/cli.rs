@@ -10,6 +10,20 @@ use std::{
 };
 
 #[test]
+fn binary_self_identifies_formal_build_mode() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tempest"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    #[cfg(feature = "native-test-upstream")]
+    assert!(stdout.contains("native_test_upstream; formal_test_only=true"));
+    #[cfg(not(feature = "native-test-upstream"))]
+    assert!(stdout.contains("production; formal_test_only=false"));
+}
+
+#[test]
 fn model_relay_process_exits_when_its_controller_lifetime_closes() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
