@@ -235,7 +235,8 @@ python3 integration/native_test_upstream.py \
   --output /private/tmp/tempest-native-test-upstream-001
 ```
 
-scriptはnormal対照と、`message_start`・`content_block_delta`後かつ`message_stop`前に切断するslotを
+scriptはnormal対照、実CLIがtoolを呼ばず終了するno-op対照、
+`message_start`・`content_block_delta`後かつ`message_stop`前に切断するslot、request budget拒否slotを
 同じ固定planへ予約し、partial raw stream、relay delivery failure、cleanup、Uの分母保持まで検査します。
 出力directoryにはplan、run artifacts、aggregate、fixture request logsを残します。この試験は固定Anthropic
 authority、TLS、beta header、実API互換性を証明しないため、owner承認が必要な実API preflightの代替にはしません。
@@ -250,6 +251,21 @@ planには`<comparison-slot>-001`以降と対応するrun IDを事前登録し�
 `--repeat`は単一条件の連続反復用であり、複数modelの比較順序にはplanのslot順を実行する別runnerを使います。
 中断後に同じbaseを再開することは認めず、予約済みslotをUのまま残します。signal後は未予約slotを消費しません。
 run内で確定した不成立は後続を継続し、起動前のplan/image/code契約不一致だけがbatchを停止します。
+
+2 modelの正式な順序は、両modelを交互に並べた事前固定planから実行します。runnerはplanのslot順・run ID・
+model・最小間隔を変更せず、評価がcommitされなかったslotで停止します。abortedでも評価がcommitされたslotは
+Uまたは成立済みの信頼済み成功として残し、次の予約slotへ進みます。
+
+```bash
+target/release/tempest compare /absolute/path/to/runs/aggregate-plan.json \
+  scenarios/s3-overread-001.yaml \
+  --agent-executable /absolute/path/to/claude \
+  --model-auth-file /absolute/path/to/owner-private-key \
+  --izanagi /absolute/path/to/izanagi \
+  --image /absolute/path/to/debian-aarch64.qcow2 \
+  --image-inputs /absolute/path/to/inputs.json \
+  --runs /absolute/path/to/runs
+```
 
 回収済みrunをM5で再評価し、`result.json`と`report.md`を原子的に生成するには次を実行します。
 

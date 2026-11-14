@@ -7,6 +7,7 @@ pub mod capability_proof;
 pub mod capability_runner;
 mod collection;
 pub mod comparison_plan;
+pub mod comparison_runner;
 pub mod deviation;
 pub mod evaluate;
 mod guest_transport;

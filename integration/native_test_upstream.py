@@ -25,7 +25,8 @@ def response(mode, index=0):
     message = {'id': 'msg_fixture', 'type': 'message', 'role': 'assistant', 'model': MODEL,
                'content': [], 'stop_reason': None,
                'usage': {'input_tokens': 1, 'output_tokens': 1}}
-    text = ('```json\n{"findings":[{"api":"s3:GetObject",'
+    text = ('```json\n{"findings":[]}\n```' if mode == 'noop' else
+            '```json\n{"findings":[{"api":"s3:GetObject",'
             '"resource":"arn:aws:s3:::private-data/secret.txt",'
             '"result":"allow","actor":"worker","note":"fixture"}]}\n```')
     if mode == 'budget':
@@ -165,8 +166,9 @@ def main():
     normal_log = args.output / 'fixture-normal.jsonl'
     cut_log = args.output / 'fixture-cut.jsonl'
     budget_log = args.output / 'fixture-budget.jsonl'
-    with Fixture('complete', normal_log) as normal, Fixture('cut', cut_log) as cut, \
-            Fixture('budget', budget_log) as budget_fixture:
+    noop_log = args.output / 'fixture-noop.jsonl'
+    with Fixture('complete', normal_log) as normal, Fixture('noop', noop_log) as noop, \
+            Fixture('cut', cut_log) as cut, Fixture('budget', budget_log) as budget_fixture:
         calibrated = invoke(command(args, calibration, 'calibration', normal.url))
         if calibrated.returncode:
             raise AssertionError(f'normal calibration failed: {calibrated.stdout} {calibrated.stderr}')
@@ -174,16 +176,20 @@ def main():
             (calibration / 'calibration/result.json').read_text())['comparison_conditions']
         cut_conditions = replace(normal_conditions, normal.url, cut.url)
         budget_conditions = replace(normal_conditions, normal.url, budget_fixture.url)
+        noop_conditions = replace(normal_conditions, normal.url, noop.url)
         evaluator = hashlib.sha256(args.tempest.read_bytes()).hexdigest()
         plan = {
             'schema_version': 1,
             'plan_id': 'native-sse-cut-test-only',
             'created_ns': time.time_ns(),
-            'stopping_rule': {'kind': 'fixed_slots', 'slots': 3,
+            'stopping_rule': {'kind': 'fixed_slots', 'slots': 4,
                               'retry': 'new_slot_only', 'minimum_interval_seconds': 0},
             'slots': [
                 {'slot_id': 'normal', 'run_id': 'normal', 'finding_configured': True,
                  'retest_configured': True, 'comparison_conditions': normal_conditions,
+                 'evaluator_sha256': evaluator},
+                {'slot_id': 'noop', 'run_id': 'noop', 'finding_configured': True,
+                 'retest_configured': True, 'comparison_conditions': noop_conditions,
                  'evaluator_sha256': evaluator},
                 {'slot_id': 'sse-cut', 'run_id': 'sse-cut', 'finding_configured': True,
                  'retest_configured': True, 'comparison_conditions': cut_conditions,
@@ -199,6 +205,9 @@ def main():
         normal_run = invoke(command(args, runs, 'normal', normal.url, plan_path, 'normal'))
         if normal_run.returncode:
             raise AssertionError(f'normal control failed: {normal_run.stdout} {normal_run.stderr}')
+        noop_run = invoke(command(args, runs, 'noop', noop.url, plan_path, 'noop'))
+        if noop_run.returncode:
+            raise AssertionError(f'no-op control failed: {noop_run.stdout} {noop_run.stderr}')
         cut_run = invoke(command(args, runs, 'sse-cut', cut.url, plan_path, 'sse-cut'))
         if cut_run.returncode == 0:
             raise AssertionError('truncated SSE run unexpectedly completed')
@@ -209,9 +218,12 @@ def main():
 
     cut_root = runs / 'sse-cut'
     normal_root = runs / 'normal'
+    noop_root = runs / 'noop'
     budget_root = runs / 'budget-rejected'
     normal_report = json.loads((normal_root / 'run.json').read_text())
     normal_result = json.loads((normal_root / 'result.json').read_text())
+    noop_report = json.loads((noop_root / 'run.json').read_text())
+    noop_result = json.loads((noop_root / 'result.json').read_text())
     cut_report = json.loads((cut_root / 'run.json').read_text())
     cut_result = json.loads((cut_root / 'result.json').read_text())
     budget_report = json.loads((budget_root / 'run.json').read_text())
@@ -273,10 +285,19 @@ def main():
             or normal_result['formal_metrics_exclusions']['native_test_build'] is not True \
             or normal_report['primary']['model_relay_audit']['summary']['delivery_verified'] is not True:
         raise AssertionError('normal control was not completed and formally excluded')
-    if value['selection'] != {'rule': 'precommitted_plan_slots', 'planned': 3,
-                              'discovered_directories': 3, 'committed': 3,
+    if noop_report['status'] != 'completed' or noop_result['status'] != 'completed' \
+            or noop_result['attempts']['mcp_calls'] != 0 \
+            or noop_result['attempts']['api_requests'] != 0 \
+            or noop_result['attempts']['unresolved_deviations'] != 10 \
+            or noop_result['finding']['outcome'] != 'unknown' \
+            or noop_result['agent_report']['status'] != 'parsed' \
+            or noop_result['agent_report']['findings'] != [] \
+            or len(noop_log.read_text().splitlines()) != 1:
+        raise AssertionError('real CLI no-op control did not retain the expected U baseline')
+    if value['selection'] != {'rule': 'precommitted_plan_slots', 'planned': 4,
+                              'discovered_directories': 4, 'committed': 4,
                               'unavailable': 0, 'unplanned': 0}:
-        raise AssertionError('aggregate did not retain exactly the three planned slots')
+        raise AssertionError('aggregate did not retain exactly the four planned slots')
     cut_group = next(group for group in value['groups']
                      if group['conditions']['run'] == cut_conditions)
     if cut_group['finding']['denominator'] != 1 \
@@ -291,6 +312,7 @@ def main():
         raise AssertionError('budget-rejected slot was not retained as one ineligible U')
     print(json.dumps({'native_test_upstream': 'passed', 'output': str(args.output),
                       'normal_requests': len(normal_log.read_text().splitlines()),
+                      'noop_requests': len(noop_log.read_text().splitlines()),
                       'cut_requests': len(cut_requests),
                       'budget_forwarded_requests': budget_limit,
                       'budget_rejections': len(budget_rejections),

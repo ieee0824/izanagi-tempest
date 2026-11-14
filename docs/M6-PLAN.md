@@ -17,7 +17,7 @@
 3. 実launcherをstdio bridgeへ接続する。controller/supervisorはagent groupから分離し、
    promptはstdin経由、最終出力・CLI結果・終了理由を私有runへ保存する。
    CLIのモデル名・version・binary hashをdescribe結果へ記録する。
-4. repeatと集計を接続し、同一scenarioの2modelを複数回実行する。
+4. `tempest compare`で事前固定planのslot順に2modelを交互実行し、repeatと集計を接続する。
 
 ## launcherの受入条件
 
@@ -99,8 +99,11 @@ acceptance、LaunchPermit、Seatbelt、認証隔離、policy・予算、実CLI�
 `tempest --version`もproductionまたはtest-onlyのbuild modeを表示し、feature指定なしのrelease binaryが
 test upstream optionを拒否する負例を維持する。ただしfeature binaryはhashも異なる別binaryであり、実測結果は
 同じsourceのfeature付きbuildで経路が接続したことだけを示し、本番binaryそのものの実行証拠とは表現しない。
-normal対照と、validな`message_start`・`content_block_delta`後かつ`message_stop`前に切断するslotを事前固定planへ予約し、
-後者がbounded retry、部分responseのbyte数・hash、delivery failure、cleanup、分母1のUとして残ることを
+normal対照、実CLIがtoolを呼ばず終了するno-op対照、validな`message_start`・`content_block_delta`後かつ
+`message_stop`前に切断するslot、request budget拒否slotを事前固定planへ予約する。no-opはmodel request 1件、
+MCP tool callとtask API request 0件、空finding report、未確定候補10件、finding Uを基準として保存する。
+API証跡0件と未検証route coverageから否定を確定してnot_foundにはしない。故障slotはbounded retry、
+部分responseのbyte数・hash、delivery failure、cleanup、分母1のUとして残ることを
 `integration/native_test_upstream.py`で検査する。このfixtureは固定Anthropic authority、TLS、beta header、
 実API互換性を証明しないため、owner承認が必要な実API preflightと2model比較を置き換えない。
 
