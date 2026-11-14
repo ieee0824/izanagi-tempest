@@ -65,6 +65,7 @@ pub struct CliAdapter {
 
 #[derive(Clone)]
 struct CliContract {
+    system_files: crate::system_files::SystemFiles,
     kind: CliKind,
     executable: PathBuf,
     executable_sha256: String,
@@ -391,6 +392,7 @@ impl CliAdapter {
         let sandbox_jail = private_directory(&config.sandbox_jail)?;
         let home = sandbox_jail.join("home");
         let contract = CliContract {
+            system_files: permit.system_files().clone(),
             kind,
             executable,
             executable_sha256,
@@ -494,12 +496,14 @@ impl CliContract {
             || crate::host_io::digest(&self.executable)? != self.executable_sha256
             || bridge_path != self.mcp_bridge
             || self.sandbox_executable != Path::new("/usr/bin/sandbox-exec")
-            || crate::host_io::digest(&self.sandbox_executable)? != self.sandbox_executable_sha256
+            || self.system_files.digest(&self.sandbox_executable)? != self.sandbox_executable_sha256
             || crate::host_io::digest(&self.sandbox_profile)? != self.sandbox_profile_sha256
             || fs::read(&self.sandbox_profile)? != include_bytes!("darwin-agent.sb")
-            || crate::host_io::digest(Path::new("/System/Library/Sandbox/Profiles/system.sb"))?
+            || self
+                .system_files
+                .digest(Path::new("/System/Library/Sandbox/Profiles/system.sb"))?
                 != self.system_profile_sha256
-            || crate::host_io::digest(Path::new(
+            || self.system_files.digest(Path::new(
                 "/System/Library/Sandbox/Profiles/dyld-support.sb",
             ))? != self.dyld_profile_sha256
             || jail == Path::new("/")
@@ -840,6 +844,7 @@ pub(crate) async fn run_capability_probe_cli(
 ) -> io::Result<AgentOutcome> {
     let sandbox_executable = PathBuf::from("/usr/bin/sandbox-exec");
     let contract = CliContract {
+        system_files: crate::system_files::SystemFiles::default(),
         kind: config.kind,
         executable_sha256: crate::host_io::digest(&config.executable)?,
         executable: config.executable,
@@ -1163,6 +1168,13 @@ mod stream_tests {
     }
 
     fn cli_fixture(kind: CliKind) -> (PathBuf, CliContract, McpCommand, PathBuf) {
+        cli_fixture_with_host_files(kind, false)
+    }
+
+    fn cli_fixture_with_host_files(
+        kind: CliKind,
+        host_files: bool,
+    ) -> (PathBuf, CliContract, McpCommand, PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "tempest-cli-adapter-{}",
             crate::host_io::random_hex().unwrap()
@@ -1182,7 +1194,13 @@ mod stream_tests {
         let profile = jail.join("agent.sb");
         crate::host_io::write_new(&profile, include_bytes!("darwin-agent.sb")).unwrap();
         let sandbox_executable = PathBuf::from("/usr/bin/sandbox-exec");
+        let system_files = if host_files {
+            crate::system_files::SystemFiles::default()
+        } else {
+            crate::system_files::SystemFiles::create_fixture(&root)
+        };
         let adapter = CliContract {
+            system_files: system_files.clone(),
             kind,
             executable: executable.clone(),
             executable_sha256: crate::host_io::digest(&executable).unwrap(),
@@ -1194,19 +1212,19 @@ mod stream_tests {
             relay_endpoint: "http://127.0.0.1:1234/capabilitycapabilitycapability12".into(),
             maximum_turns: 20,
             sandbox_executable: sandbox_executable.clone(),
-            sandbox_executable_sha256: crate::host_io::digest(&sandbox_executable).unwrap(),
+            sandbox_executable_sha256: system_files.digest(&sandbox_executable).unwrap(),
             sandbox_profile_sha256: crate::host_io::digest(&profile).unwrap(),
             sandbox_profile: profile,
             sandbox_jail: jail.clone(),
             harness_root: harness.clone(),
-            system_profile_sha256: crate::host_io::digest(Path::new(
-                "/System/Library/Sandbox/Profiles/system.sb",
-            ))
-            .unwrap(),
-            dyld_profile_sha256: crate::host_io::digest(Path::new(
-                "/System/Library/Sandbox/Profiles/dyld-support.sb",
-            ))
-            .unwrap(),
+            system_profile_sha256: system_files
+                .digest(Path::new("/System/Library/Sandbox/Profiles/system.sb"))
+                .unwrap(),
+            dyld_profile_sha256: system_files
+                .digest(Path::new(
+                    "/System/Library/Sandbox/Profiles/dyld-support.sb",
+                ))
+                .unwrap(),
         };
         let endpoint = McpCommand {
             executable: bridge,
@@ -1233,7 +1251,8 @@ mod stream_tests {
         let (root, _, _, challenge) = crate::capability_proof::tests::fixture();
         let code_root = root.join("authorized-code");
         let permit =
-            crate::capability_proof::authorize_launch(&root, &code_root, challenge).unwrap();
+            crate::capability_proof::tests::authorize_fixture_launch(&root, &code_root, challenge)
+                .unwrap();
         let jail = code_root.join("jail");
         for directory in ["home", "cwd"] {
             crate::host_io::directory(&jail.join(directory)).unwrap();
@@ -1332,11 +1351,29 @@ mod stream_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn launch_rechecks_each_bound_system_file() {
+        let (root, adapter, endpoint, cwd) = cli_fixture(CliKind::Codex);
+        for logical in [
+            "/usr/bin/sandbox-exec",
+            "/System/Library/Sandbox/Profiles/system.sb",
+            "/System/Library/Sandbox/Profiles/dyld-support.sb",
+        ] {
+            let path = adapter.system_files.path(Path::new(logical));
+            let original = fs::read(path).unwrap();
+            crate::host_io::replace(path, b"changed").unwrap();
+            assert!(adapter.launch("prompt", &endpoint, &cwd).is_err());
+            crate::host_io::replace(path, &original).unwrap();
+            adapter.launch("prompt", &endpoint, &cwd).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn seatbelt_allows_only_jail_files_and_the_fixed_relay_port() {
         use std::net::TcpListener;
-        let (root, adapter, _, _) = cli_fixture(CliKind::Codex);
+        let (root, adapter, _, _) = cli_fixture_with_host_files(CliKind::Codex, true);
         let canary_root = std::env::temp_dir().join(format!(
             "tempest-seatbelt-canary-{}",
             crate::host_io::random_hex().unwrap()

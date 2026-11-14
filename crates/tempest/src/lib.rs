@@ -23,5 +23,6 @@ pub mod run_cli;
 pub mod scenario;
 pub mod seed_controller;
 pub mod supervisor;
+mod system_files;
 pub mod timeline;
 mod vm;
