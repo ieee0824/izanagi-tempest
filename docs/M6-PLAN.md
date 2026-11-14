@@ -136,6 +136,8 @@ loopback portは別UIDを含むhost processから到達でき、秘密のpath ca
 `foreign_capability_requests`と`foreign_capability_overflow`へ別計上する。このbounded診断はagentのdelivery成否へ
 混ぜない。実capability一致後の不正method/query/body/schema/予算超過は従来どおりrunをUにする。固定CLIのhelloが
 0件または複数件ならdelivery検証を失敗させ、`preflight_rejections`の件数をsummaryへ残す。
+Claudeの実効model request上限は19件であり、CLIの`--max-turns 20`へ到達する前にrelayが20件目を拒否する。
+上限到達はrunをUにするが、到達前に`api.jsonl`へ記録済みの信頼済み成功は後続拒否で消さず、結果へ保持する。
 script/shimやPATH解決は正式profileで認めず、Codexは同梱native binary、Claude Codeはnative binaryの
 canonical targetを指定する。検証後はclosureの各fileをrun私有directoryへコピーし、copyのhashを再照合して
 そのcopyだけを実行する。API relayも最終的に同じnative `tempest` binaryへ統合し、Python prototypeを正式launcherで使わない。
