@@ -1203,6 +1203,7 @@ pub(crate) async fn start_probe_relay(
             .expect("fixed header value"),
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
             .no_proxy()
             .connect_timeout(std::time::Duration::from_secs(60))
             .read_timeout(std::time::Duration::from_secs(60))
@@ -1348,6 +1349,7 @@ async fn serve(options: Options) -> io::Result<()> {
         auth_value: options.auth_value,
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
             .no_proxy()
             .connect_timeout(options.timeout)
             .read_timeout(options.timeout)
@@ -1760,115 +1762,125 @@ mod tests {
 
     #[tokio::test]
     async fn redirect_is_replaced_before_client_can_follow_and_auth_is_replaced() {
-        let root = std::env::temp_dir().join(format!(
-            "tempest-native-model-relay-{}",
-            host_io::random_hex().unwrap()
-        ));
-        host_io::directory(&root).unwrap();
-        let root = root.canonicalize().unwrap();
-        let sink = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let sink_address = sink.local_addr().unwrap();
-        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let upstream_address = upstream.local_addr().unwrap();
-        let auth_replaced = Arc::new(AtomicBool::new(false));
-        let observed = auth_replaced.clone();
-        let upstream_task = tokio::spawn(async move {
-            let (stream, _) = upstream.accept().await.unwrap();
-            hyper::server::conn::http1::Builder::new()
-                .serve_connection(
-                    TokioIo::new(stream),
-                    service_fn(move |request: Request<Incoming>| {
-                        observed.store(
-                            request.headers()[hyper::header::AUTHORIZATION] == "fixture-value"
-                                && !request.headers().contains_key("x-api-key")
-                                && !request.headers().contains_key("x-agent-controlled")
-                                && request.headers()["x-tempest-profile"] == "fixed",
-                            Ordering::SeqCst,
-                        );
-                        async move {
-                            Ok::<_, std::convert::Infallible>(
-                                Response::builder()
-                                    .status(StatusCode::FOUND)
-                                    .header(
-                                        hyper::header::LOCATION,
-                                        format!("http://{sink_address}/stolen"),
-                                    )
-                                    .body(Full::new(Bytes::new()))
-                                    .unwrap(),
-                            )
-                        }
-                    }),
-                )
-                .await
+        for same_origin in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "tempest-native-model-relay-{}",
+                host_io::random_hex().unwrap()
+            ));
+            host_io::directory(&root).unwrap();
+            let root = root.canonicalize().unwrap();
+            let sink = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let sink_address = sink.local_addr().unwrap();
+            let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream_address = upstream.local_addr().unwrap();
+            let location = if same_origin {
+                format!("http://{upstream_address}/stolen")
+            } else {
+                format!("http://{sink_address}/stolen")
+            };
+            let auth_replaced = Arc::new(AtomicBool::new(false));
+            let upstream_requests = Arc::new(AtomicU64::new(0));
+            let observed = auth_replaced.clone();
+            let observed_requests = upstream_requests.clone();
+            let upstream_task = tokio::spawn(async move {
+                let (stream, _) = upstream.accept().await.unwrap();
+                hyper::server::conn::http1::Builder::new()
+                    .serve_connection(
+                        TokioIo::new(stream),
+                        service_fn(move |request: Request<Incoming>| {
+                            observed_requests.fetch_add(1, Ordering::SeqCst);
+                            observed.store(
+                                request.headers()[hyper::header::AUTHORIZATION] == "fixture-value"
+                                    && !request.headers().contains_key("x-api-key")
+                                    && !request.headers().contains_key("x-agent-controlled")
+                                    && request.headers()["x-tempest-profile"] == "fixed",
+                                Ordering::SeqCst,
+                            );
+                            let location = location.clone();
+                            async move {
+                                Ok::<_, std::convert::Infallible>(
+                                    Response::builder()
+                                        .status(StatusCode::FOUND)
+                                        .header(hyper::header::LOCATION, location.clone())
+                                        .body(Full::new(Bytes::new()))
+                                        .unwrap(),
+                                )
+                            }
+                        }),
+                    )
+                    .await
+                    .unwrap();
+            });
+            let audit_file = root.join("audit.jsonl");
+            let audit = fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .mode(0o600)
+                .open(&audit_file)
                 .unwrap();
-        });
-        let audit_file = root.join("audit.jsonl");
-        let audit = fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .mode(0o600)
-            .open(&audit_file)
-            .unwrap();
-        let state = Arc::new(State {
-            upstream: format!("http://{upstream_address}/").parse().unwrap(),
-            path_capability: "x".repeat(32),
-            policy: policy(),
-            audit: Mutex::new(audit),
-            auth_header: hyper::header::AUTHORIZATION,
-            auth_value: "fixture-value".parse().unwrap(),
-            client: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .no_proxy()
-                .build()
-                .unwrap(),
-            requests: AtomicU64::new(0),
-            foreign_capability_requests: AtomicU64::new(0),
-        });
-        let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let relay_address = relay.local_addr().unwrap();
-        let relay_task = tokio::spawn(async move {
-            let (stream, _) = relay.accept().await.unwrap();
-            hyper::server::conn::http1::Builder::new()
-                .serve_connection(
-                    TokioIo::new(stream),
-                    service_fn(move |request| handle(request, state.clone())),
-                )
-                .await
-                .unwrap();
-        });
-        let value = json!({"model":"model-1","prompt":"fixture","tools":[{
+            let state = Arc::new(State {
+                upstream: format!("http://{upstream_address}/").parse().unwrap(),
+                path_capability: "x".repeat(32),
+                policy: policy(),
+                audit: Mutex::new(audit),
+                auth_header: hyper::header::AUTHORIZATION,
+                auth_value: "fixture-value".parse().unwrap(),
+                client: reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .retry(reqwest::retry::never())
+                    .no_proxy()
+                    .build()
+                    .unwrap(),
+                requests: AtomicU64::new(0),
+                foreign_capability_requests: AtomicU64::new(0),
+            });
+            let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let relay_address = relay.local_addr().unwrap();
+            let relay_task = tokio::spawn(async move {
+                let (stream, _) = relay.accept().await.unwrap();
+                hyper::server::conn::http1::Builder::new()
+                    .serve_connection(
+                        TokioIo::new(stream),
+                        service_fn(move |request| handle(request, state.clone())),
+                    )
+                    .await
+                    .unwrap();
+            });
+            let value = json!({"model":"model-1","prompt":"fixture","tools":[{
             "type":"function","name":"mcp__tempest__status","description":"fixed",
             "input_schema":{"type":"object"}}]});
-        let result = reqwest::Client::new()
-            .post(format!(
-                "http://{relay_address}/{}{}",
-                "x".repeat(32),
-                "/v1/messages"
-            ))
-            .header(hyper::header::AUTHORIZATION, "agent-placeholder")
-            .header("x-api-key", "agent-placeholder")
-            .header("x-agent-controlled", "must-not-forward")
-            .header(hyper::header::CONTENT_TYPE, "application/json")
-            .body(serde_json::to_vec(&value).unwrap())
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(result.status(), StatusCode::BAD_GATEWAY);
-        assert!(!result.headers().contains_key(hyper::header::LOCATION));
-        assert!(auth_replaced.load(Ordering::SeqCst));
-        upstream_task.abort();
-        relay_task.await.unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), sink.accept())
+            let result = reqwest::Client::new()
+                .post(format!(
+                    "http://{relay_address}/{}{}",
+                    "x".repeat(32),
+                    "/v1/messages"
+                ))
+                .header(hyper::header::AUTHORIZATION, "agent-placeholder")
+                .header("x-api-key", "agent-placeholder")
+                .header("x-agent-controlled", "must-not-forward")
+                .header(hyper::header::CONTENT_TYPE, "application/json")
+                .body(serde_json::to_vec(&value).unwrap())
+                .send()
                 .await
-                .is_err()
-        );
-        let rows = fs::read_to_string(&audit_file).unwrap();
-        let last: Value = serde_json::from_str(rows.lines().last().unwrap()).unwrap();
-        assert_eq!(last["path"], "/v1/messages");
-        assert_eq!(last["model"], "model-1");
-        assert_eq!(last["upstream_status"], 302);
-        fs::remove_dir_all(root).unwrap();
+                .unwrap();
+            assert_eq!(result.status(), StatusCode::BAD_GATEWAY);
+            assert!(!result.headers().contains_key(hyper::header::LOCATION));
+            assert!(auth_replaced.load(Ordering::SeqCst));
+            assert_eq!(upstream_requests.load(Ordering::SeqCst), 1);
+            upstream_task.abort();
+            relay_task.await.unwrap();
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), sink.accept())
+                    .await
+                    .is_err()
+            );
+            let rows = fs::read_to_string(&audit_file).unwrap();
+            let last: Value = serde_json::from_str(rows.lines().last().unwrap()).unwrap();
+            assert_eq!(last["path"], "/v1/messages");
+            assert_eq!(last["model"], "model-1");
+            assert_eq!(last["upstream_status"], 302);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[tokio::test]
