@@ -512,6 +512,12 @@ impl Watchdog {
             status.transition,
             Transition::Released | Transition::Recovered
         ) {
+            // A terminal acknowledgement is a single event. Repeated valid
+            // tuples are invalid stream evidence, while the first accepted
+            // acknowledgement continues to prohibit resource mutation.
+            if self.normal_terminal.is_some() {
+                return Err(Fault::Identity);
+            }
             // Normal termination is an acknowledgement of the exact command
             // whose atomic write succeeded. Keep that command after switching
             // to DeadObserved so a post-reap drain has the same binding.
@@ -1073,6 +1079,99 @@ mod tests {
         assert_eq!(watch.drain_status(), DrainState::Invalid);
         assert!(watch.normal_terminal.is_none());
         lease::clear();
+    }
+
+    #[test]
+    fn duplicate_terminal_in_drain_keeps_first_acknowledgement() {
+        let process = Process::bind(std::process::id()).unwrap();
+        for (command, reason, transition) in [
+            (b'D', Reason::ExplicitDone, Transition::Released),
+            (b'R', Reason::Relinquish, Transition::Recovered),
+        ] {
+            for duplicate_elapsed_ms in [1, 2] {
+                let (mut watch, _read, _write) = watch_for(&process, false);
+                watch.send_command(command).unwrap();
+                watch.mode = Mode::DeadObserved;
+                let first = Status {
+                    reason,
+                    trigger: reason,
+                    transition,
+                    owner_dead: false,
+                    elapsed_ms: 1,
+                };
+                let duplicate = Status {
+                    elapsed_ms: duplicate_elapsed_ms,
+                    ..first
+                };
+                let mut bytes = serde_json::to_vec(&first).unwrap();
+                bytes.push(b'\n');
+                bytes.extend(serde_json::to_vec(&duplicate).unwrap());
+                bytes.push(b'\n');
+                assert_eq!(watch.parse_drained(&bytes), DrainState::Invalid);
+                let retained = watch.normal_terminal.unwrap();
+                assert_eq!(retained.reason, reason);
+                assert_eq!(retained.trigger, reason);
+                assert_eq!(retained.transition, transition);
+                assert!(!retained.owner_dead);
+                assert_eq!(retained.elapsed_ms, 1);
+                assert_eq!(watch.mode, Mode::DeadObserved);
+                lease::clear();
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_terminal_in_receive_remains_invalid_after_drain() {
+        let process = Process::bind(std::process::id()).unwrap();
+        for (command, reason, transition, expected_command) in [
+            (
+                b'D',
+                Reason::ExplicitDone,
+                Transition::Released,
+                Command::Done,
+            ),
+            (
+                b'R',
+                Reason::Relinquish,
+                Transition::Recovered,
+                Command::Relinquish,
+            ),
+        ] {
+            let (mut watch, _read, writer) = watch_for(&process, false);
+            watch.send_command(command).unwrap();
+            let first = Status {
+                reason,
+                trigger: reason,
+                transition,
+                owner_dead: false,
+                elapsed_ms: 1,
+            };
+            let duplicate = Status {
+                elapsed_ms: 2,
+                ..first
+            };
+            let mut bytes = serde_json::to_vec(&first).unwrap();
+            bytes.push(b'\n');
+            bytes.extend(serde_json::to_vec(&duplicate).unwrap());
+            bytes.push(b'\n');
+            assert_eq!(
+                unsafe { libc::write(writer.as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) },
+                bytes.len() as isize
+            );
+            watch.receive(transition).unwrap();
+            assert_eq!(watch.mode, Mode::TerminalAck(expected_command));
+            assert_eq!(watch.receive(transition), Err(Fault::Identity));
+            assert_eq!(watch.mode, Mode::TerminalAck(expected_command));
+            watch.mode = Mode::DeadObserved;
+            assert_eq!(watch.drain_status(), DrainState::Invalid);
+            let retained = watch.normal_terminal.unwrap();
+            assert_eq!(retained.reason, reason);
+            assert_eq!(retained.trigger, reason);
+            assert_eq!(retained.transition, transition);
+            assert!(!retained.owner_dead);
+            assert_eq!(retained.elapsed_ms, 1);
+            lease::clear();
+        }
     }
 
     #[test]

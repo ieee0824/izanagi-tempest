@@ -36,6 +36,8 @@ waitpidのterminal結果は一度だけ保存し、command側と回収側でreap
 Dはreason/triggerがともにexplicit_doneかつreleased、Rはともにrelinquishかつrecoveredで、
 どちらもowner_dead=falseが必要です。送信前・対応しない組合せはinvalidとして記録します。
 死亡後のdrainにも同じ検証を適用し、既知の正常terminalを後続invalidで上書きしません。
+同一の正常terminalを重複受信した場合もInvalidとして記録し、最初の証明を保持します。
+後続異常を根拠にmutationへ戻ることはなく、verify-onlyで残留を検出した場合はFailedとして保持します。
 正常terminalがないfailed/partial/invalid/emptyは、不確実性を記録したまま死亡後の専用回収を行います。
 これらの全順序のroot故障注入は未完です。
 
@@ -93,7 +95,10 @@ PID/birth と既存の保持対象を照合し、PID の数値だけで再採用
 異常終了を通常 suite の成功や M1 合格に読み替えません。
 各遷移に固定の件数を残し、失敗時も省略しません。reap未確認理由はechild/pidfd_alive/
 evidence_missing/signal_failed/wait_failedで区別します。populated未確認はnullとして0と区別します。
-回収前のfaultはfirst_faultとして保持します。
+collectorが返したfaultは、期待したlifecycle異常の検証結果へ変換する前にfirst_faultへ先着保存します。
+その後のidentity検証・guardian死亡・cleanupの早期returnでも元の理由を上書きせず、
+当該baselineの検証とcleanupが全成功した場合だけ消去します。
+期待した負例のfaultは、呼び出し側が対応するscenarioと結果を受理した後に消去します。
 未送信EAGAINでguardianが生存し、親がheartbeatを禁止したまま待機する場合は、
 5秒lease失効によりguardianが親を停止して回収する可能性があります。
 この順序では親の最終reportが出ないため、guardian statusを外部で保持する故障注入が必要です（未完）。
@@ -111,7 +116,18 @@ guardian SIGSTOP だけでは親が所有権を取らない負例と、正常終
 現在のfixtureはSIGSTOP負例を早い加入直後へ移し、既に加入したdummy roleもPIDFDで停止して
 正常完了による対象消失を防ぎます。guardian生存・親の無出力・対象生存・ROOT identity保持を
 500 ms確認した後にguardianをSIGKILLし、専用回収へ進むかを別に確認します。
-このfixtureの変更とterminalの組合せ検証は、上記の旧版実測と区別して検証します。
+この変更とterminalの組合せ検証を含む`efa9159`では、workspace224 testsと
+4ケース・次世代137観測を再通過しました（driver exit=0、138.824秒）。
+加入直後・孫・collector・SIGSTOP後の検知上限は6.729/0.805/1.335/0.376 msです。
+SIGSTOP中の500 msは死亡検知の測定に含めず、その後のSIGKILLから測定しています。
+guardianを停止したまま5秒以上の待機を重ねる経路のreport順序は別の未完試験です。
+
+`python3 integration/linux_primary_fault_smoke.py` はx86_64専用VMで、自分の親の
+`cgroup.kill` write入口をptraceし、固定ROOTのinode・対象FD・len=1・byte=`1`を照合します。
+ReportEof確認後にguardianをSIGKILLするケースと、StdoutFlood確認後にそのwriteだけをEIOにするケースを分離します。
+前者は専用回収の3直接子reap、後者は通常reaper後の空registryをVerifiedで確認します。
+後者の監査件数0を新たな3子reapとは数えず、別に保持した3 roleのPIDFD死亡も確認します。
+どちらも最終reasonとfirst_faultを別々にassertし、次世代が起動できることを検証します。
 
 親による回収中に親も死亡する二重故障では、新たな guardian を自動生成しません。
 結果が記録されず、payload/cgroup/RUN が残る可能性があります。

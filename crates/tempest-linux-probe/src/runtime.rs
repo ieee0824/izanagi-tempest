@@ -827,6 +827,11 @@ fn baseline(
                 continue;
             }
             let received = event(worker, until, &workers);
+            // Preserve the observed collector fault before lifecycle checks
+            // translate it or a later identity/cleanup operation can fail.
+            if primary_fault.is_none() {
+                *primary_fault = received.as_ref().err().map(|fault| fault.reason());
+            }
             if worker.role == Role::A && scenario.lifecycle() {
                 let expected_fault = match scenario {
                     Scenario::ReportTimeout => Fault::ReportTimeout,
@@ -991,7 +996,9 @@ fn baseline(
         }
         Ok(observations)
     })();
-    *primary_fault = result.as_ref().err().map(|fault| fault.reason());
+    if primary_fault.is_none() {
+        *primary_fault = result.as_ref().err().map(|fault| fault.reason());
+    }
     // Leave the live target ledger intact for the exclusive recovery path.
     // Killing namespace leaders here could erase unobserved descendants
     // before RecoveryGroup takes its bounded PIDFD snapshot.
@@ -1145,7 +1152,11 @@ fn baseline(
             }
         }
     }
-    *primary_fault = None;
+    // The caller decides whether an expected negative result is accepted.
+    // Preserve an observed fault when validation failed even if cleanup worked.
+    if result.is_ok() {
+        *primary_fault = None;
+    }
     result
 }
 
@@ -1277,14 +1288,17 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 &mut registry,
                 &mut first_fault,
             ) {
-                Err(Fault::ForeignReady) => observed.push(Observation {
-                    scenario: Some(Scenario::ForeignReady),
-                    check: contract::Check::ForeignReadyRejected,
-                    role: Some(Role::A),
-                    passed: true,
-                    attempts: 1,
-                    denials: 1,
-                }),
+                Err(Fault::ForeignReady) => {
+                    first_fault = None;
+                    observed.push(Observation {
+                        scenario: Some(Scenario::ForeignReady),
+                        check: contract::Check::ForeignReadyRejected,
+                        role: Some(Role::A),
+                        passed: true,
+                        attempts: 1,
+                        denials: 1,
+                    });
+                }
                 Err(error) => return Err(error),
                 Ok(_) => return Err(Fault::Identity),
             }
@@ -1303,6 +1317,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                     &mut first_fault,
                 ) {
                     Err(Fault::LibraryRejected(rejected)) if rejected == scenario => {
+                        first_fault = None;
                         observed.push(Observation {
                             scenario: Some(scenario),
                             check: contract::Check::LibraryFaultRejected,
@@ -1345,6 +1360,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 &mut first_fault,
             ) {
                 Err(Fault::CgroupKillFailureRecovered) => {
+                    first_fault = None;
                     for (check, attempts) in [
                         (contract::Check::CgroupKillFailureDetected, 1),
                         (contract::Check::RolesReaped, 3),
@@ -1379,6 +1395,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                     &mut first_fault,
                 ) {
                     Err(fault) if fault == expected => {
+                        first_fault = None;
                         observed.push(Observation {
                             scenario: Some(scenario),
                             check: if scenario == Scenario::ReportTimeout {
