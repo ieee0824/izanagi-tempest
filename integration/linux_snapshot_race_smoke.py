@@ -219,6 +219,14 @@ def bounded_pipe_reads(streams, limit, timeout):
     status='oversize' if oversize else ('complete' if not pending else 'timeout')
     return {name:bytes(value) for name,value in buffers.items()},status
 
+def validate_snapshot_counts(counts):
+    assert counts['snapshot_stage']=='bind' and counts['snapshot_reason']=='exited_after_listing'
+    assert counts['snapshot_errno'] is None
+    assert counts['registry_total']==3 and counts['direct']==3
+    assert counts['descendants']==0 and counts['unattached']==0
+    assert counts['direct']==counts['dead_pidfds']==counts['reaped']==3
+    assert counts['reap_unconfirmed']==0 and counts['cgroup_populated'] is False
+
 def terminate_held_members():
     # Every signal targets an already pinned member of this exact generation.
     for handle in handles.values():
@@ -392,12 +400,7 @@ try:
     assert final['transition']=='failed' and final['guardian_reaped']
     assert final['guardian_signal']==signal.SIGKILL and report['formal_eligible'] is False
     assert report['model_launched'] is False
-    assert counts['snapshot_stage']=='bind' and counts['snapshot_reason']=='exited_after_listing'
-    assert counts['snapshot_errno'] is None
-    assert counts['registered']==3 and counts['direct']==3
-    assert counts['descendant']==0 and counts['unattached']==0
-    assert counts['direct']==counts['dead_pidfds']==counts['reaped']==3
-    assert counts['reap_unconfirmed']==0 and counts['cgroup_populated'] is False
+    validate_snapshot_counts(counts)
     assert all(select.select([h],[],[],0)[0] for h in handles.values())
     stage='fixture_cleanup'
     assert cleanup_owned_generation()

@@ -30,6 +30,10 @@ PIPE_FUNCTION = next(node for node in FIXTURE_TREE.body
                      if isinstance(node, ast.FunctionDef) and node.name == 'bounded_pipe_reads')
 PIPE_NAMESPACE = {'os': os, 'select': select, 'time': time}
 exec(compile(ast.Module(body=[PIPE_FUNCTION], type_ignores=[]), '<fixture-helper>', 'exec'), PIPE_NAMESPACE)
+COUNTS_FUNCTION = next(node for node in FIXTURE_TREE.body
+                       if isinstance(node, ast.FunctionDef) and node.name == 'validate_snapshot_counts')
+COUNTS_NAMESPACE = {}
+exec(compile(ast.Module(body=[COUNTS_FUNCTION], type_ignores=[]), '<fixture-helper>', 'exec'), COUNTS_NAMESPACE)
 
 
 class AuditBasenameTests(unittest.TestCase):
@@ -72,6 +76,18 @@ class SnapshotPathPresenceTests(unittest.TestCase):
         self.assertEqual(classify(True, False), 'preserved')
         self.assertEqual(classify(False, True), 'preserved')
         self.assertEqual(classify(True, True), 'both_present')
+
+
+class SnapshotCountContractTests(unittest.TestCase):
+    def test_runtime_projection_keys_and_values(self):
+        counts = {'snapshot_stage': 'bind', 'snapshot_reason': 'exited_after_listing',
+                  'snapshot_errno': None, 'registry_total': 3, 'direct': 3,
+                  'descendants': 0, 'unattached': 0, 'dead_pidfds': 3,
+                  'reaped': 3, 'reap_unconfirmed': 0, 'cgroup_populated': False}
+        COUNTS_NAMESPACE['validate_snapshot_counts'](counts)
+        counts['registry_total'] = 2
+        with self.assertRaises(AssertionError):
+            COUNTS_NAMESPACE['validate_snapshot_counts'](counts)
 
 
 class BoundedPipeReadTests(unittest.TestCase):
