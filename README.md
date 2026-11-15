@@ -105,7 +105,14 @@ sudoers/service/user/group/AppArmor/nft の永続設定も変更しません。
 現 WIP は baseline が成功しても `status: "incomplete"`・終了コード 1 を返します。
 rootless unit・API compile-fail 試験と baseline の観測は、M1 全体の合格や本番隔離の証明には使いません。
 実行中 ancillary 10ケースと偽 ready nonce の拒否は root 統合で確認済みです。
-既存 cgroup に対する起動拒否では、既存プロセス・limits・構造を変更しないことを別 fixture で検証します。
+既存 cgroup に対する起動拒否では、既存プロセス・limits・構造を変更せず、
+自分の空 RUN だけを inode 照合して削除することを別 fixture で検証します。
+外部 cleanup なしに同じ binary を2回実行して、同じ拒否を再現します。
+同 fixture は supervisor の RUN directory FD を kernel から確認して一時停止し、
+RUN path 交換と unexpected entry を注入して保持を実測します。
+RUN が置換された場合や予期しない内容がある場合は削除せず、
+削除失敗も固定 `run_cleanup` failure と `resources_removed: false` にします。
+FD/path 照合と rmdir の間の同時 race・trusted cleanup 競合は別の未完 gate です。
 watchdog が cgroup を作成し、保持した directory fd の dev/inode を照合してから親へ所有権を通知します。
 通知前の親停止でも watchdog が自分の group だけを回収する設計です（停止タイミング別の故障注入は未完）。
 既存 group の作成拒否では回収権を取得しません。watchdog 自身が作成途中に停止して残留した場合も、次回は採用せず拒否します。
@@ -115,7 +122,10 @@ library は write fd を bind 前に close し、同 inode の read fd から配
 bootstrap の bind 前後・全配置後と、supervisor の Ready 後・barrier 直前に
 dev/inode/uid/gid/mode/nlink/hash を確認し、bind 後は ro/nosuid/nodev と exec 可を照合します。
 worker は各 library の read 成功・write 拒否と bind の read-write remount 拒否を観測します。
-これらは library への writable alias や path 交換の故障注入を代替しません。
+固定 A の実 bootstrap に、RO bind 後の writable alias からの改変、hardlink 追加、
+symlink 交換、同じ bytes の別 inode への交換を注入する4ケースも実行します。
+各注入は正常配置の確認後に行い、期待した型の拒否と Go 前の出力0・全 role 回収を要求します。
+これは実 worker への write fd 継承や元 view の露出など他の故障注入を代替しません。
 library 配置と write fd の追加負例、PID/UID/run 混入、
 資源枯渇・監査容量不足・EOF/cancel/timeout・監督異常・孫 process の回収等が残っています。
 失敗の診断は固定 stage/reason と数値 errno に限り、raw argv/env/stderr/任意 path や credential を出しません。

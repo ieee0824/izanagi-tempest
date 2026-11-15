@@ -34,19 +34,76 @@ try:
                 [(n, (root / n).read_text()) for n in
                  ['memory.max', 'pids.max', 'cpu.max', 'cgroup.subtree_control', 'cgroup.procs']])
     before = snapshot()
-    result = subprocess.run([sys.argv[1], 'linux-isolation-probe'], env={},
-                            capture_output=True, timeout=12)
-    report = json.loads(result.stdout)
-    assert result.returncode != 0 and report['status'] == 'failed'
-    assert report['phase'] == 'watchdog'
-    assert before == snapshot() and child.poll() is None
-    # The failed probe owns only this empty run lock, not the existing cgroup.
-    # Never recursively delete unexpected entries from a failed probe.
-    if run.exists():
-        assert not list(run.iterdir())
-        run.rmdir()
+    for attempt in range(2):
+        result = subprocess.run([sys.argv[1], 'linux-isolation-probe'], env={},
+                                capture_output=True, timeout=12)
+        report = json.loads(result.stdout)
+        assert result.returncode != 0 and report['status'] == 'failed'
+        assert report['phase'] == 'watchdog'
+        assert before == snapshot() and child.poll() is None
+        assert not run.exists()
+    # No external cleanup occurs between the two rejected invocations above.
+    # Freeze only AFTER a real directory FD pins RUN. This prevents a path
+    # mutation from occurring before the supervisor acquires its own identity.
+    for mutation in ['entry', 'replacement']:
+        proc = subprocess.Popen([sys.argv[1], 'linux-isolation-probe'], env={},
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stopped = False
+        try:
+            import time, signal, stat
+            until = time.monotonic() + 5
+            while time.monotonic() < until and proc.poll() is None:
+                try:
+                    original = run.stat()
+                    for fd in pathlib.Path(f'/proc/{proc.pid}/fd').iterdir():
+                        m = fd.stat()
+                        if stat.S_ISDIR(m.st_mode) and (m.st_dev, m.st_ino) == (original.st_dev, original.st_ino):
+                            os.kill(proc.pid, signal.SIGSTOP)
+                            _, status = os.waitpid(proc.pid, os.WUNTRACED)
+                            assert os.WIFSTOPPED(status)
+                            stopped = True
+                            break
+                except FileNotFoundError:
+                    pass
+                if stopped:
+                    break
+                time.sleep(0.0001)
+            assert stopped
+            current = run.stat()
+            original_identity = (original.st_dev, original.st_ino)
+            assert (current.st_dev, current.st_ino) == original_identity
+            alternate = run.with_name('tempest-linux-isolation-probe-negative-original')
+            assert not alternate.exists()
+            if mutation == 'entry':
+                marker = run / 'unexpected-fixed-marker'
+                marker.touch(exist_ok=False)
+            else:
+                run.rename(alternate)
+                run.mkdir(mode=0o700)
+                replacement_identity = (run.stat().st_dev, run.stat().st_ino)
+            os.kill(proc.pid, signal.SIGCONT)
+            stopped = False
+            output, _ = proc.communicate(timeout=12)
+            report = json.loads(output)
+            assert proc.returncode != 0 and report['reason'] == 'run_cleanup'
+            assert report['resources_removed'] is False
+            assert before == snapshot() and child.poll() is None
+            if mutation == 'entry':
+                assert (run.stat().st_dev, run.stat().st_ino) == original_identity
+                assert marker.exists()
+                marker.unlink()
+                run.rmdir()
+            else:
+                assert (run.stat().st_dev, run.stat().st_ino) == replacement_identity
+                assert (alternate.stat().st_dev, alternate.stat().st_ino) == original_identity
+                run.rmdir()
+                alternate.rmdir()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
     print(json.dumps({'status': 'passed', 'existing_group_unchanged': True,
-                      'existing_process_alive': True}))
+                      'existing_process_alive': True, 'rejected_twice_without_cleanup': True, 'run_entry_retained': True, 'run_replacement_retained': True}))
 finally:
     if child is not None:
         child.kill()

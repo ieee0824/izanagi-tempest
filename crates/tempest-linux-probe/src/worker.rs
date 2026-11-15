@@ -38,6 +38,8 @@ pub(super) struct Event {
     #[serde(default)]
     pub(super) bootstrap: Option<(u8, i32)>,
     #[serde(default)]
+    pub(super) library_fault: Option<Scenario>,
+    #[serde(default)]
     pub(super) rejection: Option<ancillary::Rejection>,
     pub(super) role: Role,
     pub(super) nonce: [u8; 16],
@@ -73,6 +75,7 @@ fn event(manifest: &Manifest, phase: Phase, checks: Vec<Observation>) -> bool {
     }
     let value = Event {
         bootstrap: None,
+        library_fault: None,
         rejection: None,
         role: manifest.role,
         nonce,
@@ -353,6 +356,7 @@ pub(super) fn run() -> i32 {
                 Err(rejection) => {
                     let rejected = Event {
                         bootstrap: None,
+                        library_fault: None,
                         rejection: Some(rejection),
                         role: manifest.role,
                         nonce: manifest.nonce,

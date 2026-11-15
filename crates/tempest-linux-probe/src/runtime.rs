@@ -109,6 +109,7 @@ fn event(worker: &Worker, until: Instant) -> Result<Event, Fault> {
 
 fn spawn(
     role: Role,
+    scenario: Scenario,
     code: &Snapshot,
     libraries: &[Snapshot],
     null: &File,
@@ -170,7 +171,7 @@ fn spawn(
             }
         }
         let mut step = 0;
-        let result = capsule::enter(role, &root, libraries, &mappings, &mut step);
+        let result = capsule::enter(role, scenario, &root, libraries, &mappings, &mut step);
         if step < 5 {
             // Before descriptor remapping the original report endpoint is
             // still valid. Emit only fixed stage/errno, never an OS message.
@@ -180,6 +181,11 @@ fn spawn(
             };
             let value = Event {
                 bootstrap: Some((step, errno)),
+                library_fault: if let Err(Fault::LibraryRejected(scenario)) = result {
+                    Some(scenario)
+                } else {
+                    None
+                },
                 rejection: None,
                 role,
                 nonce: [0; 16],
@@ -344,6 +350,7 @@ fn injection(
         || rejected.role != Role::Guard
         || rejected.nonce != *nonce
         || rejected.bootstrap.is_some()
+        || rejected.library_fault.is_some()
         || rejected.rejection != Some(expected)
     {
         return Err(Fault::Identity);
@@ -377,6 +384,7 @@ fn injection(
             || done.role != recipient.role
             || done.nonce != *nonce
             || done.bootstrap.is_some()
+            || done.library_fault.is_some()
             || done.rejection.is_some()
             || done.checks.len() != 1
             || done.checks[0].check != contract::Check::NoForwardedPayload
@@ -429,7 +437,7 @@ fn baseline(
                     (to_b.write.as_raw_fd(), 10),
                 ],
             };
-            workers.push(spawn(role, code, libraries, &null, &ipc, group)?);
+            workers.push(spawn(role, scenario, code, libraries, &null, &ipc, group)?);
         }
         let peers: [u32; 3] = workers
             .iter()
@@ -464,6 +472,14 @@ fn baseline(
             let ready = event(worker, until)?;
             if ready.phase == Phase::BootstrapFault {
                 let (step, errno) = ready.bootstrap.ok_or(Fault::Identity)?;
+                if ready.role == Role::A
+                    && step == 3
+                    && errno == 0
+                    && scenario.library_fault()
+                    && ready.library_fault == Some(scenario)
+                {
+                    return Err(Fault::LibraryRejected(scenario));
+                }
                 return Err(Fault::Bootstrap(step, errno));
             }
             *phase = "kernel_state";
@@ -473,6 +489,7 @@ fn baseline(
             if ready.role != worker.role
                 || ready.phase != Phase::Ready
                 || ready.bootstrap.is_some()
+                || ready.library_fault.is_some()
                 || ready.rejection.is_some()
                 || !ready.checks.is_empty()
                 || !contract::ready(worker.role, &worker.expected, &state, &nonce, &nonce)
@@ -536,6 +553,7 @@ fn baseline(
                 || entered.phase != Phase::Entered
                 || !entered.checks.is_empty()
                 || entered.bootstrap.is_some()
+                || entered.library_fault.is_some()
                 || entered.rejection.is_some()
             {
                 return Err(Fault::Identity);
@@ -570,6 +588,7 @@ fn baseline(
                 || done.phase != Phase::Done
                 || done.checks.is_empty()
                 || done.bootstrap.is_some()
+                || done.library_fault.is_some()
                 || done.rejection.is_some()
                 || !done
                     .checks
@@ -602,7 +621,7 @@ fn baseline(
     if !group.empty()? {
         return Err(Fault::Kernel(libc::EBUSY));
     }
-    if matches!(result, Err(Fault::ForeignReady)) {
+    if matches!(result, Err(Fault::ForeignReady | Fault::LibraryRejected(_))) {
         // Payload entry writes a fixed stderr marker only AFTER Go. Do not
         // consume or publish any bytes; inspect the pipe counters independently.
         for worker in &workers {
@@ -629,9 +648,10 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     }
     let mut locked = false;
+    let mut run_lock = None;
     let mut phase = "entry";
     let mut watchdog = None;
-    let result = (|| {
+    let mut result = (|| {
         if !cfg!(target_arch = "x86_64") || fs::read_dir("/proc/self/task")?.count() != 1 {
             return Err(Fault::Identity);
         }
@@ -654,6 +674,12 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         phase = "run_lock";
         os::private_directory(Path::new(RUN))?;
         locked = true;
+        run_lock = Some(
+            fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(RUN)?,
+        );
         phase = "watchdog";
         let (watch, mut group) = super::watchdog::Watchdog::start()?;
         watchdog = Some(watch);
@@ -688,6 +714,25 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 Err(error) => return Err(error),
                 Ok(_) => return Err(Fault::Identity),
             }
+            for scenario in Scenario::LIBRARY_FAULTS {
+                for role in Role::ALL {
+                    fs::remove_dir(Path::new(RUN).join(role.name()))?;
+                }
+                match baseline(&code, &libraries, &group, &mut phase, scenario) {
+                    Err(Fault::LibraryRejected(rejected)) if rejected == scenario => {
+                        observed.push(Observation {
+                            scenario: Some(scenario),
+                            check: contract::Check::LibraryFaultRejected,
+                            role: Some(Role::A),
+                            passed: true,
+                            attempts: 1,
+                            denials: 1,
+                        })
+                    }
+                    Err(error) => return Err(error),
+                    Ok(_) => return Err(Fault::Identity),
+                }
+            }
             for scenario in Scenario::INJECTIONS {
                 for role in Role::ALL {
                     fs::remove_dir(Path::new(RUN).join(role.name()))?;
@@ -700,13 +745,32 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         let observed = observed?;
         Ok((code.sha256, observed))
     })();
+    // No payload can exist before Watchdog::start returns ownership. Even if
+    // a foreign cgroup exists, release our own empty RUN without touching it.
+    let mut early_removed = false;
+    let mut early_cleanup_failed = false;
+    if watchdog.is_none() && phase == "watchdog" {
+        if let Some(lock) = &run_lock {
+            match os::remove_owned_empty_directory(Path::new(RUN), lock) {
+                Ok(()) => early_removed = true,
+                Err(_) => {
+                    early_cleanup_failed = true;
+                    result = Err(Fault::RunCleanup);
+                }
+            }
+        }
+    }
     let kernel_removed = !Path::new(super::cgroup::ROOT).exists();
     let watch_finished = if let Some(watch) = &mut watchdog {
         kernel_removed && watch.finish().is_ok()
     } else {
         true
     };
-    let removed = if locked && kernel_removed && watch_finished {
+    let removed = if early_cleanup_failed {
+        false
+    } else if early_removed {
+        kernel_removed
+    } else if locked && kernel_removed && watch_finished {
         fs::remove_dir_all(RUN).is_ok()
     } else {
         !Path::new(RUN).exists() && kernel_removed
@@ -738,6 +802,8 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 Fault::Child(_) => "child_exit",
                 Fault::Bootstrap(_, _) => "bootstrap",
                 Fault::ForeignReady => "foreign_ready",
+                Fault::RunCleanup => "run_cleanup",
+                Fault::LibraryRejected(_) => "library_rejected",
             };
             let errno = match fault {
                 Fault::Kernel(value) => value,

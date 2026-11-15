@@ -1,7 +1,7 @@
 //! Fixed privileged child bootstrap. All paths and descriptor roles come from
 //! the supervisor, never from a workload, environment or CLI option.
 use super::{
-    contract::Role,
+    contract::{Role, Scenario},
     os::{self, Fault, Snapshot},
     seccomp,
 };
@@ -102,7 +102,12 @@ pub(super) fn verify_library(snapshot: &Snapshot, target: &Path) -> Result<Libra
     Ok(identity)
 }
 
-fn bind(snapshot: &Snapshot, root: &Path, relative: &str) -> Result<LibraryIdentity, Fault> {
+fn bind(
+    snapshot: &Snapshot,
+    root: &Path,
+    relative: &str,
+    fault: Option<Scenario>,
+) -> Result<LibraryIdentity, Fault> {
     let target = root.join(relative);
     for parent in target.parent().ok_or(Fault::Path)?.ancestors() {
         let m = parent.symlink_metadata()?;
@@ -122,7 +127,14 @@ fn bind(snapshot: &Snapshot, root: &Path, relative: &str) -> Result<LibraryIdent
         .open(&target)?;
     snapshot.materialize(&mut writer)?;
     let identity = library_identity(&writer)?;
-    // Close the only writable output descriptor BEFORE bind/verification.
+    // This alias exists only in the fixed negative case and never reaches a
+    // worker. It demonstrates why read-only bind alone is insufficient.
+    let mut writable_alias = if fault == Some(Scenario::LibraryLateWrite) {
+        Some(writer.try_clone()?)
+    } else {
+        None
+    };
+    // Normal runs close their only writable output descriptor BEFORE bind.
     // No other role exists in this private tmpfs, and the supervisor never
     // obtains an output write descriptor into this child mount namespace.
     drop(writer);
@@ -134,6 +146,47 @@ fn bind(snapshot: &Snapshot, root: &Path, relative: &str) -> Result<LibraryIdent
         return Err(Fault::Identity);
     }
     snapshot.verify_file(&source)?;
+    if let Some(scenario) = fault.filter(|s| *s != Scenario::LibraryLateWrite) {
+        let alternate = root.join("private/library-fault");
+        match scenario {
+            Scenario::LibraryHardlink => fs::hard_link(&target, &alternate)?,
+            Scenario::LibrarySymlink => {
+                fs::rename(&target, &alternate)?;
+                std::os::unix::fs::symlink(&alternate, &target)?;
+            }
+            Scenario::LibraryReplacement => {
+                fs::remove_file(&target)?;
+                let mut replacement = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o555)
+                    .open(&target)?;
+                snapshot.materialize(&mut replacement)?;
+            }
+            _ => return Err(Fault::Identity),
+        }
+        let rejected = (|| {
+            let candidate = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&target)?;
+            if library_identity(&candidate)? != identity {
+                return Err(Fault::Identity);
+            }
+            snapshot.verify_file(&candidate)
+        })();
+        return match (scenario, rejected) {
+            (Scenario::LibrarySymlink, Err(Fault::Kernel(libc::ELOOP)))
+            | (Scenario::LibraryHardlink | Scenario::LibraryReplacement, Err(Fault::Identity)) => {
+                Err(Fault::LibraryRejected(scenario))
+            }
+            _ => Err(Fault::Identity),
+        };
+    }
+    if metadata_identity(&target.symlink_metadata()?)? != identity {
+        return Err(Fault::Identity);
+    }
     os::mount(
         Some(Path::new(&format!("/proc/self/fd/{}", source.as_raw_fd()))),
         &target,
@@ -151,11 +204,22 @@ fn bind(snapshot: &Snapshot, root: &Path, relative: &str) -> Result<LibraryIdent
     if verify_library(snapshot, &target)? != identity {
         return Err(Fault::Identity);
     }
+    if let Some(mut alias) = writable_alias.take() {
+        use std::io::{Seek, SeekFrom};
+        alias.seek(SeekFrom::Start(0))?;
+        alias.write_all(&[0])?;
+        drop(alias);
+        return match verify_library(snapshot, &target) {
+            Err(Fault::Identity) => Err(Fault::LibraryRejected(Scenario::LibraryLateWrite)),
+            _ => Err(Fault::Identity),
+        };
+    }
     Ok(identity)
 }
 
 pub(super) fn enter(
     role: Role,
+    scenario: Scenario,
     root: &Path,
     libraries: &[Snapshot],
     mappings: &[(RawFd, RawFd)],
@@ -214,7 +278,9 @@ pub(super) fn enter(
     *step = 3;
     let mut installed = Vec::new();
     for (snapshot, (_, relative)) in libraries.iter().zip(LIBRARIES) {
-        installed.push(bind(snapshot, root, relative)?);
+        let fault = (role == Role::A && installed.is_empty() && scenario.library_fault())
+            .then_some(scenario);
+        installed.push(bind(snapshot, root, relative, fault)?);
     }
     for ((snapshot, (_, relative)), expected) in libraries.iter().zip(LIBRARIES).zip(installed) {
         if verify_library(snapshot, &root.join(relative))? != expected {

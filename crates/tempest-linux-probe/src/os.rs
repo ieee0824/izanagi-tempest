@@ -21,6 +21,8 @@ pub(super) enum Fault {
     Child(i32),
     Bootstrap(u8, i32),
     ForeignReady,
+    RunCleanup,
+    LibraryRejected(super::contract::Scenario),
 }
 
 impl From<io::Error> for Fault {
@@ -234,6 +236,24 @@ pub(super) fn private_directory(path: &Path) -> Result<(), Fault> {
     Ok(())
 }
 
+/// Remove only the empty directory acquired by this run. A path replacement
+/// or unexpected content is evidence to retain, never recursively adopt.
+pub(super) fn remove_owned_empty_directory(path: &Path, pinned: &File) -> Result<(), Fault> {
+    let owned = pinned.metadata()?;
+    let current = path.symlink_metadata()?;
+    if !owned.is_dir()
+        || !current.is_dir()
+        || owned.dev() != current.dev()
+        || owned.ino() != current.ino()
+        || current.uid() != unsafe { libc::geteuid() }
+        || current.mode() & 0o7777 != 0o700
+    {
+        return Err(Fault::Identity);
+    }
+    fs::remove_dir(path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +309,34 @@ mod tests {
         assert_eq!(snapshot.verify_file(&writer), Err(Fault::Identity));
         drop(writer);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_run_cleanup_does_not_remove_a_replacement_or_unexpected_contents() {
+        let base = std::env::temp_dir().join(format!(
+            "tempest-lock-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        private_directory(&base).unwrap();
+        let path = base.join("run");
+        private_directory(&path).unwrap();
+        let pinned = File::open(&path).unwrap();
+        let moved = base.join("old");
+        fs::rename(&path, &moved).unwrap();
+        private_directory(&path).unwrap();
+        assert_eq!(
+            remove_owned_empty_directory(&path, &pinned),
+            Err(Fault::Identity)
+        );
+        assert!(path.exists() && moved.exists());
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&moved, &path).unwrap();
+        File::create(path.join("unexpected")).unwrap();
+        assert!(remove_owned_empty_directory(&path, &pinned).is_err());
+        assert!(path.join("unexpected").exists());
+        fs::remove_file(path.join("unexpected")).unwrap();
+        remove_owned_empty_directory(&path, &pinned).unwrap();
+        fs::remove_dir(base).unwrap();
     }
 
     #[test]

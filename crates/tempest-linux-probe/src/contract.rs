@@ -24,6 +24,10 @@ pub(super) enum Scenario {
     UnexpectedControl,
     FrameOversize,
     FrameMalformed,
+    LibraryLateWrite,
+    LibraryHardlink,
+    LibrarySymlink,
+    LibraryReplacement,
 }
 
 impl Scenario {
@@ -39,8 +43,17 @@ impl Scenario {
         Self::FrameOversize,
         Self::FrameMalformed,
     ];
+    pub(super) const LIBRARY_FAULTS: [Self; 4] = [
+        Self::LibraryLateWrite,
+        Self::LibraryHardlink,
+        Self::LibrarySymlink,
+        Self::LibraryReplacement,
+    ];
+    pub(super) fn library_fault(self) -> bool {
+        Self::LIBRARY_FAULTS.contains(&self)
+    }
     pub(super) fn injection(self) -> bool {
-        !matches!(self, Self::Baseline | Self::ForeignReady)
+        Self::INJECTIONS.contains(&self)
     }
     pub(super) fn reverse(self) -> bool {
         matches!(self, Self::FdFileB | Self::FdDirectoryB | Self::FdSocketB)
@@ -133,6 +146,7 @@ pub(super) enum Check {
     PrivilegeDenied,
     NamespaceDenied,
     LibraryReadonly,
+    LibraryFaultRejected,
     SignalDenied,
     PtraceDenied,
     ProcessMemoryDenied,
