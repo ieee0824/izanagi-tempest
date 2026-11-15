@@ -125,6 +125,9 @@ created fixtureはmkdir成功直後と20 byte ACKのwrite syscall entryでguardi
 後者は親のread端と同一FIFOのwrite先であることも照合します。ACK失敗後のpidfd死亡確認と
 固定watchdog_startup_failed/resources_removed=false、未証明groupの保持、次回起動の無変更拒否を検証します。
 fixtureだけが停止時にpinしたinodeと全group無人を確認して、自分のcgroupを明示回収します。
+同fixtureはACK write成功（20 byte）のsyscall exitでも停止し、親を再開する前にguardianを
+pidfdでSIGKILL・死亡確認してから、起動失敗・未確認ownership・残留保持と次回拒否を検証します。
+これはACK送信直後のguardian異常の部分試験です。親のACK timeout境界や通常実行中のguardian死亡回収は別の未完gateです。
 ACKのwrite直後に親のtimeoutが先行する場合も、親がidentityを受信できなければ自動回収せず残留します。
 その場合は次回probeを拒否し、専用VM管理者が記録と所有identityを確認して回収する必要があります。
 
@@ -152,7 +155,7 @@ supervisor SIGKILL fixture は、A の加入直後と、setsid/double-fork し�
 kernel から確認した後と、heartbeat停止（親SIGSTOP）の3ケースで、対象/guardianのpidfd死亡・run/cgroup回収を確認します。
 status pipeを同一FIFO inodeで検証して複製し、owner_deadとlease_expiredの理由と死亡前後のownership遷移を観測します。
 祖先の終了・group/session の離脱を実測し、単なる最初の fork を孫と取り違えない条件を要求します。
-ACK write直後・他のbootstrap時点の停止、Drop cleanup失敗の故障注入は未検証です。
+ACK timeout境界・他のbootstrap時点の停止、Drop cleanup失敗の故障注入は未検証です。
 library は write fd を bind 前に close し、同 inode の read fd から配置します。
 bootstrap の bind 前後・全配置後と、supervisor の Ready 後・barrier 直前に
 dev/inode/uid/gid/mode/nlink/hash を確認し、bind 後は ro/nosuid/nodev と exec 可を照合します。

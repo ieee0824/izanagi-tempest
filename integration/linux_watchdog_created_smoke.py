@@ -12,7 +12,7 @@ libc = ctypes.CDLL(None, use_errno=True)
 libc.ptrace.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
 libc.ptrace.restype = ctypes.c_long
 results = []
-for scenario in ['guardian_after_create', 'guardian_before_ack']:
+for scenario in ['guardian_after_create', 'guardian_before_ack', 'guardian_after_ack']:
     process = subprocess.Popen([sys.argv[1], 'linux-isolation-probe'], env={},
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     guardian_handle = directory = None
@@ -52,7 +52,7 @@ for scenario in ['guardian_after_create', 'guardian_before_ack']:
             selected = root.exists() if scenario == 'guardian_after_create' else ack_entry
             if selected:
                 assert root.exists()
-                if scenario == 'guardian_before_ack':
+                if scenario != 'guardian_after_create':
                     assert all((root / role).is_dir() for role in ['a', 'b', 'guard'])
                     endpoint = pathlib.Path(f'/proc/{guardian}/fd/{registers[14]}').stat()
                     assert stat.S_ISFIFO(endpoint.st_mode)
@@ -73,7 +73,16 @@ for scenario in ['guardian_after_create', 'guardian_before_ack']:
                 pinned = os.fstat(directory)
                 identity = (pinned.st_dev, pinned.st_ino)
                 break
-        assert libc.ptrace(17, process.pid, None, None) == 0
+        ack_written = scenario == 'guardian_after_ack'
+        if ack_written:
+            assert libc.ptrace(24, guardian, None, None) == 0
+            _, status = os.waitpid(guardian, 0x40000000)
+            assert os.WIFSTOPPED(status) and os.WSTOPSIG(status) == (signal.SIGTRAP | 0x80)
+            assert libc.ptrace(12, guardian, None, ctypes.byref(registers)) == 0
+            assert registers[15] == 1 and registers[10] == 20
+            signal.pidfd_send_signal(guardian_handle, signal.SIGKILL)
+        else:
+            assert libc.ptrace(17, process.pid, None, None) == 0
         # Leave the guardian in its exact syscall stop. SIGKILL bypasses that
         # stop; drain the tracer's exit notification so its real parent can reap.
         stage = 'timeout_reap'
@@ -85,6 +94,9 @@ for scenario in ['guardian_after_create', 'guardian_before_ack']:
                 assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
                 break
             time.sleep(0.002)
+        if ack_written:
+            assert select.select([guardian_handle], [], [], 0)[0]
+            assert libc.ptrace(17, process.pid, None, None) == 0
         output, _ = process.communicate(timeout=5)
         report = json.loads(output)
         stage = 'startup_result'
@@ -115,7 +127,8 @@ for scenario in ['guardian_after_create', 'guardian_before_ack']:
         results.append({'scenario': scenario, 'guardian_reaped': True,
                         'guardian_signal': 'sigkill', 'reason': report['reason'],
                         'phase': report['phase'], 'probe_exit_code': process.returncode,
-                        'ack_received': False, 'unproved_group_preserved': True,
+                        'ack_write_completed': ack_written, 'ownership_confirmed': False,
+                        'unproved_group_preserved': True,
                         'resources_removed': report['resources_removed'],
                         'next_generation_rejected_without_mutation': True,
                         'fixture_owned_cleanup': True})
