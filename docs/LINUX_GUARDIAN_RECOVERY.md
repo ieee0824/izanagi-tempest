@@ -173,6 +173,19 @@ snapshot_stage/reason/errnoは両ケースともnullで、今回snapshot取得�
 `/tmp/tempest-primary-fault-651fd36{,-meta}.json`です。
 前回の残留失敗と次世代確認失敗の原因は、この成功だけでは確定・解消扱いにしません。
 
+### snapshot終了窓を固定する次のfixture案（未実装）
+
+report_timeoutのcollectorで自分の親だけをptraceし、guardian単独poll入口
+（x86_64 syscall=7、nfds=1、timeout=0、pollfdのFDのfdinfo/Pidが主guardianと一致）を捕捉します。
+この入口でguardianをPIDFD SIGKILLし、死亡を確認してから親を再開します。
+eventのpulse失敗とbaseline末尾のForbiddenにより、通常kill/fallbackより前にsnapshotへ進ませます。
+そこでpidfd_open入口（434、引数がpin済みの生存role PID）を捕捉し、
+先行する自所有cgroup.procs読取・guardian死亡を照合してからそのroleをPIDFD SIGKILLします。
+外部PIDFD死亡を確認後に親を再開し、bind/exited_after_listing、Failed、空の同identity残留を期待します。
+通常cgroup.kill入口でのEIOや成功値偽装は、どちらも後続leader fallbackがあり、生存対象を保証できません。
+これらの初期案は採用しません。fixture自身が作った世代の後始末は、親terminal後にguardを再取得し、
+pin済みidentity・全role空・populated0・全PIDFD死亡を再確認した範囲だけに限定する設計です。
+
 追加の非root実験では、自分の直接子をPIDFD ledgerへ登録してから終了させると、
 freshな`Process::bind`はIdentityで拒否する一方、保持済みPIDFDで死亡確認とreapが成功することを確認しました。
 `registry::record_tests::pinned_dead_child_can_be_reaped_when_fresh_binding_is_rejected`がこの順序を固定します。
