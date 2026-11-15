@@ -273,6 +273,34 @@ mod record_tests {
     }
 
     #[test]
+    fn pinned_dead_child_can_be_reaped_when_fresh_binding_is_rejected() {
+        let child = BlockedChild::spawn();
+        let mut registry = Registry::default();
+        let record = registry.track(Role::A, &child.process, true).unwrap();
+        registry.attached(record).unwrap();
+        child.process.kill().unwrap();
+        let mut poll = libc::pollfd {
+            fd: child.process.fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut poll, 1, 3000) }, 1);
+        // A fresh snapshot cannot bind this unreaped zombie as live, while
+        // the existing PIDFD ledger still proves which direct child to reap.
+        assert!(matches!(
+            Process::bind(child.process.pid),
+            Err(Fault::Identity)
+        ));
+        let mut counts = Counts::default();
+        registry.stop_and_reap_verified(&mut counts).unwrap();
+        assert_eq!(counts.dead_pidfds, 1);
+        assert_eq!(counts.reaped, 1);
+        assert_eq!(counts.reap_unconfirmed, 0);
+        assert_eq!(counts.unconfirmed_reason, None);
+        assert!(registry.entries.is_empty());
+    }
+
+    #[test]
     fn recovery_counts_confirm_unattached_child_death_and_reap() {
         let child = BlockedChild::spawn();
         let mut registry = Registry::default();

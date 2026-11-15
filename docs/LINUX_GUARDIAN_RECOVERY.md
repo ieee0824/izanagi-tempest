@@ -150,6 +150,14 @@ EIOケースもfirst_fault・最終reason・Verified・PIDFD死亡・資源不�
 raw stderrは保存しません。失敗した回収のcountsを含む保存内容と0600権限を、
 実際のfixture保存ブロックを使った非root検証で確認しました。rootでの再実行は未実施です。
 
+追加の非root実験では、自分の直接子をPIDFD ledgerへ登録してから終了させると、
+freshな`Process::bind`はIdentityで拒否する一方、保持済みPIDFDで死亡確認とreapが成功することを確認しました。
+`registry::record_tests::pinned_dead_child_can_be_reaped_when_fresh_binding_is_rejected`がこの順序を固定します。
+snapshotでの取得失敗は、回収済みregistryの証拠が欠けていることと必ずしも同義ではありません。
+ただし前回実機がこの窓へ入った証拠はなく、snapshotの失敗を無視する変更は行っていません。
+ルーム#16085の独立静的レビューでも、snapshot失敗を保存した後にkill/reap/populated0まで進み、
+role削除前に失敗する経路が残留の形と一致すると確認されています。原因確定には次の実機auditが必要です。
+
 親による回収中に親も死亡する二重故障では、新たな guardian を自動生成しません。
 結果が記録されず、payload/cgroup/RUN が残る可能性があります。
 次の probe は既存 ROOT/RUN を採用せず拒否し、専用 VM 管理者が所有 identity と証拠を確認して回収します。
