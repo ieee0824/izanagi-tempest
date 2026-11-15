@@ -28,6 +28,8 @@ pub(super) enum Scenario {
     LibraryHardlink,
     LibrarySymlink,
     LibraryReplacement,
+    PidsLimit,
+    TmpfsFull,
 }
 
 impl Scenario {
@@ -49,6 +51,10 @@ impl Scenario {
         Self::LibrarySymlink,
         Self::LibraryReplacement,
     ];
+    pub(super) const RESOURCES: [Self; 2] = [Self::PidsLimit, Self::TmpfsFull];
+    pub(super) fn resource(self) -> bool {
+        Self::RESOURCES.contains(&self)
+    }
     pub(super) fn library_fault(self) -> bool {
         Self::LIBRARY_FAULTS.contains(&self)
     }
@@ -158,6 +164,8 @@ pub(super) enum Check {
     ForeignReadyRejected,
     NoForwardedPayload,
     ResourceLimits,
+    PidsBounded,
+    TmpfsBounded,
     DescendantsKilled,
     CgroupEmpty,
     ResourcesRemoved,

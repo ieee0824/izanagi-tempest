@@ -424,7 +424,13 @@ fn baseline(
     let to_b = Channel::new()?;
     let mut workers = Vec::new();
     let until = Instant::now() + OVERALL;
-    let result = (|| {
+    let mut descendants = Vec::new();
+    let pids_before = if scenario == Scenario::PidsLimit {
+        Some(group.pids_events()?)
+    } else {
+        None
+    };
+    let mut result = (|| {
         *phase = "clone";
         for role in Role::ALL {
             let ipc = match role {
@@ -582,6 +588,9 @@ fn baseline(
         }
         let mut observations = Vec::new();
         for worker in &workers {
+            if scenario.resource() && worker.role != Role::A {
+                worker.start.send(b"G")?;
+            }
             let mut done = event(worker, until)?;
             if done.role != worker.role
                 || done.nonce != nonce
@@ -605,6 +614,54 @@ fn baseline(
             }
             observations.extend(done.checks);
         }
+        if scenario == Scenario::PidsLimit {
+            if group.pids_events()? <= pids_before.ok_or(Fault::Identity)? {
+                return Err(Fault::Identity);
+            }
+            let members = group.pids_members()?;
+            let worker = workers
+                .iter()
+                .find(|worker| worker.role == Role::A)
+                .ok_or(Fault::Identity)?;
+            if members.len() != 12 || !members.contains(&worker.process.pid) {
+                return Err(Fault::Identity);
+            }
+            for pid in members.into_iter().filter(|pid| *pid != worker.process.pid) {
+                let process = Process::bind(pid)?;
+                if !process.alive()? || !group.bound(Role::A, pid)? {
+                    return Err(Fault::Identity);
+                }
+                descendants.push(process);
+            }
+            observations.push(Observation {
+                scenario: Some(scenario),
+                check: contract::Check::ResourceLimits,
+                role: Some(Role::A),
+                passed: true,
+                attempts: 1,
+                denials: 1,
+            });
+        } else if scenario == Scenario::TmpfsFull {
+            let worker = workers
+                .iter()
+                .find(|worker| worker.role == Role::A)
+                .ok_or(Fault::Identity)?;
+            let root = File::open(format!("/proc/{}/root/work", worker.process.pid))?;
+            let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+            os::syscall(unsafe { libc::fstatvfs(root.as_raw_fd(), stats.as_mut_ptr()) })?;
+            let stats = unsafe { stats.assume_init() };
+            if stats.f_bavail != 0 || stats.f_blocks * stats.f_frsize > 16_777_216 {
+                return Err(Fault::Identity);
+            }
+            observations.push(Observation {
+                scenario: Some(scenario),
+                check: contract::Check::ResourceLimits,
+                role: Some(Role::A),
+                passed: true,
+                attempts: 1,
+                denials: 1,
+            });
+        }
         Ok(observations)
     })();
     let killed = group.kill();
@@ -620,6 +677,23 @@ fn baseline(
     reaped?;
     if !group.empty()? {
         return Err(Fault::Kernel(libc::EBUSY));
+    }
+    if !descendants.is_empty() {
+        for descendant in &descendants {
+            if descendant.alive()? {
+                return Err(Fault::Identity);
+            }
+        }
+        if let Ok(observations) = &mut result {
+            observations.push(Observation {
+                scenario: Some(scenario),
+                check: contract::Check::DescendantsKilled,
+                role: Some(Role::A),
+                passed: true,
+                attempts: descendants.len() as u64,
+                denials: 0,
+            });
+        }
     }
     if matches!(result, Err(Fault::ForeignReady | Fault::LibraryRejected(_))) {
         // Payload entry writes a fixed stderr marker only AFTER Go. Do not
@@ -732,6 +806,12 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                     Err(error) => return Err(error),
                     Ok(_) => return Err(Fault::Identity),
                 }
+            }
+            for scenario in Scenario::RESOURCES {
+                for role in Role::ALL {
+                    fs::remove_dir(Path::new(RUN).join(role.name()))?;
+                }
+                observed.extend(baseline(&code, &libraries, &group, &mut phase, scenario)?);
             }
             for scenario in Scenario::INJECTIONS {
                 for role in Role::ALL {

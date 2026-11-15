@@ -128,6 +128,11 @@ worker は各 library の read 成功・write 拒否と bind の read-write remo
 symlink 交換、同じ bytes の別 inode への交換を注入する4ケースも実行します。
 各注入は正常配置の確認後に行い、期待した型の拒否と Go 前の出力0・全 role 回収を要求します。
 これは実 worker への write fd 継承や元 view の露出など他の故障注入を代替しません。
+固定 resource ケースでは A の fork を最大16回、tmpfs 書き込みを最大16 MiBへ制限します。
+pids は cgroup の current=12・max=12・events増加と11子の pidfd、
+tmpfs は ENOSPC と kernel の空きblock=0・容量上限16 MiBを照合します。
+B/G の正対照は A の上限到達後に実行し、終了後は子の pidfd 死亡・cgroup 空・資源回収を確認します。
+これは memory/CPU/output/audit の枯渇、setsid/double-fork、他の停止時点の回収を代替しません。
 library 配置と write fd の追加負例、PID/UID/run 混入、
 資源枯渇・監査容量不足・EOF/cancel/timeout・監督異常・孫 process の回収等が残っています。
 失敗の診断は固定 stage/reason と数値 errno に限り、raw argv/env/stderr/任意 path や credential を出しません。

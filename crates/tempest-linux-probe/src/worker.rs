@@ -114,10 +114,8 @@ fn denied(value: libc::c_long) -> bool {
         )
 }
 
-fn checks(manifest: &Manifest) -> Vec<Observation> {
-    let role = manifest.role;
-    let mut values = Vec::new();
-    let own = if role == Role::A {
+fn positive_canary(role: Role) -> bool {
+    if role == Role::A {
         fs::read("/private/credential.canary").is_ok_and(|b| b == b"synthetic-canary-only")
     } else {
         fs::OpenOptions::new()
@@ -127,7 +125,92 @@ fn checks(manifest: &Manifest) -> Vec<Observation> {
             .open("/work/own")
             .and_then(|mut f| f.write_all(b"dummy"))
             .is_ok()
+    }
+}
+
+fn resource_checks(manifest: &Manifest) -> Vec<Observation> {
+    let role = manifest.role;
+    let mut values = vec![observe(
+        Check::PositiveCanary,
+        role,
+        positive_canary(role),
+        0,
+    )];
+    if role != Role::A {
+        return values;
+    }
+    let resource = match manifest.scenario {
+        Scenario::PidsLimit => {
+            let mut children = 0;
+            let mut denied = false;
+            let mut attempts = 0;
+            // Absolute cap even if the kernel contract is broken. Children do
+            // no work and remain in this role cgroup until supervisor cleanup.
+            for _ in 0..16 {
+                attempts += 1;
+                let pid = unsafe { libc::fork() };
+                if pid == 0 {
+                    let delay = libc::timespec {
+                        tv_sec: 30,
+                        tv_nsec: 0,
+                    };
+                    loop {
+                        unsafe {
+                            libc::nanosleep(&delay, std::ptr::null_mut());
+                        }
+                    }
+                }
+                if pid < 0 {
+                    denied = std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN);
+                    break;
+                }
+                children += 1;
+            }
+            Observation {
+                scenario: None,
+                check: Check::PidsBounded,
+                role: Some(role),
+                passed: children == 11 && denied,
+                attempts,
+                denials: u64::from(denied),
+            }
+        }
+        Scenario::TmpfsFull => {
+            let block = [0_u8; 524288];
+            let mut exhausted = false;
+            let mut attempts = 0;
+            for index in 0..32 {
+                attempts += 1;
+                let result = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(format!("/work/fixed-fill-{index}"))
+                    .and_then(|mut file| file.write_all(&block));
+                if let Err(error) = result {
+                    exhausted = error.raw_os_error() == Some(libc::ENOSPC);
+                    break;
+                }
+            }
+            Observation {
+                scenario: None,
+                check: Check::TmpfsBounded,
+                role: Some(role),
+                passed: exhausted && attempts > 1,
+                attempts,
+                denials: u64::from(exhausted),
+            }
+        }
+        _ => return values,
     };
+    values.push(resource);
+    values
+}
+
+fn checks(manifest: &Manifest) -> Vec<Observation> {
+    let role = manifest.role;
+    let mut values = Vec::new();
+    let own = positive_canary(role);
     values.push(observe(Check::PositiveCanary, role, own, 0));
     values.push(observe(
         Check::PeerCanaryDenied,
@@ -312,6 +395,20 @@ pub(super) fn run() -> i32 {
     }
     if !event(&manifest, Phase::Entered, Vec::new()) {
         return 3;
+    }
+    if manifest.scenario.resource() {
+        // Peer positives run only after A reports exhaustion, so a success
+        // cannot come from before pressure was applied in the other role.
+        if manifest.role != Role::A && !wait() {
+            return 3;
+        }
+        let values = resource_checks(&manifest);
+        let ok = values.iter().all(|value| value.passed);
+        if !event(&manifest, Phase::Done, values) {
+            return 4;
+        }
+        wait();
+        return if ok { 0 } else { 1 };
     }
     if manifest.scenario.injection() && manifest.role != Role::Guard {
         // The root fixture injects at the raw socket. Recipients remain armed

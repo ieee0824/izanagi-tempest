@@ -325,7 +325,16 @@ pub(super) fn enter(
     for (resource, value) in [
         (libc::RLIMIT_CORE, 0),
         (libc::RLIMIT_NOFILE, 32),
-        (libc::RLIMIT_NPROC, 12),
+        // Raise only this dummy case above cgroup pids.max so the kernel
+        // cgroup event, rather than RLIMIT_NPROC, proves the denial.
+        (
+            libc::RLIMIT_NPROC,
+            if role == Role::A && scenario == Scenario::PidsLimit {
+                32
+            } else {
+                12
+            },
+        ),
         (libc::RLIMIT_FSIZE, 1_048_576),
         (libc::RLIMIT_STACK, 8_388_608),
         (libc::RLIMIT_AS, 201_326_592),

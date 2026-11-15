@@ -181,6 +181,38 @@ impl Group {
             .any(|line| line == format!("0::/tempest-linux-isolation-probe/{}", role.name())))
     }
 
+    pub(super) fn pids_events(&self) -> Result<u64, Fault> {
+        self.verify()?;
+        let child = open_at(
+            &self.directory,
+            Role::A.name(),
+            libc::O_RDONLY | libc::O_DIRECTORY,
+        )?;
+        read(&child, "pids.events")?
+            .lines()
+            .find_map(|line| line.strip_prefix("max "))
+            .ok_or(Fault::Identity)?
+            .parse()
+            .map_err(|_| Fault::Identity)
+    }
+
+    pub(super) fn pids_members(&self) -> Result<Vec<u32>, Fault> {
+        self.verify()?;
+        let child = open_at(
+            &self.directory,
+            Role::A.name(),
+            libc::O_RDONLY | libc::O_DIRECTORY,
+        )?;
+        if read(&child, "pids.current")?.trim() != "12" || read(&child, "pids.max")?.trim() != "12"
+        {
+            return Err(Fault::Identity);
+        }
+        read(&child, "cgroup.procs")?
+            .split_whitespace()
+            .map(|pid| pid.parse().map_err(|_| Fault::Identity))
+            .collect()
+    }
+
     pub(super) fn kill(&self) -> Result<(), Fault> {
         self.verify()?;
         write(&self.directory, "cgroup.kill", "1")
