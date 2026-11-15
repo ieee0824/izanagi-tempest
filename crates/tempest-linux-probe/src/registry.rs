@@ -299,6 +299,14 @@ mod record_tests {
         let mut registry = Registry::default();
         let record = registry.track(Role::A, &child.process, true).unwrap();
         registry.attached(record).unwrap();
+        assert_eq!(
+            Process::snapshot_read_error(-1, Fault::Kernel(libc::EACCES)),
+            Fault::Kernel(libc::EACCES)
+        );
+        assert_eq!(
+            Process::snapshot_read_error(child.process.fd(), Fault::Kernel(libc::ENOENT)),
+            Fault::Kernel(libc::ENOENT)
+        );
         child.process.kill().unwrap();
         let mut poll = libc::pollfd {
             fd: child.process.fd(),
@@ -306,6 +314,10 @@ mod record_tests {
             revents: 0,
         };
         assert_eq!(unsafe { libc::poll(&mut poll, 1, 3000) }, 1);
+        assert_eq!(
+            Process::snapshot_read_error(child.process.fd(), Fault::Kernel(libc::ENOENT)),
+            Fault::ExitedAfterListing
+        );
         // A fresh snapshot cannot bind this unreaped zombie as live, while
         // the existing PIDFD ledger still proves which direct child to reap.
         assert!(matches!(

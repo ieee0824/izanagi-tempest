@@ -166,6 +166,10 @@ snapshot_reason（既存の固定fault理由）、snapshot_errno（kernel error�
 通常bindは従来のIdentityを維持します。所属確認ではbirth/cgroupの不一致を先に拒否し、
 一致した対象のPIDFDが死亡を示した場合だけこの理由を返します。
 この分類も死亡の観測であり、取得前の同一性やsnapshot網羅性を証明しません。
+snapshot専用bindのstat読取、所属確認のstat/cgroup読取に失敗した場合も、
+既に保持したPIDFDのPOLLINを再確認します。死亡観測時のみ同じ固定理由に分類し、
+poll失敗や死亡未確認では元のerrorを保持します。通常bindの読取errorは変更しません。
+非rootの自所有子テストで、生存中のENOENT保持・死亡後の分類・無効FDでの元error保持を確認します。
 
 親による回収中に親も死亡する二重故障では、新たな guardian を自動生成しません。
 結果が記録されず、payload/cgroup/RUN が残る可能性があります。

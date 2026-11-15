@@ -74,10 +74,24 @@ fn ticks(value: &str, expected_pid: u32) -> Result<u64, Fault> {
 }
 
 impl Process {
+    pub(super) fn snapshot_read_error(fd: i32, error: Fault) -> Fault {
+        let mut poll = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut poll, 1, 0) } > 0 && poll.revents & libc::POLLIN != 0 {
+            Fault::ExitedAfterListing
+        } else {
+            error
+        }
+    }
     pub(super) fn recovery_member(&self, role: Role) -> Result<bool, Fault> {
-        let membership = fs::read_to_string(format!("/proc/{}/cgroup", self.pid))?;
+        let membership = fs::read_to_string(format!("/proc/{}/cgroup", self.pid))
+            .map_err(|error| Self::snapshot_read_error(self.fd(), error.into()))?;
         let current = ticks(
-            &fs::read_to_string(format!("/proc/{}/stat", self.pid))?,
+            &fs::read_to_string(format!("/proc/{}/stat", self.pid))
+                .map_err(|error| Self::snapshot_read_error(self.fd(), error.into()))?,
             self.pid,
         )?;
         if current != self.birth
@@ -114,7 +128,14 @@ impl Process {
             return Err(io::Error::last_os_error().into());
         }
         let fd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
-        let birth = ticks(&fs::read_to_string(format!("/proc/{pid}/stat"))?, pid)?;
+        let value = fs::read_to_string(format!("/proc/{pid}/stat")).map_err(|error| {
+            if dead_fault == Fault::ExitedAfterListing {
+                Self::snapshot_read_error(fd.as_raw_fd(), error.into())
+            } else {
+                error.into()
+            }
+        })?;
+        let birth = ticks(&value, pid)?;
         let process = Self { pid, birth, fd };
         if !process.alive()? {
             return Err(dead_fault);
