@@ -185,6 +185,8 @@ process = subprocess.Popen([sys.argv[1], 'linux-isolation-probe'], env={}, stdin
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 handles = {}; directories = {}; guardian_handle = None
 stage = 'select_target'
+audit_basename = None
+guardian_poll_hits = snapshot_bind_hits = 0
 try:
     until = time.monotonic() + 90
     while time.monotonic() < until:
@@ -217,7 +219,9 @@ try:
         if fd >= 2**31: continue
         info=pathlib.Path(f'/proc/{process.pid}/fdinfo/{fd}').read_text()
         if f'Pid:\t{guardian}' not in info.splitlines(): continue
+        guardian_poll_hits += 1
         break
+    assert guardian_poll_hits == 1
     assert all(not select.select([h],[],[],0)[0] for h in handles.values())
     signal.pidfd_send_signal(guardian_handle,signal.SIGKILL)
     assert select.select([guardian_handle],[],[],2)[0]
@@ -241,7 +245,8 @@ try:
             if (endpoint.st_dev,endpoint.st_ino) in member_files:
                 listed.update(int(pid) for pid in trace_bytes(values[13],values[10]).split())
         if values[15]==434 and values[10]==NEG_ENOSYS and values[14] in handles:
-            target=values[14];break
+            target=values[14];snapshot_bind_hits += 1;break
+    assert snapshot_bind_hits == 1
     assert target in listed
     assert not select.select([handles[target]],[],[],0)[0]
     # The parent is inside its snapshot bind, after listing the live target.
@@ -251,8 +256,9 @@ try:
     ptrace(17,process.pid)
     output,errors=process.communicate(timeout=15)
     report=json.loads(output)
-    audit_fd,audit_path=tempfile.mkstemp(prefix='tempest-snapshot-race-audit-',suffix='.json')
+    audit_fd,audit_path=tempfile.mkstemp(prefix='tempest-primary-fault-audit-',suffix='.json')
     with os.fdopen(audit_fd,'w') as audit:json.dump(report,audit)
+    audit_basename=pathlib.Path(audit_path).name
     stage='validate_status'
     assert process.returncode==1 and report['resources_removed'] is False
     final=report['parent_recovery_status'][-1];counts=final['counts']
@@ -273,16 +279,20 @@ try:
             assert not (root/role/'cgroup.procs').read_text().split()
             assert 'populated 0' in (root/role/'cgroup.events').read_text().splitlines()
         for role in ['a','b','guard']:os.rmdir(role,dir_fd=directories['root'])
+        assert (root.lstat().st_dev,root.lstat().st_ino)==identities['root']
         root.rmdir()
         # Preserve RUN rather than delete diagnostic evidence.
         hold=pathlib.Path(tempfile.mkdtemp(prefix='tempest-snapshot-race-evidence-',dir='/run'))
+        assert (run.lstat().st_dev,run.lstat().st_ino)==identities['run']
         run.rename(hold/'original-run')
+        assert not root.exists() and not run.exists()
     stage='next_generation'
     next_generation(sys.argv[1])
     print(json.dumps({'status':'passed','snapshot_counts':counts,'audit_basename':pathlib.Path(audit_path).name,
                       'resources_removed_by_probe':False,'fixture_owned_cleanup':True,'next_generation_admitted':True}))
 except BaseException as error:
-    print(json.dumps({'status':'failed','scenario':'snapshot_exit_race','fixture_stage':stage,**exception_diagnostic(error)}))
+    print(json.dumps({'status':'failed','scenario':'snapshot_exit_race','fixture_stage':stage,
+                      'audit_basename':audit_basename,**exception_diagnostic(error)}))
     raise
 finally:
     kill_reap(process)
