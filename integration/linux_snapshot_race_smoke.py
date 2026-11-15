@@ -187,6 +187,79 @@ handles = {}; directories = {}; guardian_handle = None
 stage = 'select_target'
 audit_basename = None
 guardian_poll_hits = snapshot_bind_hits = 0
+snapshot_read_hits = 0
+follow_diagnostic = None
+cleanup_disposition = 'not_attempted'
+cleanup_state = None
+prestop_live_owned = stopped_live_owned = 0
+
+def terminate_held_members():
+    # Every signal targets an already pinned member of this exact generation.
+    for handle in handles.values():
+        if not select.select([handle],[],[],0)[0]:
+            try: signal.pidfd_send_signal(handle,signal.SIGCONT)
+            except ProcessLookupError: pass
+            try: signal.pidfd_send_signal(handle,signal.SIGKILL)
+            except ProcessLookupError: pass
+    if guardian_handle is not None and not select.select([guardian_handle],[],[],0)[0]:
+        try: signal.pidfd_send_signal(guardian_handle,signal.SIGKILL)
+        except ProcessLookupError: pass
+    until=time.monotonic()+5
+    pinned=[*handles.values(),*([guardian_handle] if guardian_handle is not None else [])]
+    while time.monotonic()<until and any(not select.select([handle],[],[],0)[0] for handle in pinned):
+        time.sleep(0.001)
+    while time.monotonic()<until and root.exists():
+        try:
+            if all(not (root/role/'cgroup.procs').read_text().split() for role in ['', 'a','b','guard']) and all(
+                    'populated 0' in (root/role/'cgroup.events').read_text().splitlines()
+                    for role in ['', 'a','b','guard']):break
+        except FileNotFoundError:break
+        time.sleep(0.001)
+
+def cleanup_owned_generation():
+    global cleanup_disposition, cleanup_state
+    state={'parent_terminal':process.returncode is not None,'paths_present':root.exists() and run.exists(),
+           'identity_matches':False,'roles_empty':False,'populated_zero':False,
+           'role_pidfds_dead':all(select.select([handle],[],[],0)[0] for handle in handles.values()),
+           'guardian_dead':guardian_handle is not None and bool(select.select([guardian_handle],[],[],0)[0])}
+    cleanup_state=state
+    if not state['paths_present']:
+        cleanup_disposition='already_absent'
+        return True
+    if not state['parent_terminal'] or set(directories) != {'root','run'} or not handles:
+        cleanup_disposition='preserved';return False
+    try:
+        for key,path in [('root',root),('run',run)]:
+            current=path.lstat();held=os.fstat(directories[key])
+            if (current.st_dev,current.st_ino)!=(held.st_dev,held.st_ino) or (held.st_dev,held.st_ino)!=identities[key]:
+                cleanup_disposition='preserved';return False
+        state['identity_matches']=True
+        state['roles_empty']=all(not (root/role/'cgroup.procs').read_text().split()
+                                 for role in ['', 'a','b','guard'])
+        state['populated_zero']=all('populated 0' in (root/role/'cgroup.events').read_text().splitlines()
+                                    for role in ['', 'a','b','guard'])
+        if not all([state['roles_empty'],state['populated_zero'],state['role_pidfds_dead'],state['guardian_dead']]):
+            cleanup_disposition='preserved';return False
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as lock:
+            lock.bind('\0tempest-linux-isolation-probe-lock')
+            # Recheck the complete guard while holding the generation lock.
+            for key,path in [('root',root),('run',run)]:
+                current=path.lstat();held=os.fstat(directories[key])
+                assert (current.st_dev,current.st_ino)==(held.st_dev,held.st_ino)==identities[key]
+            assert all(not (root/role/'cgroup.procs').read_text().split() for role in ['', 'a','b','guard'])
+            assert all('populated 0' in (root/role/'cgroup.events').read_text().splitlines()
+                       for role in ['', 'a','b','guard'])
+            assert all(select.select([handle],[],[],0)[0] for handle in handles.values())
+            assert select.select([guardian_handle],[],[],0)[0]
+            for role in ['a','b','guard']:os.rmdir(role,dir_fd=directories['root'])
+            root.rmdir()
+            hold=pathlib.Path(tempfile.mkdtemp(prefix='tempest-snapshot-race-evidence-',dir='/run'))
+            assert (run.lstat().st_dev,run.lstat().st_ino)==identities['run']
+            run.rename(hold/'original-run')
+        cleanup_disposition='removed'
+        return True
+    except (AssertionError,FileNotFoundError,OSError):
+        cleanup_disposition='preserved';return False
 try:
     until = time.monotonic() + 90
     while time.monotonic() < until:
@@ -208,6 +281,24 @@ try:
     for role in ['a','b','guard']:
         pids=(root/role/'cgroup.procs').read_text().split(); assert len(pids)==1
         pid=int(pids[0]);handles[pid]=bind_live_child(pid,process.pid)
+    prestop_members={int(pid) for role in ['a','b','guard']
+                     for pid in (root/role/'cgroup.procs').read_text().split()}
+    prestop_live_owned=sum(pid in prestop_members and not select.select([handle],[],[],0)[0]
+                           for pid,handle in handles.items())
+    assert prestop_members==set(handles) and prestop_live_owned==3
+    # Keep all three dummy roles alive until recovery has listed them.  The
+    # report-timeout payload otherwise has enough time to finish naturally
+    # while the traced parent is stopped at the guardian poll.
+    for handle in handles.values(): signal.pidfd_send_signal(handle,signal.SIGSTOP)
+    stop_until=time.monotonic()+2
+    while time.monotonic()<stop_until:
+        stopped_live_owned=sum(not select.select([handle],[],[],0)[0] and
+                               next(line for line in pathlib.Path(f'/proc/{pid}/status').read_text().splitlines()
+                                    if line.startswith('State:')).split()[1] in {'T','t'}
+                               for pid,handle in handles.items())
+        if stopped_live_owned==3:break
+        time.sleep(0.001)
+    assert stopped_live_owned==3
     stage = 'guardian_poll'
     # With live roles in report_timeout collector, the first matching poll is
     # a lease pulse; later parent_recovery/guardian_alive polls alone would not
@@ -246,6 +337,7 @@ try:
         if values[15]==0 and 0 < values[10] <= 1024:
             endpoint=pathlib.Path(f'/proc/{process.pid}/fd/{values[14]}').stat()
             if (endpoint.st_dev,endpoint.st_ino) in member_files:
+                snapshot_read_hits += 1
                 listed.update(int(pid) for pid in trace_bytes(values[13],values[10]).split())
         if values[15]==434 and values[10]==NEG_ENOSYS and values[14] in handles:
             target=values[14];snapshot_bind_hits += 1;break
@@ -259,7 +351,7 @@ try:
     ptrace(17,process.pid)
     output,errors=process.communicate(timeout=15)
     report=json.loads(output)
-    audit_fd,audit_path=tempfile.mkstemp(prefix='tempest-primary-fault-audit-',suffix='.json')
+    audit_fd,audit_path=tempfile.mkstemp(prefix='tempest-snapshot-race-audit-',suffix='.json')
     with os.fdopen(audit_fd,'w') as audit:
         json.dump({'scenario':'snapshot_exit_race','report':report},audit)
     audit_basename=pathlib.Path(audit_path).name
@@ -270,33 +362,58 @@ try:
     assert final['guardian_signal']==signal.SIGKILL and report['formal_eligible'] is False
     assert report['model_launched'] is False
     assert counts['snapshot_stage']=='bind' and counts['snapshot_reason']=='exited_after_listing'
+    assert counts['snapshot_errno'] is None
+    assert counts['registered']==3 and counts['direct']==3
+    assert counts['descendant']==0 and counts['unattached']==0
     assert counts['direct']==counts['dead_pidfds']==counts['reaped']==3
     assert counts['reap_unconfirmed']==0 and counts['cgroup_populated'] is False
     assert all(select.select([h],[],[],0)[0] for h in handles.values())
     stage='fixture_cleanup'
-    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as lock:
-        lock.bind('\0tempest-linux-isolation-probe-lock')
-        for key,path in [('root',root),('run',run)]:
-            st=path.lstat();assert (st.st_dev,st.st_ino)==identities[key]
-            st=os.fstat(directories[key]);assert (st.st_dev,st.st_ino)==identities[key]
-        for role in ['', 'a','b','guard']:
-            assert not (root/role/'cgroup.procs').read_text().split()
-            assert 'populated 0' in (root/role/'cgroup.events').read_text().splitlines()
-        for role in ['a','b','guard']:os.rmdir(role,dir_fd=directories['root'])
-        assert (root.lstat().st_dev,root.lstat().st_ino)==identities['root']
-        root.rmdir()
-        # Preserve RUN rather than delete diagnostic evidence.
-        hold=pathlib.Path(tempfile.mkdtemp(prefix='tempest-snapshot-race-evidence-',dir='/run'))
-        assert (run.lstat().st_dev,run.lstat().st_ino)==identities['run']
-        run.rename(hold/'original-run')
-        assert not root.exists() and not run.exists()
+    assert cleanup_owned_generation()
+    assert cleanup_disposition=='removed' and not root.exists() and not run.exists()
     stage='next_generation'
     next_generation(sys.argv[1])
     print(json.dumps({'status':'passed','snapshot_counts':counts,'audit_basename':pathlib.Path(audit_path).name,
-                      'resources_removed_by_probe':False,'fixture_owned_cleanup':True,'next_generation_admitted':True}))
+                      'resources_removed_by_probe':False,'fixture_owned_cleanup':True,'next_generation_admitted':True,
+                      'prestop_live_owned':prestop_live_owned,'stopped_live_owned':stopped_live_owned,
+                      'guardian_poll_hits':guardian_poll_hits,'snapshot_read_hits':snapshot_read_hits,
+                      'snapshot_bind_hits':snapshot_bind_hits}))
 except BaseException as error:
+    early_projection = None
+    early_stdout_bytes = early_stderr_bytes = 0
+    if audit_basename is None and process.returncode is not None:
+        try:
+            early_output=process.stdout.read(65537)
+            early_errors=process.stderr.read(65537)
+            early_stdout_bytes=len(early_output);early_stderr_bytes=len(early_errors)
+            assert len(early_output)<=65536 and len(early_errors)<=65536
+            early_report=json.loads(early_output)
+            assert isinstance(early_report,dict)
+            statuses=early_report.get('parent_recovery_status')
+            last_status=statuses[-1] if isinstance(statuses,list) and statuses and isinstance(statuses[-1],dict) else {}
+            early_projection={'reason':early_report.get('reason'),
+                              'parent_recovery_status':{key:last_status.get(key) for key in
+                                                        ['transition','guardian_reaped','guardian_signal']},
+                              'guardian_alive':early_report.get('guardian_alive'),
+                              'resources_removed':early_report.get('resources_removed')}
+            audit_fd,audit_path=tempfile.mkstemp(prefix='tempest-snapshot-race-audit-',suffix='.json')
+            with os.fdopen(audit_fd,'w') as audit:
+                json.dump({'scenario':'snapshot_exit_race','report':early_report},audit)
+            audit_basename=pathlib.Path(audit_path).name
+        except (AssertionError,ValueError,OSError): pass
+    terminate_held_members()
+    kill_reap(process)
+    if cleanup_disposition=='not_attempted': cleanup_owned_generation()
+    role_pidfds_dead=sum(bool(select.select([handle],[],[],0)[0]) for handle in handles.values())
     print(json.dumps({'status':'failed','scenario':'snapshot_exit_race','fixture_stage':stage,
-                      'audit_basename':audit_basename,**exception_diagnostic(error)}))
+                      'audit_basename':audit_basename,'guardian_poll_hits':guardian_poll_hits,
+                      'snapshot_read_hits':snapshot_read_hits,'snapshot_bind_hits':snapshot_bind_hits,
+                      'listed_count':len(listed) if 'listed' in globals() else 0,
+                      'prestop_live_owned':prestop_live_owned,'stopped_live_owned':stopped_live_owned,
+                      'role_pidfds_dead':role_pidfds_dead,'stdout_bytes':early_stdout_bytes,
+                      'stderr_bytes':early_stderr_bytes,'early_report':early_projection,
+                      'cleanup_disposition':cleanup_disposition,'cleanup_state':cleanup_state,
+                      **(follow_diagnostic or {}),**exception_diagnostic(error)}))
     raise
 finally:
     kill_reap(process)

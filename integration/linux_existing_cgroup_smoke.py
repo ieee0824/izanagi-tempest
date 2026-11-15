@@ -153,7 +153,30 @@ def run_fixture(fixture, failure_reason, timeout=25):
         if result.returncode != 0:
             try:
                 diagnostic = json.loads(result.stdout)
-                if isinstance(diagnostic, dict) and {'status', 'scenario', 'fixture_stage'} <= set(diagnostic) <= {'status', 'scenario', 'fixture_stage', 'probe_reason', 'probe_removed', 'failure_kind', 'exit_code', 'stdout_bytes', 'stderr_bytes', 'completed_cases', 'follow_stage', 'follow_exit_code', 'follow_last_progress', 'follow_root_exists', 'follow_run_exists', 'exception_type', 'fixture_line', 'audit_basename'}:
+                snapshot_state = diagnostic.get('cleanup_state') if isinstance(diagnostic, dict) else None
+                snapshot_projection = diagnostic.get('early_report') if isinstance(diagnostic, dict) else None
+                valid_snapshot_details = (not isinstance(diagnostic, dict) or diagnostic.get('scenario') != 'snapshot_exit_race' or
+                    all(type(diagnostic.get(key, 0)) is int and 0 <= diagnostic.get(key, 0) <= 16
+                        for key in ['guardian_poll_hits', 'snapshot_read_hits', 'snapshot_bind_hits', 'listed_count', 'role_pidfds_dead', 'prestop_live_owned', 'stopped_live_owned'])
+                    and diagnostic.get('cleanup_disposition') in {'not_attempted', 'already_absent', 'preserved', 'removed'}
+                    and (snapshot_state is None or isinstance(snapshot_state, dict)
+                         and set(snapshot_state) == {'parent_terminal', 'paths_present', 'identity_matches', 'roles_empty', 'populated_zero', 'role_pidfds_dead', 'guardian_dead'}
+                         and all(type(value) is bool for value in snapshot_state.values()))
+                    and (snapshot_projection is None or isinstance(snapshot_projection, dict)
+                         and set(snapshot_projection) == {'reason', 'parent_recovery_status', 'guardian_alive', 'resources_removed'}
+                         and (snapshot_projection['reason'] is None or isinstance(snapshot_projection['reason'], str) and len(snapshot_projection['reason']) <= 64)
+                         and type(snapshot_projection['guardian_alive']) in {bool, type(None)}
+                         and type(snapshot_projection['resources_removed']) in {bool, type(None)}
+                         and isinstance(snapshot_projection['parent_recovery_status'], dict)
+                         and set(snapshot_projection['parent_recovery_status']) == {'transition', 'guardian_reaped', 'guardian_signal'}
+                         and (snapshot_projection['parent_recovery_status']['transition'] is None or
+                              isinstance(snapshot_projection['parent_recovery_status']['transition'], str)
+                              and len(snapshot_projection['parent_recovery_status']['transition']) <= 32)
+                         and type(snapshot_projection['parent_recovery_status']['guardian_reaped']) in {bool, type(None)}
+                         and (snapshot_projection['parent_recovery_status']['guardian_signal'] is None or
+                              type(snapshot_projection['parent_recovery_status']['guardian_signal']) is int
+                              and 0 <= snapshot_projection['parent_recovery_status']['guardian_signal'] <= 64)))
+                if isinstance(diagnostic, dict) and {'status', 'scenario', 'fixture_stage'} <= set(diagnostic) <= {'status', 'scenario', 'fixture_stage', 'probe_reason', 'probe_removed', 'failure_kind', 'exit_code', 'stdout_bytes', 'stderr_bytes', 'completed_cases', 'follow_stage', 'follow_exit_code', 'follow_last_progress', 'follow_root_exists', 'follow_run_exists', 'exception_type', 'fixture_line', 'audit_basename', 'guardian_poll_hits', 'snapshot_read_hits', 'snapshot_bind_hits', 'listed_count', 'role_pidfds_dead', 'prestop_live_owned', 'stopped_live_owned', 'early_report', 'cleanup_disposition', 'cleanup_state'}:
                     scenarios = {'initial_admission', 'detached_grandchild', 'lease_stopped', 'guardian_before_create', 'guardian_after_create', 'guardian_before_ack', 'guardian_after_ack', 'guardian_ack_timeout', 'guardian_admission', 'guardian_payload', 'guardian_collector', 'guardian_stopped', 'primary_eof_guardian_death', 'primary_output_cleanup_eio', 'snapshot_exit_race'}
                     stages = {'select_target', 'status_metadata', 'open_status_channel', 'owner_stop', 'recovery_paths', 'decode_status', 'validate_status', 'seize', 'fork_event', 'freeze_guardian', 'timeout_reap', 'next_generation', 'startup_result', 'ack_timeout_parent', 'guardian_stop', 'cleanup_entry', 'pin_roles', 'inject_secondary', 'guardian_poll', 'snapshot_bind', 'fixture_cleanup'}
                     if (diagnostic['status'] == 'failed' and diagnostic['scenario'] in scenarios and diagnostic['fixture_stage'] in stages
@@ -161,8 +184,9 @@ def run_fixture(fixture, failure_reason, timeout=25):
                             and type(diagnostic.get('probe_removed', False)) is bool
                             and diagnostic.get('failure_kind', 'assertion') in {'timeout', 'parse', 'assertion'}
                             and type(diagnostic.get('completed_cases',0)) is int and 0 <= diagnostic.get('completed_cases',0) <= 4
-                            and (diagnostic.get('audit_basename') is None or isinstance(diagnostic['audit_basename'], str) and re.fullmatch(r'tempest-primary-fault-audit-[a-z0-9_]{8}\.json', diagnostic['audit_basename']) is not None)
+                            and (diagnostic.get('audit_basename') is None or isinstance(diagnostic['audit_basename'], str) and re.fullmatch(r'tempest-(?:primary-fault|snapshot-race)-audit-[a-z0-9_]{8}\.json', diagnostic['audit_basename']) is not None)
                             and valid_follow_details(diagnostic)
+                            and valid_snapshot_details
                             and (diagnostic.get('exit_code') is None or type(diagnostic['exit_code']) is int and -128 <= diagnostic['exit_code'] <= 255)
                             and all(type(diagnostic.get(key, 0)) is int and 0 <= diagnostic.get(key, 0) <= 65536 for key in ['stdout_bytes', 'stderr_bytes'])):
                         print(json.dumps(diagnostic))
