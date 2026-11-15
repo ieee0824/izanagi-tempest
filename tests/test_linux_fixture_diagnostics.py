@@ -6,6 +6,10 @@ import select
 import sys
 import time
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from types import SimpleNamespace
+from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(__file__).resolve().parents[1] / 'integration' / 'linux_existing_cgroup_smoke.py'
@@ -91,6 +95,50 @@ class BoundedPipeReadTests(unittest.TestCase):
         self.assertEqual((values['stdout'], status), (b'123456789', 'oversize'))
         values, status = self.run_read(b'', False)
         self.assertEqual((values['stdout'], status), (b'', 'timeout'))
+
+
+class RunnerOversizeDiagnosticTests(unittest.TestCase):
+    def diagnostic(self, **updates):
+        value = {'status': 'failed', 'scenario': 'snapshot_exit_race',
+                 'fixture_stage': 'select_target', 'audit_basename': None,
+                 'follow_stage': 'admission', 'follow_exit_code': None,
+                 'follow_last_progress': None, 'follow_root_exists': False,
+                 'follow_run_exists': False, 'guardian_poll_hits': 0,
+                 'snapshot_read_hits': 0, 'snapshot_bind_hits': 0,
+                 'listed_count': 0, 'role_pidfds_dead': 0,
+                 'prestop_live_owned': 0, 'stopped_live_owned': 0,
+                 'early_read_status': 'oversize', 'early_report': None,
+                 'cleanup_disposition': 'not_attempted', 'cleanup_state': None,
+                 'stdout_bytes': 65537, 'stderr_bytes': 0,
+                 'exception_type': 'AssertionError', 'fixture_line': 1}
+        value.update(updates)
+        return value
+
+    def test_byte_count_boundary_is_scenario_and_status_specific(self):
+        self.assertTrue(MODULE.valid_output_byte_counts(self.diagnostic()))
+        self.assertFalse(MODULE.valid_output_byte_counts(
+            self.diagnostic(early_read_status='complete')))
+        self.assertFalse(MODULE.valid_output_byte_counts(
+            self.diagnostic(scenario='primary_eof_guardian_death')))
+        self.assertFalse(MODULE.valid_output_byte_counts(
+            self.diagnostic(stdout_bytes=65536)))
+
+    def test_runner_preserves_valid_oversize_diagnostic(self):
+        diagnostic = self.diagnostic()
+
+        def privileged(*args, **kwargs):
+            if args[0] == '/usr/bin/python3':
+                return SimpleNamespace(returncode=1, stdout=__import__('json').dumps(diagnostic), stderr='')
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
+
+        output = StringIO()
+        with mock.patch.object(MODULE, 'privileged', side_effect=privileged), \
+             mock.patch.object(MODULE.os, 'geteuid', return_value=1000), \
+             mock.patch.object(MODULE.sys, 'argv', ['fixture']), \
+             redirect_stdout(output):
+            result = MODULE.run_fixture('fixture', 'generic_failure')
+        self.assertEqual(result, 1)
+        self.assertEqual(__import__('json').loads(output.getvalue()), diagnostic)
 
 
 if __name__ == '__main__':

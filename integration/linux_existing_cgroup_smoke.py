@@ -147,6 +147,15 @@ def valid_audit_basename(diagnostic):
     return basename is None or isinstance(basename, str) and re.fullmatch(pattern, basename) is not None
 
 
+def valid_output_byte_counts(diagnostic):
+    values = [diagnostic.get(key, 0) for key in ['stdout_bytes', 'stderr_bytes']]
+    snapshot_oversize = (diagnostic.get('scenario') == 'snapshot_exit_race'
+                         and diagnostic.get('early_read_status') == 'oversize')
+    limit = 65537 if snapshot_oversize else 65536
+    return (all(type(value) is int and 0 <= value <= limit for value in values)
+            and (not snapshot_oversize or 65537 in values))
+
+
 def run_fixture(fixture, failure_reason, timeout=25):
     if len(sys.argv) != 1 or sys.platform != 'linux' or os.geteuid() == 0:
         print(json.dumps({'status': 'rejected', 'reason': 'nonroot_dedicated_vm_entry_required'}))
@@ -201,7 +210,7 @@ def run_fixture(fixture, failure_reason, timeout=25):
                             and valid_follow_details(diagnostic)
                             and valid_snapshot_details
                             and (diagnostic.get('exit_code') is None or type(diagnostic['exit_code']) is int and -128 <= diagnostic['exit_code'] <= 255)
-                            and all(type(diagnostic.get(key, 0)) is int and 0 <= diagnostic.get(key, 0) <= 65536 for key in ['stdout_bytes', 'stderr_bytes'])):
+                            and valid_output_byte_counts(diagnostic)):
                         print(json.dumps(diagnostic))
                         return 1
             except (ValueError, TypeError):
