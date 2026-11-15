@@ -131,13 +131,14 @@ def run_fixture(fixture, failure_reason, timeout=25):
         if result.returncode != 0:
             try:
                 diagnostic = json.loads(result.stdout)
-                if isinstance(diagnostic, dict) and {'status', 'scenario', 'fixture_stage'} <= set(diagnostic) <= {'status', 'scenario', 'fixture_stage', 'probe_reason', 'probe_removed', 'failure_kind', 'exit_code', 'stdout_bytes', 'stderr_bytes'}:
+                if isinstance(diagnostic, dict) and {'status', 'scenario', 'fixture_stage'} <= set(diagnostic) <= {'status', 'scenario', 'fixture_stage', 'probe_reason', 'probe_removed', 'failure_kind', 'exit_code', 'stdout_bytes', 'stderr_bytes', 'completed_cases'}:
                     scenarios = {'initial_admission', 'detached_grandchild', 'lease_stopped', 'guardian_before_create', 'guardian_after_create', 'guardian_before_ack', 'guardian_after_ack', 'guardian_ack_timeout', 'guardian_admission', 'guardian_payload', 'guardian_collector', 'guardian_stopped'}
                     stages = {'select_target', 'status_metadata', 'open_status_channel', 'owner_stop', 'recovery_paths', 'decode_status', 'validate_status', 'seize', 'fork_event', 'freeze_guardian', 'timeout_reap', 'next_generation', 'startup_result', 'ack_timeout_parent', 'guardian_stop'}
                     if (diagnostic['status'] == 'failed' and diagnostic['scenario'] in scenarios and diagnostic['fixture_stage'] in stages
-                            and diagnostic.get('probe_reason', 'other') in {'watchdog_startup_failed', 'watchdog_guardian_unconfirmed', 'run_cleanup', 'identity', 'kernel', 'other'}
+                            and diagnostic.get('probe_reason', 'other') in {'watchdog_startup_failed', 'watchdog_guardian_unconfirmed', 'run_cleanup', 'identity', 'kernel', 'other', 'child_exit', 'child_signal', 'watchdog_guardian_died', 'watchdog_lease_unavailable'}
                             and type(diagnostic.get('probe_removed', False)) is bool
                             and diagnostic.get('failure_kind', 'assertion') in {'timeout', 'parse', 'assertion'}
+                            and type(diagnostic.get('completed_cases',0)) is int and 0 <= diagnostic.get('completed_cases',0) <= 4
                             and (diagnostic.get('exit_code') is None or type(diagnostic['exit_code']) is int and -128 <= diagnostic['exit_code'] <= 255)
                             and all(type(diagnostic.get(key, 0)) is int and 0 <= diagnostic.get(key, 0) <= 65536 for key in ['stdout_bytes', 'stderr_bytes'])):
                         print(json.dumps(diagnostic))

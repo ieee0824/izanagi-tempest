@@ -343,6 +343,7 @@ pub(super) struct Watchdog {
     normal_terminal: Option<Status>,
     pending_status: Vec<u8>,
     terminal_wait: Option<Result<(), Fault>>,
+    sent_command: Option<Command>,
     mode: Mode,
     recovery: Option<RecoveryGroup>,
     started: Instant,
@@ -396,6 +397,7 @@ impl Watchdog {
             normal_terminal: None,
             pending_status: Vec::new(),
             terminal_wait: None,
+            sent_command: None,
             mode: Mode::Startup,
             recovery: None,
             started: Instant::now(),
@@ -504,17 +506,41 @@ impl Watchdog {
         }
     }
 
-    fn record_status(&mut self, status: Status) {
+    fn record_status(&mut self, status: Status) -> Result<(), Fault> {
         self.last = Some(status);
         if matches!(
             status.transition,
             Transition::Released | Transition::Recovered
         ) {
+            // Normal termination is an acknowledgement of the exact command
+            // whose atomic write succeeded. Keep that command after switching
+            // to DeadObserved so a post-reap drain has the same binding.
+            let expected = match self.sent_command {
+                Some(Command::Done) => (Reason::ExplicitDone, Transition::Released),
+                Some(Command::Relinquish) => (Reason::Relinquish, Transition::Recovered),
+                None => return Err(Fault::Identity),
+            };
+            let command_phase = match self.mode {
+                Mode::CommandSent(command) | Mode::TerminalAck(command) => {
+                    Some(command) == self.sent_command
+                }
+                Mode::DeadObserved => true,
+                _ => false,
+            };
+            if !command_phase
+                || status.reason != expected.0
+                || status.trigger != expected.0
+                || status.transition != expected.1
+                || status.owner_dead
+            {
+                return Err(Fault::Identity);
+            }
             self.normal_terminal = Some(status);
             if let Mode::CommandSent(command) = self.mode {
                 self.mode = Mode::TerminalAck(command);
             }
         }
+        Ok(())
     }
 
     fn parse_drained(&mut self, bytes: &[u8]) -> DrainState {
@@ -534,7 +560,7 @@ impl Watchdog {
                 continue;
             }
             match serde_json::from_slice(line) {
-                Ok(status) => self.record_status(status),
+                Ok(status) => invalid |= self.record_status(status).is_err(),
                 Err(_) => invalid = true,
             }
         }
@@ -744,7 +770,7 @@ impl Watchdog {
                         &self.pending_status[..self.pending_status.len() - 1],
                     )
                     .map_err(|_| Fault::Identity)?;
-                    self.record_status(value);
+                    self.record_status(value)?;
                     self.pending_status.clear();
                     if value.transition == Transition::Failed {
                         return Err(Fault::WatchdogRecovery);
@@ -814,11 +840,13 @@ impl Watchdog {
             // command was delivered; retain ParentOwned for death/reap proof.
             return Err(Fault::WatchdogRecovery);
         }
-        self.mode = Mode::CommandSent(if byte == b'R' {
+        let command = if byte == b'R' {
             Command::Relinquish
         } else {
             Command::Done
-        });
+        };
+        self.sent_command = Some(command);
+        self.mode = Mode::CommandSent(command);
         Ok(())
     }
 
@@ -863,6 +891,7 @@ mod tests {
                 normal_terminal: None,
                 pending_status: Vec::new(),
                 terminal_wait: None,
+                sent_command: None,
                 mode: Mode::ParentOwned,
                 recovery: None,
                 started: Instant::now(),
@@ -932,6 +961,118 @@ mod tests {
         let mut bytes = serde_json::to_vec(&terminal).unwrap();
         bytes.push(b'\n');
         bytes
+    }
+
+    #[test]
+    fn normal_terminal_requires_exact_command_reason_trigger_and_live_owner() {
+        let process = Process::bind(std::process::id()).unwrap();
+        let reasons = [
+            Reason::OwnerDead,
+            Reason::LeaseExpired,
+            Reason::ExplicitDone,
+            Reason::Relinquish,
+            Reason::RecoveryFailed,
+        ];
+        for command in [None, Some(b'D'), Some(b'R')] {
+            for dead_observed in [false, true] {
+                for reason in reasons {
+                    for trigger in reasons {
+                        for transition in [Transition::Released, Transition::Recovered] {
+                            for owner_dead in [false, true] {
+                                let (mut watch, _read, _write) = watch_for(&process, false);
+                                if let Some(byte) = command {
+                                    watch.send_command(byte).unwrap();
+                                }
+                                if dead_observed {
+                                    watch.mode = Mode::DeadObserved;
+                                }
+                                let status = Status {
+                                    reason,
+                                    trigger,
+                                    transition,
+                                    owner_dead,
+                                    elapsed_ms: 1,
+                                };
+                                let mut bytes = serde_json::to_vec(&status).unwrap();
+                                bytes.push(b'\n');
+                                let expected = !owner_dead
+                                    && match command {
+                                        Some(b'D') => {
+                                            reason == Reason::ExplicitDone
+                                                && trigger == Reason::ExplicitDone
+                                                && transition == Transition::Released
+                                        }
+                                        Some(b'R') => {
+                                            reason == Reason::Relinquish
+                                                && trigger == Reason::Relinquish
+                                                && transition == Transition::Recovered
+                                        }
+                                        _ => false,
+                                    };
+                                assert_eq!(
+                                    watch.parse_drained(&bytes),
+                                    if expected {
+                                        DrainState::Complete
+                                    } else {
+                                        DrainState::Invalid
+                                    }
+                                );
+                                assert_eq!(watch.normal_terminal.is_some(), expected);
+                                if expected && !dead_observed {
+                                    assert!(matches!(watch.mode, Mode::TerminalAck(_)));
+                                }
+                                lease::clear();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn crossed_terminal_never_erases_an_earlier_valid_acknowledgement() {
+        let process = Process::bind(std::process::id()).unwrap();
+        let (mut watch, _read, _write) = watch_for(&process, false);
+        watch.send_command(b'D').unwrap();
+        assert_eq!(watch.parse_drained(&terminal_bytes()), DrainState::Complete);
+        watch.mode = Mode::DeadObserved;
+        let crossed = Status {
+            reason: Reason::Relinquish,
+            trigger: Reason::Relinquish,
+            transition: Transition::Recovered,
+            owner_dead: false,
+            elapsed_ms: 2,
+        };
+        let mut bytes = serde_json::to_vec(&crossed).unwrap();
+        bytes.push(b'\n');
+        assert_eq!(watch.parse_drained(&bytes), DrainState::Invalid);
+        let retained = watch.normal_terminal.unwrap();
+        assert_eq!(retained.reason, Reason::ExplicitDone);
+        assert_eq!(retained.trigger, Reason::ExplicitDone);
+        assert_eq!(retained.transition, Transition::Released);
+        assert!(!retained.owner_dead);
+        assert_eq!(retained.elapsed_ms, 1);
+        lease::clear();
+    }
+
+    #[test]
+    fn crossed_receive_is_rejected_and_retained_as_invalid_drain_evidence() {
+        let process = Process::bind(std::process::id()).unwrap();
+        let (mut watch, _read, writer) = watch_for(&process, false);
+        watch.send_command(b'R').unwrap();
+        let bytes = terminal_bytes();
+        assert_eq!(
+            unsafe { libc::write(writer.as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) },
+            bytes.len() as isize
+        );
+        assert_eq!(watch.receive(Transition::Released), Err(Fault::Identity));
+        assert_eq!(watch.mode, Mode::CommandSent(Command::Relinquish));
+        assert!(watch.normal_terminal.is_none());
+        watch.mode = Mode::DeadObserved;
+        assert_eq!(watch.drain_status(), DrainState::Invalid);
+        assert!(watch.normal_terminal.is_none());
+        lease::clear();
     }
 
     #[test]
@@ -1045,6 +1186,7 @@ mod tests {
             normal_terminal: None,
             pending_status: Vec::new(),
             terminal_wait: None,
+            sent_command: None,
             mode: Mode::ParentOwned,
             recovery: None,
             started: Instant::now(),

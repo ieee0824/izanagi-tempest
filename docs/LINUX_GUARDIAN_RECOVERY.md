@@ -32,6 +32,10 @@ CommandSentでもguardian死亡/reap確認後に部分回収し、正常terminal
 mutationせず最終状態とregistryだけ検証してVerifiedを出します。生存guardianからの取戻しは認めません。
 waitpidのterminal結果は一度だけ保存し、command側と回収側でreapを重複しません。
 完全な正常terminalは別に保持し、後続partial/invalidがあってもmutationしません。
+正常terminalは送信に成功したcommandと対応する完全な組合せだけを受理します。
+Dはreason/triggerがともにexplicit_doneかつreleased、Rはともにrelinquishかつrecoveredで、
+どちらもowner_dead=falseが必要です。送信前・対応しない組合せはinvalidとして記録します。
+死亡後のdrainにも同じ検証を適用し、既知の正常terminalを後続invalidで上書きしません。
 正常terminalがないfailed/partial/invalid/emptyは、不確実性を記録したまま死亡後の専用回収を行います。
 これらの全順序のroot故障注入は未完です。
 
@@ -101,6 +105,13 @@ barrier 前は clone 直後、PIDFD bind 後、attach 前/直後に分け、cgro
 guardian SIGSTOP だけでは親が所有権を取らない負例と、正常終端直後の race も独立に試験します。
 各ケースは typed transition、検知時間、guardian reap、payload/descendant の PIDFD 死亡、
 回収結果、次世代の起動または残留時の無変更拒否を確認します。
+
+`80f78b3`のdiagnostic再実行では加入直後・孫実行中・collector待ち・SIGSTOP負例の4ケースと、
+最後の次世代137観測を通過しました。初回のSIGSTOPケースはselect_targetで失敗し、根因は未確定です。
+現在のfixtureはSIGSTOP負例を早い加入直後へ移し、既に加入したdummy roleもPIDFDで停止して
+正常完了による対象消失を防ぎます。guardian生存・親の無出力・対象生存・ROOT identity保持を
+500 ms確認した後にguardianをSIGKILLし、専用回収へ進むかを別に確認します。
+このfixtureの変更とterminalの組合せ検証は、上記の旧版実測と区別して検証します。
 
 親による回収中に親も死亡する二重故障では、新たな guardian を自動生成しません。
 結果が記録されず、payload/cgroup/RUN が残る可能性があります。

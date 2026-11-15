@@ -20,8 +20,8 @@ for scenario in ['guardian_admission', 'guardian_payload', 'guardian_collector',
             assert process.poll() is None
             try:
                 pids = [int(pid) for pid in (root / 'a' / 'cgroup.procs').read_text().split()]
-                selected = bool(pids) and scenario == 'guardian_admission'
-                if scenario != 'guardian_admission':
+                selected = bool(pids) and scenario in ['guardian_admission', 'guardian_stopped']
+                if scenario not in ['guardian_admission', 'guardian_stopped']:
                     progress = json.loads((run / 'progress').read_bytes())
                     if scenario == 'guardian_payload':
                         selected = progress['scenario'] == 'detached_grandchild' and len(pids) == 2
@@ -53,6 +53,9 @@ for scenario in ['guardian_admission', 'guardian_payload', 'guardian_collector',
         stage = 'guardian_stop'
         stopped_without_takeover = False
         if scenario == 'guardian_stopped':
+            # Hold the already admitted dummy role at the early stable point;
+            # it cannot complete normally during the guardian SIGSTOP test.
+            for handle in handles: signal.pidfd_send_signal(handle, signal.SIGSTOP)
             signal.pidfd_send_signal(guardian_handle, signal.SIGSTOP)
             until = time.monotonic() + 2
             while time.monotonic() < until:
@@ -136,8 +139,21 @@ for scenario in ['guardian_admission', 'guardian_payload', 'guardian_collector',
                         'external_guardian_readiness_wait':False,
                         'next_generation_full_checks':follow_checks,
                         'next_generation_admitted':True,'detection_upper_ms':round(detection_upper_ms,3)})
-    except BaseException:
-        print(json.dumps({'status':'failed','scenario':scenario,'fixture_stage':stage}))
+    except BaseException as error:
+        reason = 'other'
+        exited = process.poll() is not None
+        if exited:
+            try:
+                failed_output, _ = process.communicate(timeout=2)
+                failed_report = json.loads(failed_output)
+                candidate = failed_report.get('reason') if isinstance(failed_report, dict) else None
+                if candidate in {'identity','kernel','child_exit','child_signal','watchdog_guardian_died','watchdog_startup_failed','watchdog_guardian_unconfirmed','run_cleanup','watchdog_lease_unavailable'}:
+                    reason = candidate
+            except (ValueError, subprocess.TimeoutExpired): pass
+        print(json.dumps({'status':'failed','scenario':scenario,'fixture_stage':stage,
+                          'probe_reason':reason,'exit_code':process.returncode,
+                          'failure_kind':'timeout' if isinstance(error, (subprocess.TimeoutExpired, TimeoutError)) else 'parse' if isinstance(error, ValueError) else 'assertion',
+                          'completed_cases':len(results)}))
         raise
     finally:
         if process.poll() is None:
