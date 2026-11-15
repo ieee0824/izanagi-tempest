@@ -381,6 +381,9 @@ try:
 except BaseException as error:
     early_projection = None
     early_stdout_bytes = early_stderr_bytes = 0
+    # Close any inherited pipe writers before the bounded reads below.  Every
+    # signal is scoped to a pidfd pinned from this exact owned generation.
+    terminate_held_members()
     if audit_basename is None and process.returncode is not None:
         try:
             early_output=process.stdout.read(65537)
@@ -401,7 +404,6 @@ except BaseException as error:
                 json.dump({'scenario':'snapshot_exit_race','report':early_report},audit)
             audit_basename=pathlib.Path(audit_path).name
         except (AssertionError,ValueError,OSError): pass
-    terminate_held_members()
     kill_reap(process)
     if cleanup_disposition=='not_attempted': cleanup_owned_generation()
     role_pidfds_dead=sum(bool(select.select([handle],[],[],0)[0]) for handle in handles.values())
