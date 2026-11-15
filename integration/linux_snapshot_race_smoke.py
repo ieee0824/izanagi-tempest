@@ -209,6 +209,9 @@ try:
         pids=(root/role/'cgroup.procs').read_text().split(); assert len(pids)==1
         pid=int(pids[0]);handles[pid]=bind_live_child(pid,process.pid)
     stage = 'guardian_poll'
+    # With live roles in report_timeout collector, the first matching poll is
+    # a lease pulse; later parent_recovery/guardian_alive polls alone would not
+    # satisfy the subsequent live snapshot bind and failure assertions.
     while True:
         values=next_syscall(process,until)
         if values[15]!=7 or values[10]!=NEG_ENOSYS or values[13]!=1 or values[12]!=0: continue
@@ -257,7 +260,8 @@ try:
     output,errors=process.communicate(timeout=15)
     report=json.loads(output)
     audit_fd,audit_path=tempfile.mkstemp(prefix='tempest-primary-fault-audit-',suffix='.json')
-    with os.fdopen(audit_fd,'w') as audit:json.dump(report,audit)
+    with os.fdopen(audit_fd,'w') as audit:
+        json.dump({'scenario':'snapshot_exit_race','report':report},audit)
     audit_basename=pathlib.Path(audit_path).name
     stage='validate_status'
     assert process.returncode==1 and report['resources_removed'] is False
