@@ -91,10 +91,11 @@ cargo test --locked -p tempest-linux-probe
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 integration/linux_existing_cgroup_smoke.py
+python3 integration/linux_supervisor_death_smoke.py
 python3 integration/linux_isolation_smoke.py
 ```
 
-最後の2コマンドは**専用の Ubuntu 24.04 x86_64 VM**で、非 root user から実行します。
+最後の3コマンドは**専用の Ubuntu 24.04 x86_64 VM**で、非 root user から実行します。
 既存の `sudo -n`、`install`、`timeout` と、kernel の namespace・seccomp・cgroup v2
 （cpu/memory/pids controller、`cgroup.kill`）が必要です。通常の `cargo test` は root probe を起動しません。
 driver は固定の `target/debug/tempest` を root 所有・0700 の `/var/lib/tempest-probe-install-<ID>/`
@@ -108,6 +109,8 @@ rootless unit・API compile-fail 試験と baseline の観測は、M1 全体の�
 watchdog が cgroup を作成し、保持した directory fd の dev/inode を照合してから親へ所有権を通知します。
 通知前の親停止でも watchdog が自分の group だけを回収する設計です（停止タイミング別の故障注入は未完）。
 既存 group の作成拒否では回収権を取得しません。watchdog 自身が作成途中に停止して残留した場合も、次回は採用せず拒否します。
+A の cgroup 加入を kernel から観測して supervisor を SIGKILL する fixture では、
+pidfd で観測対象の死亡と run/cgroup の回収を確認します。全 role 稼働後・孫生成後や通知前など他の停止タイミングは未検証です。
 library 配置と write fd の追加負例、PID/UID/run 混入、
 資源枯渇・監査容量不足・EOF/cancel/timeout・監督異常・孫 process の回収等が残っています。
 失敗の診断は固定 stage/reason と数値 errno に限り、raw argv/env/stderr/任意 path や credential を出しません。

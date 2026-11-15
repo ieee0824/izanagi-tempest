@@ -56,7 +56,7 @@ finally:
 '''
 
 
-def main():
+def run_fixture(fixture, failure_reason):
     if len(sys.argv) != 1 or sys.platform != 'linux' or os.geteuid() == 0:
         print(json.dumps({'status': 'rejected', 'reason': 'nonroot_dedicated_vm_entry_required'}))
         return 2
@@ -70,14 +70,14 @@ def main():
         created = True
         if privileged('/usr/bin/install', '-o', 'root', '-g', 'root', '-m', '0700', '--', str(source), str(installed)).returncode:
             raise RuntimeError
-        result = privileged('/usr/bin/python3', '-c', FIXTURE, str(installed), timeout=25)
+        result = privileged('/usr/bin/python3', '-c', fixture, str(installed), timeout=25)
         if result.returncode != 0:
             raise RuntimeError
         report = json.loads(result.stdout)
         print(json.dumps(report))
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
-        print(json.dumps({'status': 'failed', 'reason': 'existing_group_preservation_fixture'}))
+        print(json.dumps({'status': 'failed', 'reason': failure_reason}))
         return 1
     finally:
         if created:
@@ -86,4 +86,4 @@ def main():
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    raise SystemExit(run_fixture(FIXTURE, 'existing_group_preservation_fixture'))
