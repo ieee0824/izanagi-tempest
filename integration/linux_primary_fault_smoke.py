@@ -3,7 +3,7 @@
 from linux_existing_cgroup_smoke import run_fixture
 
 FIXTURE = r'''
-import ctypes, errno, json, os, pathlib, platform, select, signal, stat, subprocess, sys, time
+import ctypes, errno, json, os, pathlib, platform, select, signal, stat, subprocess, sys, tempfile, time
 assert platform.machine() == 'x86_64'
 root = pathlib.Path('/sys/fs/cgroup/tempest-linux-isolation-probe')
 run = pathlib.Path('/run/tempest-linux-isolation-probe')
@@ -260,6 +260,13 @@ for scenario, target, primary in [
         for marker in [b'dummy-argv-marker', b'dummy-stderr-marker', b'synthetic-canary-only', b'dummy-output-marker']:
             assert marker not in output and marker not in errors
         report = json.loads(output)
+        # Retain the complete public audit before assertions can discard the
+        # recovery counts and failure evidence. mkstemp creates a private file
+        # without following an existing path; raw stderr is never persisted.
+        audit_fd, _ = tempfile.mkstemp(prefix='tempest-primary-fault-audit-', suffix='.json')
+        with os.fdopen(audit_fd, 'w') as audit:
+            json.dump({'scenario': scenario, 'report': report}, audit)
+            audit.write('\n')
         assert process.returncode == 1 and report['status'] == 'failed'
         assert report['first_fault'] == primary and report['active_scenario'] == target
         assert report['formal_eligible'] is False and report['model_launched'] is False

@@ -144,6 +144,11 @@ EIOケースもfirst_fault・最終reason・Verified・PIDFD死亡・資源不�
 `/tmp/tempest-a51ed85-residual.json`に保存しました。元probeの詳細なparent statusは
 失敗diagnosticに保存していないため、この記録だけで回収失敗の理由を断定できません。
 2026-11-15のルーム投稿#16068で管理者から休止指示があり、この未解決状態で作業を区切ります。
+投稿#16075の再開連絡後も、残留identityと全groupの空状態を読み取りで確認しました。
+再開後のfixtureはassert前に完全なpublic auditを一意な
+`/tmp/tempest-primary-fault-audit-*.json`へ0600で保存します。
+raw stderrは保存しません。失敗した回収のcountsを含む保存内容と0600権限を、
+実際のfixture保存ブロックを使った非root検証で確認しました。rootでの再実行は未実施です。
 
 親による回収中に親も死亡する二重故障では、新たな guardian を自動生成しません。
 結果が記録されず、payload/cgroup/RUN が残る可能性があります。
