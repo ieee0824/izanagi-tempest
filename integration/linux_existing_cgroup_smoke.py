@@ -113,6 +113,27 @@ finally:
 '''
 
 
+def valid_follow_details(diagnostic):
+    stages = {None, 'admission', 'metadata', 'lineage', 'writer', 'kill_reap', 'guardian_terminal', 'paths_absent'}
+    exceptions = {'AssertionError', 'FileNotFoundError', 'ProcessLookupError', 'PermissionError',
+                  'ChildProcessError', 'OSError', 'TimeoutExpired', 'TimeoutError', 'ValueError',
+                  'JSONDecodeError', 'KeyError', 'TypeError', 'RuntimeError', 'Other'}
+    scenarios = {'baseline', 'foreign_ready', 'fd_file_a', 'fd_file_b', 'fd_directory_a', 'fd_directory_b',
+                 'fd_socket_a', 'fd_socket_b', 'control_truncation', 'unexpected_control', 'frame_oversize',
+                 'frame_malformed', 'library_late_write', 'library_hardlink', 'library_symlink',
+                 'library_replacement', 'pids_limit', 'tmpfs_full', 'detached_grandchild', 'report_timeout',
+                 'report_eof', 'cgroup_kill_noop', 'memory_oom', 'stdout_flood', 'stderr_flood',
+                 'peer_stdout_flood', 'continuous_stdout', 'other'}
+    progress = diagnostic.get('follow_last_progress')
+    return (diagnostic.get('follow_stage') in stages
+            and diagnostic.get('exception_type', 'Other') in exceptions
+            and type(diagnostic.get('fixture_line', 0)) is int and 0 <= diagnostic.get('fixture_line', 0) <= 10000
+            and (diagnostic.get('follow_exit_code') is None or type(diagnostic['follow_exit_code']) is int and -128 <= diagnostic['follow_exit_code'] <= 255)
+            and all(type(diagnostic.get(key, False)) is bool for key in ['follow_root_exists', 'follow_run_exists'])
+            and (progress is None or isinstance(progress, dict) and set(progress) == {'scenario', 'phase'}
+                 and progress['scenario'] in scenarios and progress['phase'] in {'barrier', 'payload', 'collector', 'other'}))
+
+
 def run_fixture(fixture, failure_reason, timeout=25):
     if len(sys.argv) != 1 or sys.platform != 'linux' or os.geteuid() == 0:
         print(json.dumps({'status': 'rejected', 'reason': 'nonroot_dedicated_vm_entry_required'}))
@@ -131,7 +152,7 @@ def run_fixture(fixture, failure_reason, timeout=25):
         if result.returncode != 0:
             try:
                 diagnostic = json.loads(result.stdout)
-                if isinstance(diagnostic, dict) and {'status', 'scenario', 'fixture_stage'} <= set(diagnostic) <= {'status', 'scenario', 'fixture_stage', 'probe_reason', 'probe_removed', 'failure_kind', 'exit_code', 'stdout_bytes', 'stderr_bytes', 'completed_cases'}:
+                if isinstance(diagnostic, dict) and {'status', 'scenario', 'fixture_stage'} <= set(diagnostic) <= {'status', 'scenario', 'fixture_stage', 'probe_reason', 'probe_removed', 'failure_kind', 'exit_code', 'stdout_bytes', 'stderr_bytes', 'completed_cases', 'follow_stage', 'follow_exit_code', 'follow_last_progress', 'follow_root_exists', 'follow_run_exists', 'exception_type', 'fixture_line'}:
                     scenarios = {'initial_admission', 'detached_grandchild', 'lease_stopped', 'guardian_before_create', 'guardian_after_create', 'guardian_before_ack', 'guardian_after_ack', 'guardian_ack_timeout', 'guardian_admission', 'guardian_payload', 'guardian_collector', 'guardian_stopped', 'primary_eof_guardian_death', 'primary_output_cleanup_eio'}
                     stages = {'select_target', 'status_metadata', 'open_status_channel', 'owner_stop', 'recovery_paths', 'decode_status', 'validate_status', 'seize', 'fork_event', 'freeze_guardian', 'timeout_reap', 'next_generation', 'startup_result', 'ack_timeout_parent', 'guardian_stop', 'cleanup_entry', 'pin_roles', 'inject_secondary'}
                     if (diagnostic['status'] == 'failed' and diagnostic['scenario'] in scenarios and diagnostic['fixture_stage'] in stages
@@ -139,6 +160,7 @@ def run_fixture(fixture, failure_reason, timeout=25):
                             and type(diagnostic.get('probe_removed', False)) is bool
                             and diagnostic.get('failure_kind', 'assertion') in {'timeout', 'parse', 'assertion'}
                             and type(diagnostic.get('completed_cases',0)) is int and 0 <= diagnostic.get('completed_cases',0) <= 4
+                            and valid_follow_details(diagnostic)
                             and (diagnostic.get('exit_code') is None or type(diagnostic['exit_code']) is int and -128 <= diagnostic['exit_code'] <= 255)
                             and all(type(diagnostic.get(key, 0)) is int and 0 <= diagnostic.get(key, 0) <= 65536 for key in ['stdout_bytes', 'stderr_bytes'])):
                         print(json.dumps(diagnostic))

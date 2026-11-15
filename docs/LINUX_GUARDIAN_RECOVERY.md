@@ -128,6 +128,12 @@ ReportEof確認後にguardianをSIGKILLするケースと、StdoutFlood確認後
 前者は専用回収の3直接子reap、後者は通常reaper後の空registryをVerifiedで確認します。
 後者の監査件数0を新たな3子reapとは数えず、別に保持した3 roleのPIDFD死亡も確認します。
 どちらも最終reasonとfirst_faultを別々にassertし、次世代が起動できることを検証します。
+`a72df68`はworkspace226 testsと通常137観測を通過しましたが、同時故障fixture初回は
+EOFケース完了後、EIOケースの次世代確認で失敗しました（driver exit=1、122.404秒）。
+EIOケースもfirst_fault・最終reason・Verified・PIDFD死亡・資源不在までのassertは通過しています。
+終了後ROOT/RUNは不存在ですが、次世代確認の失敗原因は未確定で、2ケース全体の成功とは扱いません。
+追加診断では次世代の段階・終了コード・固定progress・path存在を元probeと分け、
+許可した例外型とfixture内行番号だけを保存します。例外本文やtraceback本文は公開しません。
 
 親による回収中に親も死亡する二重故障では、新たな guardian を自動生成しません。
 結果が記録されず、payload/cgroup/RUN が残る可能性があります。

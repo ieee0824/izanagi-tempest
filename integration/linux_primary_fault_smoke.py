@@ -76,12 +76,15 @@ def bind_live_child(pid, parent):
         os.close(handle)
         raise
 
-def main_guardian(process):
+def main_guardian(process, diagnostic_step=None):
+    if diagnostic_step is not None: diagnostic_step('metadata')
     metadata = json.loads((run / 'watchdog.channel').read_bytes())
     assert set(metadata) == {'watchdog_pid', 'status_fd'}
     guardian = metadata['watchdog_pid']
+    if diagnostic_step is not None: diagnostic_step('lineage')
     handle = bind_live_child(guardian, process.pid)
     try:
+        if diagnostic_step is not None: diagnostic_step('writer')
         endpoint = pathlib.Path(f'/proc/{process.pid}/fd/{metadata["status_fd"]}').stat()
         assert stat.S_ISFIFO(endpoint.st_mode)
         writers = []
@@ -98,9 +101,43 @@ def main_guardian(process):
         raise
 
 def next_generation(binary):
+    global follow_diagnostic
+    follow_diagnostic = {'follow_stage':'admission', 'follow_exit_code':None,
+                         'follow_last_progress':None, 'follow_root_exists':False,
+                         'follow_run_exists':False}
     follow = subprocess.Popen([binary, 'linux-isolation-probe'], env={}, stdin=subprocess.DEVNULL,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     guardian = None
+    scenarios = {'baseline', 'foreign_ready', 'fd_file_a', 'fd_file_b', 'fd_directory_a',
+                 'fd_directory_b', 'fd_socket_a', 'fd_socket_b', 'control_truncation',
+                 'unexpected_control', 'frame_oversize', 'frame_malformed', 'library_late_write',
+                 'library_hardlink', 'library_symlink', 'library_replacement', 'pids_limit',
+                 'tmpfs_full', 'detached_grandchild', 'report_timeout', 'report_eof',
+                 'cgroup_kill_noop', 'memory_oom', 'stdout_flood', 'stderr_flood',
+                 'peer_stdout_flood', 'continuous_stdout'}
+
+    def snapshot():
+        # Diagnostics never poll/reap the child or replace a failure. Retain
+        # the last complete progress record after RUN disappears during cleanup.
+        follow_diagnostic['follow_exit_code'] = follow.returncode
+        for key, path in [('follow_root_exists', root), ('follow_run_exists', run)]:
+            try: follow_diagnostic[key] = path.exists()
+            except OSError: pass
+        try:
+            with (run / 'progress').open('rb') as stream:
+                value = json.loads(stream.read(513))
+            if isinstance(value, dict) and set(value) == {'scenario', 'phase'}:
+                scenario = value['scenario']
+                phase = value['phase']
+                follow_diagnostic['follow_last_progress'] = {
+                    'scenario':scenario if isinstance(scenario, str) and scenario in scenarios else 'other',
+                    'phase':phase if isinstance(phase, str) and phase in {'barrier', 'payload', 'collector'} else 'other'}
+        except (OSError, ValueError): pass
+
+    def step(value):
+        follow_diagnostic['follow_stage'] = value
+        snapshot()
+
     try:
         try:
             until = time.monotonic() + 10
@@ -110,17 +147,37 @@ def next_generation(binary):
                 try:
                     admitted = bool((root / 'a' / 'cgroup.procs').read_text().split())
                 except FileNotFoundError: pass
+                snapshot()
                 if admitted:
-                    guardian = main_guardian(follow)
+                    guardian = main_guardian(follow, step)
                     break
                 time.sleep(0.002)
             assert admitted
         finally:
+            failed_stage = follow_diagnostic['follow_stage'] if sys.exc_info()[0] is not None else None
+            step('kill_reap')
             kill_reap(follow)
+            if failed_stage is not None: follow_diagnostic['follow_stage'] = failed_stage
+        step('guardian_terminal')
         assert guardian is not None and select.select([guardian], [], [], 10)[0]
+        step('paths_absent')
         assert not root.exists() and not run.exists()
     finally:
+        snapshot()
         if guardian is not None: os.close(guardian)
+
+def exception_diagnostic(error):
+    allowed = {'AssertionError', 'FileNotFoundError', 'ProcessLookupError', 'PermissionError',
+               'ChildProcessError', 'OSError', 'TimeoutExpired', 'TimeoutError', 'ValueError',
+               'JSONDecodeError', 'KeyError', 'TypeError', 'RuntimeError'}
+    name = type(error).__name__
+    line = 0
+    trace = error.__traceback__
+    while trace is not None:
+        if trace.tb_frame.f_code.co_filename == '<string>': line = trace.tb_lineno
+        trace = trace.tb_next
+    return {'exception_type':name if name in allowed else 'Other',
+            'fixture_line':line if 0 <= line <= 10000 else 0}
 
 results = []
 for scenario, target, primary in [
@@ -132,6 +189,7 @@ for scenario, target, primary in [
     handles = []
     guardian_handle = directory = None
     stage = 'select_target'
+    follow_diagnostic = None
     report = None
     output = errors = b''
     try:
@@ -243,7 +301,8 @@ for scenario, target, primary in [
                           'probe_removed':bool(report.get('resources_removed')) if isinstance(report, dict) else False,
                           'failure_kind':'timeout' if isinstance(error, subprocess.TimeoutExpired) else 'parse' if isinstance(error, ValueError) else 'assertion',
                           'exit_code':process.returncode,'stdout_bytes':len(output),'stderr_bytes':len(errors),
-                          'completed_cases':len(results)}))
+                          'completed_cases':len(results), **(follow_diagnostic or {}),
+                          **exception_diagnostic(error)}))
         raise
     finally:
         # This Popen child is either still ours/unreaped or already recorded
