@@ -193,6 +193,32 @@ cleanup_disposition = 'not_attempted'
 cleanup_state = None
 prestop_live_owned = stopped_live_owned = 0
 
+def path_presence_disposition(root_present, run_present):
+    if not root_present and not run_present:return 'already_absent'
+    if root_present != run_present:return 'preserved'
+    return 'both_present'
+
+def bounded_pipe_reads(streams, limit, timeout):
+    deadline=time.monotonic()+timeout
+    buffers={name:bytearray() for name in streams}
+    pending={stream:name for name,stream in streams.items()}
+    for stream in pending:os.set_blocking(stream.fileno(),False)
+    while pending and time.monotonic()<deadline:
+        ready,_,_=select.select(list(pending),[],[],max(0,deadline-time.monotonic()))
+        if not ready:break
+        for stream in ready:
+            name=pending[stream]
+            try:chunk=os.read(stream.fileno(),limit-len(buffers[name]))
+            except BlockingIOError:continue
+            if not chunk:
+                del pending[stream]
+                continue
+            buffers[name].extend(chunk)
+            if len(buffers[name])>=limit:del pending[stream]
+    oversize=any(len(value)>=limit for value in buffers.values())
+    status='oversize' if oversize else ('complete' if not pending else 'timeout')
+    return {name:bytes(value) for name,value in buffers.items()},status
+
 def terminate_held_members():
     # Every signal targets an already pinned member of this exact generation.
     for handle in handles.values():
@@ -218,14 +244,19 @@ def terminate_held_members():
 
 def cleanup_owned_generation():
     global cleanup_disposition, cleanup_state
-    state={'parent_terminal':process.returncode is not None,'paths_present':root.exists() and run.exists(),
+    root_present=root.exists();run_present=run.exists()
+    presence=path_presence_disposition(root_present,run_present)
+    state={'parent_terminal':process.returncode is not None,'root_present':root_present,'run_present':run_present,
            'identity_matches':False,'roles_empty':False,'populated_zero':False,
            'role_pidfds_dead':all(select.select([handle],[],[],0)[0] for handle in handles.values()),
            'guardian_dead':guardian_handle is not None and bool(select.select([guardian_handle],[],[],0)[0])}
     cleanup_state=state
-    if not state['paths_present']:
+    if presence=='already_absent':
         cleanup_disposition='already_absent'
         return True
+    if presence=='preserved':
+        cleanup_disposition='preserved'
+        return False
     if not state['parent_terminal'] or set(directories) != {'root','run'} or not handles:
         cleanup_disposition='preserved';return False
     try:
@@ -381,14 +412,17 @@ try:
 except BaseException as error:
     early_projection = None
     early_stdout_bytes = early_stderr_bytes = 0
+    early_read_status = 'not_attempted'
     # Close any inherited pipe writers before the bounded reads below.  Every
     # signal is scoped to a pidfd pinned from this exact owned generation.
     terminate_held_members()
     if audit_basename is None and process.returncode is not None:
         try:
-            early_output=process.stdout.read(65537)
-            early_errors=process.stderr.read(65537)
+            early_streams,early_read_status=bounded_pipe_reads(
+                {'stdout':process.stdout,'stderr':process.stderr},65537,2)
+            early_output=early_streams['stdout'];early_errors=early_streams['stderr']
             early_stdout_bytes=len(early_output);early_stderr_bytes=len(early_errors)
+            assert early_read_status=='complete'
             assert len(early_output)<=65536 and len(early_errors)<=65536
             early_report=json.loads(early_output)
             assert isinstance(early_report,dict)
@@ -413,7 +447,8 @@ except BaseException as error:
                       'listed_count':len(listed) if 'listed' in globals() else 0,
                       'prestop_live_owned':prestop_live_owned,'stopped_live_owned':stopped_live_owned,
                       'role_pidfds_dead':role_pidfds_dead,'stdout_bytes':early_stdout_bytes,
-                      'stderr_bytes':early_stderr_bytes,'early_report':early_projection,
+                      'stderr_bytes':early_stderr_bytes,'early_read_status':early_read_status,
+                      'early_report':early_projection,
                       'cleanup_disposition':cleanup_disposition,'cleanup_state':cleanup_state,
                       **(follow_diagnostic or {}),**exception_diagnostic(error)}))
     raise
