@@ -458,6 +458,7 @@ fn baseline(
             worker.boot.send(b"\n")?;
         }
         let mut states = Vec::new();
+        let mut library_states = Vec::new();
         *phase = "ready";
         for worker in &workers {
             let ready = event(worker, until)?;
@@ -481,6 +482,20 @@ fn baseline(
             if ready.nonce != nonce {
                 return Err(Fault::ForeignReady);
             }
+            *phase = "library_identity";
+            library_states.push(
+                libraries
+                    .iter()
+                    .zip(capsule::LIBRARIES)
+                    .map(|(snapshot, (_, relative))| {
+                        capsule::verify_library(
+                            snapshot,
+                            &Path::new(&format!("/proc/{}/root", worker.process.pid))
+                                .join(relative),
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
             states.push(state);
         }
         let states: [_; 3] = states.try_into().map_err(|_| Fault::Identity)?;
@@ -489,12 +504,24 @@ fn baseline(
         }
         // Recheck kernel state for every role immediately before releasing any
         // payload. A later peer death aborts the run, never a successful result.
-        for worker in &workers {
+        for (worker, expected_libraries) in workers.iter().zip(&library_states) {
             let state = worker
                 .process
                 .observe(group, worker.role, &worker.descriptors)?;
             if !contract::ready(worker.role, &worker.expected, &state, &nonce, &nonce) {
                 return Err(Fault::Identity);
+            }
+            *phase = "library_recheck";
+            for ((snapshot, (_, relative)), expected) in libraries
+                .iter()
+                .zip(capsule::LIBRARIES)
+                .zip(expected_libraries)
+            {
+                let target =
+                    Path::new(&format!("/proc/{}/root", worker.process.pid)).join(relative);
+                if capsule::verify_library(snapshot, &target)? != *expected {
+                    return Err(Fault::Identity);
+                }
             }
         }
         *phase = "barrier";

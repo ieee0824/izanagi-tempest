@@ -11,7 +11,7 @@ use std::{
     io::Write,
     os::{
         fd::{AsRawFd, RawFd},
-        unix::fs::{DirBuilderExt, OpenOptionsExt},
+        unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     },
     path::Path,
 };
@@ -49,21 +49,93 @@ fn limit(resource: libc::__rlimit_resource_t, amount: u64) -> Result<(), Fault> 
     os::syscall(unsafe { libc::setrlimit(resource, &value) })
 }
 
-fn bind(snapshot: &Snapshot, root: &Path, relative: &str) -> Result<(), Fault> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct LibraryIdentity {
+    dev: u64,
+    ino: u64,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    nlink: u64,
+}
+
+fn library_identity(file: &fs::File) -> Result<LibraryIdentity, Fault> {
+    metadata_identity(&file.metadata()?)
+}
+
+fn metadata_identity(m: &fs::Metadata) -> Result<LibraryIdentity, Fault> {
+    if !m.is_file() || m.uid() != 0 || m.gid() != 0 || m.mode() & 0o7777 != 0o555 || m.nlink() != 1
+    {
+        return Err(Fault::Identity);
+    }
+    Ok(LibraryIdentity {
+        dev: m.dev(),
+        ino: m.ino(),
+        uid: m.uid(),
+        gid: m.gid(),
+        mode: m.mode(),
+        nlink: m.nlink(),
+    })
+}
+
+pub(super) fn verify_library(snapshot: &Snapshot, target: &Path) -> Result<LibraryIdentity, Fault> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(target)?;
+    let identity = library_identity(&file)?;
+    snapshot.verify_file(&file)?;
+    let mut flags = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    os::syscall(unsafe { libc::fstatvfs(file.as_raw_fd(), flags.as_mut_ptr()) })?;
+    let flags = unsafe { flags.assume_init() }.f_flag;
+    let required = libc::ST_RDONLY | libc::ST_NOSUID | libc::ST_NODEV;
+    // Loader and shared libraries require executable mappings. All four are
+    // fixed reviewed library roles, never user-selected executable content.
+    if flags & required != required || flags & libc::ST_NOEXEC != 0 {
+        return Err(Fault::Identity);
+    }
+    if library_identity(&file)? != identity
+        || metadata_identity(&target.symlink_metadata()?)? != identity
+    {
+        return Err(Fault::Identity);
+    }
+    Ok(identity)
+}
+
+fn bind(snapshot: &Snapshot, root: &Path, relative: &str) -> Result<LibraryIdentity, Fault> {
     let target = root.join(relative);
-    let mut file = fs::OpenOptions::new()
+    for parent in target.parent().ok_or(Fault::Path)?.ancestors() {
+        let m = parent.symlink_metadata()?;
+        if !m.is_dir() || m.uid() != 0 || m.gid() != 0 || m.mode() & 0o022 != 0 {
+            return Err(Fault::Ownership);
+        }
+        if parent == root {
+            break;
+        }
+    }
+    let mut writer = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .mode(0o555)
         .open(&target)?;
-    // Anonymous memfd dentries cannot be bind-mounted on this kernel. Copy
-    // ONLY the sealed, already-verified library bytes into the new private
-    // rootfs, verify the opened output bytes, and bind that same open inode.
-    // The code image itself remains a sealed descriptor-only execveat image.
-    snapshot.materialize(&mut file)?;
+    snapshot.materialize(&mut writer)?;
+    let identity = library_identity(&writer)?;
+    // Close the only writable output descriptor BEFORE bind/verification.
+    // No other role exists in this private tmpfs, and the supervisor never
+    // obtains an output write descriptor into this child mount namespace.
+    drop(writer);
+    let source = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&target)?;
+    if library_identity(&source)? != identity {
+        return Err(Fault::Identity);
+    }
+    snapshot.verify_file(&source)?;
     os::mount(
-        Some(Path::new(&format!("/proc/self/fd/{}", file.as_raw_fd()))),
+        Some(Path::new(&format!("/proc/self/fd/{}", source.as_raw_fd()))),
         &target,
         None,
         libc::MS_BIND,
@@ -75,7 +147,11 @@ fn bind(snapshot: &Snapshot, root: &Path, relative: &str) -> Result<(), Fault> {
         None,
         libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
         None,
-    )
+    )?;
+    if verify_library(snapshot, &target)? != identity {
+        return Err(Fault::Identity);
+    }
+    Ok(identity)
 }
 
 pub(super) fn enter(
@@ -136,8 +212,14 @@ pub(super) fn enter(
         chown(&path, role.uid())?;
     }
     *step = 3;
+    let mut installed = Vec::new();
     for (snapshot, (_, relative)) in libraries.iter().zip(LIBRARIES) {
-        bind(snapshot, root, relative)?;
+        installed.push(bind(snapshot, root, relative)?);
+    }
+    for ((snapshot, (_, relative)), expected) in libraries.iter().zip(LIBRARIES).zip(installed) {
+        if verify_library(snapshot, &root.join(relative))? != expected {
+            return Err(Fault::Identity);
+        }
     }
     *step = 4;
     os::mount(

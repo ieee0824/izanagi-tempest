@@ -111,6 +111,11 @@ watchdog が cgroup を作成し、保持した directory fd の dev/inode を�
 既存 group の作成拒否では回収権を取得しません。watchdog 自身が作成途中に停止して残留した場合も、次回は採用せず拒否します。
 A の cgroup 加入を kernel から観測して supervisor を SIGKILL する fixture では、
 pidfd で観測対象の死亡と run/cgroup の回収を確認します。全 role 稼働後・孫生成後や通知前など他の停止タイミングは未検証です。
+library は write fd を bind 前に close し、同 inode の read fd から配置します。
+bootstrap の bind 前後・全配置後と、supervisor の Ready 後・barrier 直前に
+dev/inode/uid/gid/mode/nlink/hash を確認し、bind 後は ro/nosuid/nodev と exec 可を照合します。
+worker は各 library の read 成功・write 拒否と bind の read-write remount 拒否を観測します。
+これらは library への writable alias や path 交換の故障注入を代替しません。
 library 配置と write fd の追加負例、PID/UID/run 混入、
 資源枯渇・監査容量不足・EOF/cancel/timeout・監督異常・孫 process の回収等が残っています。
 失敗の診断は固定 stage/reason と数値 errno に限り、raw argv/env/stderr/任意 path や credential を出しません。

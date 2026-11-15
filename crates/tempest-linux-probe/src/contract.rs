@@ -132,6 +132,7 @@ pub(super) enum Check {
     ShellAbsent,
     PrivilegeDenied,
     NamespaceDenied,
+    LibraryReadonly,
     SignalDenied,
     PtraceDenied,
     ProcessMemoryDenied,

@@ -133,19 +133,35 @@ impl Snapshot {
             target.write_all(&buffer[..count as usize])?;
             offset += count as i64;
         }
-        target.seek(SeekFrom::Start(0))?;
+        self.verify_file(target)?;
+        syscall(unsafe { libc::fchmod(target.as_raw_fd(), 0o555) })?;
+        Ok(())
+    }
+    pub(super) fn verify_file(&self, target: &File) -> Result<(), Fault> {
         let mut hash = Sha256::new();
+        let mut offset = 0;
+        let mut buffer = [0_u8; 65536];
         loop {
-            let count = target.read(&mut buffer)?;
+            let count = unsafe {
+                libc::pread(
+                    target.as_raw_fd(),
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
+                    offset,
+                )
+            };
+            if count < 0 {
+                return Err(io::Error::last_os_error().into());
+            }
             if count == 0 {
                 break;
             }
-            hash.update(&buffer[..count]);
+            hash.update(&buffer[..count as usize]);
+            offset += count as i64;
         }
         if format!("{:x}", hash.finalize()) != self.sha256 {
             return Err(Fault::Identity);
         }
-        syscall(unsafe { libc::fchmod(target.as_raw_fd(), 0o555) })?;
         Ok(())
     }
 }
@@ -245,6 +261,33 @@ mod tests {
             -1
         );
         assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn output_verification_detects_late_write_and_does_not_trust_file_offset() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-library-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        private_directory(&root).unwrap();
+        let path = root.join("library");
+        let snapshot = Snapshot::copy(&mut &b"fixed dummy library"[..]).unwrap();
+        let mut writer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        snapshot.materialize(&mut writer).unwrap();
+        writer.seek(SeekFrom::End(0)).unwrap();
+        snapshot.verify_file(&writer).unwrap();
+        // Intentionally retain a writable alias as a negative fixture. A
+        // content hash from before this write must never authorize the file.
+        writer.seek(SeekFrom::Start(0)).unwrap();
+        writer.write_all(b"altered").unwrap();
+        assert_eq!(snapshot.verify_file(&writer), Err(Fault::Identity));
+        drop(writer);
         fs::remove_dir_all(root).unwrap();
     }
 

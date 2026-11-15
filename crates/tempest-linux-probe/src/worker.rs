@@ -191,6 +191,41 @@ fn checks(manifest: &Manifest) -> Vec<Observation> {
         }),
         1,
     ));
+    let mut library_denials = 0;
+    let mut library_reads = true;
+    for (_, relative) in super::capsule::LIBRARIES {
+        let path = format!("/{relative}");
+        library_reads &= fs::File::open(&path).is_ok();
+        let result = fs::OpenOptions::new().write(true).open(&path);
+        if result.is_err_and(|error| {
+            matches!(
+                error.raw_os_error(),
+                Some(libc::EROFS | libc::EACCES | libc::EPERM)
+            )
+        }) {
+            library_denials += 1;
+        }
+    }
+    if denied(unsafe {
+        libc::syscall(
+            libc::SYS_mount,
+            std::ptr::null::<libc::c_char>(),
+            c"/lib/x86_64-linux-gnu/libc.so.6".as_ptr(),
+            std::ptr::null::<libc::c_char>(),
+            libc::MS_REMOUNT | libc::MS_BIND,
+            std::ptr::null::<libc::c_char>(),
+        )
+    }) {
+        library_denials += 1;
+    }
+    values.push(Observation {
+        scenario: None,
+        check: Check::LibraryReadonly,
+        role: Some(role),
+        passed: library_reads && library_denials == 5,
+        attempts: 5,
+        denials: library_denials,
+    });
     let target = manifest.supervisor as libc::pid_t;
     let self_signal = unsafe { libc::kill(1, 0) } == 0;
     values.push(observe(
