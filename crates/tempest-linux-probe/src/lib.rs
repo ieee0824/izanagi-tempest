@@ -23,6 +23,7 @@
 
 mod ancillary;
 mod capsule;
+mod capture;
 mod cgroup;
 mod contract;
 mod identity;

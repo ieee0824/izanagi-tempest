@@ -102,6 +102,12 @@ driver は固定の `target/debug/tempest` を root 所有・0700 の `/var/lib/
 へ一時配置し、空の環境で起動して回収します。`/run` の noexec 等の既存 mount 設定は変更しません。
 sudoers/service/user/group/AppArmor/nft の永続設定も変更しません。
 
+**現在の追加 output/diagnostic 差分は root suite 未合格です。**
+固定90秒 watchdog と増加した suite の衝突が疑われ、91,092 ms・`frame_oversize` の Ready で
+child SIGKILL・watchdog exit1・RUN残留を再現しました。残留は root0700 の証拠directoryへ保全しています。
+lease heartbeat・owner pidfd死亡確認後の排他的回収・done/relinquish/status channel は未実装で、
+単なる timer 延長では解決済みと扱いません。継続 writer の root 再検証も、この修正後に行います。
+
 現 WIP は baseline が成功しても `status: "incomplete"`・終了コード 1 を返します。
 rootless unit・API compile-fail 試験と baseline の観測は、M1 全体の合格や本番隔離の証明には使いません。
 実行中 ancillary 10ケースと偽 ready nonce の拒否は root 統合で確認済みです。
@@ -151,10 +157,16 @@ A の SIGKILL 終了と local max/oom/oom_kill 増加を照合し、親・B/G �
 A 終了後の B/G 正対照、全3 role の reap/cgroup空を確認します。
 local counter の意味は [kernel の cgroup v2 仕様](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files) を参照。
 通常 exit code と signal/core flag は区別し、exit9 と SIGKILL の取り違えを実 child で試験します。
-これらは CPU/output/audit の枯渇や、他の停止時点の回収を代替しません。
+report 待機中は全 role の stdout/stderr を同時 poll し、4 KiB buffer で読み捨てます。
+role ごとの stdout+stderr 合計閾値は64 KiBです。超過検出時は最大1 chunk の観測超過を許容し、
+raw bytes を audit/file に保存せず、その role と stream の固定識別子だけを診断します。
+固定 flood は stdout/stderr 各256 KiBまでとし、全 role Entered後の合図から開始します。
+所定collectorで超過counterとkernel stateを照合→停止/reap/cgroup空を確認し、別段階の単なる失敗を成功にしません。
+EOF済streamはpoll対象から外し、既存の出力0負例は読み捨て済counterも0であることを要求します。
+これらは CPU/audit の枯渇や、他の停止時点の回収を代替しません。
 library 配置と write fd の追加負例、PID/UID/run 混入、
 資源枯渇・監査容量不足・bootstrap/control の EOF・cancel・他の timeout/監督異常時点と孫 process の回収等が残っています。
-失敗の診断は固定 stage/reason・数値 errno・child exit/signal/core flag に限り、raw argv/env/stderr/任意 path や credential を出しません。
+失敗の診断は固定 stage/reason・数値 errno・child exit/signal/core flag・固定 output role/stream に限り、raw argv/env/stderr/任意 path や credential を出しません。
 `/run/tempest-linux-isolation-probe` または `/sys/fs/cgroup/tempest-linux-isolation-probe` が残った場合は、
 成功にせず新規 probe を拒否します。driver は未知の残留資源を削除しません。
 

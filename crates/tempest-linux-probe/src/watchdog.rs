@@ -35,6 +35,7 @@ impl Watchdog {
             return Err(io::Error::last_os_error().into());
         }
         if pid == 0 {
+            let mut expired = false;
             let result = (|| {
                 os::syscall(unsafe { libc::setsid() })?;
                 os::close_except(&[read.as_raw_fd(), owner.fd(), ack_write.as_raw_fd()])?;
@@ -79,10 +80,11 @@ impl Watchdog {
                         }
                         break;
                     }
-                    if poll.revents & libc::POLLHUP != 0
-                        || !owner.alive()?
-                        || Instant::now() >= until
-                    {
+                    if Instant::now() >= until {
+                        expired = true;
+                        break;
+                    }
+                    if poll.revents & libc::POLLHUP != 0 || !owner.alive()? {
                         break;
                     }
                 }
@@ -95,7 +97,11 @@ impl Watchdog {
                 Ok(())
             })();
             unsafe {
-                libc::_exit(if result.is_ok() { 0 } else { 1 });
+                libc::_exit(if result.is_ok() {
+                    if expired { 124 } else { 0 }
+                } else {
+                    1
+                });
             }
         }
         drop(read);
@@ -133,8 +139,17 @@ impl Watchdog {
             let result = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) };
             if result == self.pid {
                 self.active = false;
-                return if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
-                    Ok(())
+                return if libc::WIFEXITED(status) {
+                    if libc::WEXITSTATUS(status) == 0 {
+                        Ok(())
+                    } else {
+                        Err(Fault::Child(libc::WEXITSTATUS(status)))
+                    }
+                } else if libc::WIFSIGNALED(status) {
+                    Err(Fault::ChildSignal(
+                        libc::WTERMSIG(status),
+                        libc::WCOREDUMP(status),
+                    ))
                 } else {
                     Err(Fault::Identity)
                 };
@@ -150,10 +165,15 @@ impl Watchdog {
     }
 
     pub(super) fn finish(&mut self) -> Result<(), Fault> {
-        if unsafe { libc::write(self.control.as_raw_fd(), b"D".as_ptr().cast(), 1) } != 1 {
-            return Err(Fault::Identity);
+        let wrote = unsafe { libc::write(self.control.as_raw_fd(), b"D".as_ptr().cast(), 1) } == 1;
+        // Reap even on EPIPE so an already completed recovery/deadline is
+        // distinguishable from an unexplained missing control reader.
+        let finished = self.wait();
+        if wrote {
+            finished
+        } else {
+            finished.and(Err(Fault::Identity))
         }
-        self.wait()
     }
 }
 

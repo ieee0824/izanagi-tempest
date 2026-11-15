@@ -35,6 +35,10 @@ pub(super) enum Scenario {
     ReportEof,
     CgroupKillNoop,
     MemoryOom,
+    StdoutFlood,
+    StderrFlood,
+    PeerStdoutFlood,
+    ContinuousStdout,
 }
 
 impl Scenario {
@@ -62,7 +66,29 @@ impl Scenario {
         Self::DetachedGrandchild,
         Self::MemoryOom,
     ];
-    pub(super) const LIFECYCLE: [Self; 2] = [Self::ReportTimeout, Self::ReportEof];
+    pub(super) const LIFECYCLE: [Self; 6] = [
+        Self::ReportTimeout,
+        Self::ReportEof,
+        Self::StdoutFlood,
+        Self::StderrFlood,
+        Self::PeerStdoutFlood,
+        Self::ContinuousStdout,
+    ];
+    pub(super) fn output_flood(self) -> bool {
+        matches!(
+            self,
+            Self::StdoutFlood | Self::StderrFlood | Self::PeerStdoutFlood | Self::ContinuousStdout
+        )
+    }
+    pub(super) fn output_target(self) -> (Role, u8) {
+        if self == Self::PeerStdoutFlood {
+            (Role::B, 1)
+        } else if self == Self::StderrFlood {
+            (Role::A, 2)
+        } else {
+            (Role::A, 1)
+        }
+    }
     pub(super) fn lifecycle(self) -> bool {
         Self::LIFECYCLE.contains(&self)
     }
@@ -188,6 +214,8 @@ pub(super) enum Check {
     MemoryMapped,
     MemoryBounded,
     ChildSignalObserved,
+    OutputLimitDetected,
+    OutputCaptureBounded,
     ResourcesRemoved,
     AuditBounded,
     ReportTimeoutDetected,

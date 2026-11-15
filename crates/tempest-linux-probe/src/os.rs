@@ -20,6 +20,8 @@ pub(super) enum Fault {
     Kernel(i32),
     Child(i32),
     ChildSignal(i32, bool),
+    OutputLimit(super::contract::Role, u8),
+    LifecycleDetected(super::contract::Scenario),
     Bootstrap(u8, i32),
     ForeignReady,
     RunCleanup,

@@ -45,7 +45,10 @@ def main() -> int:
             "/usr/bin/env", "-i", str(installed), "linux-isolation-probe",
             timeout=140,
         )
-        for marker in [b"dummy-argv-marker", b"dummy-stderr-marker", b"synthetic-canary-only"]:
+        if result.returncode == 124:
+            print(json.dumps({"status": "failed", "reason": "driver_timeout", "exit_code": 124}))
+            return 1
+        for marker in [b"dummy-argv-marker", b"dummy-stderr-marker", b"synthetic-canary-only", b"dummy-output-marker"]:
             if marker in result.stdout or marker in result.stderr:
                 raise RuntimeError("untrusted_marker_reached_audit")
         try:
@@ -56,13 +59,15 @@ def main() -> int:
                               "stdout_bytes": len(result.stdout),
                               "stderr_bytes": len(result.stderr)}))
             return 1
-        allowed = {"schema_version", "status", "reason", "formal_eligible", "model_launched", "code_sha256", "checks", "errno", "resources_removed", "phase", "child_exit", "child_signal", "child_core_dumped"}
+        allowed = {"schema_version", "status", "reason", "formal_eligible", "model_launched", "code_sha256", "checks", "errno", "resources_removed", "phase", "child_exit", "child_signal", "child_core_dumped", "output_role", "output_stream", "watchdog_exit", "watchdog_signal", "watchdog_core_dumped", "active_scenario", "elapsed_ms"}
         if not isinstance(report, dict) or report.keys() - allowed:
             raise RuntimeError("unexpected_public_audit_fields")
         if report.get("code_sha256", digest) != digest:
             raise RuntimeError("executed_binary_identity_changed")
         if Path("/run/tempest-linux-isolation-probe").exists() or Path("/sys/fs/cgroup/tempest-linux-isolation-probe").exists():
-            raise RuntimeError("probe_resources_remain_new_probe_must_refuse")
+            print(json.dumps({"status": "failed", "reason": "probe_resources_remain_new_probe_must_refuse",
+                              "probe_exit_code": result.returncode, "probe_report": report}, sort_keys=True))
+            return 1
         print(json.dumps(report, sort_keys=True))
         return 0 if result.returncode == 0 and report.get("status") == "passed" else 1
     except (OSError, subprocess.TimeoutExpired, RuntimeError) as error:

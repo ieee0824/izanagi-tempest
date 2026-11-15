@@ -474,6 +474,31 @@ pub(super) fn run() -> i32 {
         }
         return 93; // Surviving the entire allocation is a failure, never OOM.
     }
+    if manifest.scenario.output_flood() && manifest.role == manifest.scenario.output_target().0 {
+        if !wait() {
+            return 3;
+        }
+        let stream = i32::from(manifest.scenario.output_target().1);
+        let mut block = [42_u8; 4096];
+        let marker = b"dummy-output-marker";
+        block[..marker.len()].copy_from_slice(marker);
+        if manifest.scenario == Scenario::ContinuousStdout {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while std::time::Instant::now() < until {
+                if !bytes(stream, &block) {
+                    return 4;
+                }
+            }
+        } else {
+            for _ in 0..64 {
+                if !bytes(stream, &block) {
+                    return 4;
+                }
+            }
+        }
+        wait();
+        return 0;
+    }
     if manifest.scenario.lifecycle() && manifest.role == Role::A {
         if manifest.scenario == Scenario::ReportEof {
             unsafe {
