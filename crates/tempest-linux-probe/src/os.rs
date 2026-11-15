@@ -36,6 +36,34 @@ pub(super) enum Fault {
     LibraryRejected(super::contract::Scenario),
 }
 
+impl Fault {
+    pub(super) fn reason(&self) -> &'static str {
+        match self {
+            Self::Identity => "identity",
+            Self::LeaseUnavailable => "watchdog_lease_unavailable",
+            Self::WatchdogRecovery => "watchdog_recovery_failed",
+            Self::GuardianUnconfirmed => "watchdog_guardian_unconfirmed",
+            Self::GuardianStartupStopped => "watchdog_startup_failed",
+            Self::GuardianDied => "watchdog_guardian_died",
+            Self::Ownership => "ownership",
+            Self::Path => "path",
+            Self::Seal => "seal",
+            Self::Kernel(_) => "kernel",
+            Self::Child(_) => "child_exit",
+            Self::ChildSignal(_, _) => "child_signal",
+            Self::OutputLimit(_, _) => "output_limit",
+            Self::LifecycleDetected(_) => "lifecycle_detected",
+            Self::Bootstrap(_, _) => "bootstrap",
+            Self::ForeignReady => "foreign_ready",
+            Self::RunCleanup => "run_cleanup",
+            Self::ReportTimeout => "report_timeout",
+            Self::ReportEof => "report_eof",
+            Self::CgroupKillFailureRecovered => "cgroup_kill_failure_recovered",
+            Self::LibraryRejected(_) => "library_rejected",
+        }
+    }
+}
+
 impl From<io::Error> for Fault {
     fn from(value: io::Error) -> Self {
         Self::Kernel(value.raw_os_error().unwrap_or(0))

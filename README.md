@@ -141,7 +141,10 @@ lease境界・guardian自身の異常終了/fork前異常などの全故障時�
 PIDFD死亡/reap確認と通常Group disarm後に専用RecoveryGroupだけで回収し、別parent_recovery_statusを出します。
 `python3 integration/linux_guardian_death_smoke.py` は専用VMで加入直後・孫実行中・collector待ちの
 guardian SIGKILL、保持PIDFD死亡、自所有回収、次世代起動を確認します。
-失敗時の証拠件数、clone/attach境界、SIGSTOP負例、正常終端raceなどの全gateは未完です。
+監査は各遷移でregistry件数・direct/descendant・PIDFD死亡・reap済み/未確認件数・cgroup populatedと
+固定の未確認理由を保持し、元のfaultもfirst_faultに併記します。記録削除はPIDではなく独立通番RecordIdで行います。
+R/Dの1 byte write未送信なら親所有を保持し、最大5秒のPIDFD死亡待ちとreap後に専用回収を再試行します。
+送信後terminal前死亡、clone/attach境界、SIGSTOP負例、正常終端raceなどの全gateは未完です。
 
 現 WIP は baseline が成功しても `status: "incomplete"`・終了コード 1 を返します。
 rootless unit・API compile-fail 試験と baseline の観測は、M1 全体の合格や本番隔離の証明には使いません。

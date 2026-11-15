@@ -56,6 +56,7 @@ struct Worker {
     descriptors: std::collections::BTreeMap<i32, Descriptor>,
     role: Role,
     process: Process,
+    record: super::registry::RecordId,
     expected: Identity,
     boot: Channel,
     start: Channel,
@@ -301,16 +302,18 @@ fn spawn(
             libc::_exit(120 + i32::from(step));
         }
     }
+    let mut record = None;
     let bound = (|| {
         let process = Process::bind(pid as u32)?;
-        registry.track(role, &process, true)?;
+        let id = registry.track(role, &process, true)?;
+        record = Some(id);
         group.attach(role, process.pid)?;
-        registry.attached(&process)?;
+        registry.attached(id)?;
         let mut expected = process.identity()?;
         expected.code = code_identity(code)?;
-        Ok((process, expected))
+        Ok((process, expected, id))
     })();
-    let (process, expected) = match bound {
+    let (process, expected, record) = match bound {
         Ok(bound) => bound,
         Err(error) => {
             // This is our fresh, unreaped clone, so its PID cannot be reused.
@@ -322,7 +325,12 @@ fn spawn(
                 let mut status = 0;
                 let result = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
                 if result == pid as i32 {
-                    registry.reaped(pid as u32);
+                    if !libc::WIFEXITED(status) && !libc::WIFSIGNALED(status) {
+                        return Err(Fault::Identity);
+                    }
+                    if let Some(id) = record {
+                        registry.reaped(id)?;
+                    }
                     break;
                 }
                 if result < 0 || Instant::now() >= until {
@@ -342,6 +350,7 @@ fn spawn(
         descriptors,
         role,
         process,
+        record,
         expected,
         boot,
         start,
@@ -350,14 +359,21 @@ fn spawn(
     })
 }
 
-fn reap(process: &Process, registry: &mut super::registry::Registry) -> Result<(), Fault> {
+fn reap(
+    process: &Process,
+    record: super::registry::RecordId,
+    registry: &mut super::registry::Registry,
+) -> Result<(), Fault> {
     let until = Instant::now() + Duration::from_secs(3);
     loop {
         super::lease::pulse()?;
         let mut status = 0;
         let value = unsafe { libc::waitpid(process.pid as i32, &mut status, libc::WNOHANG) };
         if value == process.pid as i32 {
-            registry.reaped(process.pid);
+            if !libc::WIFEXITED(status) && !libc::WIFSIGNALED(status) {
+                return Err(Fault::Identity);
+            }
+            registry.reaped(record)?;
             return Ok(());
         }
         if value < 0 {
@@ -1012,7 +1028,9 @@ fn baseline(
     } else {
         workers.iter().try_for_each(|worker| worker.process.kill())
     };
-    let reaped = workers.iter().try_for_each(|w| reap(&w.process, registry));
+    let reaped = workers
+        .iter()
+        .try_for_each(|w| reap(&w.process, w.record, registry));
     // Raw stdout/stderr is never public audit. These fields keep capture pipes
     // private and live until termination, including an error path.
     for worker in &workers {
@@ -1162,6 +1180,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
     let mut run_guard = None;
     let mut handoff_status = None;
     let mut registry = super::registry::Registry::default();
+    let mut first_fault = None;
     let mut result = (|| {
         if !cfg!(target_arch = "x86_64") || fs::read_dir("/proc/self/task")?.count() != 1 {
             return Err(Fault::Identity);
@@ -1437,10 +1456,16 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 denials: 0,
             });
         }
+        if let Err(error) = &observed {
+            first_fault = Some(error.reason());
+        }
         group.cleanup()?;
         let observed = observed?;
         Ok((code.sha256, observed))
     })();
+    if first_fault.is_none() {
+        first_fault = result.as_ref().err().map(|error| error.reason());
+    }
     // No payload can exist before Watchdog::start returns ownership. Even if
     // a foreign cgroup exists, release our own empty RUN without touching it.
     let mut early_cleanup_failed = false;
@@ -1464,7 +1489,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
     let mut parent_recovery_status = None;
     if let Some(watch) = &mut watchdog {
         if let (Some(guard), Some(pinned)) = (&run_guard, &run_lock) {
-            parent_recovery_status = watch.parent_recovery(guard, pinned, &mut registry);
+            parent_recovery_status = watch.parent_recovery(guard, pinned, &mut registry, false);
         }
         if let Some(statuses) = &parent_recovery_status {
             watch_finished = statuses.last().is_some_and(|status| {
@@ -1498,7 +1523,21 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             };
             match completed {
                 Ok(()) => watch_finished = true,
-                Err(fault) => watchdog_fault = Some(fault),
+                Err(fault) => {
+                    watchdog_fault = Some(fault);
+                    if let (Some(guard), Some(pinned)) = (&run_guard, &run_lock) {
+                        // A failed atomic command write retains ownership. Pipe
+                        // closure may precede pidfd readiness during exit.
+                        parent_recovery_status =
+                            watch.parent_recovery(guard, pinned, &mut registry, true);
+                        if let Some(statuses) = &parent_recovery_status {
+                            watch_finished = statuses.last().is_some_and(|status| {
+                                status.transition == super::watchdog::ParentTransition::Recovered
+                            });
+                            result = Err(Fault::GuardianDied);
+                        }
+                    }
+                }
             }
         }
         kernel_removed = !Path::new(super::cgroup::ROOT).exists();
@@ -1573,29 +1612,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             } else {
                 (None, None)
             };
-            let reason = match fault {
-                Fault::Identity => "identity",
-                Fault::LeaseUnavailable => "watchdog_lease_unavailable",
-                Fault::WatchdogRecovery => "watchdog_recovery_failed",
-                Fault::GuardianUnconfirmed => "watchdog_guardian_unconfirmed",
-                Fault::GuardianStartupStopped => "watchdog_startup_failed",
-                Fault::GuardianDied => "watchdog_guardian_died",
-                Fault::Ownership => "ownership",
-                Fault::Path => "path",
-                Fault::Seal => "seal",
-                Fault::Kernel(_) => "kernel",
-                Fault::Child(_) => "child_exit",
-                Fault::ChildSignal(_, _) => "child_signal",
-                Fault::OutputLimit(_, _) => "output_limit",
-                Fault::LifecycleDetected(_) => "lifecycle_detected",
-                Fault::Bootstrap(_, _) => "bootstrap",
-                Fault::ForeignReady => "foreign_ready",
-                Fault::RunCleanup => "run_cleanup",
-                Fault::ReportTimeout => "report_timeout",
-                Fault::ReportEof => "report_eof",
-                Fault::CgroupKillFailureRecovered => "cgroup_kill_failure_recovered",
-                Fault::LibraryRejected(_) => "library_rejected",
-            };
+            let reason = fault.reason();
             let errno = match fault {
                 Fault::Kernel(value) => value,
                 Fault::Bootstrap(_, value) => value,
@@ -1609,7 +1626,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 "child_signal":child_signal,"child_core_dumped":child_core_dumped,
                 "output_role":output_role,"output_stream":output_stream,
                 "watchdog_exit":watchdog_exit,"watchdog_signal":watchdog_signal,"watchdog_core_dumped":watchdog_core_dumped,
-                "watchdog_status":watchdog_status,"handoff_status":handoff_status,"parent_recovery_status":parent_recovery_status,"guardian_alive":guardian_alive,"active_scenario":active_scenario,"elapsed_ms":run_started.elapsed().as_millis().min(3_600_000) as u64})
+                "watchdog_status":watchdog_status,"handoff_status":handoff_status,"parent_recovery_status":parent_recovery_status,"guardian_alive":guardian_alive,"first_fault":first_fault,"active_scenario":active_scenario,"elapsed_ms":run_started.elapsed().as_millis().min(3_600_000) as u64})
             );
             std::process::ExitCode::from(1)
         }

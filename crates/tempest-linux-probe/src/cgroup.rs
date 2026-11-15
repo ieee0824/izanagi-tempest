@@ -48,11 +48,13 @@ impl RecoveryGroup {
         self,
         proof: &super::watchdog::DeadGuardian<'_>,
         registry: &mut super::registry::Registry,
-    ) -> Result<super::registry::Counts, Fault> {
+        counts: &mut super::registry::Counts,
+    ) -> Result<(), Fault> {
         self.verify_pinned()?;
         if matches!(fs::symlink_metadata(ROOT), Err(error) if error.kind() == io::ErrorKind::NotFound)
         {
-            return registry.stop_and_reap(proof);
+            counts.cgroup_populated = Some(false);
+            return registry.stop_and_reap(proof, counts);
         }
         self.verify()?;
         let mut evidence_failure = None;
@@ -90,14 +92,17 @@ impl RecoveryGroup {
         self.verify()?;
         let stopped = write(&self.directory, "cgroup.kill", "1");
         // Stop unattached direct children even if cgroup.kill failed.
-        let reaped = registry.stop_and_reap(proof);
-        stopped?;
-        let counts = reaped?;
+        let reaped = registry.stop_and_reap(proof, counts);
         let until = Instant::now() + Duration::from_secs(3);
         loop {
             self.verify()?;
             let events = read(&self.directory, "cgroup.events")?;
-            if events.lines().any(|line| line == "populated 0") {
+            counts.cgroup_populated = events.lines().find_map(|line| match line {
+                "populated 0" => Some(false),
+                "populated 1" => Some(true),
+                _ => None,
+            });
+            if counts.cgroup_populated == Some(false) {
                 break;
             }
             if Instant::now() >= until {
@@ -105,6 +110,8 @@ impl RecoveryGroup {
             }
             thread::sleep(Duration::from_millis(10));
         }
+        stopped?;
+        reaped?;
         if let Some(error) = evidence_failure {
             return Err(error);
         }
@@ -118,7 +125,7 @@ impl RecoveryGroup {
         // Top-level identity-check/unlink race with another privileged actor
         // remains a separate gate, as in the normal cleanup path.
         fs::remove_dir(ROOT)?;
-        Ok(counts)
+        Ok(())
     }
 }
 

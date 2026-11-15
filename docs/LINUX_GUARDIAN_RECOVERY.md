@@ -1,7 +1,7 @@
 # Linux probe の guardian 異常終了回収設計
 
-この文書は `tempest-linux-probe` の次の実装条件を固定するものです。
-実装済み・M1 合格を意味しません。通常運転の lease/guard は `9e2fb47`、
+この文書は `tempest-linux-probe` の実装条件を固定するものです。
+`2cda673` に基本の親専用回収を実装しましたが、全故障時点・M1 合格を意味しません。通常運転の lease/guard は `9e2fb47`、
 起動失敗の追加 fixture は `68314b2` までの開発ブランチを前提とします。
 実モデル・認証情報・本番 permit・VM/KVM の設定変更は対象に含めません。
 
@@ -26,6 +26,13 @@ proof は guard を借用し、回収完了前に serialization が解放され�
 pipe の EPIPE/HUP、guardian の SIGSTOP、単なる応答欠落からは proof を作りません。
 `lease::clear` による通常 API の一括再許可も行いません。
 
+上の送信後回収禁止条件は、次の拡張で置き換える予定です。現実装のcheckpointでは
+R/Dの1 byte writeが成功してからmodeを変更し、未送信失敗時は親所有を保持します。
+未送信時に限り最大5秒のPIDFD死亡待ちとreap後に専用回収を再試行します。
+次の拡張ではCommandSentでもguardian死亡/reap確認後に部分回収し、正常terminal確認済みなら
+mutationせず最終状態だけ検証します。生存guardianからの取戻しは認めません。
+この拡張の状態機械と故障注入はまだ未実装です。
+
 ## 検知と対象の保持
 
 lease の pulse ごとに guardian pidfd を poll し、heartbeat の rate limit 判定より先に死亡を検知します。
@@ -41,6 +48,8 @@ attach 済み flag を後から一方向に更新します。PIDFD 取得前の�
 未 reap 子に対する既存の kill/wait 保証を維持します。
 直接子と既知の descendant を区別し、直接子の通常 reap 成功時にだけその記録を除去します。
 異常経路で Worker や baseline の local Vec が drop されても PIDFD を失いません。
+registry はPID由来でない単調増加のRecordIdを発行し、directのattach/reap更新に使います。
+既知のterminal waitpid成功時だけ該当IDを除去し、未知ID・二重更新・根拠のないECHILDを拒否します。
 
 孫の生成から通常の PIDFD 取得までの窓もあるため、回収専用型は保持した role directory FD から
 `cgroup.procs` を上限付きで snapshot し、未登録の生存 task の PIDFD も停止前に取得します。
@@ -62,6 +71,9 @@ PID/birth と既存の保持対象を照合し、PID の数値だけで再採用
 `parent_recovery_status` に `guardian_dead → parent_owned → recovered/failed` を記録します。
 死亡・reap・PIDFD・自所有回収・最終不在の全条件が揃った場合だけ `resources_removed=true` にします。
 異常終了を通常 suite の成功や M1 合格に読み替えません。
+各遷移に固定の件数を残し、失敗時も省略しません。reap未確認理由はechild/pidfd_alive/
+evidence_missing/signal_failed/wait_failedで区別します。populated未確認はnullとして0と区別します。
+回収前のfaultはfirst_faultとして保持します。
 
 ## 故障注入と残る範囲
 

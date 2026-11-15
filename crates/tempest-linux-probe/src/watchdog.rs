@@ -94,7 +94,7 @@ pub(super) struct ParentStatus {
     guardian_exit: Option<i32>,
     guardian_signal: Option<i32>,
     status_drain: DrainState,
-    counts: Option<super::registry::Counts>,
+    counts: super::registry::Counts,
     elapsed_ms: u64,
 }
 
@@ -523,6 +523,7 @@ impl Watchdog {
         guard: &Guard,
         pinned: &File,
         registry: &mut super::registry::Registry,
+        wait_for_death: bool,
     ) -> Option<Vec<ParentStatus>> {
         if self.mode != Mode::ParentOwned {
             return None;
@@ -532,7 +533,9 @@ impl Watchdog {
             events: libc::POLLIN,
             revents: 0,
         };
-        if unsafe { libc::poll(&mut poll, 1, 0) } <= 0 || poll.revents & libc::POLLIN == 0 {
+        if unsafe { libc::poll(&mut poll, 1, if wait_for_death { 5000 } else { 0 }) } <= 0
+            || poll.revents & libc::POLLIN == 0
+        {
             return None;
         }
         lease::forbid();
@@ -569,9 +572,11 @@ impl Watchdog {
             counts,
             elapsed_ms: started.elapsed().as_millis().min(3_600_000) as u64,
         };
-        let mut statuses = vec![make(ParentTransition::GuardianDead, !self.active, None)];
+        let mut counts = registry.counts();
+        let mut statuses = vec![make(ParentTransition::GuardianDead, !self.active, counts)];
         if self.active {
-            statuses.push(make(ParentTransition::Failed, false, None));
+            counts.fail(super::registry::Unconfirmed::EvidenceMissing);
+            statuses.push(make(ParentTransition::Failed, false, counts));
             return Some(statuses);
         }
         // Never reclaim after an acknowledged normal release, nor after R/D.
@@ -583,24 +588,28 @@ impl Watchdog {
                 )
             })
         {
-            statuses.push(make(ParentTransition::Failed, true, None));
+            counts.fail(super::registry::Unconfirmed::EvidenceMissing);
+            statuses.push(make(ParentTransition::Failed, true, counts));
             return Some(statuses);
         }
         self.mode = Mode::ParentRecovery;
         let proof = DeadGuardian { _guard: guard };
-        statuses.push(make(ParentTransition::ParentOwned, true, None));
+        statuses.push(make(ParentTransition::ParentOwned, true, counts));
         let recovered = (|| {
             let group = self.recovery.take().ok_or(Fault::Identity)?;
-            let counts = group.recover(&proof, registry)?;
+            group.recover(&proof, registry, &mut counts)?;
             remove_run(pinned)?;
             if Path::new(super::cgroup::ROOT).exists() || Path::new(RUN).exists() {
                 return Err(Fault::Identity);
             }
-            Ok::<_, Fault>(counts)
+            Ok::<_, Fault>(())
         })();
         statuses.push(match recovered {
-            Ok(counts) => make(ParentTransition::Recovered, true, Some(counts)),
-            Err(_) => make(ParentTransition::Failed, true, None),
+            Ok(()) => make(ParentTransition::Recovered, true, counts),
+            Err(_) => {
+                counts.fail(super::registry::Unconfirmed::EvidenceMissing);
+                make(ParentTransition::Failed, true, counts)
+            }
         });
         Some(statuses)
     }
@@ -683,17 +692,23 @@ impl Watchdog {
         }
     }
 
-    fn command(&mut self, byte: u8, target: Transition) -> Result<(), Fault> {
+    fn send_command(&mut self, byte: u8) -> Result<(), Fault> {
+        lease::forbid();
+        if unsafe { libc::write(self.control.as_raw_fd(), (&byte as *const u8).cast(), 1) } != 1 {
+            // One byte to the nonblocking pipe is atomic. Failure means no
+            // command was delivered; retain ParentOwned for death/reap proof.
+            return Err(Fault::WatchdogRecovery);
+        }
         self.mode = if byte == b'R' {
             Mode::Relinquished
         } else {
             Mode::Done
         };
-        lease::forbid();
-        if unsafe { libc::write(self.control.as_raw_fd(), (&byte as *const u8).cast(), 1) } != 1 {
-            let _ = self.wait();
-            return Err(Fault::WatchdogRecovery);
-        }
+        Ok(())
+    }
+
+    fn command(&mut self, byte: u8, target: Transition) -> Result<(), Fault> {
+        self.send_command(byte)?;
         let received = self.receive(target);
         let waited = self.wait();
         received?;
@@ -706,10 +721,73 @@ impl Watchdog {
         self.command(b'R', Transition::Recovered)
     }
 }
+
 impl Drop for Watchdog {
     fn drop(&mut self) {
         if self.active && self.mode == Mode::ParentOwned {
             let _ = self.relinquish();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn command_delivery_requires_a_successful_atomic_write() {
+        let (read, control) = os::pipe().unwrap();
+        let (input, _output) = os::pipe().unwrap();
+        let process = Process::bind(std::process::id()).unwrap();
+        let mut watch = Watchdog {
+            pid: std::process::id() as i32,
+            control,
+            input,
+            guardian: os::duplicate_fd(process.fd()).unwrap(),
+            active: false,
+            last: None,
+            mode: Mode::ParentOwned,
+            recovery: None,
+            started: Instant::now(),
+        };
+        let flags = unsafe { libc::fcntl(watch.control.as_raw_fd(), libc::F_GETFL) };
+        assert_eq!(
+            unsafe {
+                libc::fcntl(
+                    watch.control.as_raw_fd(),
+                    libc::F_SETFL,
+                    flags | libc::O_NONBLOCK,
+                )
+            },
+            0
+        );
+        let block = [0_u8; 4096];
+        while unsafe {
+            libc::write(
+                watch.control.as_raw_fd(),
+                block.as_ptr().cast(),
+                block.len(),
+            )
+        } > 0
+        {}
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN)
+        );
+        assert_eq!(watch.send_command(b'R'), Err(Fault::WatchdogRecovery));
+        assert!(watch.mode == Mode::ParentOwned);
+        drop(read);
+        assert_eq!(watch.send_command(b'R'), Err(Fault::WatchdogRecovery));
+        assert!(watch.mode == Mode::ParentOwned);
+        let (reader, writer) = os::pipe().unwrap();
+        watch.control = writer;
+        watch.send_command(b'R').unwrap();
+        assert!(watch.mode == Mode::Relinquished);
+        let mut byte = 0_u8;
+        assert_eq!(
+            unsafe { libc::read(reader.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) },
+            1
+        );
+        assert_eq!(byte, b'R');
+        lease::clear();
     }
 }

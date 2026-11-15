@@ -68,6 +68,10 @@ for scenario in ['guardian_admission', 'guardian_payload', 'guardian_collector']
         counts = statuses[-1]['counts']
         assert counts['direct'] >= 1 and counts['direct'] == counts['reaped']
         assert counts['dead_pidfds'] == counts['direct'] + counts['descendants']
+        assert counts['registry_total'] == counts['dead_pidfds']
+        assert counts['reap_unconfirmed'] == 0 and counts['unconfirmed_reason'] is None
+        assert counts['cgroup_populated'] is False
+        assert all(isinstance(value['counts'], dict) for value in statuses)
         if scenario == 'guardian_payload': assert counts['descendants'] >= 1
         assert all(select.select([handle], [], [], 0)[0] for handle in handles)
         assert not root.exists() and not run.exists()
