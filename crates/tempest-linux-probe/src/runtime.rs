@@ -63,6 +63,32 @@ struct Worker {
     capture: Capture,
 }
 
+// The guardian owns error cleanup after the normal path ends. Explicitly
+// disarm before the inner Group is dropped; a failed Drop is not a handoff.
+struct ParentGroup(Group);
+impl std::ops::Deref for ParentGroup {
+    type Target = Group;
+    fn deref(&self) -> &Group {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for ParentGroup {
+    fn deref_mut(&mut self) -> &mut Group {
+        &mut self.0
+    }
+}
+impl Drop for ParentGroup {
+    fn drop(&mut self) {
+        self.0.disarm();
+    }
+}
+
+struct SpawnSpec<'a> {
+    role: Role,
+    scenario: Scenario,
+    ipc: &'a [(RawFd, RawFd)],
+}
+
 fn code_identity(code: &Snapshot) -> Result<(u64, u64), Fault> {
     let metadata = fs::metadata(format!("/proc/self/fd/{}", code.fd()))?;
     Ok((metadata.dev(), metadata.ino()))
@@ -71,6 +97,20 @@ fn code_identity(code: &Snapshot) -> Result<(u64, u64), Fault> {
 fn write_event(channel: &Channel, manifest: &Manifest) -> Result<(), Fault> {
     let bytes = serde_json::to_vec(manifest).map_err(|_| Fault::Identity)?;
     channel.send(&bytes)
+}
+
+fn progress(scenario: Scenario, phase: &'static str) -> Result<(), Fault> {
+    let value = serde_json::to_vec(&serde_json::json!({"scenario":scenario,"phase":phase}))
+        .map_err(|_| Fault::Identity)?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(Path::new(RUN).join("progress"))?
+        .write_all(&value)?;
+    Ok(())
 }
 
 fn event(worker: &Worker, until: Instant, peers: &[Worker]) -> Result<Event, Fault> {
@@ -87,8 +127,9 @@ fn event(worker: &Worker, until: Instant, peers: &[Worker]) -> Result<Event, Fau
             fd: -1,
             events: libc::POLLIN,
             revents: 0,
-        }; 7];
+        }; 8];
         polls[0].fd = worker.report.as_raw_fd();
+        polls[1 + peers.len() * 2].fd = super::lease::guardian_fd();
         for (peer_index, peer) in peers.iter().enumerate() {
             for stream in 0..2 {
                 polls[1 + peer_index * 2 + stream].fd = peer.capture.poll_fd(stream);
@@ -97,13 +138,14 @@ fn event(worker: &Worker, until: Instant, peers: &[Worker]) -> Result<Event, Fau
         let result = unsafe {
             libc::poll(
                 polls.as_mut_ptr(),
-                (1 + peers.len() * 2) as libc::nfds_t,
+                (2 + peers.len() * 2) as libc::nfds_t,
                 10,
             )
         };
         if result < 0 {
             return Err(io::Error::last_os_error().into());
         }
+        super::lease::pulse()?;
         for (peer_index, peer) in peers.iter().enumerate() {
             for stream in 0..2 {
                 let revents = polls[1 + peer_index * 2 + stream].revents;
@@ -150,14 +192,18 @@ fn event(worker: &Worker, until: Instant, peers: &[Worker]) -> Result<Event, Fau
 }
 
 fn spawn(
-    role: Role,
-    scenario: Scenario,
+    spec: SpawnSpec<'_>,
     code: &Snapshot,
     libraries: &[Snapshot],
     null: &File,
-    ipc: &[(RawFd, RawFd)],
     group: &Group,
+    registry: &mut super::registry::Registry,
 ) -> Result<Worker, Fault> {
+    let SpawnSpec {
+        role,
+        scenario,
+        ipc,
+    } = spec;
     let boot = Channel::new()?;
     let start = Channel::new()?;
     let report = Channel::new()?;
@@ -257,7 +303,9 @@ fn spawn(
     }
     let bound = (|| {
         let process = Process::bind(pid as u32)?;
+        registry.track(role, &process, true)?;
         group.attach(role, process.pid)?;
+        registry.attached(&process)?;
         let mut expected = process.identity()?;
         expected.code = code_identity(code)?;
         Ok((process, expected))
@@ -274,6 +322,7 @@ fn spawn(
                 let mut status = 0;
                 let result = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
                 if result == pid as i32 {
+                    registry.reaped(pid as u32);
                     break;
                 }
                 if result < 0 || Instant::now() >= until {
@@ -301,13 +350,14 @@ fn spawn(
     })
 }
 
-fn reap(process: &Process) -> Result<(), Fault> {
+fn reap(process: &Process, registry: &mut super::registry::Registry) -> Result<(), Fault> {
     let until = Instant::now() + Duration::from_secs(3);
     loop {
         super::lease::pulse()?;
         let mut status = 0;
         let value = unsafe { libc::waitpid(process.pid as i32, &mut status, libc::WNOHANG) };
         if value == process.pid as i32 {
+            registry.reaped(process.pid);
             return Ok(());
         }
         if value < 0 {
@@ -484,6 +534,7 @@ fn baseline(
     group: &Group,
     phase: &mut &'static str,
     scenario: Scenario,
+    registry: &mut super::registry::Registry,
 ) -> Result<Vec<Observation>, Fault> {
     let host = identity::namespace_ids(std::process::id())?;
     let nonce: [u8; 16] = crate::private_io::random_hex()?.as_bytes()[..16]
@@ -515,7 +566,18 @@ fn baseline(
                     (to_b.write.as_raw_fd(), 10),
                 ],
             };
-            workers.push(spawn(role, scenario, code, libraries, &null, &ipc, group)?);
+            workers.push(spawn(
+                SpawnSpec {
+                    role,
+                    scenario,
+                    ipc: &ipc,
+                },
+                code,
+                libraries,
+                &null,
+                group,
+                registry,
+            )?);
         }
         let peers: [u32; 3] = workers
             .iter()
@@ -620,10 +682,12 @@ fn baseline(
             }
         }
         *phase = "barrier";
+        progress(scenario, "barrier")?;
         for worker in &workers {
             worker.start.send(b"G")?;
         }
         *phase = "payload";
+        progress(scenario, "payload")?;
         for worker in &workers {
             let entered = event(worker, until, &workers)?;
             if entered.role != worker.role
@@ -666,6 +730,7 @@ fn baseline(
                 &to_b,
             );
         }
+        progress(scenario, "collector")?;
         let mut observations = Vec::new();
         for worker in &workers {
             if (scenario.resource() || scenario.lifecycle()) && worker.role != Role::A {
@@ -826,6 +891,7 @@ fn baseline(
             }
             for pid in members.into_iter().filter(|pid| *pid != worker.process.pid) {
                 let process = Process::bind(pid)?;
+                registry.track(Role::A, &process, false)?;
                 if !process.alive()? || !group.bound(Role::A, pid)? {
                     return Err(Fault::Identity);
                 }
@@ -856,6 +922,7 @@ fn baseline(
                 .find(|pid| **pid != worker.process.pid)
                 .ok_or(Fault::Identity)?;
             let descendant = Process::bind(pid)?;
+            registry.track(Role::A, &descendant, false)?;
             let [parent, group_id, session] = descendant.lineage()?;
             let [_, parent_group, parent_session] = worker.process.lineage()?;
             if parent != worker.process.pid
@@ -906,6 +973,10 @@ fn baseline(
         }
         Ok(observations)
     })();
+    // Leave the live target ledger intact for the exclusive recovery path.
+    // Killing namespace leaders here could erase unobserved descendants
+    // before RecoveryGroup takes its bounded PIDFD snapshot.
+    super::lease::pulse()?;
     let targets = workers
         .iter()
         .map(|worker| &worker.process)
@@ -941,7 +1012,7 @@ fn baseline(
     } else {
         workers.iter().try_for_each(|worker| worker.process.kill())
     };
-    let reaped = workers.iter().try_for_each(|w| reap(&w.process));
+    let reaped = workers.iter().try_for_each(|w| reap(&w.process, registry));
     // Raw stdout/stderr is never public audit. These fields keep capture pipes
     // private and live until termination, including an error path.
     for worker in &workers {
@@ -950,6 +1021,7 @@ fn baseline(
     killed?;
     leaders?;
     reaped?;
+    registry.finish()?;
     if !group.empty()? {
         return Err(Fault::Kernel(libc::EBUSY));
     }
@@ -1089,6 +1161,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
     let mut watchdog = None;
     let mut run_guard = None;
     let mut handoff_status = None;
+    let mut registry = super::registry::Registry::default();
     let mut result = (|| {
         if !cfg!(target_arch = "x86_64") || fs::read_dir("/proc/self/task")?.count() != 1 {
             return Err(Fault::Identity);
@@ -1133,8 +1206,9 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 .open(RUN)?,
         );
         phase = "watchdog";
-        let (watch, mut group) =
+        let (watch, group) =
             super::watchdog::Watchdog::start(run_guard.as_ref().ok_or(Fault::Identity)?)?;
+        let mut group = ParentGroup(group);
         watchdog = Some(watch);
         watchdog.as_ref().ok_or(Fault::Identity)?.write_metadata()?;
         // Stable regression coverage even when a faster host completes the
@@ -1150,7 +1224,14 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         drop(canary);
         let mut observed = (|| {
             active_scenario = Some(Scenario::Baseline);
-            let mut observed = baseline(&code, &libraries, &group, &mut phase, Scenario::Baseline)?;
+            let mut observed = baseline(
+                &code,
+                &libraries,
+                &group,
+                &mut phase,
+                Scenario::Baseline,
+                &mut registry,
+            )?;
             observed.push(Observation {
                 scenario: None,
                 check: contract::Check::WatchdogHandoff,
@@ -1169,6 +1250,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 &group,
                 &mut phase,
                 Scenario::ForeignReady,
+                &mut registry,
             ) {
                 Err(Fault::ForeignReady) => observed.push(Observation {
                     scenario: Some(Scenario::ForeignReady),
@@ -1186,7 +1268,14 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 for role in Role::ALL {
                     fs::remove_dir(Path::new(RUN).join(role.name()))?;
                 }
-                match baseline(&code, &libraries, &group, &mut phase, scenario) {
+                match baseline(
+                    &code,
+                    &libraries,
+                    &group,
+                    &mut phase,
+                    scenario,
+                    &mut registry,
+                ) {
                     Err(Fault::LibraryRejected(rejected)) if rejected == scenario => {
                         observed.push(Observation {
                             scenario: Some(scenario),
@@ -1206,7 +1295,14 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 for role in Role::ALL {
                     fs::remove_dir(Path::new(RUN).join(role.name()))?;
                 }
-                observed.extend(baseline(&code, &libraries, &group, &mut phase, scenario)?);
+                observed.extend(baseline(
+                    &code,
+                    &libraries,
+                    &group,
+                    &mut phase,
+                    scenario,
+                    &mut registry,
+                )?);
             }
             for role in Role::ALL {
                 fs::remove_dir(Path::new(RUN).join(role.name()))?;
@@ -1218,6 +1314,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 &group,
                 &mut phase,
                 Scenario::CgroupKillNoop,
+                &mut registry,
             ) {
                 Err(Fault::CgroupKillFailureRecovered) => {
                     for (check, attempts) in [
@@ -1244,7 +1341,14 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                     fs::remove_dir(Path::new(RUN).join(role.name()))?;
                 }
                 let expected = Fault::LifecycleDetected(scenario);
-                match baseline(&code, &libraries, &group, &mut phase, scenario) {
+                match baseline(
+                    &code,
+                    &libraries,
+                    &group,
+                    &mut phase,
+                    scenario,
+                    &mut registry,
+                ) {
                     Err(fault) if fault == expected => {
                         observed.push(Observation {
                             scenario: Some(scenario),
@@ -1304,7 +1408,14 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 for role in Role::ALL {
                     fs::remove_dir(Path::new(RUN).join(role.name()))?;
                 }
-                observed.extend(baseline(&code, &libraries, &group, &mut phase, scenario)?);
+                observed.extend(baseline(
+                    &code,
+                    &libraries,
+                    &group,
+                    &mut phase,
+                    scenario,
+                    &mut registry,
+                )?);
             }
             Ok(observed)
         })();
@@ -1350,34 +1461,45 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
     let mut kernel_removed = !Path::new(super::cgroup::ROOT).exists();
     let mut watchdog_fault = None;
     let mut watch_finished = watchdog.is_none();
+    let mut parent_recovery_status = None;
     if let Some(watch) = &mut watchdog {
-        // All Group handles have been dropped by the result closure. A
-        // relinquish therefore permanently hands off every remaining object.
-        let completed = if kernel_removed {
-            let cleanup = (|| {
-                super::lease::pulse()?;
-                if let Some(lock) = &run_lock {
-                    let current = fs::symlink_metadata(RUN)?;
-                    let pinned = lock.metadata()?;
-                    if (current.dev(), current.ino()) != (pinned.dev(), pinned.ino()) {
-                        return Err(Fault::Identity);
-                    }
-                    fs::remove_dir_all(RUN)?;
-                }
-                Ok::<_, Fault>(())
-            })();
-            if cleanup.is_ok() {
-                watch.finish()
-            } else {
-                result = Err(Fault::RunCleanup);
-                watch.relinquish()
-            }
+        if let (Some(guard), Some(pinned)) = (&run_guard, &run_lock) {
+            parent_recovery_status = watch.parent_recovery(guard, pinned, &mut registry);
+        }
+        if let Some(statuses) = &parent_recovery_status {
+            watch_finished = statuses.last().is_some_and(|status| {
+                status.transition == super::watchdog::ParentTransition::Recovered
+            });
+            result = Err(Fault::GuardianDied);
         } else {
-            watch.relinquish()
-        };
-        match completed {
-            Ok(()) => watch_finished = true,
-            Err(fault) => watchdog_fault = Some(fault),
+            // All Group handles have been dropped by the result closure. A
+            // relinquish therefore permanently hands off every remaining object.
+            let completed = if kernel_removed {
+                let cleanup = (|| {
+                    super::lease::pulse()?;
+                    if let Some(lock) = &run_lock {
+                        let current = fs::symlink_metadata(RUN)?;
+                        let pinned = lock.metadata()?;
+                        if (current.dev(), current.ino()) != (pinned.dev(), pinned.ino()) {
+                            return Err(Fault::Identity);
+                        }
+                        fs::remove_dir_all(RUN)?;
+                    }
+                    Ok::<_, Fault>(())
+                })();
+                if cleanup.is_ok() {
+                    watch.finish()
+                } else {
+                    result = Err(Fault::RunCleanup);
+                    watch.relinquish()
+                }
+            } else {
+                watch.relinquish()
+            };
+            match completed {
+                Ok(()) => watch_finished = true,
+                Err(fault) => watchdog_fault = Some(fault),
+            }
         }
         kernel_removed = !Path::new(super::cgroup::ROOT).exists();
     }
@@ -1386,8 +1508,13 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         result = Err(watchdog_fault.unwrap_or(Fault::Identity));
     }
     let watchdog_status = watchdog.as_ref().and_then(|watch| watch.status());
+    let guardian_alive = watchdog.as_ref().and_then(|watch| watch.guardian_alive());
     let terminal_confirmed = if watchdog.is_some() {
-        matches!(
+        (parent_recovery_status.as_ref().is_some_and(|statuses| {
+            statuses.last().is_some_and(|status| {
+                status.transition == super::watchdog::ParentTransition::Recovered
+            })
+        }) || matches!(
             watchdog_status,
             Some(super::watchdog::Status {
                 reason: super::watchdog::Reason::ExplicitDone,
@@ -1398,7 +1525,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 transition: super::watchdog::Transition::Recovered,
                 ..
             })
-        ) && watch_finished
+        )) && watch_finished
     } else {
         // Failed startup may release its empty RUN only after the guardian
         // has been reaped. An unconfirmed guardian can create resources later.
@@ -1425,7 +1552,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 "{}",
                 serde_json::json!({"schema_version":1,"status":"incomplete",
                 "formal_eligible":false,"model_launched":false,"code_sha256":hash,
-                "checks":observations,"resources_removed":true,"watchdog_status":watchdog_status,"handoff_status":handoff_status})
+                "checks":observations,"resources_removed":true,"watchdog_status":watchdog_status,"handoff_status":handoff_status,"parent_recovery_status":parent_recovery_status,"guardian_alive":guardian_alive})
             );
             std::process::ExitCode::from(1)
         }
@@ -1452,6 +1579,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 Fault::WatchdogRecovery => "watchdog_recovery_failed",
                 Fault::GuardianUnconfirmed => "watchdog_guardian_unconfirmed",
                 Fault::GuardianStartupStopped => "watchdog_startup_failed",
+                Fault::GuardianDied => "watchdog_guardian_died",
                 Fault::Ownership => "ownership",
                 Fault::Path => "path",
                 Fault::Seal => "seal",
@@ -1481,7 +1609,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 "child_signal":child_signal,"child_core_dumped":child_core_dumped,
                 "output_role":output_role,"output_stream":output_stream,
                 "watchdog_exit":watchdog_exit,"watchdog_signal":watchdog_signal,"watchdog_core_dumped":watchdog_core_dumped,
-                "watchdog_status":watchdog_status,"handoff_status":handoff_status,"active_scenario":active_scenario,"elapsed_ms":run_started.elapsed().as_millis().min(3_600_000) as u64})
+                "watchdog_status":watchdog_status,"handoff_status":handoff_status,"parent_recovery_status":parent_recovery_status,"guardian_alive":guardian_alive,"active_scenario":active_scenario,"elapsed_ms":run_started.elapsed().as_millis().min(3_600_000) as u64})
             );
             std::process::ExitCode::from(1)
         }

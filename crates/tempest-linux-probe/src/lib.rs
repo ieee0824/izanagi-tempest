@@ -30,6 +30,7 @@ mod guard;
 mod identity;
 mod lease;
 mod os;
+mod registry;
 mod runtime;
 mod seccomp;
 mod watchdog;

@@ -17,6 +17,111 @@ pub(super) struct Group {
     directory: fs::File,
 }
 
+/// No normal Group API and no Drop cleanup. Only an exclusive death proof
+/// authorizes use of the already validated identity and duplicated directory FD.
+pub(super) struct RecoveryGroup {
+    identity: (u64, u64),
+    directory: fs::File,
+}
+impl RecoveryGroup {
+    fn verify_pinned(&self) -> Result<(), Fault> {
+        use std::os::unix::fs::MetadataExt;
+        let pinned = self.directory.metadata()?;
+        if !pinned.is_dir() || (pinned.dev(), pinned.ino()) != self.identity {
+            return Err(Fault::Identity);
+        }
+        Ok(())
+    }
+    fn verify(&self) -> Result<(), Fault> {
+        use std::os::unix::fs::MetadataExt;
+        let pinned = self.directory.metadata()?;
+        let current = fs::symlink_metadata(ROOT)?;
+        if !current.is_dir()
+            || (current.dev(), current.ino()) != self.identity
+            || (pinned.dev(), pinned.ino()) != self.identity
+        {
+            return Err(Fault::Identity);
+        }
+        Ok(())
+    }
+    pub(super) fn recover(
+        self,
+        proof: &super::watchdog::DeadGuardian<'_>,
+        registry: &mut super::registry::Registry,
+    ) -> Result<super::registry::Counts, Fault> {
+        self.verify_pinned()?;
+        if matches!(fs::symlink_metadata(ROOT), Err(error) if error.kind() == io::ErrorKind::NotFound)
+        {
+            return registry.stop_and_reap(proof);
+        }
+        self.verify()?;
+        let mut evidence_failure = None;
+        // Snapshot is bounded by the fixed parent pids.max=48; populated=0
+        // remains independently necessary because fork can race this snapshot.
+        for role in Role::ALL {
+            let result = (|| {
+                let directory = match open_at(
+                    &self.directory,
+                    role.name(),
+                    libc::O_RDONLY | libc::O_DIRECTORY,
+                ) {
+                    Ok(directory) => directory,
+                    Err(Fault::Kernel(libc::ENOENT)) => return Ok(()),
+                    Err(error) => return Err(error),
+                };
+                let members = read(&directory, "cgroup.procs")?;
+                if members.len() > 1024 {
+                    return Err(Fault::Identity);
+                }
+                for pid in members.split_whitespace().take(49) {
+                    let process =
+                        super::identity::Process::bind(pid.parse().map_err(|_| Fault::Identity)?)?;
+                    if !process.recovery_member(role)? {
+                        return Err(Fault::Identity);
+                    }
+                    registry.track(role, &process, false)?;
+                }
+                Ok::<_, Fault>(())
+            })();
+            if let Err(error) = result {
+                evidence_failure.get_or_insert(error);
+            }
+        }
+        self.verify()?;
+        let stopped = write(&self.directory, "cgroup.kill", "1");
+        // Stop unattached direct children even if cgroup.kill failed.
+        let reaped = registry.stop_and_reap(proof);
+        stopped?;
+        let counts = reaped?;
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            self.verify()?;
+            let events = read(&self.directory, "cgroup.events")?;
+            if events.lines().any(|line| line == "populated 0") {
+                break;
+            }
+            if Instant::now() >= until {
+                return Err(Fault::Kernel(libc::EBUSY));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        if let Some(error) = evidence_failure {
+            return Err(error);
+        }
+        for role in Role::ALL {
+            match rmdir(&self.directory, role.name()) {
+                Ok(()) | Err(Fault::Kernel(libc::ENOENT)) => (),
+                Err(error) => return Err(error),
+            }
+        }
+        self.verify()?;
+        // Top-level identity-check/unlink race with another privileged actor
+        // remains a separate gate, as in the normal cleanup path.
+        fs::remove_dir(ROOT)?;
+        Ok(counts)
+    }
+}
+
 fn open_directory() -> Result<fs::File, Fault> {
     use std::os::unix::fs::OpenOptionsExt;
     Ok(fs::OpenOptions::new()
@@ -73,6 +178,13 @@ fn rmdir(directory: &fs::File, name: &str) -> Result<(), Fault> {
 }
 
 impl Group {
+    pub(super) fn recovery_handle(&self) -> Result<RecoveryGroup, Fault> {
+        self.verify()?;
+        Ok(RecoveryGroup {
+            identity: self.identity,
+            directory: super::os::duplicate_fd(self.directory.as_raw_fd())?.into(),
+        })
+    }
     pub(super) fn disarm(&mut self) {
         self.armed = false;
     }

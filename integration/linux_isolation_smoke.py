@@ -59,7 +59,7 @@ def main() -> int:
                               "stdout_bytes": len(result.stdout),
                               "stderr_bytes": len(result.stderr)}))
             return 1
-        allowed = {"schema_version", "status", "reason", "formal_eligible", "model_launched", "code_sha256", "checks", "errno", "resources_removed", "phase", "child_exit", "child_signal", "child_core_dumped", "output_role", "output_stream", "watchdog_exit", "watchdog_signal", "watchdog_core_dumped", "active_scenario", "elapsed_ms", "watchdog_status", "handoff_status"}
+        allowed = {"schema_version", "status", "reason", "formal_eligible", "model_launched", "code_sha256", "checks", "errno", "resources_removed", "phase", "child_exit", "child_signal", "child_core_dumped", "output_role", "output_stream", "watchdog_exit", "watchdog_signal", "watchdog_core_dumped", "active_scenario", "elapsed_ms", "watchdog_status", "handoff_status", "parent_recovery_status", "guardian_alive"}
         if not isinstance(report, dict) or report.keys() - allowed:
             raise RuntimeError("unexpected_public_audit_fields")
         if report.get("code_sha256", digest) != digest:

@@ -1,6 +1,6 @@
 //! Root-only lease guardian. Recovery never races a live mutating owner.
 use super::{
-    cgroup::Group,
+    cgroup::{Group, RecoveryGroup},
     guard::Guard,
     identity::Process,
     lease,
@@ -49,6 +49,55 @@ pub(super) struct Status {
     pub(super) elapsed_ms: u64,
 }
 
+pub(super) struct DeadGuardian<'a> {
+    _guard: &'a Guard,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Startup,
+    ParentOwned,
+    DeadObserved,
+    Relinquished,
+    Done,
+    ParentRecovery,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ParentTransition {
+    GuardianDead,
+    ParentOwned,
+    Recovered,
+    Failed,
+}
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ParentReason {
+    GuardianDied,
+    RecoveryFailed,
+}
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DrainState {
+    NotRead,
+    Empty,
+    Complete,
+    Partial,
+    Invalid,
+}
+#[derive(Clone, Copy, Serialize)]
+pub(super) struct ParentStatus {
+    schema_version: u8,
+    reason: ParentReason,
+    pub(super) transition: ParentTransition,
+    guardian_dead: bool,
+    guardian_reaped: bool,
+    guardian_exit: Option<i32>,
+    guardian_signal: Option<i32>,
+    status_drain: DrainState,
+    counts: Option<super::registry::Counts>,
+    elapsed_ms: u64,
+}
+
 fn status(fd: i32, started: Instant, trigger: Reason, transition: Transition, owner_dead: bool) {
     let value = Status {
         reason: if transition == Transition::Failed {
@@ -64,8 +113,28 @@ fn status(fd: i32, started: Instant, trigger: Reason, transition: Transition, ow
     if let Ok(mut bytes) = serde_json::to_vec(&value) {
         bytes.push(b'\n');
         if bytes.len() <= 512 {
-            unsafe {
-                libc::write(fd, bytes.as_ptr().cast(), bytes.len());
+            let until = Instant::now() + Duration::from_millis(50);
+            loop {
+                if unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) }
+                    == bytes.len() as isize
+                {
+                    break;
+                }
+                if !matches!(
+                    io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EAGAIN | libc::EINTR)
+                ) || Instant::now() >= until
+                {
+                    break;
+                }
+                let mut poll = libc::pollfd {
+                    fd,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                if unsafe { libc::poll(&mut poll, 1, 5) } < 0 {
+                    break;
+                }
             }
         }
     }
@@ -78,7 +147,11 @@ fn remove_run(pinned: &File) -> Result<(), Fault> {
         Err(error) => return Err(error.into()),
     };
     let original = pinned.metadata()?;
-    if !current.is_dir() || (current.dev(), current.ino()) != (original.dev(), original.ino()) {
+    if !current.is_dir()
+        || current.uid() != 0
+        || current.mode() & 0o7777 != 0o700
+        || (current.dev(), current.ino()) != (original.dev(), original.ino())
+    {
         return Err(Fault::Identity);
     }
     fs::remove_dir_all(RUN)?;
@@ -121,6 +194,10 @@ fn recover(
 
 fn child(owner: Process, pinned: File, read: OwnedFd, output: OwnedFd, guard: &Guard) -> ! {
     lease::clear();
+    // Losing an audit reader must not interrupt resource recovery.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
     let started = Instant::now();
     let mut trigger = Reason::RecoveryFailed;
     let result = (|| {
@@ -236,6 +313,9 @@ pub(super) struct Watchdog {
     guardian: OwnedFd,
     active: bool,
     last: Option<Status>,
+    mode: Mode,
+    recovery: Option<RecoveryGroup>,
+    started: Instant,
 }
 
 impl Watchdog {
@@ -283,6 +363,9 @@ impl Watchdog {
             guardian,
             active: true,
             last: None,
+            mode: Mode::Startup,
+            recovery: None,
+            started: Instant::now(),
         };
         let startup = (|| {
             let mut poll = libc::pollfd {
@@ -309,9 +392,11 @@ impl Watchdog {
                 u64::from_ne_bytes(ack[4..12].try_into().map_err(|_| Fault::Identity)?),
                 u64::from_ne_bytes(ack[12..].try_into().map_err(|_| Fault::Identity)?),
             );
-            lease::activate(watchdog.control.as_raw_fd());
+            lease::activate(watchdog.control.as_raw_fd(), watchdog.guardian.as_raw_fd());
             lease::pulse()?;
-            Group::adopt(identity)
+            let group = Group::adopt(identity)?;
+            watchdog.recovery = Some(group.recovery_handle()?);
+            Ok(group)
         })();
         let group = match startup {
             Ok(group) => group,
@@ -320,6 +405,7 @@ impl Watchdog {
                 return Err(Fault::GuardianStartupStopped);
             }
         };
+        watchdog.mode = Mode::ParentOwned;
         Ok((watchdog, group))
     }
 
@@ -365,6 +451,158 @@ impl Watchdog {
 
     pub(super) fn status(&self) -> Option<Status> {
         self.last
+    }
+
+    pub(super) fn guardian_alive(&self) -> Option<bool> {
+        let mut poll = libc::pollfd {
+            fd: self.guardian.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut poll, 1, 0) } < 0 {
+            return None;
+        }
+        if poll.revents & libc::POLLIN != 0 {
+            Some(false)
+        } else if poll.revents == 0 {
+            Some(true)
+        } else {
+            None
+        }
+    }
+
+    fn drain_status(&mut self) -> DrainState {
+        let mut bytes = Vec::new();
+        loop {
+            let mut chunk = [0_u8; 512];
+            let count = unsafe {
+                libc::read(
+                    self.input.as_raw_fd(),
+                    chunk.as_mut_ptr().cast(),
+                    chunk.len(),
+                )
+            };
+            if count < 0 {
+                if io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) {
+                    break;
+                }
+                return DrainState::Invalid;
+            }
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..count as usize]);
+            if bytes.len() > 2048 {
+                return DrainState::Invalid;
+            }
+        }
+        if !bytes.is_empty() && bytes.last() != Some(&b'\n') {
+            return DrainState::Partial;
+        }
+        for line in bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            if line.len() > 512 {
+                return DrainState::Invalid;
+            }
+            match serde_json::from_slice(line) {
+                Ok(status) => self.last = Some(status),
+                Err(_) => return DrainState::Invalid,
+            }
+        }
+        if bytes.is_empty() {
+            DrainState::Empty
+        } else {
+            DrainState::Complete
+        }
+    }
+
+    pub(super) fn parent_recovery(
+        &mut self,
+        guard: &Guard,
+        pinned: &File,
+        registry: &mut super::registry::Registry,
+    ) -> Option<Vec<ParentStatus>> {
+        if self.mode != Mode::ParentOwned {
+            return None;
+        }
+        let mut poll = libc::pollfd {
+            fd: self.guardian.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut poll, 1, 0) } <= 0 || poll.revents & libc::POLLIN == 0 {
+            return None;
+        }
+        lease::forbid();
+        self.mode = Mode::DeadObserved;
+        let waited = self.wait(); // Terminal nonzero status still proves reap.
+        let guardian_exit = match waited {
+            Ok(()) => Some(0),
+            Err(Fault::Child(code)) => Some(code),
+            _ => None,
+        };
+        let guardian_signal = match waited {
+            Err(Fault::ChildSignal(signal, _)) => Some(signal),
+            _ => None,
+        };
+        let drain = if self.active {
+            DrainState::NotRead
+        } else {
+            self.drain_status()
+        };
+        let started = self.started;
+        let make = |transition, reaped, counts| ParentStatus {
+            schema_version: 1,
+            reason: if transition == ParentTransition::Failed {
+                ParentReason::RecoveryFailed
+            } else {
+                ParentReason::GuardianDied
+            },
+            transition,
+            guardian_dead: true,
+            guardian_reaped: reaped,
+            guardian_exit,
+            guardian_signal,
+            status_drain: drain,
+            counts,
+            elapsed_ms: started.elapsed().as_millis().min(3_600_000) as u64,
+        };
+        let mut statuses = vec![make(ParentTransition::GuardianDead, !self.active, None)];
+        if self.active {
+            statuses.push(make(ParentTransition::Failed, false, None));
+            return Some(statuses);
+        }
+        // Never reclaim after an acknowledged normal release, nor after R/D.
+        if matches!(drain, DrainState::Invalid | DrainState::Partial)
+            || self.last.is_some_and(|status| {
+                matches!(
+                    status.transition,
+                    Transition::Released | Transition::Recovered
+                )
+            })
+        {
+            statuses.push(make(ParentTransition::Failed, true, None));
+            return Some(statuses);
+        }
+        self.mode = Mode::ParentRecovery;
+        let proof = DeadGuardian { _guard: guard };
+        statuses.push(make(ParentTransition::ParentOwned, true, None));
+        let recovered = (|| {
+            let group = self.recovery.take().ok_or(Fault::Identity)?;
+            let counts = group.recover(&proof, registry)?;
+            remove_run(pinned)?;
+            if Path::new(super::cgroup::ROOT).exists() || Path::new(RUN).exists() {
+                return Err(Fault::Identity);
+            }
+            Ok::<_, Fault>(counts)
+        })();
+        statuses.push(match recovered {
+            Ok(counts) => make(ParentTransition::Recovered, true, Some(counts)),
+            Err(_) => make(ParentTransition::Failed, true, None),
+        });
+        Some(statuses)
     }
 
     fn receive(&mut self, target: Transition) -> Result<(), Fault> {
@@ -416,6 +654,9 @@ impl Watchdog {
             let mut status = 0;
             let result = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) };
             if result == self.pid {
+                if !libc::WIFEXITED(status) && !libc::WIFSIGNALED(status) {
+                    return Err(Fault::Identity);
+                }
                 self.active = false;
                 return if libc::WIFEXITED(status) {
                     if libc::WEXITSTATUS(status) == 0 {
@@ -443,6 +684,11 @@ impl Watchdog {
     }
 
     fn command(&mut self, byte: u8, target: Transition) -> Result<(), Fault> {
+        self.mode = if byte == b'R' {
+            Mode::Relinquished
+        } else {
+            Mode::Done
+        };
         lease::forbid();
         if unsafe { libc::write(self.control.as_raw_fd(), (&byte as *const u8).cast(), 1) } != 1 {
             let _ = self.wait();
@@ -462,7 +708,7 @@ impl Watchdog {
 }
 impl Drop for Watchdog {
     fn drop(&mut self) {
-        if self.active {
+        if self.active && self.mode == Mode::ParentOwned {
             let _ = self.relinquish();
         }
     }

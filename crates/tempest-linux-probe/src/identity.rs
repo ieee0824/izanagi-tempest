@@ -74,6 +74,25 @@ fn ticks(value: &str, expected_pid: u32) -> Result<u64, Fault> {
 }
 
 impl Process {
+    pub(super) fn recovery_member(&self, role: Role) -> Result<bool, Fault> {
+        let membership = fs::read_to_string(format!("/proc/{}/cgroup", self.pid))?;
+        let current = ticks(
+            &fs::read_to_string(format!("/proc/{}/stat", self.pid))?,
+            self.pid,
+        )?;
+        Ok(current == self.birth
+            && self.alive()?
+            && membership
+                .lines()
+                .any(|line| line == format!("0::/tempest-linux-isolation-probe/{}", role.name())))
+    }
+    pub(super) fn duplicate(&self) -> Result<Self, Fault> {
+        Ok(Self {
+            pid: self.pid,
+            birth: self.birth,
+            fd: super::os::duplicate_fd(self.fd.as_raw_fd())?,
+        })
+    }
     pub(super) fn fd(&self) -> i32 {
         self.fd.as_raw_fd()
     }

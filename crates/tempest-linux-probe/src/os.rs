@@ -18,6 +18,7 @@ pub(super) enum Fault {
     WatchdogRecovery,
     GuardianUnconfirmed,
     GuardianStartupStopped,
+    GuardianDied,
     Ownership,
     Path,
     Seal,
@@ -47,6 +48,14 @@ pub(super) fn syscall(result: libc::c_int) -> Result<(), Fault> {
     } else {
         Ok(())
     }
+}
+
+pub(super) fn duplicate_fd(fd: RawFd) -> Result<OwnedFd, Fault> {
+    let raw = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if raw < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(raw) })
 }
 
 /// These bytes, rather than a subsequently resolved pathname, are what is
