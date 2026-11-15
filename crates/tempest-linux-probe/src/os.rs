@@ -22,6 +22,8 @@ pub(super) enum Fault {
     Bootstrap(u8, i32),
     ForeignReady,
     RunCleanup,
+    ReportTimeout,
+    ReportEof,
     LibraryRejected(super::contract::Scenario),
 }
 

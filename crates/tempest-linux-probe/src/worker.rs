@@ -438,7 +438,18 @@ pub(super) fn run() -> i32 {
     if !event(&manifest, Phase::Entered, Vec::new()) {
         return 3;
     }
-    if manifest.scenario.resource() {
+    if manifest.scenario.lifecycle() && manifest.role == Role::A {
+        if manifest.scenario == Scenario::ReportEof {
+            unsafe {
+                libc::close(5);
+            }
+        }
+        // Stay alive with no stdout/stderr output. The supervisor must detect
+        // EOF or its normal overall deadline, not mistake this for a child exit.
+        wait();
+        return 0;
+    }
+    if manifest.scenario.resource() || manifest.scenario.lifecycle() {
         // Peer positives run only after A reports exhaustion, so a success
         // cannot come from before pressure was applied in the other role.
         if manifest.role != Role::A && !wait() {

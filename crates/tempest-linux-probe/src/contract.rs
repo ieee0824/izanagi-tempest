@@ -31,6 +31,8 @@ pub(super) enum Scenario {
     PidsLimit,
     TmpfsFull,
     DetachedGrandchild,
+    ReportTimeout,
+    ReportEof,
 }
 
 impl Scenario {
@@ -54,6 +56,10 @@ impl Scenario {
     ];
     pub(super) const RESOURCES: [Self; 3] =
         [Self::PidsLimit, Self::TmpfsFull, Self::DetachedGrandchild];
+    pub(super) const LIFECYCLE: [Self; 2] = [Self::ReportTimeout, Self::ReportEof];
+    pub(super) fn lifecycle(self) -> bool {
+        Self::LIFECYCLE.contains(&self)
+    }
     pub(super) fn resource(self) -> bool {
         Self::RESOURCES.contains(&self)
     }
@@ -173,6 +179,9 @@ pub(super) enum Check {
     CgroupEmpty,
     ResourcesRemoved,
     AuditBounded,
+    ReportTimeoutDetected,
+    ReportEofDetected,
+    RolesReaped,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

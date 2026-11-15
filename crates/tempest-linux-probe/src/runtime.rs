@@ -58,9 +58,9 @@ struct Worker {
     expected: Identity,
     boot: Channel,
     start: Channel,
-    report: Channel,
-    output: Channel,
-    error: Channel,
+    report: OwnedFd,
+    output: OwnedFd,
+    error: OwnedFd,
 }
 
 fn code_identity(code: &Snapshot) -> Result<(u64, u64), Fault> {
@@ -77,10 +77,10 @@ fn event(worker: &Worker, until: Instant) -> Result<Event, Fault> {
     let mut value = Vec::new();
     loop {
         if Instant::now() >= until {
-            return Err(Fault::Kernel(libc::ETIMEDOUT));
+            return Err(Fault::ReportTimeout);
         }
         let mut poll = libc::pollfd {
-            fd: worker.report.read.as_raw_fd(),
+            fd: worker.report.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
@@ -100,6 +100,8 @@ fn event(worker: &Worker, until: Instant) -> Result<Event, Fault> {
             if value.len() > 8192 {
                 return Err(Fault::Identity);
             }
+        } else if poll.revents & libc::POLLHUP != 0 && worker.process.alive()? {
+            return Err(Fault::ReportEof);
         } else if !worker.process.alive()? {
             return Err(worker.process.exited());
         }
@@ -234,6 +236,11 @@ fn spawn(
             return Err(error);
         }
     };
+    // The supervisor owns read ends only. Retaining any write end here masks
+    // a live worker's report closure and prevents real pipe EOF observation.
+    drop(report.write);
+    drop(output.write);
+    drop(error.write);
     Ok(Worker {
         descriptors,
         role,
@@ -241,9 +248,9 @@ fn spawn(
         expected,
         boot,
         start,
-        report,
-        output,
-        error,
+        report: report.read,
+        output: output.read,
+        error: error.read,
     })
 }
 
@@ -588,10 +595,36 @@ fn baseline(
         }
         let mut observations = Vec::new();
         for worker in &workers {
-            if scenario.resource() && worker.role != Role::A {
+            if (scenario.resource() || scenario.lifecycle()) && worker.role != Role::A {
                 worker.start.send(b"G")?;
             }
-            let mut done = event(worker, until)?;
+            let received = event(worker, until);
+            if worker.role == Role::A && scenario.lifecycle() {
+                let expected_fault = match scenario {
+                    Scenario::ReportTimeout => Fault::ReportTimeout,
+                    Scenario::ReportEof => Fault::ReportEof,
+                    _ => return Err(Fault::Identity),
+                };
+                if received.as_ref().err() != Some(&expected_fault)
+                    || (scenario == Scenario::ReportTimeout && Instant::now() < until)
+                {
+                    return Err(Fault::Identity);
+                }
+                // Verify every role is still alive and confined at failure.
+                // The EOF case intentionally removes exactly report FD 5.
+                for peer in &workers {
+                    let mut descriptors = peer.descriptors.clone();
+                    if scenario == Scenario::ReportEof && peer.role == Role::A {
+                        descriptors.remove(&5);
+                    }
+                    let state = peer.process.observe(group, peer.role, &descriptors)?;
+                    if !contract::ready(peer.role, &peer.expected, &state, &nonce, &nonce) {
+                        return Err(Fault::Identity);
+                    }
+                }
+                return Err(expected_fault);
+            }
+            let mut done = received?;
             if done.role != worker.role
                 || done.nonce != nonce
                 || done.phase != Phase::Done
@@ -736,13 +769,15 @@ fn baseline(
             });
         }
     }
-    if matches!(result, Err(Fault::ForeignReady | Fault::LibraryRejected(_))) {
+    if matches!(result, Err(Fault::ForeignReady | Fault::LibraryRejected(_)))
+        || (scenario.lifecycle() && matches!(result, Err(Fault::ReportEof | Fault::ReportTimeout)))
+    {
         // Payload entry writes a fixed stderr marker only AFTER Go. Do not
         // consume or publish any bytes; inspect the pipe counters independently.
         for worker in &workers {
             for channel in [&worker.output, &worker.error] {
                 let mut count = 0_i32;
-                if unsafe { libc::ioctl(channel.read.as_raw_fd(), libc::FIONREAD, &mut count) } != 0
+                if unsafe { libc::ioctl(channel.as_raw_fd(), libc::FIONREAD, &mut count) } != 0
                     || count != 0
                 {
                     return Err(Fault::Identity);
@@ -854,6 +889,50 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 }
                 observed.extend(baseline(&code, &libraries, &group, &mut phase, scenario)?);
             }
+            for scenario in Scenario::LIFECYCLE {
+                for role in Role::ALL {
+                    fs::remove_dir(Path::new(RUN).join(role.name()))?;
+                }
+                let expected = if scenario == Scenario::ReportTimeout {
+                    Fault::ReportTimeout
+                } else {
+                    Fault::ReportEof
+                };
+                match baseline(&code, &libraries, &group, &mut phase, scenario) {
+                    Err(fault) if fault == expected => {
+                        observed.push(Observation {
+                            scenario: Some(scenario),
+                            check: if scenario == Scenario::ReportTimeout {
+                                contract::Check::ReportTimeoutDetected
+                            } else {
+                                contract::Check::ReportEofDetected
+                            },
+                            role: Some(Role::A),
+                            passed: true,
+                            attempts: 1,
+                            denials: 1,
+                        });
+                        observed.push(Observation {
+                            scenario: Some(scenario),
+                            check: contract::Check::RolesReaped,
+                            role: None,
+                            passed: true,
+                            attempts: 3,
+                            denials: 0,
+                        });
+                        observed.push(Observation {
+                            scenario: Some(scenario),
+                            check: contract::Check::CgroupEmpty,
+                            role: None,
+                            passed: true,
+                            attempts: 1,
+                            denials: 0,
+                        });
+                    }
+                    Err(error) => return Err(error),
+                    Ok(_) => return Err(Fault::Identity),
+                }
+            }
             for scenario in Scenario::INJECTIONS {
                 for role in Role::ALL {
                     fs::remove_dir(Path::new(RUN).join(role.name()))?;
@@ -898,8 +977,8 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
     };
     match result {
         Ok((hash, observations)) if removed => {
-            // Further lifecycle/resource/ancillary root cases are not yet
-            // implemented. Never advertise the baseline as M1 completion.
+            // Remaining lifecycle/resource/fault gates are not yet complete.
+            // Never advertise these observations as M1 completion.
             println!(
                 "{}",
                 serde_json::json!({"schema_version":1,"status":"incomplete",
@@ -924,6 +1003,8 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 Fault::Bootstrap(_, _) => "bootstrap",
                 Fault::ForeignReady => "foreign_ready",
                 Fault::RunCleanup => "run_cleanup",
+                Fault::ReportTimeout => "report_timeout",
+                Fault::ReportEof => "report_eof",
                 Fault::LibraryRejected(_) => "library_rejected",
             };
             let errno = match fault {
