@@ -148,6 +148,9 @@ EIOケースもfirst_fault・最終reason・Verified・PIDFD死亡・資源不�
 再開後のfixtureはassert前に完全なpublic auditを一意な
 `/tmp/tempest-primary-fault-audit-*.json`へ0600で保存します。
 raw stderrは保存しません。失敗した回収のcountsを含む保存内容と0600権限を、
+失敗diagnosticの`audit_basename`でこのprivate fileへ対応付けます。
+driverは固定prefix・8文字の一時名・`.json`だけを許可し、任意pathは公開しません。
+`exited_after_listing`も固定理由として保持します。
 実際のfixture保存ブロックを使った非root検証で確認しました。rootでの再実行は未実施です。
 
 追加の非root実験では、自分の直接子をPIDFD ledgerへ登録してから終了させると、

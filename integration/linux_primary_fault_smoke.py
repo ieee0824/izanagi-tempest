@@ -192,6 +192,7 @@ for scenario, target, primary in [
     follow_diagnostic = None
     report = None
     output = errors = b''
+    audit_basename = None
     try:
         # ReportTimeout precedes both targets and provides a stable 30-second
         # window to attach. No helper argv, production timeout or test hook changes.
@@ -263,7 +264,8 @@ for scenario, target, primary in [
         # Retain the complete public audit before assertions can discard the
         # recovery counts and failure evidence. mkstemp creates a private file
         # without following an existing path; raw stderr is never persisted.
-        audit_fd, _ = tempfile.mkstemp(prefix='tempest-primary-fault-audit-', suffix='.json')
+        audit_fd, audit_path = tempfile.mkstemp(prefix='tempest-primary-fault-audit-', suffix='.json')
+        audit_basename = pathlib.Path(audit_path).name
         with os.fdopen(audit_fd, 'w') as audit:
             json.dump({'scenario': scenario, 'report': report}, audit)
             audit.write('\n')
@@ -302,13 +304,13 @@ for scenario, target, primary in [
     except BaseException as error:
         reason = report.get('reason') if isinstance(report, dict) else 'other'
         allowed = {'watchdog_guardian_died', 'watchdog_guardian_unconfirmed', 'watchdog_startup_failed',
-                   'watchdog_lease_unavailable', 'run_cleanup', 'identity', 'kernel', 'child_exit', 'child_signal'}
+                   'watchdog_lease_unavailable', 'run_cleanup', 'identity', 'kernel', 'child_exit', 'child_signal', 'exited_after_listing'}
         print(json.dumps({'status':'failed','scenario':scenario,'fixture_stage':stage,
                           'probe_reason':reason if reason in allowed else 'other',
                           'probe_removed':bool(report.get('resources_removed')) if isinstance(report, dict) else False,
                           'failure_kind':'timeout' if isinstance(error, subprocess.TimeoutExpired) else 'parse' if isinstance(error, ValueError) else 'assertion',
                           'exit_code':process.returncode,'stdout_bytes':len(output),'stderr_bytes':len(errors),
-                          'completed_cases':len(results), **(follow_diagnostic or {}),
+                          'completed_cases':len(results), 'audit_basename':audit_basename, **(follow_diagnostic or {}),
                           **exception_diagnostic(error)}))
         raise
     finally:
