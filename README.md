@@ -93,10 +93,11 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 integration/linux_existing_cgroup_smoke.py
 python3 integration/linux_supervisor_death_smoke.py
 python3 integration/linux_watchdog_startup_smoke.py
+python3 integration/linux_watchdog_created_smoke.py
 python3 integration/linux_isolation_smoke.py
 ```
 
-最後の4コマンドは**専用の Ubuntu 24.04 x86_64 VM**で、非 root user から実行します。
+最後の5コマンドは**専用の Ubuntu 24.04 x86_64 VM**で、非 root user から実行します。
 既存の `sudo -n`、`install`、`timeout` と、kernel の namespace・seccomp・cgroup v2
 （cpu/memory/pids controller、`cgroup.kill`）が必要です。通常の `cargo test` は root probe を起動しません。
 driver は固定の `target/debug/tempest` を root 所有・0700 の `/var/lib/tempest-probe-install-<ID>/`
@@ -120,6 +121,12 @@ workerにはFDを継承せず、最後のFD closeで解放されるためファ�
 作成済みcgroupの所有identityを受信できなければ採用せず、残留があれば回収失敗として保持します。
 startup fixtureは自分のdummy親子だけをptraceし、fork直後・cgroup作成前のguardian停止で
 ACK timeout後の死亡確認、空RUN回収、次世代起動を検証します。ptrace/sysctl設定は変更しません。
+created fixtureはmkdir成功直後と20 byte ACKのwrite syscall entryでguardianを停止します。
+後者は親のread端と同一FIFOのwrite先であることも照合します。ACK失敗後のpidfd死亡確認と
+固定watchdog_startup_failed/resources_removed=false、未証明groupの保持、次回起動の無変更拒否を検証します。
+fixtureだけが停止時にpinしたinodeと全group無人を確認して、自分のcgroupを明示回収します。
+ACKのwrite直後に親のtimeoutが先行する場合も、親がidentityを受信できなければ自動回収せず残留します。
+その場合は次回probeを拒否し、専用VM管理者が記録と所有identityを確認して回収する必要があります。
 
 通常suiteは旧90秒超のlease更新を固定回帰試験にするため、機能case終了後も主watchdog開始から95秒まで
 空cgroupのままheartbeatを継続します。payloadの30秒期限や外側driverの120秒timeoutは延長しません。
@@ -145,7 +152,7 @@ supervisor SIGKILL fixture は、A の加入直後と、setsid/double-fork し�
 kernel から確認した後と、heartbeat停止（親SIGSTOP）の3ケースで、対象/guardianのpidfd死亡・run/cgroup回収を確認します。
 status pipeを同一FIFO inodeで検証して複製し、owner_deadとlease_expiredの理由と死亡前後のownership遷移を観測します。
 祖先の終了・group/session の離脱を実測し、単なる最初の fork を孫と取り違えない条件を要求します。
-作成直後・ACK直前直後・他のbootstrap時点の停止、Drop cleanup失敗の故障注入は未検証です。
+ACK write直後・他のbootstrap時点の停止、Drop cleanup失敗の故障注入は未検証です。
 library は write fd を bind 前に close し、同 inode の read fd から配置します。
 bootstrap の bind 前後・全配置後と、supervisor の Ready 後・barrier 直前に
 dev/inode/uid/gid/mode/nlink/hash を確認し、bind 後は ro/nosuid/nodev と exec 可を照合します。
