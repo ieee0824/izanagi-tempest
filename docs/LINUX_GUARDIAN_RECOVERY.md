@@ -36,6 +36,9 @@ pulse 箇所を列挙し、検知までの時間を fixture で測定します�
 host の停止・scheduler や同期 filesystem I/O の停止まで含む hard realtime の保証にはしません。
 
 role と PIDFD/birth を持つ小さな registry を baseline より外側で保持します。
+登録は Worker 完成後ではなく、clone 成功後の PIDFD 取得直後・group attach 前に行い、
+attach 済み flag を後から一方向に更新します。PIDFD 取得前の失敗では、自分の fresh な
+未 reap 子に対する既存の kill/wait 保証を維持します。
 直接子と既知の descendant を区別し、直接子の通常 reap 成功時にだけその記録を除去します。
 異常経路で Worker や baseline の local Vec が drop されても PIDFD を失いません。
 
@@ -49,6 +52,7 @@ PID/birth と既存の保持対象を照合し、PID の数値だけで再採用
 `RecoveryGroup::recover` だけが proof を受け取り、通常 Group API を経由せずに次を行います。
 
 1. 保持 FD と ROOT の dev/inode を照合し、自所有 group に FD 相対で `cgroup.kill` を実行する。
+   まだ attach していない直接子もあるため、registry の直接子には PIDFD による停止も行う。
 2. 全保持 PIDFD の死亡と cgroup の `populated 0` を確認する。
 3. registry の直接子だけを reap する。descendant に親であると仮定した wait を行わない。
 4. 既知 role directory、ROOT、pin 済み RUN を照合して回収する。
@@ -62,6 +66,7 @@ PID/birth と既存の保持対象を照合し、PID の数値だけで再採用
 ## 故障注入と残る範囲
 
 barrier 前、payload 実行中、collector 中の guardian SIGKILL を分けて試験します。
+barrier 前は clone 直後、PIDFD bind 後、attach 前/直後に分け、cgroup 外の子も残らないことを確認します。
 guardian SIGSTOP だけでは親が所有権を取らない負例と、正常終端直後の race も独立に試験します。
 各ケースは typed transition、検知時間、guardian reap、payload/descendant の PIDFD 死亡、
 回収結果、次世代の起動または残留時の無変更拒否を確認します。
