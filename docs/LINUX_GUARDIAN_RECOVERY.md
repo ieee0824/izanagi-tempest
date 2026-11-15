@@ -152,7 +152,7 @@ raw stderrは保存しません。失敗した回収のcountsを含む保存内�
 失敗diagnosticの`audit_basename`でこのprivate fileへ対応付けます。
 driverは固定prefix・8文字の一時名・`.json`だけを許可し、任意pathは公開しません。
 `exited_after_listing`も固定理由として保持します。
-rootでの再実行は未実施です。
+この時点ではrootでの再実行は未実施でした。
 
 その後、管理者の承認依頼#16107への承認決定#16117を専用toolで検証して、
 指定identityをserialization guard下で再照合し、全group空・populated0・guardian不存在を確認しました。
@@ -173,7 +173,7 @@ snapshot_stage/reason/errnoは両ケースともnullで、今回snapshot取得�
 `/tmp/tempest-primary-fault-651fd36{,-meta}.json`です。
 前回の残留失敗と次世代確認失敗の原因は、この成功だけでは確定・解消扱いにしません。
 
-### snapshot終了窓を固定する次のfixture案（未実装）
+### snapshot終了窓の固定fixture
 
 report_timeoutのcollectorで自分の親だけをptraceし、guardian単独poll入口
 （x86_64 syscall=7、nfds=1、timeout=0、pollfdのFDのfdinfo/Pidが主guardianと一致）を捕捉します。
@@ -208,6 +208,18 @@ poll失敗や死亡未確認では元のerrorを保持します。通常bindの�
 非rootの自所有子テストで、生存中のENOENT保持・死亡後の分類・無効FDでの元error保持を確認します。
 特にcgroup読取失敗後の`exited_after_listing`では所属の照合は未完です。
 この理由から、そのtaskがROOTのmemberだったと推定しません。
+
+`37b1075`の`integration/linux_snapshot_race_smoke.py`を専用Ubuntu x86_64 VMで実行し、
+driver exit 0、28.96秒、stderr 0 byteを得ました。binary SHA-256は
+`c8d8992b6408730fb2d5868204bb85ffc01d2c0fd63104314938e32a5ac4ce4a`です。
+3 roleをPIDFDで停止して生存を固定し、guardian poll、role一覧read、snapshot bindを各1回捕捉しました。
+結果は`bind/exited_after_listing`、snapshot errnoなし、registry/direct/dead/reaped=3、
+descendant/unattached/reap未確認=0、populated=falseでした。probeの`resources_removed`はfalseです。
+その後にfixtureが、親terminal、保持identity、全role空、populated0、全PIDFD死亡を再確認した
+同一世代だけを除去し、次世代加入・guardian terminal・最終ROOT/RUN不在を確認しました。
+従ってこれは保守的fail-closeとfixture限定回収後の再加入を証明しますが、probe自身による
+競合後の自動回復、過去の残留失敗の原因、他のsnapshot/clone/attach順序は証明しません。
+private audit basenameは`tempest-snapshot-race-audit-otwj2jhf.json`、ルーム実測報告は#16180です。
 
 親による回収中に親も死亡する二重故障では、新たな guardian を自動生成しません。
 結果が記録されず、payload/cgroup/RUN が残る可能性があります。

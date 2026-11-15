@@ -84,6 +84,7 @@ VM の `--guest-probe`・`--guest-file`・`--agent-probe` と固定バイナリ�
 同じ `tempest` binary の固定 A/B/guard G だけを別 UID・mount/PID/net namespace へ起動し、
 root supervisor が cgroup・kernel identity・開始 barrier と回収を扱います。
 Claude、設定・認証情報、Izanagi/guest、外部 network、HTTP MCP は使いません。
+Issue全体の完了条件と未完gateは[Issue #36 gate台帳](docs/ISSUE-36-GATES.md)に固定します。
 
 ```bash
 cargo build --workspace --locked
@@ -149,7 +150,10 @@ guardian SIGKILL、保持PIDFD死亡、自所有回収、次世代起動を確�
 最終reasonとは別にfirst_faultがreport_eof/output_limitを保持すること、回収と次世代起動を検証します。
 `python3 integration/linux_snapshot_race_smoke.py` はsnapshot中の終了窓を固定する追加fixtureです。
 guardianの死亡後、親がrole一覧を読んだ後のPIDFD取得入口で対象だけを終了させ、
-証拠不足のFailedと残留を確認し、同世代に限定したfixture cleanupと次世代加入を検証します（実機未検証）。
+証拠不足のFailedとprobe自身が資源を除去しないことを確認した後、同世代に限定したfixture cleanupと
+次世代加入を検証します。`37b1075`の専用Linux実測はdriver exit 0、28.96秒、stderr 0 byteで、
+poll/read/bind注入各1、`bind/exited_after_listing`、3 roleの死亡・reap、fixture cleanup、
+次世代guardian terminal、最終ROOT/RUN不在を確認しました。これは競合後にprobe自身が自動回復した証拠ではありません。
 R/Dの1 byte write未送信なら親所有を保持し、最大5秒のPIDFD死亡待ちとreap後に専用回収を再試行します。
 送信後terminal前のguardian死亡もreap確認後に専用の部分回収を行い、正常terminalがある場合は
 mutationせず最終不在/registryだけを確認します。正常terminalは送信済みR/Dとreason/trigger/transitionの対応、
