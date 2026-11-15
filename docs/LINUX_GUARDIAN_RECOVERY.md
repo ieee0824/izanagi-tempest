@@ -162,6 +162,10 @@ snapshot_reason（既存の固定fault理由）、snapshot_errno（kernel error�
 最初のsnapshot失敗を保存し、registry回収時の件数初期化でも保持します。
 失敗なしはnullです。bindのIdentityだけでは死亡とidentity不一致を区別できないため、
 この記録を死亡の証明やsnapshot失敗を無視する根拠には使いません。
+追加分類`exited_after_listing`はsnapshot専用bindでPIDFDが死亡を示した場合に記録します。
+通常bindは従来のIdentityを維持します。所属確認ではbirth/cgroupの不一致を先に拒否し、
+一致した対象のPIDFDが死亡を示した場合だけこの理由を返します。
+この分類も死亡の観測であり、取得前の同一性やsnapshot網羅性を証明しません。
 
 親による回収中に親も死亡する二重故障では、新たな guardian を自動生成しません。
 結果が記録されず、payload/cgroup/RUN が残る可能性があります。

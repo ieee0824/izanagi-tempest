@@ -79,8 +79,9 @@ impl RecoveryGroup {
                 }
                 for pid in members.split_whitespace().take(49) {
                     stage = SnapshotStage::Bind;
-                    let process =
-                        super::identity::Process::bind(pid.parse().map_err(|_| Fault::Identity)?)?;
+                    let process = super::identity::Process::bind_snapshot(
+                        pid.parse().map_err(|_| Fault::Identity)?,
+                    )?;
                     stage = SnapshotStage::Membership;
                     if !process.recovery_member(role)? {
                         return Err(Fault::Identity);

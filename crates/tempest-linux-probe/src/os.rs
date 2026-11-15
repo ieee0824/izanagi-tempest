@@ -13,6 +13,7 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Fault {
+    ExitedAfterListing,
     Identity,
     LeaseUnavailable,
     WatchdogRecovery,
@@ -39,6 +40,7 @@ pub(super) enum Fault {
 impl Fault {
     pub(super) fn reason(&self) -> &'static str {
         match self {
+            Self::ExitedAfterListing => "exited_after_listing",
             Self::Identity => "identity",
             Self::LeaseUnavailable => "watchdog_lease_unavailable",
             Self::WatchdogRecovery => "watchdog_recovery_failed",

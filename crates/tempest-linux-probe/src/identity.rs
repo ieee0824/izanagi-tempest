@@ -80,11 +80,17 @@ impl Process {
             &fs::read_to_string(format!("/proc/{}/stat", self.pid))?,
             self.pid,
         )?;
-        Ok(current == self.birth
-            && self.alive()?
-            && membership
+        if current != self.birth
+            || !membership
                 .lines()
-                .any(|line| line == format!("0::/tempest-linux-isolation-probe/{}", role.name())))
+                .any(|line| line == format!("0::/tempest-linux-isolation-probe/{}", role.name()))
+        {
+            return Ok(false);
+        }
+        if !self.alive()? {
+            return Err(Fault::ExitedAfterListing);
+        }
+        Ok(true)
     }
     pub(super) fn duplicate(&self) -> Result<Self, Fault> {
         Ok(Self {
@@ -97,6 +103,12 @@ impl Process {
         self.fd.as_raw_fd()
     }
     pub(super) fn bind(pid: u32) -> Result<Self, Fault> {
+        Self::bind_with_dead_fault(pid, Fault::Identity)
+    }
+    pub(super) fn bind_snapshot(pid: u32) -> Result<Self, Fault> {
+        Self::bind_with_dead_fault(pid, Fault::ExitedAfterListing)
+    }
+    fn bind_with_dead_fault(pid: u32, dead_fault: Fault) -> Result<Self, Fault> {
         let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
         if raw < 0 {
             return Err(io::Error::last_os_error().into());
@@ -105,7 +117,7 @@ impl Process {
         let birth = ticks(&fs::read_to_string(format!("/proc/{pid}/stat"))?, pid)?;
         let process = Self { pid, birth, fd };
         if !process.alive()? {
-            return Err(Fault::Identity);
+            return Err(dead_fault);
         }
         Ok(process)
     }

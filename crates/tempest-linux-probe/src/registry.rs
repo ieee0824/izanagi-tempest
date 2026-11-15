@@ -312,6 +312,10 @@ mod record_tests {
             Process::bind(child.process.pid),
             Err(Fault::Identity)
         ));
+        assert!(matches!(
+            Process::bind_snapshot(child.process.pid),
+            Err(Fault::ExitedAfterListing)
+        ));
         let mut counts = Counts::default();
         registry.stop_and_reap_verified(&mut counts).unwrap();
         assert_eq!(counts.dead_pidfds, 1);
