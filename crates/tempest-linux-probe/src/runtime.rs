@@ -551,7 +551,9 @@ fn baseline(
     phase: &mut &'static str,
     scenario: Scenario,
     registry: &mut super::registry::Registry,
+    primary_fault: &mut Option<&'static str>,
 ) -> Result<Vec<Observation>, Fault> {
+    *primary_fault = None;
     let host = identity::namespace_ids(std::process::id())?;
     let nonce: [u8; 16] = crate::private_io::random_hex()?.as_bytes()[..16]
         .try_into()
@@ -989,6 +991,7 @@ fn baseline(
         }
         Ok(observations)
     })();
+    *primary_fault = result.as_ref().err().map(|fault| fault.reason());
     // Leave the live target ledger intact for the exclusive recovery path.
     // Killing namespace leaders here could erase unobserved descendants
     // before RecoveryGroup takes its bounded PIDFD snapshot.
@@ -1142,6 +1145,7 @@ fn baseline(
             }
         }
     }
+    *primary_fault = None;
     result
 }
 
@@ -1250,6 +1254,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 &mut phase,
                 Scenario::Baseline,
                 &mut registry,
+                &mut first_fault,
             )?;
             observed.push(Observation {
                 scenario: None,
@@ -1270,6 +1275,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 &mut phase,
                 Scenario::ForeignReady,
                 &mut registry,
+                &mut first_fault,
             ) {
                 Err(Fault::ForeignReady) => observed.push(Observation {
                     scenario: Some(Scenario::ForeignReady),
@@ -1294,6 +1300,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                     &mut phase,
                     scenario,
                     &mut registry,
+                    &mut first_fault,
                 ) {
                     Err(Fault::LibraryRejected(rejected)) if rejected == scenario => {
                         observed.push(Observation {
@@ -1321,6 +1328,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                     &mut phase,
                     scenario,
                     &mut registry,
+                    &mut first_fault,
                 )?);
             }
             for role in Role::ALL {
@@ -1334,6 +1342,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 &mut phase,
                 Scenario::CgroupKillNoop,
                 &mut registry,
+                &mut first_fault,
             ) {
                 Err(Fault::CgroupKillFailureRecovered) => {
                     for (check, attempts) in [
@@ -1367,6 +1376,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                     &mut phase,
                     scenario,
                     &mut registry,
+                    &mut first_fault,
                 ) {
                     Err(fault) if fault == expected => {
                         observed.push(Observation {
@@ -1434,6 +1444,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                     &mut phase,
                     scenario,
                     &mut registry,
+                    &mut first_fault,
                 )?);
             }
             Ok(observed)
@@ -1457,7 +1468,9 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             });
         }
         if let Err(error) = &observed {
-            first_fault = Some(error.reason());
+            if first_fault.is_none() {
+                first_fault = Some(error.reason());
+            }
         }
         group.cleanup()?;
         let observed = observed?;
@@ -1491,14 +1504,9 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         if let (Some(guard), Some(pinned)) = (&run_guard, &run_lock) {
             parent_recovery_status = watch.parent_recovery(guard, pinned, &mut registry, false);
         }
-        if let Some(statuses) = &parent_recovery_status {
-            watch_finished = statuses.last().is_some_and(|status| {
-                status.transition == super::watchdog::ParentTransition::Recovered
-            });
-            result = Err(Fault::GuardianDied);
-        } else {
-            // All Group handles have been dropped by the result closure. A
-            // relinquish therefore permanently hands off every remaining object.
+        if parent_recovery_status.is_none() {
+            // ParentGroup is already disarmed/dropped. A sent command leaves
+            // ownership with the guardian for its entire remaining lifetime.
             let completed = if kernel_removed {
                 let cleanup = (|| {
                     super::lease::pulse()?;
@@ -1521,23 +1529,25 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             } else {
                 watch.relinquish()
             };
-            match completed {
-                Ok(()) => watch_finished = true,
-                Err(fault) => {
-                    watchdog_fault = Some(fault);
-                    if let (Some(guard), Some(pinned)) = (&run_guard, &run_lock) {
-                        // A failed atomic command write retains ownership. Pipe
-                        // closure may precede pidfd readiness during exit.
-                        parent_recovery_status =
-                            watch.parent_recovery(guard, pinned, &mut registry, true);
-                        if let Some(statuses) = &parent_recovery_status {
-                            watch_finished = statuses.last().is_some_and(|status| {
-                                status.transition == super::watchdog::ParentTransition::Recovered
-                            });
-                            result = Err(Fault::GuardianDied);
-                        }
-                    }
-                }
+            if let Err(fault) = completed {
+                watchdog_fault = Some(fault);
+            }
+            if let (Some(guard), Some(pinned)) = (&run_guard, &run_lock) {
+                parent_recovery_status =
+                    watch.parent_recovery(guard, pinned, &mut registry, completed.is_err());
+            }
+        }
+        if let Some(statuses) = &parent_recovery_status {
+            let terminal = statuses.last().map(|status| status.transition);
+            watch_finished = matches!(
+                terminal,
+                Some(
+                    super::watchdog::ParentTransition::Recovered
+                        | super::watchdog::ParentTransition::Verified
+                )
+            );
+            if terminal != Some(super::watchdog::ParentTransition::Verified) {
+                result = Err(Fault::GuardianDied);
             }
         }
         kernel_removed = !Path::new(super::cgroup::ROOT).exists();
@@ -1549,22 +1559,15 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
     let watchdog_status = watchdog.as_ref().and_then(|watch| watch.status());
     let guardian_alive = watchdog.as_ref().and_then(|watch| watch.guardian_alive());
     let terminal_confirmed = if watchdog.is_some() {
-        (parent_recovery_status.as_ref().is_some_and(|statuses| {
+        parent_recovery_status.as_ref().is_some_and(|statuses| {
             statuses.last().is_some_and(|status| {
-                status.transition == super::watchdog::ParentTransition::Recovered
+                matches!(
+                    status.transition,
+                    super::watchdog::ParentTransition::Recovered
+                        | super::watchdog::ParentTransition::Verified
+                )
             })
-        }) || matches!(
-            watchdog_status,
-            Some(super::watchdog::Status {
-                reason: super::watchdog::Reason::ExplicitDone,
-                transition: super::watchdog::Transition::Released,
-                ..
-            }) | Some(super::watchdog::Status {
-                reason: super::watchdog::Reason::Relinquish,
-                transition: super::watchdog::Transition::Recovered,
-                ..
-            })
-        )) && watch_finished
+        }) && watch_finished
     } else {
         // Failed startup may release its empty RUN only after the guardian
         // has been reaped. An unconfirmed guardian can create resources later.

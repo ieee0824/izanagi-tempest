@@ -18,7 +18,7 @@ ACK 未受信の ROOT を固定 path から採用する経路は追加しませ�
 1. serialization guard を引き続き保持している。
 2. guardian の pidfd が死亡を示し、`waitpid` が terminal status を返して reap 済みである。
 3. 専用 status pipe の bounded な読み取りで、正常な `released`/`recovered` 終端を先に識別する。
-4. 親の ownership mode が通常所有中であり、R/D の送信後ではない。
+4. 親のownership modeがParentOwned/CommandSent/TerminalAckのいずれかであり、死亡/reapが確認済みである。
 5. heartbeat と通常 Group 操作を一方向に Forbidden にする。
 
 この条件からだけ、watchdog module が回収専用の `DeadGuardian` proof を構築します。
@@ -26,12 +26,14 @@ proof は guard を借用し、回収完了前に serialization が解放され�
 pipe の EPIPE/HUP、guardian の SIGSTOP、単なる応答欠落からは proof を作りません。
 `lease::clear` による通常 API の一括再許可も行いません。
 
-上の送信後回収禁止条件は、次の拡張で置き換える予定です。現実装のcheckpointでは
-R/Dの1 byte writeが成功してからmodeを変更し、未送信失敗時は親所有を保持します。
+R/Dの1 byte writeが成功してからCommandSentへ変更し、未送信失敗時は親所有を保持します。
 未送信時に限り最大5秒のPIDFD死亡待ちとreap後に専用回収を再試行します。
-次の拡張ではCommandSentでもguardian死亡/reap確認後に部分回収し、正常terminal確認済みなら
-mutationせず最終状態だけ検証します。生存guardianからの取戻しは認めません。
-この拡張の状態機械と故障注入はまだ未実装です。
+CommandSentでもguardian死亡/reap確認後に部分回収し、正常terminal確認済みなら
+mutationせず最終状態とregistryだけ検証してVerifiedを出します。生存guardianからの取戻しは認めません。
+waitpidのterminal結果は一度だけ保存し、command側と回収側でreapを重複しません。
+完全な正常terminalは別に保持し、後続partial/invalidがあってもmutationしません。
+正常terminalがないfailed/partial/invalid/emptyは、不確実性を記録したまま死亡後の専用回収を行います。
+これらの全順序のroot故障注入は未完です。
 
 ## 検知と対象の保持
 
@@ -41,6 +43,20 @@ collector の poll 対象にも guardian pidfd を加えます。
 pulse 箇所を列挙し、検知までの時間を fixture で測定します。
 通常の poll 10 ms / sleep 25 ms と heartbeat 250 ms を基準にしますが、
 host の停止・scheduler や同期 filesystem I/O の停止まで含む hard realtime の保証にはしません。
+
+| 経路 | guardian確認箇所 | 通常の巡回間隔・制約 |
+| --- | --- | --- |
+| ready/Entered/Done・collector | eventのpoll前後・capture sweep後 | 最大10 msのpollにPIDFDを含む |
+| 通常reap・全対象死亡待ち・memory OOM待ち | 各loopのpulse | sleep 5 ms |
+| 通常Group操作・cleanup空待ち | verify/empty経由のpulse | 空待ちsleep 10 ms、filesystem操作時間は別 |
+| code/library copy・hash・materialize | 各64 KiB巡回のpulse | 同期I/Oの停止は上限外 |
+| 長時間lease回帰 | 各loopのpulse | sleep 25 ms |
+| baseline終了・最終RUN回収 | cleanup開始直前のpulse | syscall実行時間は別 |
+| spawn失敗時のfresh child kill/wait | 通常lease検知とは独立して自分の子を回収 | 最大3秒、専用の検知遅延検証は未完 |
+
+最初の加入直後・孫実行中・collectorの3実測で得た6.531/0.607/0.764 msは、
+親再開から最初のparent statusまでの保守的な上限です。全経路の最大値を証明するものではありません。
+guardian自身のreceive/waitと、死亡reap後の回収専用loopは通常lease検知の測定対象から除きます。
 
 role と PIDFD/birth を持つ小さな registry を baseline より外側で保持します。
 登録は Worker 完成後ではなく、clone 成功後の PIDFD 取得直後・group attach 前に行い、
@@ -74,6 +90,9 @@ PID/birth と既存の保持対象を照合し、PID の数値だけで再採用
 各遷移に固定の件数を残し、失敗時も省略しません。reap未確認理由はechild/pidfd_alive/
 evidence_missing/signal_failed/wait_failedで区別します。populated未確認はnullとして0と区別します。
 回収前のfaultはfirst_faultとして保持します。
+未送信EAGAINでguardianが生存し、親がheartbeatを禁止したまま待機する場合は、
+5秒lease失効によりguardianが親を停止して回収する可能性があります。
+この順序では親の最終reportが出ないため、guardian statusを外部で保持する故障注入が必要です（未完）。
 
 ## 故障注入と残る範囲
 

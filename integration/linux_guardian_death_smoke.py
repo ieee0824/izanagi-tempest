@@ -8,7 +8,7 @@ root = pathlib.Path('/sys/fs/cgroup/tempest-linux-isolation-probe')
 run = pathlib.Path('/run/tempest-linux-isolation-probe')
 assert not root.exists() and not run.exists()
 results = []
-for scenario in ['guardian_admission', 'guardian_payload', 'guardian_collector']:
+for scenario in ['guardian_admission', 'guardian_payload', 'guardian_collector', 'guardian_stopped']:
     process = subprocess.Popen([sys.argv[1], 'linux-isolation-probe'], env={},
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     handles = []
@@ -51,9 +51,28 @@ for scenario in ['guardian_admission', 'guardian_payload', 'guardian_collector']
         assert pathlib.Path(f'/proc/{guardian}/stat').read_text().rsplit(')', 1)[1].split()[1] == str(process.pid)
         guardian_handle = os.pidfd_open(guardian)
         stage = 'guardian_stop'
-        signal.pidfd_send_signal(guardian_handle, signal.SIGKILL)
-        assert select.select([guardian_handle], [], [], 2)[0]
+        stopped_without_takeover = False
+        if scenario == 'guardian_stopped':
+            signal.pidfd_send_signal(guardian_handle, signal.SIGSTOP)
+            until = time.monotonic() + 2
+            while time.monotonic() < until:
+                if pathlib.Path(f'/proc/{guardian}/stat').read_text().rsplit(')',1)[1].split()[0] == 'T': break
+                time.sleep(0.001)
+            else: raise AssertionError
+            root_identity = (root.stat().st_dev, root.stat().st_ino)
+            os.kill(process.pid, signal.SIGCONT)
+            # The owner must remain live, with no result and no exclusive
+            # takeover while the guardian is stopped but still alive.
+            time.sleep(0.5)
+            assert process.poll() is None and not select.select([process.stdout],[],[],0)[0]
+            assert not select.select([guardian_handle],[],[],0)[0]
+            assert all(not select.select([handle],[],[],0)[0] for handle in handles)
+            assert (root.stat().st_dev,root.stat().st_ino) == root_identity
+            stopped_without_takeover = True
         resumed = time.monotonic()
+        signal.pidfd_send_signal(guardian_handle, signal.SIGKILL)
+        # Do not wait for guardian death here: the parent must handle pipe
+        # closure and pidfd notification in their actual kernel order.
         os.kill(process.pid, signal.SIGCONT)
         output, _ = process.communicate(timeout=10)
         total_ms = (time.monotonic() - resumed) * 1000
@@ -62,6 +81,7 @@ for scenario in ['guardian_admission', 'guardian_payload', 'guardian_collector']
         assert process.returncode == 1 and report['reason'] == 'watchdog_guardian_died'
         assert report['status'] == 'failed' and report['formal_eligible'] is False and report['model_launched'] is False
         assert report['resources_removed'] is True and report['guardian_alive'] is False
+        assert select.select([guardian_handle],[],[],0)[0]
         statuses = report['parent_recovery_status']
         assert [value['transition'] for value in statuses] == ['guardian_dead','parent_owned','recovered']
         assert all(value['guardian_dead'] and value['guardian_reaped'] and value['guardian_signal'] == signal.SIGKILL for value in statuses)
@@ -80,8 +100,11 @@ for scenario in ['guardian_admission', 'guardian_payload', 'guardian_collector']
         detection_upper_ms = max(0, total_ms - (statuses[-1]['elapsed_ms'] - statuses[0]['elapsed_ms']))
         assert detection_upper_ms <= 250
         stage = 'next_generation'
+        full_follow = scenario == 'guardian_stopped'
+        follow_checks = None
         follow = subprocess.Popen([sys.argv[1], 'linux-isolation-probe'], env={},
-                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE if full_follow else subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL)
         try:
             until = time.monotonic() + 10
             admitted = False
@@ -92,6 +115,15 @@ for scenario in ['guardian_admission', 'guardian_payload', 'guardian_collector']
                 except FileNotFoundError: pass
                 time.sleep(0.002)
             assert admitted
+            if full_follow:
+                follow_output, _ = follow.communicate(timeout=115)
+                follow_report = json.loads(follow_output)
+                assert follow.returncode == 1 and follow_report['status'] == 'incomplete'
+                assert follow_report['resources_removed'] is True
+                assert follow_report['formal_eligible'] is False and follow_report['model_launched'] is False
+                follow_checks = len(follow_report['checks'])
+                assert follow_checks == 137 and all(check['passed'] for check in follow_report['checks'])
+                assert follow_report['parent_recovery_status'][-1]['transition'] == 'verified'
         finally:
             if follow.poll() is None: follow.kill()
             follow.wait(timeout=5)
@@ -100,6 +132,9 @@ for scenario in ['guardian_admission', 'guardian_payload', 'guardian_collector']
         assert not root.exists() and not run.exists()
         results.append({'scenario':scenario,'status':'passed','parent_recovery_status':statuses,
                         'external_payload_pidfds_dead':True,'resources_removed':True,
+                        'guardian_stopped_without_takeover':stopped_without_takeover,
+                        'external_guardian_readiness_wait':False,
+                        'next_generation_full_checks':follow_checks,
                         'next_generation_admitted':True,'detection_upper_ms':round(detection_upper_ms,3)})
     except BaseException:
         print(json.dumps({'status':'failed','scenario':scenario,'fixture_stage':stage}))
@@ -114,4 +149,4 @@ print(json.dumps({'status':'passed','cases':results}))
 '''
 
 if __name__ == '__main__':
-    raise SystemExit(run_fixture(FIXTURE, 'guardian_death_recovery_fixture', timeout=120))
+    raise SystemExit(run_fixture(FIXTURE, 'guardian_death_recovery_fixture', timeout=240))

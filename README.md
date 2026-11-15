@@ -144,7 +144,8 @@ guardian SIGKILL、保持PIDFD死亡、自所有回収、次世代起動を確�
 監査は各遷移でregistry件数・direct/descendant・PIDFD死亡・reap済み/未確認件数・cgroup populatedと
 固定の未確認理由を保持し、元のfaultもfirst_faultに併記します。記録削除はPIDではなく独立通番RecordIdで行います。
 R/Dの1 byte write未送信なら親所有を保持し、最大5秒のPIDFD死亡待ちとreap後に専用回収を再試行します。
-送信後terminal前死亡、clone/attach境界、SIGSTOP負例、正常終端raceなどの全gateは未完です。
+送信後terminal前のguardian死亡もreap確認後に専用の部分回収を行い、正常terminalがある場合は
+mutationせず最終不在/registryだけを確認します。全順序の実測、clone/attach境界、SIGSTOP負例、正常終端raceなどの全gateは未完です。
 
 現 WIP は baseline が成功しても `status: "incomplete"`・終了コード 1 を返します。
 rootless unit・API compile-fail 試験と baseline の観測は、M1 全体の合格や本番隔離の証明には使いません。

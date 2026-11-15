@@ -52,30 +52,40 @@ pub(super) struct Status {
 pub(super) struct DeadGuardian<'a> {
     _guard: &'a Guard,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Command {
+    Relinquish,
+    Done,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     Startup,
     ParentOwned,
     DeadObserved,
-    Relinquished,
-    Done,
+    CommandSent(Command),
+    TerminalAck(Command),
     ParentRecovery,
+    Verified,
+    Failed,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum ParentTransition {
     GuardianDead,
     ParentOwned,
     Recovered,
+    Verified,
     Failed,
 }
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ParentReason {
     GuardianDied,
+    NormalCompletion,
     RecoveryFailed,
 }
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum DrainState {
     NotRead,
@@ -83,6 +93,13 @@ enum DrainState {
     Complete,
     Partial,
     Invalid,
+}
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum OwnershipPhase {
+    ParentOwned,
+    CommandSent,
+    TerminalAck,
 }
 #[derive(Clone, Copy, Serialize)]
 pub(super) struct ParentStatus {
@@ -94,6 +111,8 @@ pub(super) struct ParentStatus {
     guardian_exit: Option<i32>,
     guardian_signal: Option<i32>,
     status_drain: DrainState,
+    command: Option<Command>,
+    ownership_phase: OwnershipPhase,
     counts: super::registry::Counts,
     elapsed_ms: u64,
 }
@@ -137,6 +156,14 @@ fn status(fd: i32, started: Instant, trigger: Reason, transition: Transition, ow
                 }
             }
         }
+    }
+}
+
+fn absent(path: &Path) -> Result<bool, Fault> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -313,6 +340,9 @@ pub(super) struct Watchdog {
     guardian: OwnedFd,
     active: bool,
     last: Option<Status>,
+    normal_terminal: Option<Status>,
+    pending_status: Vec<u8>,
+    terminal_wait: Option<Result<(), Fault>>,
     mode: Mode,
     recovery: Option<RecoveryGroup>,
     started: Instant,
@@ -363,6 +393,9 @@ impl Watchdog {
             guardian,
             active: true,
             last: None,
+            normal_terminal: None,
+            pending_status: Vec::new(),
+            terminal_wait: None,
             mode: Mode::Startup,
             recovery: None,
             started: Instant::now(),
@@ -471,9 +504,68 @@ impl Watchdog {
         }
     }
 
+    fn record_status(&mut self, status: Status) {
+        self.last = Some(status);
+        if matches!(
+            status.transition,
+            Transition::Released | Transition::Recovered
+        ) {
+            self.normal_terminal = Some(status);
+            if let Mode::CommandSent(command) = self.mode {
+                self.mode = Mode::TerminalAck(command);
+            }
+        }
+    }
+
+    fn parse_drained(&mut self, bytes: &[u8]) -> DrainState {
+        if bytes.is_empty() {
+            return DrainState::Empty;
+        }
+        let mut invalid = false;
+        let mut complete = 0;
+        for (index, byte) in bytes.iter().enumerate() {
+            if *byte != b'\n' {
+                continue;
+            }
+            let line = &bytes[complete..index];
+            complete = index + 1;
+            if line.is_empty() || line.len() > 512 {
+                invalid = true;
+                continue;
+            }
+            match serde_json::from_slice(line) {
+                Ok(status) => self.record_status(status),
+                Err(_) => invalid = true,
+            }
+        }
+        // A complete normal terminal remains known even when later bytes are
+        // partial or malformed. Never discard that fact and mutate its paths.
+        if invalid {
+            DrainState::Invalid
+        } else if complete < bytes.len() {
+            DrainState::Partial
+        } else {
+            DrainState::Complete
+        }
+    }
+
     fn drain_status(&mut self) -> DrainState {
-        let mut bytes = Vec::new();
+        let mut bytes = std::mem::take(&mut self.pending_status);
+        let mut invalid = false;
         loop {
+            let mut poll = libc::pollfd {
+                fd: self.input.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut poll, 1, 0) };
+            if ready < 0 || poll.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+                invalid = true;
+                break;
+            }
+            if poll.revents & libc::POLLIN == 0 {
+                break;
+            }
             let mut chunk = [0_u8; 512];
             let count = unsafe {
                 libc::read(
@@ -483,39 +575,23 @@ impl Watchdog {
                 )
             };
             if count < 0 {
-                if io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) {
-                    break;
+                if io::Error::last_os_error().raw_os_error() != Some(libc::EAGAIN) {
+                    invalid = true;
                 }
-                return DrainState::Invalid;
+                break;
             }
             if count == 0 {
                 break;
             }
-            bytes.extend_from_slice(&chunk[..count as usize]);
-            if bytes.len() > 2048 {
-                return DrainState::Invalid;
+            let length = (count as usize).min(2048_usize.saturating_sub(bytes.len()));
+            bytes.extend_from_slice(&chunk[..length]);
+            if length < count as usize || bytes.len() >= 2048 {
+                invalid = true;
+                break;
             }
         }
-        if !bytes.is_empty() && bytes.last() != Some(&b'\n') {
-            return DrainState::Partial;
-        }
-        for line in bytes
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-        {
-            if line.len() > 512 {
-                return DrainState::Invalid;
-            }
-            match serde_json::from_slice(line) {
-                Ok(status) => self.last = Some(status),
-                Err(_) => return DrainState::Invalid,
-            }
-        }
-        if bytes.is_empty() {
-            DrainState::Empty
-        } else {
-            DrainState::Complete
-        }
+        let parsed = self.parse_drained(&bytes);
+        if invalid { DrainState::Invalid } else { parsed }
     }
 
     pub(super) fn parent_recovery(
@@ -525,9 +601,12 @@ impl Watchdog {
         registry: &mut super::registry::Registry,
         wait_for_death: bool,
     ) -> Option<Vec<ParentStatus>> {
-        if self.mode != Mode::ParentOwned {
-            return None;
-        }
+        let (ownership_phase, command) = match self.mode {
+            Mode::ParentOwned => (OwnershipPhase::ParentOwned, None),
+            Mode::CommandSent(command) => (OwnershipPhase::CommandSent, Some(command)),
+            Mode::TerminalAck(command) => (OwnershipPhase::TerminalAck, Some(command)),
+            _ => return None,
+        };
         let mut poll = libc::pollfd {
             fd: self.guardian.as_raw_fd(),
             events: libc::POLLIN,
@@ -539,8 +618,12 @@ impl Watchdog {
             return None;
         }
         lease::forbid();
-        self.mode = Mode::DeadObserved;
         let waited = self.wait(); // Terminal nonzero status still proves reap.
+        self.mode = if self.active {
+            Mode::Failed
+        } else {
+            Mode::DeadObserved
+        };
         let guardian_exit = match waited {
             Ok(()) => Some(0),
             Err(Fault::Child(code)) => Some(code),
@@ -560,6 +643,8 @@ impl Watchdog {
             schema_version: 1,
             reason: if transition == ParentTransition::Failed {
                 ParentReason::RecoveryFailed
+            } else if transition == ParentTransition::Verified {
+                ParentReason::NormalCompletion
             } else {
                 ParentReason::GuardianDied
             },
@@ -569,6 +654,8 @@ impl Watchdog {
             guardian_exit,
             guardian_signal,
             status_drain: drain,
+            command,
+            ownership_phase,
             counts,
             elapsed_ms: started.elapsed().as_millis().min(3_600_000) as u64,
         };
@@ -579,19 +666,35 @@ impl Watchdog {
             statuses.push(make(ParentTransition::Failed, false, counts));
             return Some(statuses);
         }
-        // Never reclaim after an acknowledged normal release, nor after R/D.
-        if matches!(drain, DrainState::Invalid | DrainState::Partial)
-            || self.last.is_some_and(|status| {
-                matches!(
-                    status.transition,
-                    Transition::Released | Transition::Recovered
-                )
-            })
-        {
-            counts.fail(super::registry::Unconfirmed::EvidenceMissing);
-            statuses.push(make(ParentTransition::Failed, true, counts));
+        // A normal terminal prohibits mutation even if its stream later had
+        // partial/invalid bytes. Only verify filesystem absence and the known
+        // direct-child reaper ledger; populated=0 alone is not a reap proof.
+        if self.normal_terminal.is_some() {
+            let verified = (|| {
+                if !absent(Path::new(super::cgroup::ROOT))? || !absent(Path::new(RUN))? {
+                    return Err(Fault::Identity);
+                }
+                registry.finish()?;
+                counts.dead_pidfds = counts.descendants;
+                counts.cgroup_populated = Some(false);
+                Ok::<_, Fault>(())
+            })();
+            statuses.push(match verified {
+                Ok(()) => {
+                    self.mode = Mode::Verified;
+                    make(ParentTransition::Verified, true, counts)
+                }
+                Err(_) => {
+                    self.mode = Mode::Failed;
+                    counts.fail(super::registry::Unconfirmed::EvidenceMissing);
+                    make(ParentTransition::Failed, true, counts)
+                }
+            });
             return Some(statuses);
         }
+        // CommandSent alone never authorizes recovery. We arrive here only
+        // after stable pidfd death plus cached terminal reap, so incomplete or
+        // failed status may be followed by dedicated partial cleanup.
         self.mode = Mode::ParentRecovery;
         let proof = DeadGuardian { _guard: guard };
         statuses.push(make(ParentTransition::ParentOwned, true, counts));
@@ -599,7 +702,7 @@ impl Watchdog {
             let group = self.recovery.take().ok_or(Fault::Identity)?;
             group.recover(&proof, registry, &mut counts)?;
             remove_run(pinned)?;
-            if Path::new(super::cgroup::ROOT).exists() || Path::new(RUN).exists() {
+            if !absent(Path::new(super::cgroup::ROOT))? || !absent(Path::new(RUN))? {
                 return Err(Fault::Identity);
             }
             Ok::<_, Fault>(())
@@ -616,7 +719,6 @@ impl Watchdog {
 
     fn receive(&mut self, target: Transition) -> Result<(), Fault> {
         let until = Instant::now() + Duration::from_secs(5);
-        let mut bytes = Vec::new();
         loop {
             if Instant::now() >= until {
                 return Err(Fault::WatchdogRecovery);
@@ -635,10 +737,15 @@ impl Watchdog {
                     return Err(Fault::WatchdogRecovery);
                 }
                 if byte == b'\n' {
-                    let value: Status =
-                        serde_json::from_slice(&bytes).map_err(|_| Fault::Identity)?;
-                    self.last = Some(value);
-                    bytes.clear();
+                    // Retain the delimiter if decoding fails; a later drain
+                    // can still parse a complete terminal after this record.
+                    self.pending_status.push(byte);
+                    let value: Status = serde_json::from_slice(
+                        &self.pending_status[..self.pending_status.len() - 1],
+                    )
+                    .map_err(|_| Fault::Identity)?;
+                    self.record_status(value);
+                    self.pending_status.clear();
                     if value.transition == Transition::Failed {
                         return Err(Fault::WatchdogRecovery);
                     }
@@ -646,10 +753,10 @@ impl Watchdog {
                         return Ok(());
                     }
                 } else {
-                    if bytes.len() >= 512 {
+                    self.pending_status.push(byte);
+                    if self.pending_status.len() > 512 {
                         return Err(Fault::Identity);
                     }
-                    bytes.push(byte);
                 }
             } else if poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
                 return Err(Fault::WatchdogRecovery);
@@ -658,6 +765,9 @@ impl Watchdog {
     }
 
     fn wait(&mut self) -> Result<(), Fault> {
+        if let Some(terminal) = self.terminal_wait {
+            return terminal;
+        }
         let until = Instant::now() + Duration::from_secs(5);
         loop {
             let mut status = 0;
@@ -667,7 +777,7 @@ impl Watchdog {
                     return Err(Fault::Identity);
                 }
                 self.active = false;
-                return if libc::WIFEXITED(status) {
+                let terminal = if libc::WIFEXITED(status) {
                     if libc::WEXITSTATUS(status) == 0 {
                         Ok(())
                     } else {
@@ -681,6 +791,8 @@ impl Watchdog {
                 } else {
                     Err(Fault::Identity)
                 };
+                self.terminal_wait = Some(terminal);
+                return terminal;
             }
             if result < 0 {
                 return Err(io::Error::last_os_error().into());
@@ -693,17 +805,20 @@ impl Watchdog {
     }
 
     fn send_command(&mut self, byte: u8) -> Result<(), Fault> {
+        if self.mode != Mode::ParentOwned || !matches!(byte, b'R' | b'D') {
+            return Err(Fault::Identity);
+        }
         lease::forbid();
         if unsafe { libc::write(self.control.as_raw_fd(), (&byte as *const u8).cast(), 1) } != 1 {
             // One byte to the nonblocking pipe is atomic. Failure means no
             // command was delivered; retain ParentOwned for death/reap proof.
             return Err(Fault::WatchdogRecovery);
         }
-        self.mode = if byte == b'R' {
-            Mode::Relinquished
+        self.mode = Mode::CommandSent(if byte == b'R' {
+            Command::Relinquish
         } else {
-            Mode::Done
-        };
+            Command::Done
+        });
         Ok(())
     }
 
@@ -733,6 +848,188 @@ impl Drop for Watchdog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn watch_for(process: &Process, active: bool) -> (Watchdog, OwnedFd, OwnedFd) {
+        let (reader, control) = os::pipe().unwrap();
+        let (input, writer) = os::pipe().unwrap();
+        (
+            Watchdog {
+                pid: process.pid as i32,
+                control,
+                input,
+                guardian: os::duplicate_fd(process.fd()).unwrap(),
+                active,
+                last: None,
+                normal_terminal: None,
+                pending_status: Vec::new(),
+                terminal_wait: None,
+                mode: Mode::ParentOwned,
+                recovery: None,
+                started: Instant::now(),
+            },
+            reader,
+            writer,
+        )
+    }
+
+    struct TestChild {
+        process: Process,
+        gate: OwnedFd,
+    }
+    impl TestChild {
+        fn spawn() -> Self {
+            let (read, write) = os::pipe().unwrap();
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0);
+            if pid == 0 {
+                unsafe {
+                    libc::close(write.as_raw_fd());
+                    let mut byte = 0_u8;
+                    while libc::read(read.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) < 0 {}
+                    libc::_exit(7);
+                }
+            }
+            let process = match Process::bind(pid as u32) {
+                Ok(process) => process,
+                Err(error) => {
+                    unsafe {
+                        libc::kill(pid, libc::SIGKILL);
+                        libc::waitpid(pid, std::ptr::null_mut(), 0);
+                    }
+                    panic!("could not bind test child: {error:?}");
+                }
+            };
+            Self {
+                process,
+                gate: write,
+            }
+        }
+    }
+    impl Drop for TestChild {
+        fn drop(&mut self) {
+            let _ = self.process.kill();
+            let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // Stable PIDFD cleanup remains safe after Watchdog already reaped.
+            unsafe {
+                libc::waitid(
+                    libc::P_PIDFD,
+                    self.process.fd() as u32,
+                    &mut status,
+                    libc::WEXITED,
+                );
+            }
+        }
+    }
+
+    fn terminal_bytes() -> Vec<u8> {
+        let terminal = Status {
+            reason: Reason::ExplicitDone,
+            trigger: Reason::ExplicitDone,
+            transition: Transition::Released,
+            owner_dead: false,
+            elapsed_ms: 1,
+        };
+        let mut bytes = serde_json::to_vec(&terminal).unwrap();
+        bytes.push(b'\n');
+        bytes
+    }
+
+    #[test]
+    fn terminal_records_survive_partial_and_invalid_suffixes() {
+        let process = Process::bind(std::process::id()).unwrap();
+        let (mut watch, _read, write) = watch_for(&process, false);
+        watch.send_command(b'D').unwrap();
+        let mut bytes = terminal_bytes();
+        bytes.extend_from_slice(b"{partial");
+        assert_eq!(
+            unsafe { libc::write(write.as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) },
+            bytes.len() as isize
+        );
+        watch.receive(Transition::Released).unwrap();
+        assert_eq!(watch.mode, Mode::TerminalAck(Command::Done));
+        assert_eq!(watch.drain_status(), DrainState::Partial);
+        assert_eq!(
+            watch.normal_terminal.unwrap().transition,
+            Transition::Released
+        );
+        let mut bytes = b"malformed\n".to_vec();
+        bytes.extend(terminal_bytes());
+        bytes.extend_from_slice(b"{partial");
+        assert_eq!(watch.parse_drained(&bytes), DrainState::Invalid);
+        assert_eq!(
+            watch.normal_terminal.unwrap().transition,
+            Transition::Released
+        );
+        lease::clear();
+    }
+
+    #[test]
+    fn failed_receive_preserves_delimiter_for_later_terminal_drain() {
+        let process = Process::bind(std::process::id()).unwrap();
+        let (mut watch, _read, write) = watch_for(&process, false);
+        watch.send_command(b'D').unwrap();
+        let mut bytes = b"malformed\n".to_vec();
+        bytes.extend(terminal_bytes());
+        assert_eq!(
+            unsafe { libc::write(write.as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) },
+            bytes.len() as isize
+        );
+        assert_eq!(watch.receive(Transition::Released), Err(Fault::Identity));
+        assert_eq!(watch.drain_status(), DrainState::Invalid);
+        assert_eq!(
+            watch.normal_terminal.unwrap().transition,
+            Transition::Released
+        );
+        assert_eq!(watch.mode, Mode::TerminalAck(Command::Done));
+        lease::clear();
+    }
+
+    #[test]
+    fn terminal_wait_result_is_cached_for_exit_and_signal() {
+        for killed in [false, true] {
+            let child = TestChild::spawn();
+            let (mut watch, _read, _write) = watch_for(&child.process, true);
+            watch.send_command(b'R').unwrap();
+            let expected = if killed {
+                child.process.kill().unwrap();
+                Fault::ChildSignal(libc::SIGKILL, false)
+            } else {
+                assert_eq!(
+                    unsafe { libc::write(child.gate.as_raw_fd(), b"G".as_ptr().cast(), 1) },
+                    1
+                );
+                Fault::Child(7)
+            };
+            assert_eq!(watch.wait(), Err(expected));
+            assert!(!watch.active);
+            assert_eq!(watch.terminal_wait, Some(Err(expected)));
+            // A second real waitpid would return ECHILD. It must instead
+            // preserve the exact confirmed terminal result for recovery.
+            assert_eq!(watch.wait(), Err(expected));
+            lease::clear();
+        }
+    }
+
+    #[test]
+    fn delivered_command_does_not_transfer_recovery_while_guardian_lives() {
+        let guard = Guard::acquire().unwrap();
+        let pinned = File::open("/").unwrap();
+        let child = TestChild::spawn();
+        let (mut watch, _read, _write) = watch_for(&child.process, true);
+        watch.send_command(b'R').unwrap();
+        let mut registry = super::super::registry::Registry::default();
+        assert!(
+            watch
+                .parent_recovery(&guard, &pinned, &mut registry, false)
+                .is_none()
+        );
+        assert_eq!(watch.mode, Mode::CommandSent(Command::Relinquish));
+        assert!(watch.active);
+        child.process.kill().unwrap();
+        assert_eq!(watch.wait(), Err(Fault::ChildSignal(libc::SIGKILL, false)));
+        lease::clear();
+    }
+
     #[test]
     fn command_delivery_requires_a_successful_atomic_write() {
         let (read, control) = os::pipe().unwrap();
@@ -745,6 +1042,9 @@ mod tests {
             guardian: os::duplicate_fd(process.fd()).unwrap(),
             active: false,
             last: None,
+            normal_terminal: None,
+            pending_status: Vec::new(),
+            terminal_wait: None,
             mode: Mode::ParentOwned,
             recovery: None,
             started: Instant::now(),
@@ -781,7 +1081,7 @@ mod tests {
         let (reader, writer) = os::pipe().unwrap();
         watch.control = writer;
         watch.send_command(b'R').unwrap();
-        assert!(watch.mode == Mode::Relinquished);
+        assert!(watch.mode == Mode::CommandSent(Command::Relinquish));
         let mut byte = 0_u8;
         assert_eq!(
             unsafe { libc::read(reader.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) },
