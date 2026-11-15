@@ -154,6 +154,25 @@ driverは固定prefix・8文字の一時名・`.json`だけを許可し、任意
 `exited_after_listing`も固定理由として保持します。
 rootでの再実行は未実施です。
 
+その後、管理者の承認依頼#16107への承認決定#16117を専用toolで検証して、
+指定identityをserialization guard下で再照合し、全group空・populated0・guardian不存在を確認しました。
+ROOTの既知roleとROOTを除去し、元RUNは同一filesystemの
+`/run/tempest-recovery-evidence-16107/original-run`へinodeを保持して移しました。
+`/var/lib`へのrenameはEXDEVで無変更失敗したため、事前複製とは別に元inodeを保全しています。
+
+`651fd36`の同時故障fixtureはexit=0、124.773秒、stderr=0で2ケースとも次世代加入まで通過しました。
+最終ROOT/RUNは不存在です。binary SHA256は
+`c8d8992b6408730fb2d5868204bb85ffc01d2c0fd63104314938e32a5ac4ce4a`です。
+EOFケースはfirst_fault=report_eof、最終reason=watchdog_guardian_diedで、
+guardian_dead→parent_owned→recovered、direct/dead_pidfds/reaped=3、未確認0、populated=falseでした。
+EIOケースはfirst_fault=output_limit、最終reason=kernel/errno5で、
+guardian_dead→verified、通常reaper後のregistry件数は0でした。外部保持した3 role PIDFDの死亡も両方で確認しています。
+snapshot_stage/reason/errnoは両ケースともnullで、今回snapshot取得失敗は観測していません。
+完全auditはroot私有の`/tmp/tempest-primary-fault-audit-i2qn09mu.json`（EOF）と
+`/tmp/tempest-primary-fault-audit-9jluy4_l.json`（EIO）、実行結果は
+`/tmp/tempest-primary-fault-651fd36{,-meta}.json`です。
+前回の残留失敗と次世代確認失敗の原因は、この成功だけでは確定・解消扱いにしません。
+
 追加の非root実験では、自分の直接子をPIDFD ledgerへ登録してから終了させると、
 freshな`Process::bind`はIdentityで拒否する一方、保持済みPIDFDで死亡確認とreapが成功することを確認しました。
 `registry::record_tests::pinned_dead_child_can_be_reaped_when_fresh_binding_is_rejected`がこの順序を固定します。
