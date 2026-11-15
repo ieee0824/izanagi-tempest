@@ -12,7 +12,7 @@ libc = ctypes.CDLL(None, use_errno=True)
 libc.ptrace.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
 libc.ptrace.restype = ctypes.c_long
 results = []
-for scenario in ['guardian_after_create', 'guardian_before_ack', 'guardian_after_ack']:
+for scenario in ['guardian_after_create', 'guardian_before_ack', 'guardian_after_ack', 'guardian_ack_timeout']:
     process = subprocess.Popen([sys.argv[1], 'linux-isolation-probe'], env={},
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     guardian_handle = directory = None
@@ -73,15 +73,34 @@ for scenario in ['guardian_after_create', 'guardian_before_ack', 'guardian_after
                 pinned = os.fstat(directory)
                 identity = (pinned.st_dev, pinned.st_ino)
                 break
-        ack_written = scenario == 'guardian_after_ack'
+        timeout_before_write = scenario == 'guardian_ack_timeout'
+        if timeout_before_write:
+            # Keep the guardian at ACK entry while allowing the owner's actual
+            # five-second poll to return zero. Stop before Rust can branch on
+            # that result, then put a successful ACK into the pipe afterwards.
+            stage = 'ack_timeout_parent'
+            assert libc.ptrace(0x4200, process.pid, None, ctypes.c_void_p(1 | (1 << 20))) == 0
+            until = time.monotonic() + 10
+            while True:
+                assert time.monotonic() < until
+                assert libc.ptrace(24, process.pid, None, None) == 0
+                _, status = os.waitpid(process.pid, 0x40000000)
+                assert os.WIFSTOPPED(status) and os.WSTOPSIG(status) == (signal.SIGTRAP | 0x80)
+                owner_registers = (ctypes.c_ulonglong * 27)()
+                assert libc.ptrace(12, process.pid, None, ctypes.byref(owner_registers)) == 0
+                if (owner_registers[15] == 7 and owner_registers[10] == 0
+                        and owner_registers[13] == 1 and owner_registers[12] == 5000):
+                    break
+        ack_written = scenario in ['guardian_after_ack', 'guardian_ack_timeout']
         if ack_written:
             assert libc.ptrace(24, guardian, None, None) == 0
             _, status = os.waitpid(guardian, 0x40000000)
             assert os.WIFSTOPPED(status) and os.WSTOPSIG(status) == (signal.SIGTRAP | 0x80)
             assert libc.ptrace(12, guardian, None, ctypes.byref(registers)) == 0
             assert registers[15] == 1 and registers[10] == 20
-            signal.pidfd_send_signal(guardian_handle, signal.SIGKILL)
-        else:
+            if not timeout_before_write:
+                signal.pidfd_send_signal(guardian_handle, signal.SIGKILL)
+        if scenario != 'guardian_after_ack':
             assert libc.ptrace(17, process.pid, None, None) == 0
         # Leave the guardian in its exact syscall stop. SIGKILL bypasses that
         # stop; drain the tracer's exit notification so its real parent can reap.
@@ -94,7 +113,7 @@ for scenario in ['guardian_after_create', 'guardian_before_ack', 'guardian_after
                 assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
                 break
             time.sleep(0.002)
-        if ack_written:
+        if scenario == 'guardian_after_ack':
             assert select.select([guardian_handle], [], [], 0)[0]
             assert libc.ptrace(17, process.pid, None, None) == 0
         output, _ = process.communicate(timeout=5)
@@ -128,6 +147,7 @@ for scenario in ['guardian_after_create', 'guardian_before_ack', 'guardian_after
                         'guardian_signal': 'sigkill', 'reason': report['reason'],
                         'phase': report['phase'], 'probe_exit_code': process.returncode,
                         'ack_write_completed': ack_written, 'ownership_confirmed': False,
+                        'ack_poll_timed_out_before_write': timeout_before_write,
                         'unproved_group_preserved': True,
                         'resources_removed': report['resources_removed'],
                         'next_generation_rejected_without_mutation': True,
