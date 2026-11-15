@@ -207,6 +207,16 @@ impl Group {
         {
             return Err(Fault::Identity);
         }
+        self.members(Role::A)
+    }
+
+    pub(super) fn members(&self, role: Role) -> Result<Vec<u32>, Fault> {
+        self.verify()?;
+        let child = open_at(
+            &self.directory,
+            role.name(),
+            libc::O_RDONLY | libc::O_DIRECTORY,
+        )?;
         read(&child, "cgroup.procs")?
             .split_whitespace()
             .map(|pid| pid.parse().map_err(|_| Fault::Identity))

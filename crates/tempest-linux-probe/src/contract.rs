@@ -30,6 +30,7 @@ pub(super) enum Scenario {
     LibraryReplacement,
     PidsLimit,
     TmpfsFull,
+    DetachedGrandchild,
 }
 
 impl Scenario {
@@ -51,7 +52,8 @@ impl Scenario {
         Self::LibrarySymlink,
         Self::LibraryReplacement,
     ];
-    pub(super) const RESOURCES: [Self; 2] = [Self::PidsLimit, Self::TmpfsFull];
+    pub(super) const RESOURCES: [Self; 3] =
+        [Self::PidsLimit, Self::TmpfsFull, Self::DetachedGrandchild];
     pub(super) fn resource(self) -> bool {
         Self::RESOURCES.contains(&self)
     }
@@ -165,6 +167,7 @@ pub(super) enum Check {
     NoForwardedPayload,
     ResourceLimits,
     PidsBounded,
+    DetachedDescendant,
     TmpfsBounded,
     DescendantsKilled,
     CgroupEmpty,

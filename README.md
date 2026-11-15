@@ -118,8 +118,10 @@ FD/path 照合と最上位 ROOT/RUN の rmdir の間の同時 race・trusted cle
 watchdog が cgroup を作成し、保持した directory fd の dev/inode を照合してから親へ所有権を通知します。
 通知前の親停止でも watchdog が自分の group だけを回収する設計です（停止タイミング別の故障注入は未完）。
 既存 group の作成拒否では回収権を取得しません。watchdog 自身が作成途中に停止して残留した場合も、次回は採用せず拒否します。
-A の cgroup 加入を kernel から観測して supervisor を SIGKILL する fixture では、
-pidfd で観測対象の死亡と run/cgroup の回収を確認します。全 role 稼働後・孫生成後や通知前など他の停止タイミングは未検証です。
+supervisor SIGKILL fixture は、A の加入直後と、setsid/double-fork した孫の親・group・session を
+kernel から確認した後の2ケースで、対象の pidfd 死亡と run/cgroup の回収を確認します。
+祖先の終了・group/session の離脱を実測し、単なる最初の fork を孫と取り違えない条件を要求します。
+通知前・他の bootstrap 時点などの停止タイミングは未検証です。
 library は write fd を bind 前に close し、同 inode の read fd から配置します。
 bootstrap の bind 前後・全配置後と、supervisor の Ready 後・barrier 直前に
 dev/inode/uid/gid/mode/nlink/hash を確認し、bind 後は ro/nosuid/nodev と exec 可を照合します。
@@ -132,9 +134,13 @@ symlink 交換、同じ bytes の別 inode への交換を注入する4ケース
 pids は cgroup の current=12・max=12・events増加と11子の pidfd、
 tmpfs は ENOSPC と kernel の空きblock=0・容量上限16 MiBを照合します。
 B/G の正対照は A の上限到達後に実行し、終了後は子の pidfd 死亡・cgroup 空・資源回収を確認します。
-これは memory/CPU/output/audit の枯渇、setsid/double-fork、他の停止時点の回収を代替しません。
+別の固定ケースでは、A が fork→setsid→fork し、中間の子だけを終了させます。
+残った孫の親が A、group=session が A と異なり孫自身の PID とも異なることを照合し、
+uid/cap/NNP/seccomp/namespace/code/FD/cgroup が A の隔離状態を継承することを実測します。
+通常 cleanup 後も孫の pidfd 死亡を確認します。
+これらは memory/CPU/output/audit の枯渇や、他の停止時点の回収を代替しません。
 library 配置と write fd の追加負例、PID/UID/run 混入、
-資源枯渇・監査容量不足・EOF/cancel/timeout・監督異常・孫 process の回収等が残っています。
+資源枯渇・監査容量不足・EOF/cancel/timeout・他の監督異常時点と孫 process の回収等が残っています。
 失敗の診断は固定 stage/reason と数値 errno に限り、raw argv/env/stderr/任意 path や credential を出しません。
 `/run/tempest-linux-isolation-probe` または `/sys/fs/cgroup/tempest-linux-isolation-probe` が残った場合は、
 成功にせず新規 probe を拒否します。driver は未知の残留資源を削除しません。

@@ -113,7 +113,7 @@ finally:
 '''
 
 
-def run_fixture(fixture, failure_reason):
+def run_fixture(fixture, failure_reason, timeout=25):
     if len(sys.argv) != 1 or sys.platform != 'linux' or os.geteuid() == 0:
         print(json.dumps({'status': 'rejected', 'reason': 'nonroot_dedicated_vm_entry_required'}))
         return 2
@@ -127,7 +127,7 @@ def run_fixture(fixture, failure_reason):
         created = True
         if privileged('/usr/bin/install', '-o', 'root', '-g', 'root', '-m', '0700', '--', str(source), str(installed)).returncode:
             raise RuntimeError
-        result = privileged('/usr/bin/python3', '-c', fixture, str(installed), timeout=25)
+        result = privileged('/usr/bin/python3', '-c', fixture, str(installed), timeout=timeout)
         if result.returncode != 0:
             raise RuntimeError
         report = json.loads(result.stdout)

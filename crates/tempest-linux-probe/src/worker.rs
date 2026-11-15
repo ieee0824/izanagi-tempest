@@ -175,6 +175,48 @@ fn resource_checks(manifest: &Manifest) -> Vec<Observation> {
                 denials: u64::from(denied),
             }
         }
+        Scenario::DetachedGrandchild => {
+            let child = unsafe { libc::fork() };
+            if child == 0 {
+                if unsafe { libc::setsid() } < 0 {
+                    unsafe {
+                        libc::_exit(101);
+                    }
+                }
+                let grandchild = unsafe { libc::fork() };
+                if grandchild < 0 {
+                    unsafe {
+                        libc::_exit(102);
+                    }
+                }
+                if grandchild > 0 {
+                    unsafe {
+                        libc::_exit(0);
+                    }
+                }
+                // No exec and no work: retain a detached, reparented process
+                // until the supervisor proves cgroup/pidfd cleanup.
+                let delay = libc::timespec {
+                    tv_sec: 30,
+                    tv_nsec: 0,
+                };
+                loop {
+                    unsafe {
+                        libc::nanosleep(&delay, std::ptr::null_mut());
+                    }
+                }
+            }
+            let mut status = 0;
+            let waited = child > 0 && unsafe { libc::waitpid(child, &mut status, 0) } == child;
+            Observation {
+                scenario: None,
+                check: Check::DetachedDescendant,
+                role: Some(role),
+                passed: waited && libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+                attempts: 2,
+                denials: 0,
+            }
+        }
         Scenario::TmpfsFull => {
             let block = [0_u8; 524288];
             let mut exhausted = false;

@@ -641,6 +641,47 @@ fn baseline(
                 attempts: 1,
                 denials: 1,
             });
+        } else if scenario == Scenario::DetachedGrandchild {
+            let worker = workers
+                .iter()
+                .find(|worker| worker.role == Role::A)
+                .ok_or(Fault::Identity)?;
+            let members = group.members(Role::A)?;
+            if members.len() != 2 || !members.contains(&worker.process.pid) {
+                return Err(Fault::Identity);
+            }
+            let pid = *members
+                .iter()
+                .find(|pid| **pid != worker.process.pid)
+                .ok_or(Fault::Identity)?;
+            let descendant = Process::bind(pid)?;
+            let [parent, group_id, session] = descendant.lineage()?;
+            let [_, parent_group, parent_session] = worker.process.lineage()?;
+            if parent != worker.process.pid
+                || group_id == 0
+                || group_id != session
+                || group_id == pid
+                || group_id == parent_group
+                || session == parent_session
+            {
+                return Err(Fault::Identity);
+            }
+            let mut expected = worker.expected.clone();
+            expected.pid = pid;
+            expected.start_ticks = descendant.birth;
+            let state = descendant.observe(group, Role::A, &worker.descriptors)?;
+            if !contract::ready(Role::A, &expected, &state, &nonce, &nonce) {
+                return Err(Fault::Identity);
+            }
+            descendants.push(descendant);
+            observations.push(Observation {
+                scenario: Some(scenario),
+                check: contract::Check::KernelIdentity,
+                role: Some(Role::A),
+                passed: true,
+                attempts: 1,
+                denials: 0,
+            });
         } else if scenario == Scenario::TmpfsFull {
             let worker = workers
                 .iter()

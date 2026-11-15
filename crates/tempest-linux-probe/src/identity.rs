@@ -153,6 +153,23 @@ impl Process {
         })
     }
 
+    pub(super) fn lineage(&self) -> Result<[u32; 3], Fault> {
+        let value = fs::read_to_string(format!("/proc/{}/stat", self.pid))?;
+        if ticks(&value, self.pid)? != self.birth || !self.alive()? {
+            return Err(Fault::Identity);
+        }
+        let fields = value.rsplit_once(')').ok_or(Fault::Identity)?.1;
+        let mut fields = fields.split_whitespace().skip(1);
+        let mut number = || {
+            fields
+                .next()
+                .ok_or(Fault::Identity)?
+                .parse()
+                .map_err(|_| Fault::Identity)
+        };
+        Ok([number()?, number()?, number()?])
+    }
+
     pub(super) fn observe(
         &self,
         group: &Group,
@@ -246,6 +263,18 @@ fn status(value: &str, identity: Identity) -> Result<State, Fault> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn process_lineage_matches_independent_kernel_calls() {
+        let process = super::Process::bind(std::process::id()).unwrap();
+        assert_eq!(process.lineage().unwrap(), unsafe {
+            [
+                libc::getppid() as u32,
+                libc::getpgrp() as u32,
+                libc::getsid(0) as u32,
+            ]
+        });
+    }
+
     use super::*;
 
     #[test]
