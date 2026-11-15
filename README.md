@@ -112,7 +112,9 @@ rootless unit・API compile-fail 試験と baseline の観測は、M1 全体の�
 RUN path 交換と unexpected entry を注入して保持を実測します。
 RUN が置換された場合や予期しない内容がある場合は削除せず、
 削除失敗も固定 `run_cleanup` failure と `resources_removed: false` にします。
-FD/path 照合と rmdir の間の同時 race・trusted cleanup 競合は別の未完 gate です。
+cgroup control の設定・readback・attach・kill・events と role directory の作成/削除は、
+保持した directory FD から openat/mkdirat/unlinkat で行い、control 操作で ROOT を再解決しません。
+FD/path 照合と最上位 ROOT/RUN の rmdir の間の同時 race・trusted cleanup 競合は別の未完 gate です。
 watchdog が cgroup を作成し、保持した directory fd の dev/inode を照合してから親へ所有権を通知します。
 通知前の親停止でも watchdog が自分の group だけを回収する設計です（停止タイミング別の故障注入は未完）。
 既存 group の作成拒否では回収権を取得しません。watchdog 自身が作成途中に停止して残留した場合も、次回は採用せず拒否します。
