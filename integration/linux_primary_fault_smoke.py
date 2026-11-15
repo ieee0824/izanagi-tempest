@@ -265,10 +265,10 @@ for scenario, target, primary in [
         # recovery counts and failure evidence. mkstemp creates a private file
         # without following an existing path; raw stderr is never persisted.
         audit_fd, audit_path = tempfile.mkstemp(prefix='tempest-primary-fault-audit-', suffix='.json')
-        audit_basename = pathlib.Path(audit_path).name
         with os.fdopen(audit_fd, 'w') as audit:
             json.dump({'scenario': scenario, 'report': report}, audit)
             audit.write('\n')
+        audit_basename = pathlib.Path(audit_path).name
         assert process.returncode == 1 and report['status'] == 'failed'
         assert report['first_fault'] == primary and report['active_scenario'] == target
         assert report['formal_eligible'] is False and report['model_launched'] is False
