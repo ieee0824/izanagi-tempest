@@ -61,6 +61,8 @@ impl RecoveryGroup {
         // Snapshot is bounded by the fixed parent pids.max=48; populated=0
         // remains independently necessary because fork can race this snapshot.
         for role in Role::ALL {
+            use super::registry::SnapshotStage;
+            let mut stage = SnapshotStage::ReadMembers;
             let result = (|| {
                 let directory = match open_at(
                     &self.directory,
@@ -76,16 +78,27 @@ impl RecoveryGroup {
                     return Err(Fault::Identity);
                 }
                 for pid in members.split_whitespace().take(49) {
+                    stage = SnapshotStage::Bind;
                     let process =
                         super::identity::Process::bind(pid.parse().map_err(|_| Fault::Identity)?)?;
+                    stage = SnapshotStage::Membership;
                     if !process.recovery_member(role)? {
                         return Err(Fault::Identity);
                     }
+                    stage = SnapshotStage::Track;
                     registry.track(role, &process, false)?;
                 }
                 Ok::<_, Fault>(())
             })();
             if let Err(error) = result {
+                if counts.snapshot_stage.is_none() {
+                    counts.snapshot_stage = Some(stage);
+                    counts.snapshot_reason = Some(error.reason());
+                    counts.snapshot_errno = match error {
+                        Fault::Kernel(errno) => Some(errno),
+                        _ => None,
+                    };
+                }
                 evidence_failure.get_or_insert(error);
             }
         }

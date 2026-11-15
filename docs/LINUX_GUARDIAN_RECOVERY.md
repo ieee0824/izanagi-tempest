@@ -157,6 +157,11 @@ snapshotでの取得失敗は、回収済みregistryの証拠が欠けている�
 ただし前回実機がこの窓へ入った証拠はなく、snapshotの失敗を無視する変更は行っていません。
 ルーム#16085の独立静的レビューでも、snapshot失敗を保存した後にkill/reap/populated0まで進み、
 role削除前に失敗する経路が残留の形と一致すると確認されています。原因確定には次の実機auditが必要です。
+次の診断ではcountsにsnapshot_stage（read_members/bind/membership/track）、
+snapshot_reason（既存の固定fault理由）、snapshot_errno（kernel error時のみ）を残します。
+最初のsnapshot失敗を保存し、registry回収時の件数初期化でも保持します。
+失敗なしはnullです。bindのIdentityだけでは死亡とidentity不一致を区別できないため、
+この記録を死亡の証明やsnapshot失敗を無視する根拠には使いません。
 
 親による回収中に親も死亡する二重故障では、新たな guardian を自動生成しません。
 結果が記録されず、payload/cgroup/RUN が残る可能性があります。

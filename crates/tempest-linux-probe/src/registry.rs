@@ -33,6 +33,17 @@ pub(super) struct Counts {
     pub(super) reap_unconfirmed: usize,
     pub(super) cgroup_populated: Option<bool>,
     pub(super) unconfirmed_reason: Option<Unconfirmed>,
+    pub(super) snapshot_stage: Option<SnapshotStage>,
+    pub(super) snapshot_reason: Option<&'static str>,
+    pub(super) snapshot_errno: Option<i32>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum SnapshotStage {
+    ReadMembers,
+    Bind,
+    Membership,
+    Track,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -142,8 +153,18 @@ impl Registry {
     // without manufacturing the guardian ownership proof.
     fn stop_and_reap_verified(&mut self, counts: &mut Counts) -> Result<(), Fault> {
         let populated = counts.cgroup_populated;
+        let snapshot = (
+            counts.snapshot_stage,
+            counts.snapshot_reason,
+            counts.snapshot_errno,
+        );
         *counts = self.counts();
         counts.cgroup_populated = populated;
+        (
+            counts.snapshot_stage,
+            counts.snapshot_reason,
+            counts.snapshot_errno,
+        ) = snapshot;
         let mut failure = None;
         for entry in &self.entries {
             if entry.direct {
@@ -307,6 +328,9 @@ mod record_tests {
         registry.track(Role::A, &child.process, true).unwrap();
         let mut counts = Counts {
             cgroup_populated: Some(false),
+            snapshot_stage: Some(SnapshotStage::Bind),
+            snapshot_reason: Some("kernel"),
+            snapshot_errno: Some(libc::ESRCH),
             ..Counts::default()
         };
 
@@ -320,6 +344,9 @@ mod record_tests {
         assert_eq!(counts.reaped, 1);
         assert_eq!(counts.reap_unconfirmed, 0);
         assert_eq!(counts.cgroup_populated, Some(false));
+        assert_eq!(counts.snapshot_stage, Some(SnapshotStage::Bind));
+        assert_eq!(counts.snapshot_reason, Some("kernel"));
+        assert_eq!(counts.snapshot_errno, Some(libc::ESRCH));
         assert_eq!(counts.unconfirmed_reason, None);
         assert!(!child.process.alive().unwrap());
         assert!(registry.entries.is_empty());
