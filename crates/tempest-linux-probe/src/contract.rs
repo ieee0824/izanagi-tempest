@@ -216,6 +216,8 @@ pub(super) enum Check {
     ChildSignalObserved,
     OutputLimitDetected,
     OutputCaptureBounded,
+    WatchdogHandoff,
+    WatchdogLeaseRenewed,
     ResourcesRemoved,
     AuditBounded,
     ReportTimeoutDetected,

@@ -73,6 +73,12 @@ fn rmdir(directory: &fs::File, name: &str) -> Result<(), Fault> {
 }
 
 impl Group {
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+    pub(super) fn arm(&mut self) {
+        self.armed = true;
+    }
     pub(super) fn identity(&self) -> (u64, u64) {
         self.identity
     }
@@ -88,6 +94,7 @@ impl Group {
     }
 
     fn verify(&self) -> Result<(), Fault> {
+        super::lease::pulse()?;
         use std::os::unix::fs::MetadataExt;
         let metadata = fs::symlink_metadata(ROOT)?;
         let pinned = self.directory.metadata()?;

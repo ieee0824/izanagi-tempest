@@ -14,6 +14,10 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Fault {
     Identity,
+    LeaseUnavailable,
+    WatchdogRecovery,
+    GuardianUnconfirmed,
+    GuardianStartupStopped,
     Ownership,
     Path,
     Seal,
@@ -67,6 +71,7 @@ impl Snapshot {
         let mut hash = Sha256::new();
         let mut buffer = [0_u8; 65536];
         loop {
+            super::lease::pulse()?;
             let count = source.read(&mut buffer)?;
             if count == 0 {
                 break;
@@ -130,6 +135,7 @@ impl Snapshot {
         let mut offset = 0;
         let mut buffer = [0_u8; 65536];
         loop {
+            super::lease::pulse()?;
             let count =
                 unsafe { libc::pread(self.fd(), buffer.as_mut_ptr().cast(), buffer.len(), offset) };
             if count < 0 {
@@ -150,6 +156,7 @@ impl Snapshot {
         let mut offset = 0;
         let mut buffer = [0_u8; 65536];
         loop {
+            super::lease::pulse()?;
             let count = unsafe {
                 libc::pread(
                     target.as_raw_fd(),

@@ -76,6 +76,7 @@ fn write_event(channel: &Channel, manifest: &Manifest) -> Result<(), Fault> {
 fn event(worker: &Worker, until: Instant, peers: &[Worker]) -> Result<Event, Fault> {
     let mut value = Vec::new();
     loop {
+        super::lease::pulse()?;
         if Instant::now() >= until {
             return Err(Fault::ReportTimeout);
         }
@@ -118,6 +119,7 @@ fn event(worker: &Worker, until: Instant, peers: &[Worker]) -> Result<Event, Fau
                 }
             }
         }
+        super::lease::pulse()?;
         if Instant::now() >= until {
             return Err(Fault::ReportTimeout);
         }
@@ -202,6 +204,7 @@ fn spawn(
         return Err(io::Error::last_os_error().into());
     }
     if pid == 0 {
+        super::lease::clear();
         if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) } != 0
             || !parent.alive().unwrap_or(false)
         {
@@ -301,6 +304,7 @@ fn spawn(
 fn reap(process: &Process) -> Result<(), Fault> {
     let until = Instant::now() + Duration::from_secs(3);
     loop {
+        super::lease::pulse()?;
         let mut status = 0;
         let value = unsafe { libc::waitpid(process.pid as i32, &mut status, libc::WNOHANG) };
         if value == process.pid as i32 {
@@ -460,6 +464,7 @@ fn injection(
 fn wait_dead(processes: &[&Process]) -> Result<(), Fault> {
     let until = Instant::now() + Duration::from_secs(3);
     loop {
+        super::lease::pulse()?;
         let alive = processes.iter().try_fold(false, |alive, process| {
             Ok::<_, Fault>(alive | process.alive()?)
         })?;
@@ -694,6 +699,7 @@ fn baseline(
                 let guard_before = group.memory_events(Some(Role::Guard))?;
                 worker.start.send(b"G")?;
                 while worker.process.alive()? {
+                    super::lease::pulse()?;
                     if Instant::now() >= until {
                         return Err(Fault::ReportTimeout);
                     }
@@ -1049,6 +1055,24 @@ fn baseline(
     result
 }
 
+fn handoff_selftest(guard: &super::guard::Guard) -> Result<super::watchdog::Status, Fault> {
+    let (mut watch, mut group) = super::watchdog::Watchdog::start(guard)?;
+    group.disarm();
+    drop(group); // The parent cannot mutate a Group after the handoff command.
+    watch.relinquish()?;
+    let status = watch.status().ok_or(Fault::Identity)?;
+    if status.reason != super::watchdog::Reason::Relinquish
+        || status.transition != super::watchdog::Transition::Recovered
+        || status.owner_dead
+        || super::lease::pulse() != Err(Fault::LeaseUnavailable)
+        || Path::new(RUN).exists()
+        || Path::new(super::cgroup::ROOT).exists()
+    {
+        return Err(Fault::Identity);
+    }
+    Ok(status)
+}
+
 pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
     if args == [std::ffi::OsString::from("--help")] {
         println!("Usage: tempest linux-isolation-probe (fixed dummy-only root probe; no options)");
@@ -1060,10 +1084,11 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
     }
     let run_started = Instant::now();
     let mut active_scenario = None;
-    let mut locked = false;
     let mut run_lock = None;
     let mut phase = "entry";
     let mut watchdog = None;
+    let mut run_guard = None;
+    let mut handoff_status = None;
     let mut result = (|| {
         if !cfg!(target_arch = "x86_64") || fs::read_dir("/proc/self/task")?.count() != 1 {
             return Err(Fault::Identity);
@@ -1084,9 +1109,10 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             .iter()
             .map(|(path, _)| Snapshot::trusted(Path::new(path)))
             .collect::<Result<Vec<_>, _>>()?;
+        phase = "run_guard";
+        run_guard = Some(super::guard::Guard::acquire()?);
         phase = "run_lock";
         os::private_directory(Path::new(RUN))?;
-        locked = true;
         run_lock = Some(
             fs::OpenOptions::new()
                 .read(true)
@@ -1094,8 +1120,26 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 .open(RUN)?,
         );
         phase = "watchdog";
-        let (watch, mut group) = super::watchdog::Watchdog::start()?;
+        handoff_status = Some(handoff_selftest(
+            run_guard.as_ref().ok_or(Fault::Identity)?,
+        )?);
+        // A fresh run identity follows acknowledged recovery. The serialization
+        // guard remains held throughout both guardian generations.
+        os::private_directory(Path::new(RUN))?;
+        run_lock = Some(
+            fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(RUN)?,
+        );
+        phase = "watchdog";
+        let (watch, mut group) =
+            super::watchdog::Watchdog::start(run_guard.as_ref().ok_or(Fault::Identity)?)?;
         watchdog = Some(watch);
+        watchdog.as_ref().ok_or(Fault::Identity)?.write_metadata()?;
+        // Stable regression coverage even when a faster host completes the
+        // functional cases before the former fixed 90-second deadline.
+        let lease_test_until = Instant::now() + Duration::from_secs(95);
         phase = "cgroup";
         let mut canary = fs::OpenOptions::new()
             .write(true)
@@ -1104,9 +1148,17 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             .open(Path::new(RUN).join("fd.canary"))?;
         canary.write_all(b"dummy-fd-canary")?;
         drop(canary);
-        let observed = (|| {
+        let mut observed = (|| {
             active_scenario = Some(Scenario::Baseline);
             let mut observed = baseline(&code, &libraries, &group, &mut phase, Scenario::Baseline)?;
+            observed.push(Observation {
+                scenario: None,
+                check: contract::Check::WatchdogHandoff,
+                role: None,
+                passed: true,
+                attempts: 1,
+                denials: 0,
+            });
             for role in Role::ALL {
                 fs::remove_dir(Path::new(RUN).join(role.name()))?;
             }
@@ -1256,18 +1308,38 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             }
             Ok(observed)
         })();
+        if let Ok(observations) = &mut observed {
+            phase = "watchdog_long_lease";
+            while Instant::now() < lease_test_until {
+                super::lease::pulse()?;
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            if !group.empty()? {
+                return Err(Fault::Identity);
+            }
+            observations.push(Observation {
+                scenario: None,
+                check: contract::Check::WatchdogLeaseRenewed,
+                role: None,
+                passed: true,
+                attempts: 1,
+                denials: 0,
+            });
+        }
         group.cleanup()?;
         let observed = observed?;
         Ok((code.sha256, observed))
     })();
     // No payload can exist before Watchdog::start returns ownership. Even if
     // a foreign cgroup exists, release our own empty RUN without touching it.
-    let mut early_removed = false;
     let mut early_cleanup_failed = false;
-    if watchdog.is_none() && phase == "watchdog" {
+    if watchdog.is_none()
+        && phase == "watchdog"
+        && !matches!(result, Err(Fault::GuardianUnconfirmed))
+    {
         if let Some(lock) = &run_lock {
             match os::remove_owned_empty_directory(Path::new(RUN), lock) {
-                Ok(()) => early_removed = true,
+                Ok(()) => (),
                 Err(_) => {
                     early_cleanup_failed = true;
                     result = Err(Fault::RunCleanup);
@@ -1275,36 +1347,65 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             }
         }
     }
-    let kernel_removed = !Path::new(super::cgroup::ROOT).exists();
+    let mut kernel_removed = !Path::new(super::cgroup::ROOT).exists();
     let mut watchdog_fault = None;
-    let watch_finished = if let Some(watch) = &mut watchdog {
-        if kernel_removed {
-            match watch.finish() {
-                Ok(()) => true,
-                Err(fault) => {
-                    watchdog_fault = Some(fault);
-                    false
+    let mut watch_finished = watchdog.is_none();
+    if let Some(watch) = &mut watchdog {
+        // All Group handles have been dropped by the result closure. A
+        // relinquish therefore permanently hands off every remaining object.
+        let completed = if kernel_removed {
+            let cleanup = (|| {
+                super::lease::pulse()?;
+                if let Some(lock) = &run_lock {
+                    let current = fs::symlink_metadata(RUN)?;
+                    let pinned = lock.metadata()?;
+                    if (current.dev(), current.ino()) != (pinned.dev(), pinned.ino()) {
+                        return Err(Fault::Identity);
+                    }
+                    fs::remove_dir_all(RUN)?;
                 }
+                Ok::<_, Fault>(())
+            })();
+            if cleanup.is_ok() {
+                watch.finish()
+            } else {
+                result = Err(Fault::RunCleanup);
+                watch.relinquish()
             }
         } else {
-            false
+            watch.relinquish()
+        };
+        match completed {
+            Ok(()) => watch_finished = true,
+            Err(fault) => watchdog_fault = Some(fault),
         }
-    } else {
-        true
-    };
+        kernel_removed = !Path::new(super::cgroup::ROOT).exists();
+    }
     if result.is_ok() && watchdog_fault.is_some() {
         phase = "watchdog_finish";
         result = Err(watchdog_fault.unwrap_or(Fault::Identity));
     }
-    let removed = if early_cleanup_failed {
-        false
-    } else if early_removed {
-        kernel_removed
-    } else if locked && kernel_removed && watch_finished {
-        fs::remove_dir_all(RUN).is_ok()
+    let watchdog_status = watchdog.as_ref().and_then(|watch| watch.status());
+    let terminal_confirmed = if watchdog.is_some() {
+        matches!(
+            watchdog_status,
+            Some(super::watchdog::Status {
+                reason: super::watchdog::Reason::ExplicitDone,
+                transition: super::watchdog::Transition::Released,
+                ..
+            }) | Some(super::watchdog::Status {
+                reason: super::watchdog::Reason::Relinquish,
+                transition: super::watchdog::Transition::Recovered,
+                ..
+            })
+        ) && watch_finished
     } else {
-        !Path::new(RUN).exists() && kernel_removed
+        // Failed startup may release its empty RUN only after the guardian
+        // has been reaped. An unconfirmed guardian can create resources later.
+        !matches!(result, Err(Fault::GuardianUnconfirmed))
     };
+    let removed =
+        !early_cleanup_failed && kernel_removed && terminal_confirmed && !Path::new(RUN).exists();
     let watchdog_exit = if let Some(Fault::Child(value)) = watchdog_fault {
         Some(value)
     } else {
@@ -1324,7 +1425,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 "{}",
                 serde_json::json!({"schema_version":1,"status":"incomplete",
                 "formal_eligible":false,"model_launched":false,"code_sha256":hash,
-                "checks":observations,"resources_removed":true})
+                "checks":observations,"resources_removed":true,"watchdog_status":watchdog_status,"handoff_status":handoff_status})
             );
             std::process::ExitCode::from(1)
         }
@@ -1347,6 +1448,10 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             };
             let reason = match fault {
                 Fault::Identity => "identity",
+                Fault::LeaseUnavailable => "watchdog_lease_unavailable",
+                Fault::WatchdogRecovery => "watchdog_recovery_failed",
+                Fault::GuardianUnconfirmed => "watchdog_guardian_unconfirmed",
+                Fault::GuardianStartupStopped => "watchdog_startup_failed",
                 Fault::Ownership => "ownership",
                 Fault::Path => "path",
                 Fault::Seal => "seal",
@@ -1376,7 +1481,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 "child_signal":child_signal,"child_core_dumped":child_core_dumped,
                 "output_role":output_role,"output_stream":output_stream,
                 "watchdog_exit":watchdog_exit,"watchdog_signal":watchdog_signal,"watchdog_core_dumped":watchdog_core_dumped,
-                "active_scenario":active_scenario,"elapsed_ms":run_started.elapsed().as_millis().min(3_600_000) as u64})
+                "watchdog_status":watchdog_status,"handoff_status":handoff_status,"active_scenario":active_scenario,"elapsed_ms":run_started.elapsed().as_millis().min(3_600_000) as u64})
             );
             std::process::ExitCode::from(1)
         }

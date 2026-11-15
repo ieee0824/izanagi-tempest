@@ -92,21 +92,38 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 integration/linux_existing_cgroup_smoke.py
 python3 integration/linux_supervisor_death_smoke.py
+python3 integration/linux_watchdog_startup_smoke.py
 python3 integration/linux_isolation_smoke.py
 ```
 
-最後の3コマンドは**専用の Ubuntu 24.04 x86_64 VM**で、非 root user から実行します。
+最後の4コマンドは**専用の Ubuntu 24.04 x86_64 VM**で、非 root user から実行します。
 既存の `sudo -n`、`install`、`timeout` と、kernel の namespace・seccomp・cgroup v2
 （cpu/memory/pids controller、`cgroup.kill`）が必要です。通常の `cargo test` は root probe を起動しません。
 driver は固定の `target/debug/tempest` を root 所有・0700 の `/var/lib/tempest-probe-install-<ID>/`
 へ一時配置し、空の環境で起動して回収します。`/run` の noexec 等の既存 mount 設定は変更しません。
 sudoers/service/user/group/AppArmor/nft の永続設定も変更しません。
 
-**現在の追加 output/diagnostic 差分は root suite 未合格です。**
-固定90秒 watchdog と増加した suite の衝突が疑われ、91,092 ms・`frame_oversize` の Ready で
-child SIGKILL・watchdog exit1・RUN残留を再現しました。残留は root0700 の証拠directoryへ保全しています。
-lease heartbeat・owner pidfd死亡確認後の排他的回収・done/relinquish/status channel は未実装で、
-単なる timer 延長では解決済みと扱いません。継続 writer の root 再検証も、この修正後に行います。
+旧 WIP（0f5d190）では固定90秒 watchdog と増加した suite の衝突に整合する失敗を
+91,092 ms・`frame_oversize` Ready の child SIGKILL/watchdog exit1/RUN残留として再現しました。
+当時の ownership 遷移は未記録で、過去事象の実行時因果確定とは区別します。残留は root0700 で証拠保全済みです。
+
+現在は5秒 heartbeat lease を root thread の bounded wait/collector/hash巡回で更新します。
+watchdog側Groupは親所有中disarmし、lease失効ではowner pidfdへSIGKILL→死亡確認→単独recoverとします。
+owner自然死、lease失効、明示done/relinquish、recovery失敗は専用status pipeの固定enum/transition/flag/elapsedで区別します。
+control HUPがpidfd死亡より先に届く場合も、HUPだけで回収所有権を取得しません。
+明示handoffは親Group disarm/drop後の一方向command＋ackで行い、後続Group操作をForbiddenにします。
+固定abstract Unix STREAM socketをbindのみ（listen/send/recvなし）で親/watchdogが保持し、全世代を直列化します。
+workerにはFDを継承せず、最後のFD closeで解放されるためファイルやservice設定を残しません。
+通常完了では親がRUNを回収してからdone/ack/guardian waitを行い、最後にserialization guardを解放します。
+回収成功は固定statusのreleased/recoveredとguardian reap、自所有resource回収、guard解放前の不在確認で判定します。
+起動ACK失敗ではguardian pidfdへSIGKILLしてreapを確認し、確認不能なら回収成功にしません。
+作成済みcgroupの所有identityを受信できなければ採用せず、残留があれば回収失敗として保持します。
+startup fixtureは自分のdummy親子だけをptraceし、fork直後・cgroup作成前のguardian停止で
+ACK timeout後の死亡確認、空RUN回収、次世代起動を検証します。ptrace/sysctl設定は変更しません。
+
+通常suiteは旧90秒超のlease更新を固定回帰試験にするため、機能case終了後も主watchdog開始から95秒まで
+空cgroupのままheartbeatを継続します。payloadの30秒期限や外側driverの120秒timeoutは延長しません。
+lease境界・guardian自身の異常終了/fork前異常などの全故障時点は、別の未完gateです。
 
 現 WIP は baseline が成功しても `status: "incomplete"`・終了コード 1 を返します。
 rootless unit・API compile-fail 試験と baseline の観測は、M1 全体の合格や本番隔離の証明には使いません。
@@ -125,9 +142,10 @@ watchdog が cgroup を作成し、保持した directory fd の dev/inode を�
 通知前の親停止でも watchdog が自分の group だけを回収する設計です（停止タイミング別の故障注入は未完）。
 既存 group の作成拒否では回収権を取得しません。watchdog 自身が作成途中に停止して残留した場合も、次回は採用せず拒否します。
 supervisor SIGKILL fixture は、A の加入直後と、setsid/double-fork した孫の親・group・session を
-kernel から確認した後の2ケースで、対象の pidfd 死亡と run/cgroup の回収を確認します。
+kernel から確認した後と、heartbeat停止（親SIGSTOP）の3ケースで、対象/guardianのpidfd死亡・run/cgroup回収を確認します。
+status pipeを同一FIFO inodeで検証して複製し、owner_deadとlease_expiredの理由と死亡前後のownership遷移を観測します。
 祖先の終了・group/session の離脱を実測し、単なる最初の fork を孫と取り違えない条件を要求します。
-通知前・他の bootstrap 時点などの停止タイミングは未検証です。
+作成直後・ACK直前直後・他のbootstrap時点の停止、Drop cleanup失敗の故障注入は未検証です。
 library は write fd を bind 前に close し、同 inode の read fd から配置します。
 bootstrap の bind 前後・全配置後と、supervisor の Ready 後・barrier 直前に
 dev/inode/uid/gid/mode/nlink/hash を確認し、bind 後は ro/nosuid/nodev と exec 可を照合します。

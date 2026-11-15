@@ -1,135 +1,413 @@
-//! Fixed root recovery role, outside the payload cgroup and process group.
-//! It accepts only a completion byte, never a command or path.
+//! Root-only lease guardian. Recovery never races a live mutating owner.
 use super::{
     cgroup::Group,
+    guard::Guard,
     identity::Process,
+    lease,
     os::{self, Fault},
 };
+use serde::{Deserialize, Serialize};
 use std::{
-    fs, io,
+    fs::{self, File},
+    io,
     os::{
-        fd::{AsRawFd, OwnedFd},
-        unix::fs::MetadataExt,
+        fd::{AsRawFd, FromRawFd, OwnedFd},
+        unix::fs::{MetadataExt, OpenOptionsExt},
     },
     path::Path,
     time::{Duration, Instant},
 };
 
 const RUN: &str = "/run/tempest-linux-isolation-probe";
+const LEASE: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Reason {
+    OwnerDead,
+    LeaseExpired,
+    ExplicitDone,
+    Relinquish,
+    RecoveryFailed,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Transition {
+    OwnerStopping,
+    WatchdogOwned,
+    Recovered,
+    Released,
+    Failed,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Status {
+    pub(super) reason: Reason,
+    pub(super) trigger: Reason,
+    pub(super) transition: Transition,
+    pub(super) owner_dead: bool,
+    pub(super) elapsed_ms: u64,
+}
+
+fn status(fd: i32, started: Instant, trigger: Reason, transition: Transition, owner_dead: bool) {
+    let value = Status {
+        reason: if transition == Transition::Failed {
+            Reason::RecoveryFailed
+        } else {
+            trigger
+        },
+        trigger,
+        transition,
+        owner_dead,
+        elapsed_ms: started.elapsed().as_millis().min(3_600_000) as u64,
+    };
+    if let Ok(mut bytes) = serde_json::to_vec(&value) {
+        bytes.push(b'\n');
+        if bytes.len() <= 512 {
+            unsafe {
+                libc::write(fd, bytes.as_ptr().cast(), bytes.len());
+            }
+        }
+    }
+}
+
+fn remove_run(pinned: &File) -> Result<(), Fault> {
+    let current = match fs::symlink_metadata(RUN) {
+        Ok(value) => value,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let original = pinned.metadata()?;
+    if !current.is_dir() || (current.dev(), current.ino()) != (original.dev(), original.ino()) {
+        return Err(Fault::Identity);
+    }
+    fs::remove_dir_all(RUN)?;
+    Ok(())
+}
+
+fn recover(
+    mut group: Group,
+    owner: &Process,
+    pinned: &File,
+    output: i32,
+    started: Instant,
+    trigger: Reason,
+) -> Result<(), Fault> {
+    let mut dead = !owner.alive()?;
+    if trigger != Reason::Relinquish && !dead {
+        status(output, started, trigger, Transition::OwnerStopping, false);
+        owner.kill()?;
+        let until = Instant::now() + Duration::from_secs(3);
+        while owner.alive()? {
+            if Instant::now() >= until {
+                return Err(Fault::WatchdogRecovery);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        dead = true;
+    }
+    if trigger != Reason::Relinquish && !dead {
+        return Err(Fault::WatchdogRecovery);
+    }
+    // Explicit relinquish is acknowledged only after the parent has forbidden
+    // every future Group operation and dropped/disarmed its Group handle.
+    status(output, started, trigger, Transition::WatchdogOwned, dead);
+    group.arm();
+    group.recover()?;
+    remove_run(pinned)?;
+    status(output, started, trigger, Transition::Recovered, dead);
+    Ok(())
+}
+
+fn child(owner: Process, pinned: File, read: OwnedFd, output: OwnedFd, guard: &Guard) -> ! {
+    lease::clear();
+    let started = Instant::now();
+    let mut trigger = Reason::RecoveryFailed;
+    let result = (|| {
+        os::syscall(unsafe { libc::setsid() })?;
+        os::close_except(&[
+            owner.fd(),
+            pinned.as_raw_fd(),
+            read.as_raw_fd(),
+            output.as_raw_fd(),
+            guard.fd(),
+        ])?;
+        let mut group = Group::create()?;
+        let (dev, ino) = group.identity();
+        let mut ack = [0_u8; 20];
+        ack[..4].copy_from_slice(b"TSG1");
+        ack[4..12].copy_from_slice(&dev.to_ne_bytes());
+        ack[12..].copy_from_slice(&ino.to_ne_bytes());
+        // An atomic pipe ACK transfers startup ownership to the parent. While
+        // the parent owns it, even error unwinding must not cleanup the group.
+        group.disarm();
+        let written = unsafe { libc::write(output.as_raw_fd(), ack.as_ptr().cast(), ack.len()) };
+        if written != 20 {
+            if written <= 0 {
+                group.arm();
+            }
+            return Err(Fault::Identity);
+        }
+        let mut renewed = Instant::now();
+        let mut control_closed = false;
+        loop {
+            let mut polls = [
+                libc::pollfd {
+                    fd: if control_closed { -1 } else { read.as_raw_fd() },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: owner.fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let result = unsafe { libc::poll(polls.as_mut_ptr(), 2, 50) };
+            if result < 0 {
+                if io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                break;
+            }
+            let poll = &polls[0];
+            if poll.revents & libc::POLLIN != 0 {
+                let mut value = 0_u8;
+                if unsafe { libc::read(poll.fd, (&mut value as *mut u8).cast(), 1) } != 1 {
+                    break;
+                }
+                match value {
+                    b'H' => renewed = Instant::now(),
+                    b'D' => {
+                        if Path::new(super::cgroup::ROOT).exists() || Path::new(RUN).exists() {
+                            break;
+                        }
+                        status(
+                            output.as_raw_fd(),
+                            started,
+                            Reason::ExplicitDone,
+                            Transition::Released,
+                            false,
+                        );
+                        return Ok(());
+                    }
+                    b'R' => {
+                        trigger = Reason::Relinquish;
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+            if !owner.alive()? {
+                trigger = Reason::OwnerDead;
+                break;
+            }
+            if renewed.elapsed() >= LEASE {
+                trigger = Reason::LeaseExpired;
+                break;
+            }
+            if poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                // Pipe closure precedes pidfd readiness during normal exit.
+                // Stop polling the closed pipe and wait for owner death or the
+                // lease, rather than misclassifying that ordering as failure.
+                control_closed = true;
+            }
+        }
+        recover(group, &owner, &pinned, output.as_raw_fd(), started, trigger)
+    })();
+    if result.is_err() {
+        status(
+            output.as_raw_fd(),
+            started,
+            trigger,
+            Transition::Failed,
+            !owner.alive().unwrap_or(true),
+        );
+    }
+    unsafe {
+        libc::_exit(if result.is_ok() { 0 } else { 1 });
+    }
+}
 
 pub(super) struct Watchdog {
     pid: i32,
     control: OwnedFd,
+    input: OwnedFd,
+    guardian: OwnedFd,
     active: bool,
+    last: Option<Status>,
 }
 
 impl Watchdog {
-    pub(super) fn start() -> Result<(Self, Group), Fault> {
+    pub(super) fn start(guard: &Guard) -> Result<(Self, Group), Fault> {
+        lease::clear();
         let owner = Process::bind(std::process::id())?;
-        let root = fs::metadata(RUN)?;
-        let identity = (root.dev(), root.ino());
+        let pinned = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(RUN)?;
         let (read, write) = os::pipe()?;
-        let (ack_read, ack_write) = os::pipe()?;
+        let (input, output) = os::pipe()?;
+        for fd in [&write, &output] {
+            let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+            if flags < 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+            os::syscall(unsafe {
+                libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK)
+            })?;
+        }
         let pid = unsafe { libc::fork() };
         if pid < 0 {
             return Err(io::Error::last_os_error().into());
         }
         if pid == 0 {
-            let mut expired = false;
-            let result = (|| {
-                os::syscall(unsafe { libc::setsid() })?;
-                os::close_except(&[read.as_raw_fd(), owner.fd(), ack_write.as_raw_fd()])?;
-                // Only this process creates the group. A preexisting ROOT fails
-                // before ownership is acquired and is never recovered.
-                let mut group = Group::create()?;
-                let (dev, ino) = group.identity();
-                let mut ack = [0_u8; 16];
-                ack[..8].copy_from_slice(&dev.to_ne_bytes());
-                ack[8..].copy_from_slice(&ino.to_ne_bytes());
-                if unsafe { libc::write(ack_write.as_raw_fd(), ack.as_ptr().cast(), ack.len()) }
-                    != 16
-                {
-                    return Err(Fault::Identity);
-                }
-                // Keep ack_write's OwnedFd alive: close_except already closed
-                // ack_read/write copies, which must never be reused here.
-
-                let until = Instant::now() + Duration::from_secs(90);
-                loop {
-                    let mut poll = libc::pollfd {
-                        fd: read.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    };
-                    if unsafe { libc::poll(&mut poll, 1, 50) } < 0 {
-                        break;
-                    }
-                    if poll.revents & libc::POLLIN != 0 {
-                        let mut value = 0_u8;
-                        if unsafe { libc::read(poll.fd, (&mut value as *mut u8).cast(), 1) } == 1
-                            && value == b'D'
-                        {
-                            if Path::new(super::cgroup::ROOT).exists() {
-                                return Err(Fault::Identity);
-                            }
-                            let current = fs::metadata(RUN)?;
-                            if (current.dev(), current.ino()) != identity {
-                                return Err(Fault::Identity);
-                            }
-                            return Ok(());
-                        }
-                        break;
-                    }
-                    if Instant::now() >= until {
-                        expired = true;
-                        break;
-                    }
-                    if poll.revents & libc::POLLHUP != 0 || !owner.alive()? {
-                        break;
-                    }
-                }
-                let current = fs::metadata(RUN)?;
-                if (current.dev(), current.ino()) != identity {
-                    return Err(Fault::Identity);
-                }
-                group.recover()?;
-                fs::remove_dir_all(RUN)?;
-                Ok(())
-            })();
-            unsafe {
-                libc::_exit(if result.is_ok() {
-                    if expired { 124 } else { 0 }
-                } else {
-                    1
-                });
-            }
+            child(owner, pinned, read, output, guard);
         }
         drop(read);
-        drop(ack_write);
+        drop(output);
+        let raw_guardian = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        if raw_guardian < 0 {
+            // PID is our own fresh unreaped child. Keep every resource marked
+            // unconfirmed if the kernel cannot give us a stable death handle.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+            return Err(Fault::GuardianUnconfirmed);
+        }
+        let guardian = unsafe { OwnedFd::from_raw_fd(raw_guardian as i32) };
         let mut watchdog = Self {
             pid,
             control: write,
+            input,
+            guardian,
             active: true,
+            last: None,
         };
-        let mut poll = libc::pollfd {
-            fd: ack_read.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
+        let startup = (|| {
+            let mut poll = libc::pollfd {
+                fd: watchdog.input.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&mut poll, 1, 5000) } <= 0 {
+                return Err(Fault::Identity);
+            }
+            let mut ack = [0_u8; 20];
+            if unsafe {
+                libc::read(
+                    watchdog.input.as_raw_fd(),
+                    ack.as_mut_ptr().cast(),
+                    ack.len(),
+                )
+            } != 20
+                || &ack[..4] != b"TSG1"
+            {
+                return Err(Fault::Identity);
+            }
+            let identity = (
+                u64::from_ne_bytes(ack[4..12].try_into().map_err(|_| Fault::Identity)?),
+                u64::from_ne_bytes(ack[12..].try_into().map_err(|_| Fault::Identity)?),
+            );
+            lease::activate(watchdog.control.as_raw_fd());
+            lease::pulse()?;
+            Group::adopt(identity)
+        })();
+        let group = match startup {
+            Ok(group) => group,
+            Err(_) => {
+                watchdog.stop_startup()?;
+                return Err(Fault::GuardianStartupStopped);
+            }
         };
-        if unsafe { libc::poll(&mut poll, 1, 5000) } <= 0 {
-            return Err(Fault::Identity);
-        }
-        let mut ack = [0_u8; 16];
-        if unsafe { libc::read(ack_read.as_raw_fd(), ack.as_mut_ptr().cast(), ack.len()) } != 16 {
-            let _ = watchdog.wait();
-            return Err(Fault::Identity);
-        }
-        let identity = (
-            u64::from_ne_bytes(ack[..8].try_into().map_err(|_| Fault::Identity)?),
-            u64::from_ne_bytes(ack[8..].try_into().map_err(|_| Fault::Identity)?),
-        );
-        let group = Group::adopt(identity)?;
         Ok((watchdog, group))
+    }
+
+    fn stop_startup(&mut self) -> Result<(), Fault> {
+        lease::forbid();
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.guardian.as_raw_fd(),
+                libc::SIGKILL,
+                0,
+                0,
+            )
+        };
+        if result != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            return Err(Fault::GuardianUnconfirmed);
+        }
+        let _ = self.wait();
+        if self.active {
+            return Err(Fault::GuardianUnconfirmed);
+        }
+        // A reaped guardian can no longer create a group after our return.
+        // Any already created but unproved group remains visible and causes
+        // resources_removed=false; never adopt it from its fixed path alone.
+        Ok(())
+    }
+
+    pub(super) fn write_metadata(&self) -> Result<(), Fault> {
+        use std::io::Write;
+        let bytes = serde_json::to_vec(
+            &serde_json::json!({"watchdog_pid":self.pid,"status_fd":self.input.as_raw_fd()}),
+        )
+        .map_err(|_| Fault::Identity)?;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(Path::new(RUN).join("watchdog.channel"))?
+            .write_all(&bytes)?;
+        Ok(())
+    }
+
+    pub(super) fn status(&self) -> Option<Status> {
+        self.last
+    }
+
+    fn receive(&mut self, target: Transition) -> Result<(), Fault> {
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut bytes = Vec::new();
+        loop {
+            if Instant::now() >= until {
+                return Err(Fault::WatchdogRecovery);
+            }
+            let mut poll = libc::pollfd {
+                fd: self.input.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&mut poll, 1, 20) } < 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+            if poll.revents & libc::POLLIN != 0 {
+                let mut byte = 0_u8;
+                if unsafe { libc::read(poll.fd, (&mut byte as *mut u8).cast(), 1) } != 1 {
+                    return Err(Fault::WatchdogRecovery);
+                }
+                if byte == b'\n' {
+                    let value: Status =
+                        serde_json::from_slice(&bytes).map_err(|_| Fault::Identity)?;
+                    self.last = Some(value);
+                    bytes.clear();
+                    if value.transition == Transition::Failed {
+                        return Err(Fault::WatchdogRecovery);
+                    }
+                    if value.transition == target {
+                        return Ok(());
+                    }
+                } else {
+                    if bytes.len() >= 512 {
+                        return Err(Fault::Identity);
+                    }
+                    bytes.push(byte);
+                }
+            } else if poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                return Err(Fault::WatchdogRecovery);
+            }
+        }
     }
 
     fn wait(&mut self) -> Result<(), Fault> {
@@ -158,32 +436,34 @@ impl Watchdog {
                 return Err(io::Error::last_os_error().into());
             }
             if Instant::now() >= until {
-                return Err(Fault::Kernel(libc::EBUSY));
+                return Err(Fault::WatchdogRecovery);
             }
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 
-    pub(super) fn finish(&mut self) -> Result<(), Fault> {
-        let wrote = unsafe { libc::write(self.control.as_raw_fd(), b"D".as_ptr().cast(), 1) } == 1;
-        // Reap even on EPIPE so an already completed recovery/deadline is
-        // distinguishable from an unexplained missing control reader.
-        let finished = self.wait();
-        if wrote {
-            finished
-        } else {
-            finished.and(Err(Fault::Identity))
+    fn command(&mut self, byte: u8, target: Transition) -> Result<(), Fault> {
+        lease::forbid();
+        if unsafe { libc::write(self.control.as_raw_fd(), (&byte as *const u8).cast(), 1) } != 1 {
+            let _ = self.wait();
+            return Err(Fault::WatchdogRecovery);
         }
+        let received = self.receive(target);
+        let waited = self.wait();
+        received?;
+        waited
+    }
+    pub(super) fn finish(&mut self) -> Result<(), Fault> {
+        self.command(b'D', Transition::Released)
+    }
+    pub(super) fn relinquish(&mut self) -> Result<(), Fault> {
+        self.command(b'R', Transition::Recovered)
     }
 }
-
 impl Drop for Watchdog {
     fn drop(&mut self) {
         if self.active {
-            unsafe {
-                libc::write(self.control.as_raw_fd(), b"A".as_ptr().cast(), 1);
-            }
-            let _ = self.wait();
+            let _ = self.relinquish();
         }
     }
 }
