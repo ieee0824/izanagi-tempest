@@ -1153,6 +1153,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "tempest-linux-probe",
  "tempest-model",
  "tokio",
  "yaml_serde",
@@ -1179,6 +1180,16 @@ dependencies = [
  "sha2",
  "tempest-model",
  "tokio",
+]
+
+[[package]]
+name = "tempest-linux-probe"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

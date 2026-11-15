@@ -13,6 +13,8 @@ pub mod evaluate;
 mod guest_transport;
 mod host_io;
 pub mod izanagi_log;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub use tempest_linux_probe as linux_probe;
 pub mod model_api_relay;
 pub mod plan;
 pub mod proxy_cli;

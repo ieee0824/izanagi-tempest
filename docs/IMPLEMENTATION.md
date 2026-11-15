@@ -8,6 +8,10 @@ M5の判定・レポートを実装済み。M6はClaude Codeのproof-gated nativ
 M2 の具体的な入力・状態・検証範囲は [M2-GUEST.md](M2-GUEST.md) を参照。
 M0 の収集手順は [tools/m0/README.md](../tools/m0/README.md)、実測状況は [M0-RESULTS.md](M0-RESULTS.md) を参照。
 
+Issue #36 の Linux direct 方式は、固定 dummy A/B/G に限る隔離 probe を別 crate で調査中。
+本書の model adapter・LaunchPermit・正式 run の代替ではなく、全 gate 合格前は常に incomplete とする。
+実行条件と未完了の試験は [README の Linux 隔離調査](../README.md#開発-linux-direct-方式の隔離調査issue-36wip) を参照。
+
 [DESIGN.md](DESIGN.md) が「何を・なぜ」を定めるのに対し、本書は Phase 1(同一 VM 内 PoC)を
 「どう作るか」に落とし込む。DESIGN.md と食い違う場合は DESIGN.md を正とし、本書を直す。
 

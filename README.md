@@ -77,6 +77,37 @@ python3 tools/m0/probe-agent.py --agent claude --output /private/tmp/tempest-m0-
 VM の `--guest-probe`・`--guest-file`・`--agent-probe` と固定バイナリ指定 `--izanagi` の手順は
 [M0 収集ツール](tools/m0/README.md)を参照してください。
 
+## 開発: Linux direct 方式の隔離調査（Issue #36、WIP）
+
+`tempest-linux-probe` は Linux/x86_64 専用の固定 dummy probe です。
+既存の M1 シナリオ検証とは別の調査段階で、model adapter や LaunchPermit を提供しません。
+同じ `tempest` binary の固定 A/B/guard G だけを別 UID・mount/PID/net namespace へ起動し、
+root supervisor が cgroup・kernel identity・開始 barrier と回収を扱います。
+Claude、設定・認証情報、Izanagi/guest、外部 network、HTTP MCP は使いません。
+
+```bash
+cargo build --workspace --locked
+cargo test --locked -p tempest-linux-probe
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+python3 integration/linux_isolation_smoke.py
+```
+
+最後のコマンドは**専用の Ubuntu 24.04 x86_64 VM**で、非 root user から実行します。
+既存の `sudo -n`、`install`、`timeout` と、kernel の namespace・seccomp・cgroup v2
+（cpu/memory/pids controller、`cgroup.kill`）が必要です。通常の `cargo test` は root probe を起動しません。
+driver は固定の `target/debug/tempest` を root 所有・0700 の `/var/lib/tempest-probe-install-<ID>/`
+へ一時配置し、空の環境で起動して回収します。`/run` の noexec 等の既存 mount 設定は変更しません。
+sudoers/service/user/group/AppArmor/nft の永続設定も変更しません。
+
+現 WIP は baseline が成功しても `status: "incomplete"`・終了コード 1 を返します。
+rootless unit・API compile-fail 試験と baseline の観測は、M1 全体の合格や本番隔離の証明には使いません。
+実行中 ancillary の root 統合、library 配置と write fd の追加負例、偽 ready・PID/UID/run 混入、
+資源枯渇・監査容量不足・EOF/cancel/timeout・監督異常・孫 process の回収等が残っています。
+失敗の診断は固定 stage/reason と数値 errno に限り、raw argv/env/stderr/任意 path や credential を出しません。
+`/run/tempest-linux-isolation-probe` または `/sys/fs/cgroup/tempest-linux-isolation-probe` が残った場合は、
+成功にせず新規 probe を拒否します。driver は未知の残留資源を削除しません。
+
 ## 開発: M1 のシナリオ静的検証
 
 Rust edition 2024 の toolchain と Cargo が必要です（Rust 1.99.0 / macOS arm64 で検証）。

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tempest-model", "crates/tempest", "crates/tempest-guest"]
+members = ["crates/tempest-model", "crates/tempest", "crates/tempest-guest", "crates/tempest-linux-probe"]
 resolver = "3"
 
 [workspace.package]

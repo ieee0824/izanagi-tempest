@@ -4,6 +4,17 @@ use tempest_model::capability::LWS_COMMIT;
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if args
+        .first()
+        .is_some_and(|arg| arg == "linux-isolation-probe")
+    {
+        return tempest::linux_probe::run(&args[1..]);
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if args.len() == 2 && args[0] == "__linux-probe-worker" && args[1] == "dummy-argv-marker" {
+        return tempest::linux_probe::worker();
+    }
     if args.len() == 1 && (args[0] == "--version" || args[0] == "-V") {
         let binary_mode = if cfg!(feature = "native-test-upstream") {
             "native_test_upstream; formal_test_only=true"
