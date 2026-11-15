@@ -11,7 +11,8 @@ const MAX_FRAME: usize = 4096;
 // Aligned storage exceeds Linux's limit of 253 SCM_RIGHTS descriptors.
 const CONTROL_WORDS: usize = 256;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub(super) enum Rejection {
     Io(i32),
     EndOfStream,
@@ -39,6 +40,10 @@ pub(super) fn pair() -> io::Result<(OwnedFd, OwnedFd)> {
 
 pub(super) fn receive(fd: RawFd) -> Result<Vec<u8>, Rejection> {
     receive_with_control(fd, CONTROL_WORDS)
+}
+
+pub(super) fn receive_truncated_control(fd: RawFd) -> Result<Vec<u8>, Rejection> {
+    receive_with_control(fd, 4)
 }
 
 fn receive_with_control(fd: RawFd, words: usize) -> Result<Vec<u8>, Rejection> {
@@ -106,8 +111,10 @@ fn receive_with_control(fd: RawFd, words: usize) -> Result<Vec<u8>, Rejection> {
     Ok(data[4..count].to_vec())
 }
 
-#[cfg(test)]
-fn send(fd: RawFd, data: &[u8], rights: &[RawFd]) {
+pub(super) fn send_packet(fd: RawFd, data: &[u8], rights: &[RawFd]) -> io::Result<()> {
+    if rights.len() > 253 {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
     let mut control = [0_u64; CONTROL_WORDS];
     let mut iov = libc::iovec {
         iov_base: data.as_ptr().cast_mut().cast(),
@@ -121,7 +128,9 @@ fn send(fd: RawFd, data: &[u8], rights: &[RawFd]) {
         if !rights.is_empty() {
             message.msg_control = control.as_mut_ptr().cast();
             message.msg_controllen = libc::CMSG_SPACE(size_of_val(rights) as u32) as usize;
-            assert!(message.msg_controllen <= size_of_val(&control));
+            if message.msg_controllen > size_of_val(&control) {
+                return Err(io::Error::from(io::ErrorKind::InvalidInput));
+            }
             let header = libc::CMSG_FIRSTHDR(&message);
             (*header).cmsg_level = libc::SOL_SOCKET;
             (*header).cmsg_type = libc::SCM_RIGHTS;
@@ -132,11 +141,20 @@ fn send(fd: RawFd, data: &[u8], rights: &[RawFd]) {
                 rights.len(),
             );
         }
-        assert_eq!(
-            libc::sendmsg(fd, &message, libc::MSG_NOSIGNAL),
-            data.len() as isize
-        );
+        let count = libc::sendmsg(fd, &message, libc::MSG_NOSIGNAL);
+        if count < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if count != data.len() as isize {
+            return Err(io::Error::from(io::ErrorKind::WriteZero));
+        }
     }
+    Ok(())
+}
+
+#[cfg(test)]
+fn send(fd: RawFd, data: &[u8], rights: &[RawFd]) {
+    send_packet(fd, data, rights).unwrap();
 }
 
 pub(super) fn frame(bytes: &[u8]) -> Vec<u8> {

@@ -20,6 +20,7 @@ pub(super) enum Fault {
     Kernel(i32),
     Child(i32),
     Bootstrap(u8, i32),
+    ForeignReady,
 }
 
 impl From<io::Error> for Fault {

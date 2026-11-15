@@ -143,8 +143,11 @@ pub(super) fn install(role: Role, bootstrap_exec: bool) -> Result<(), Fault> {
         statement(load, 0),
     ]);
     if bootstrap_exec {
-        // The first filter admits one descriptor-bound exec. The worker stacks
-        // a second filter denying all exec before it can announce readiness.
+        // The bootstrap filter checks dirfd 6, not the pathname bytes or a
+        // one-shot counter. The trusted bootstrap supplies the empty pathname
+        // and AT_EMPTY_PATH for the sealed fd. Absolute paths cannot be excluded
+        // by this fd check alone. Before Ready, the worker stacks a second
+        // filter denying every exec, and the supervisor verifies image identity.
         program.extend([
             jump(libc::SYS_execveat as u32, 0, 4),
             statement(load, 16),

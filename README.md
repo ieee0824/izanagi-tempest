@@ -90,10 +90,11 @@ cargo build --workspace --locked
 cargo test --locked -p tempest-linux-probe
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
+python3 integration/linux_existing_cgroup_smoke.py
 python3 integration/linux_isolation_smoke.py
 ```
 
-最後のコマンドは**専用の Ubuntu 24.04 x86_64 VM**で、非 root user から実行します。
+最後の2コマンドは**専用の Ubuntu 24.04 x86_64 VM**で、非 root user から実行します。
 既存の `sudo -n`、`install`、`timeout` と、kernel の namespace・seccomp・cgroup v2
 （cpu/memory/pids controller、`cgroup.kill`）が必要です。通常の `cargo test` は root probe を起動しません。
 driver は固定の `target/debug/tempest` を root 所有・0700 の `/var/lib/tempest-probe-install-<ID>/`
@@ -102,7 +103,12 @@ sudoers/service/user/group/AppArmor/nft の永続設定も変更しません。
 
 現 WIP は baseline が成功しても `status: "incomplete"`・終了コード 1 を返します。
 rootless unit・API compile-fail 試験と baseline の観測は、M1 全体の合格や本番隔離の証明には使いません。
-実行中 ancillary の root 統合、library 配置と write fd の追加負例、偽 ready・PID/UID/run 混入、
+実行中 ancillary 10ケースと偽 ready nonce の拒否は root 統合で確認済みです。
+既存 cgroup に対する起動拒否では、既存プロセス・limits・構造を変更しないことを別 fixture で検証します。
+watchdog が cgroup を作成し、保持した directory fd の dev/inode を照合してから親へ所有権を通知します。
+通知前の親停止でも watchdog が自分の group だけを回収する設計です（停止タイミング別の故障注入は未完）。
+既存 group の作成拒否では回収権を取得しません。watchdog 自身が作成途中に停止して残留した場合も、次回は採用せず拒否します。
+library 配置と write fd の追加負例、PID/UID/run 混入、
 資源枯渇・監査容量不足・EOF/cancel/timeout・監督異常・孫 process の回収等が残っています。
 失敗の診断は固定 stage/reason と数値 errno に限り、raw argv/env/stderr/任意 path や credential を出しません。
 `/run/tempest-linux-isolation-probe` または `/sys/fs/cgroup/tempest-linux-isolation-probe` が残った場合は、

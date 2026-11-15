@@ -11,6 +11,16 @@ pub(super) const ROOT: &str = "/sys/fs/cgroup/tempest-linux-isolation-probe";
 
 pub(super) struct Group {
     armed: bool,
+    identity: (u64, u64),
+    directory: fs::File,
+}
+
+fn open_directory() -> Result<fs::File, Fault> {
+    use std::os::unix::fs::OpenOptionsExt;
+    Ok(fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(ROOT)?)
 }
 
 fn write(path: &Path, name: &str, value: &str) -> Result<(), Fault> {
@@ -24,18 +34,54 @@ fn write(path: &Path, name: &str, value: &str) -> Result<(), Fault> {
 }
 
 impl Group {
-    pub(super) fn recover_owned() -> Result<(), Fault> {
-        if !Path::new(ROOT).exists() {
-            return Ok(());
+    pub(super) fn identity(&self) -> (u64, u64) {
+        self.identity
+    }
+
+    pub(super) fn adopt(identity: (u64, u64)) -> Result<Self, Fault> {
+        let group = Self {
+            armed: true,
+            identity,
+            directory: open_directory()?,
+        };
+        group.verify()?;
+        Ok(group)
+    }
+
+    fn verify(&self) -> Result<(), Fault> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::symlink_metadata(ROOT)?;
+        let pinned = self.directory.metadata()?;
+        if !metadata.is_dir()
+            || (metadata.dev(), metadata.ino()) != self.identity
+            || (pinned.dev(), pinned.ino()) != self.identity
+        {
+            return Err(Fault::Identity);
         }
-        let mut group = Self { armed: true };
-        group.cleanup()
+        Ok(())
+    }
+
+    pub(super) fn recover(&mut self) -> Result<(), Fault> {
+        // Parent may have completed cleanup already; never adopt a replacement.
+        match fs::symlink_metadata(ROOT) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.armed = false;
+                Ok(())
+            }
+            _ => self.cleanup(),
+        }
     }
     pub(super) fn create() -> Result<Self, Fault> {
         let path = Path::new(ROOT);
         // A leftover group is never adopted or overwritten by a new probe.
         fs::create_dir(path)?;
-        let mut group = Self { armed: true };
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::symlink_metadata(path)?;
+        let mut group = Self {
+            armed: true,
+            identity: (metadata.dev(), metadata.ino()),
+            directory: open_directory()?,
+        };
         let setup = (|| {
             for (name, value) in [
                 ("memory.max", "536870912"),
@@ -75,6 +121,7 @@ impl Group {
     }
 
     pub(super) fn attach(&self, role: Role, pid: u32) -> Result<(), Fault> {
+        self.verify()?;
         write(
             &Path::new(ROOT).join(role.name()),
             "cgroup.procs",
@@ -90,6 +137,7 @@ impl Group {
     }
 
     pub(super) fn kill(&self) -> Result<(), Fault> {
+        self.verify()?;
         write(Path::new(ROOT), "cgroup.kill", "1")
     }
 

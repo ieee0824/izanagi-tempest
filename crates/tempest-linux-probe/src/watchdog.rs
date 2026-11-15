@@ -24,11 +24,12 @@ pub(super) struct Watchdog {
 }
 
 impl Watchdog {
-    pub(super) fn start() -> Result<Self, Fault> {
+    pub(super) fn start() -> Result<(Self, Group), Fault> {
         let owner = Process::bind(std::process::id())?;
         let root = fs::metadata(RUN)?;
         let identity = (root.dev(), root.ino());
         let (read, write) = os::pipe()?;
+        let (ack_read, ack_write) = os::pipe()?;
         let pid = unsafe { libc::fork() };
         if pid < 0 {
             return Err(io::Error::last_os_error().into());
@@ -36,7 +37,22 @@ impl Watchdog {
         if pid == 0 {
             let result = (|| {
                 os::syscall(unsafe { libc::setsid() })?;
-                os::close_except(&[read.as_raw_fd(), owner.fd()])?;
+                os::close_except(&[read.as_raw_fd(), owner.fd(), ack_write.as_raw_fd()])?;
+                // Only this process creates the group. A preexisting ROOT fails
+                // before ownership is acquired and is never recovered.
+                let mut group = Group::create()?;
+                let (dev, ino) = group.identity();
+                let mut ack = [0_u8; 16];
+                ack[..8].copy_from_slice(&dev.to_ne_bytes());
+                ack[8..].copy_from_slice(&ino.to_ne_bytes());
+                if unsafe { libc::write(ack_write.as_raw_fd(), ack.as_ptr().cast(), ack.len()) }
+                    != 16
+                {
+                    return Err(Fault::Identity);
+                }
+                // Keep ack_write's OwnedFd alive: close_except already closed
+                // ack_read/write copies, which must never be reused here.
+
                 let until = Instant::now() + Duration::from_secs(90);
                 loop {
                     let mut poll = libc::pollfd {
@@ -74,7 +90,7 @@ impl Watchdog {
                 if (current.dev(), current.ino()) != identity {
                     return Err(Fault::Identity);
                 }
-                Group::recover_owned()?;
+                group.recover()?;
                 fs::remove_dir_all(RUN)?;
                 Ok(())
             })();
@@ -83,11 +99,31 @@ impl Watchdog {
             }
         }
         drop(read);
-        Ok(Self {
+        drop(ack_write);
+        let mut watchdog = Self {
             pid,
             control: write,
             active: true,
-        })
+        };
+        let mut poll = libc::pollfd {
+            fd: ack_read.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut poll, 1, 5000) } <= 0 {
+            return Err(Fault::Identity);
+        }
+        let mut ack = [0_u8; 16];
+        if unsafe { libc::read(ack_read.as_raw_fd(), ack.as_mut_ptr().cast(), ack.len()) } != 16 {
+            let _ = watchdog.wait();
+            return Err(Fault::Identity);
+        }
+        let identity = (
+            u64::from_ne_bytes(ack[..8].try_into().map_err(|_| Fault::Identity)?),
+            u64::from_ne_bytes(ack[8..].try_into().map_err(|_| Fault::Identity)?),
+        );
+        let group = Group::adopt(identity)?;
+        Ok((watchdog, group))
     }
 
     fn wait(&mut self) -> Result<(), Fault> {

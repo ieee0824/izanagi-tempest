@@ -2,17 +2,17 @@
 use super::{
     ancillary, capsule,
     cgroup::Group,
-    contract::{self, Identity, Observation, Role},
-    identity::{self, Process},
+    contract::{self, Identity, Observation, Role, Scenario},
+    identity::{self, Descriptor, Process},
     os::{self, Fault, Snapshot},
     worker::{Event, Manifest, Phase},
 };
 use std::{
     fs::{self, File},
-    io,
+    io::{self, Write},
     os::{
         fd::{AsRawFd, OwnedFd, RawFd},
-        unix::fs::MetadataExt,
+        unix::fs::{MetadataExt, OpenOptionsExt},
     },
     path::Path,
     time::{Duration, Instant},
@@ -20,6 +20,16 @@ use std::{
 
 const RUN: &str = "/run/tempest-linux-isolation-probe";
 const OVERALL: Duration = Duration::from_secs(30);
+
+fn capability_contract(value: &str) -> Result<(), Fault> {
+    // The reviewed bootstrap drops exactly capabilities 0..=40. A kernel
+    // contract change must fail closed, not silently retain additional bits.
+    if value.trim().parse::<u32>() == Ok(40) {
+        Ok(())
+    } else {
+        Err(Fault::Identity)
+    }
+}
 
 struct Channel {
     read: OwnedFd,
@@ -42,6 +52,7 @@ impl Channel {
 }
 
 struct Worker {
+    descriptors: std::collections::BTreeMap<i32, Descriptor>,
     role: Role,
     process: Process,
     expected: Identity,
@@ -121,6 +132,11 @@ fn spawn(
         (boot.read.as_raw_fd(), 7),
     ];
     mappings.extend_from_slice(ipc);
+    let descriptors = mappings
+        .iter()
+        .filter(|(_, target)| !matches!(target, 6 | 7))
+        .map(|(source, target)| Ok((*target, Descriptor::bind(*source)?)))
+        .collect::<Result<_, Fault>>()?;
     let parent = Process::bind(std::process::id())?;
     // Linux fork-style clone: no shared VM, fd table or filesystem state.
     // This entry point rejects multithreaded supervisors before any clone.
@@ -164,6 +180,7 @@ fn spawn(
             };
             let value = Event {
                 bootstrap: Some((step, errno)),
+                rejection: None,
                 role,
                 nonce: [0; 16],
                 phase: Phase::BootstrapFault,
@@ -212,6 +229,7 @@ fn spawn(
         }
     };
     Ok(Worker {
+        descriptors,
         role,
         process,
         expected,
@@ -267,11 +285,125 @@ fn initial_uid_available(role: Role) -> Result<bool, Fault> {
     Ok(true)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn injection(
+    workers: &[Worker],
+    group: &Group,
+    scenario: Scenario,
+    nonce: &[u8; 16],
+    until: Instant,
+    sender: RawFd,
+    guard_socket: RawFd,
+    to_a: &Channel,
+    to_b: &Channel,
+) -> Result<Vec<Observation>, Fault> {
+    let file = File::open(Path::new(RUN).join("fd.canary"))?;
+    let directory = File::open(RUN)?;
+    let (socket, _peer) = ancillary::pair()?;
+    if scenario == Scenario::UnexpectedControl {
+        let on = 1_i32;
+        os::syscall(unsafe {
+            libc::setsockopt(
+                guard_socket,
+                libc::SOL_SOCKET,
+                libc::SO_PASSCRED,
+                (&on as *const i32).cast(),
+                std::mem::size_of_val(&on) as libc::socklen_t,
+            )
+        })?;
+    }
+    let (packet, rights) = match scenario {
+        Scenario::FdFileA | Scenario::FdFileB => {
+            (ancillary::frame(b"rejected"), vec![file.as_raw_fd(); 2])
+        }
+        Scenario::FdDirectoryA | Scenario::FdDirectoryB => (
+            ancillary::frame(b"rejected"),
+            vec![directory.as_raw_fd(); 2],
+        ),
+        Scenario::FdSocketA | Scenario::FdSocketB => {
+            (ancillary::frame(b"rejected"), vec![socket.as_raw_fd(); 2])
+        }
+        Scenario::ControlTruncation => (ancillary::frame(b"rejected"), vec![file.as_raw_fd(); 32]),
+        Scenario::UnexpectedControl => (ancillary::frame(b"rejected"), Vec::new()),
+        Scenario::FrameOversize => (ancillary::frame(&[0; 4097]), Vec::new()),
+        Scenario::FrameMalformed => (vec![0, 0, 0, 2, 42], Vec::new()),
+        _ => return Err(Fault::Identity),
+    };
+    ancillary::send_packet(sender, &packet, &rights)?;
+    let guard = workers
+        .iter()
+        .find(|w| w.role == Role::Guard)
+        .ok_or(Fault::Identity)?;
+    let rejected = event(guard, until)?;
+    let expected = match scenario {
+        Scenario::ControlTruncation | Scenario::FrameOversize => ancillary::Rejection::Truncated,
+        Scenario::FrameMalformed => ancillary::Rejection::Framing,
+        _ => ancillary::Rejection::Ancillary,
+    };
+    if rejected.phase != Phase::GuardRejected
+        || rejected.role != Role::Guard
+        || rejected.nonce != *nonce
+        || rejected.bootstrap.is_some()
+        || rejected.rejection != Some(expected)
+    {
+        return Err(Fault::Identity);
+    }
+    let state = guard
+        .process
+        .observe(group, guard.role, &guard.descriptors)?;
+    if !contract::ready(guard.role, &guard.expected, &state, nonce, nonce) {
+        return Err(Fault::Identity);
+    }
+    for pipe in [to_a, to_b] {
+        let mut count = 0_i32;
+        if unsafe { libc::ioctl(pipe.read.as_raw_fd(), libc::FIONREAD, &mut count) } != 0
+            || count != 0
+        {
+            return Err(Fault::Identity);
+        }
+    }
+    let mut observed = vec![Observation {
+        scenario: Some(scenario),
+        check: contract::Check::AncillaryClosed,
+        role: Some(Role::Guard),
+        passed: true,
+        attempts: 1,
+        denials: 1,
+    }];
+    for recipient in workers.iter().filter(|w| w.role != Role::Guard) {
+        recipient.start.send(b"G")?;
+        let mut done = event(recipient, until)?;
+        if done.phase != Phase::Done
+            || done.role != recipient.role
+            || done.nonce != *nonce
+            || done.bootstrap.is_some()
+            || done.rejection.is_some()
+            || done.checks.len() != 1
+            || done.checks[0].check != contract::Check::NoForwardedPayload
+            || !done.checks[0].passed
+            || done.checks[0].role != Some(recipient.role)
+            || done.checks[0].scenario.is_some()
+        {
+            return Err(Fault::Identity);
+        }
+        let state = recipient
+            .process
+            .observe(group, recipient.role, &recipient.descriptors)?;
+        if !contract::ready(recipient.role, &recipient.expected, &state, nonce, nonce) {
+            return Err(Fault::Identity);
+        }
+        done.checks[0].scenario = Some(scenario);
+        observed.extend(done.checks);
+    }
+    Ok(observed)
+}
+
 fn baseline(
     code: &Snapshot,
     libraries: &[Snapshot],
     group: &Group,
     phase: &mut &'static str,
+    scenario: Scenario,
 ) -> Result<Vec<Observation>, Fault> {
     let host = identity::namespace_ids(std::process::id())?;
     let nonce: [u8; 16] = crate::private_io::random_hex()?.as_bytes()[..16]
@@ -309,6 +441,7 @@ fn baseline(
             write_event(
                 &worker.boot,
                 &Manifest {
+                    scenario,
                     role: worker.role,
                     nonce,
                     supervisor: std::process::id(),
@@ -333,13 +466,20 @@ fn baseline(
                 return Err(Fault::Bootstrap(step, errno));
             }
             *phase = "kernel_state";
-            let state = worker.process.observe(group, worker.role)?;
+            let state = worker
+                .process
+                .observe(group, worker.role, &worker.descriptors)?;
             if ready.role != worker.role
                 || ready.phase != Phase::Ready
+                || ready.bootstrap.is_some()
+                || ready.rejection.is_some()
                 || !ready.checks.is_empty()
-                || !contract::ready(worker.role, &worker.expected, &state, &nonce, &ready.nonce)
+                || !contract::ready(worker.role, &worker.expected, &state, &nonce, &nonce)
             {
                 return Err(Fault::Identity);
+            }
+            if ready.nonce != nonce {
+                return Err(Fault::ForeignReady);
             }
             states.push(state);
         }
@@ -350,7 +490,9 @@ fn baseline(
         // Recheck kernel state for every role immediately before releasing any
         // payload. A later peer death aborts the run, never a successful result.
         for worker in &workers {
-            let state = worker.process.observe(group, worker.role)?;
+            let state = worker
+                .process
+                .observe(group, worker.role, &worker.descriptors)?;
             if !contract::ready(worker.role, &worker.expected, &state, &nonce, &nonce) {
                 return Err(Fault::Identity);
             }
@@ -360,19 +502,60 @@ fn baseline(
             worker.start.send(b"G")?;
         }
         *phase = "payload";
+        for worker in &workers {
+            let entered = event(worker, until)?;
+            if entered.role != worker.role
+                || entered.nonce != nonce
+                || entered.phase != Phase::Entered
+                || !entered.checks.is_empty()
+                || entered.bootstrap.is_some()
+                || entered.rejection.is_some()
+            {
+                return Err(Fault::Identity);
+            }
+        }
+        if scenario.injection() {
+            return injection(
+                &workers,
+                group,
+                scenario,
+                &nonce,
+                until,
+                if scenario.reverse() {
+                    b.as_raw_fd()
+                } else {
+                    a.as_raw_fd()
+                },
+                if scenario.reverse() {
+                    gb.as_raw_fd()
+                } else {
+                    ga.as_raw_fd()
+                },
+                &to_a,
+                &to_b,
+            );
+        }
         let mut observations = Vec::new();
         for worker in &workers {
-            let done = event(worker, until)?;
+            let mut done = event(worker, until)?;
             if done.role != worker.role
                 || done.nonce != nonce
                 || done.phase != Phase::Done
                 || done.checks.is_empty()
+                || done.bootstrap.is_some()
+                || done.rejection.is_some()
                 || !done
                     .checks
                     .iter()
                     .all(|check| check.passed && check.role == Some(worker.role))
             {
                 return Err(Fault::Identity);
+            }
+            for check in &mut done.checks {
+                if check.scenario.is_some() {
+                    return Err(Fault::Identity);
+                }
+                check.scenario = Some(scenario);
             }
             observations.extend(done.checks);
         }
@@ -391,6 +574,20 @@ fn baseline(
     reaped?;
     if !group.empty()? {
         return Err(Fault::Kernel(libc::EBUSY));
+    }
+    if matches!(result, Err(Fault::ForeignReady)) {
+        // Payload entry writes a fixed stderr marker only AFTER Go. Do not
+        // consume or publish any bytes; inspect the pipe counters independently.
+        for worker in &workers {
+            for channel in [&worker.output, &worker.error] {
+                let mut count = 0_i32;
+                if unsafe { libc::ioctl(channel.read.as_raw_fd(), libc::FIONREAD, &mut count) } != 0
+                    || count != 0
+                {
+                    return Err(Fault::Identity);
+                }
+            }
+        }
     }
     result
 }
@@ -411,6 +608,8 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         if !cfg!(target_arch = "x86_64") || fs::read_dir("/proc/self/task")?.count() != 1 {
             return Err(Fault::Identity);
         }
+        phase = "kernel_contract";
+        capability_contract(&fs::read_to_string("/proc/sys/kernel/cap_last_cap")?)?;
         phase = "uid_reservation";
         for role in Role::ALL {
             if !initial_uid_available(role)? {
@@ -429,10 +628,47 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         os::private_directory(Path::new(RUN))?;
         locked = true;
         phase = "watchdog";
-        watchdog = Some(super::watchdog::Watchdog::start()?);
+        let (watch, mut group) = super::watchdog::Watchdog::start()?;
+        watchdog = Some(watch);
         phase = "cgroup";
-        let mut group = Group::create()?;
-        let observed = baseline(&code, &libraries, &group, &mut phase);
+        let mut canary = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(Path::new(RUN).join("fd.canary"))?;
+        canary.write_all(b"dummy-fd-canary")?;
+        drop(canary);
+        let observed = (|| {
+            let mut observed = baseline(&code, &libraries, &group, &mut phase, Scenario::Baseline)?;
+            for role in Role::ALL {
+                fs::remove_dir(Path::new(RUN).join(role.name()))?;
+            }
+            match baseline(
+                &code,
+                &libraries,
+                &group,
+                &mut phase,
+                Scenario::ForeignReady,
+            ) {
+                Err(Fault::ForeignReady) => observed.push(Observation {
+                    scenario: Some(Scenario::ForeignReady),
+                    check: contract::Check::ForeignReadyRejected,
+                    role: Some(Role::A),
+                    passed: true,
+                    attempts: 1,
+                    denials: 1,
+                }),
+                Err(error) => return Err(error),
+                Ok(_) => return Err(Fault::Identity),
+            }
+            for scenario in Scenario::INJECTIONS {
+                for role in Role::ALL {
+                    fs::remove_dir(Path::new(RUN).join(role.name()))?;
+                }
+                observed.extend(baseline(&code, &libraries, &group, &mut phase, scenario)?);
+            }
+            Ok(observed)
+        })();
         group.cleanup()?;
         let observed = observed?;
         Ok((code.sha256, observed))
@@ -474,6 +710,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 Fault::Kernel(_) => "kernel",
                 Fault::Child(_) => "child_exit",
                 Fault::Bootstrap(_, _) => "bootstrap",
+                Fault::ForeignReady => "foreign_ready",
             };
             let errno = match fault {
                 Fault::Kernel(value) => value,
@@ -493,6 +730,19 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 "{{\"status\":\"failed\",\"reason\":\"cleanup_unproven\",\"resources_removed\":false}}"
             );
             std::process::ExitCode::from(1)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changed_or_unreadable_capability_ceiling_cannot_start_the_probe() {
+        assert!(capability_contract("40\n").is_ok());
+        for value in ["41", "39", "", "not-a-kernel-value", "40 41"] {
+            assert!(capability_contract(value).is_err());
         }
     }
 }

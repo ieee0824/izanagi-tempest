@@ -9,6 +9,44 @@ pub(super) enum Role {
     Guard,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Scenario {
+    Baseline,
+    ForeignReady,
+    FdFileA,
+    FdFileB,
+    FdDirectoryA,
+    FdDirectoryB,
+    FdSocketA,
+    FdSocketB,
+    ControlTruncation,
+    UnexpectedControl,
+    FrameOversize,
+    FrameMalformed,
+}
+
+impl Scenario {
+    pub(super) const INJECTIONS: [Self; 10] = [
+        Self::FdFileA,
+        Self::FdFileB,
+        Self::FdDirectoryA,
+        Self::FdDirectoryB,
+        Self::FdSocketA,
+        Self::FdSocketB,
+        Self::ControlTruncation,
+        Self::UnexpectedControl,
+        Self::FrameOversize,
+        Self::FrameMalformed,
+    ];
+    pub(super) fn injection(self) -> bool {
+        !matches!(self, Self::Baseline | Self::ForeignReady)
+    }
+    pub(super) fn reverse(self) -> bool {
+        matches!(self, Self::FdFileB | Self::FdDirectoryB | Self::FdSocketB)
+    }
+}
+
 impl Role {
     pub(super) const ALL: [Self; 3] = [Self::A, Self::B, Self::Guard];
 
@@ -102,6 +140,8 @@ pub(super) enum Check {
     AncillaryClosed,
     GuardFraming,
     KernelIdentity,
+    ForeignReadyRejected,
+    NoForwardedPayload,
     ResourceLimits,
     DescendantsKilled,
     CgroupEmpty,
@@ -112,6 +152,8 @@ pub(super) enum Check {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Observation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) scenario: Option<Scenario>,
     pub(super) check: Check,
     pub(super) role: Option<Role>,
     pub(super) passed: bool,
@@ -218,6 +260,7 @@ mod tests {
     #[test]
     fn audit_has_no_channel_for_payload_path_environment_or_stderr() {
         let value = Observation {
+            scenario: None,
             check: Check::InheritedFdClosed,
             role: Some(Role::B),
             passed: true,

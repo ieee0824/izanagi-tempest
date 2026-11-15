@@ -5,13 +5,51 @@ use super::{
     os::Fault,
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::fs::MetadataExt,
     },
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Descriptor {
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    access: i32,
+}
+
+impl Descriptor {
+    pub(super) fn bind(fd: i32) -> Result<Self, Fault> {
+        let metadata = fs::metadata(format!("/proc/self/fd/{fd}"))?;
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        Ok(Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            mode: metadata.mode(),
+            access: flags & libc::O_ACCMODE,
+        })
+    }
+
+    fn matches(&self, pid: u32, fd: i32) -> Result<bool, Fault> {
+        let metadata = fs::metadata(format!("/proc/{pid}/fd/{fd}"))?;
+        let info = fs::read_to_string(format!("/proc/{pid}/fdinfo/{fd}"))?;
+        let flags = info
+            .lines()
+            .find_map(|line| line.strip_prefix("flags:"))
+            .ok_or(Fault::Identity)?;
+        let flags = i32::from_str_radix(flags.trim(), 8).map_err(|_| Fault::Identity)?;
+        Ok(self.dev == metadata.dev()
+            && self.ino == metadata.ino()
+            && self.mode == metadata.mode()
+            && self.access == flags & libc::O_ACCMODE)
+    }
+}
 
 pub(super) struct Process {
     pub(super) pid: u32,
@@ -115,15 +153,16 @@ impl Process {
         })
     }
 
-    pub(super) fn observe(&self, group: &Group, role: Role) -> Result<State, Fault> {
+    pub(super) fn observe(
+        &self,
+        group: &Group,
+        role: Role,
+        descriptors: &BTreeMap<i32, Descriptor>,
+    ) -> Result<State, Fault> {
         let identity = self.identity()?;
         let value = fs::read_to_string(format!("/proc/{}/status", self.pid))?;
         let mut state = status(&value, identity)?;
-        let expected: BTreeSet<i32> = if role == Role::Guard {
-            [0, 1, 2, 3, 4, 5, 8, 9, 10].into_iter().collect()
-        } else {
-            [0, 1, 2, 3, 4, 5, 8].into_iter().collect()
-        };
+        let expected: BTreeSet<i32> = descriptors.keys().copied().collect();
         let actual = fs::read_dir(format!("/proc/{}/fd", self.pid))?
             .map(|entry| {
                 entry?
@@ -135,6 +174,11 @@ impl Process {
             })
             .collect::<Result<BTreeSet<_>, _>>()?;
         state.descriptors_bound = actual == expected;
+        if state.descriptors_bound {
+            for (fd, descriptor) in descriptors {
+                state.descriptors_bound &= descriptor.matches(self.pid, *fd)?;
+            }
+        }
         state.cgroup_bound = group.bound(role, self.pid)?;
         state.alive = self.alive()?;
         if self.identity()? != state.identity {
@@ -203,6 +247,37 @@ fn status(value: &str, identity: Identity) -> Result<State, Fault> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn descriptor_binding_checks_object_and_access_not_only_fd_count() {
+        let root = std::env::temp_dir().join(format!(
+            "tempest-fd-binding-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        crate::private_io::directory(&root).unwrap();
+        for name in ["one", "two"] {
+            crate::private_io::write_new(&root.join(name), b"dummy").unwrap();
+        }
+        let read = fs::File::open(root.join("one")).unwrap();
+        let write = fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("one"))
+            .unwrap();
+        let other = fs::File::open(root.join("two")).unwrap();
+        let bound = Descriptor::bind(read.as_raw_fd()).unwrap();
+        assert!(bound.matches(std::process::id(), read.as_raw_fd()).unwrap());
+        assert!(
+            !bound
+                .matches(std::process::id(), write.as_raw_fd())
+                .unwrap()
+        );
+        assert!(
+            !bound
+                .matches(std::process::id(), other.as_raw_fd())
+                .unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn process_birth_binding_does_not_depend_on_comm_contents() {

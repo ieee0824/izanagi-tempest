@@ -1,7 +1,7 @@
 //! Fixed non-root dummy roles. No model, guest, config or external destination.
 use super::{
     ancillary,
-    contract::{Check, Observation, Role},
+    contract::{Check, Observation, Role, Scenario},
     seccomp,
 };
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use std::{
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Manifest {
+    pub(super) scenario: Scenario,
     pub(super) role: Role,
     pub(super) nonce: [u8; 16],
     pub(super) supervisor: u32,
@@ -26,6 +27,7 @@ pub(super) struct Manifest {
 pub(super) enum Phase {
     BootstrapFault,
     Ready,
+    Entered,
     Done,
     GuardRejected,
 }
@@ -35,6 +37,8 @@ pub(super) enum Phase {
 pub(super) struct Event {
     #[serde(default)]
     pub(super) bootstrap: Option<(u8, i32)>,
+    #[serde(default)]
+    pub(super) rejection: Option<ancillary::Rejection>,
     pub(super) role: Role,
     pub(super) nonce: [u8; 16],
     pub(super) phase: Phase,
@@ -60,10 +64,18 @@ fn bytes(fd: RawFd, value: &[u8]) -> bool {
 }
 
 fn event(manifest: &Manifest, phase: Phase, checks: Vec<Observation>) -> bool {
+    let mut nonce = manifest.nonce;
+    if manifest.scenario == Scenario::ForeignReady
+        && manifest.role == Role::A
+        && phase == Phase::Ready
+    {
+        nonce[0] ^= 1;
+    }
     let value = Event {
         bootstrap: None,
+        rejection: None,
         role: manifest.role,
-        nonce: manifest.nonce,
+        nonce,
         phase,
         checks,
         canary_address: MEMORY.as_ptr() as u64,
@@ -82,6 +94,7 @@ fn wait() -> bool {
 
 fn observe(check: Check, role: Role, passed: bool, denials: u64) -> Observation {
     Observation {
+        scenario: None,
         check,
         role: Some(role),
         passed,
@@ -136,6 +149,7 @@ fn checks(manifest: &Manifest) -> Vec<Observation> {
     ] {
         let passed = paths.iter().all(|p| fs::symlink_metadata(p).is_err());
         values.push(Observation {
+            scenario: None,
             check,
             role: Some(role),
             passed,
@@ -218,6 +232,7 @@ fn checks(manifest: &Manifest) -> Vec<Observation> {
         network &= denied(unsafe { libc::syscall(libc::SYS_socket, domain, libc::SOCK_DGRAM, 0) });
     }
     values.push(Observation {
+        scenario: None,
         check: Check::NetworkDenied,
         role: Some(role),
         passed: network,
@@ -257,16 +272,66 @@ pub(super) fn run() -> i32 {
     if !event(&manifest, Phase::Ready, Vec::new()) || !wait() {
         return 3;
     }
+    if !event(&manifest, Phase::Entered, Vec::new()) {
+        return 3;
+    }
+    if manifest.scenario.injection() && manifest.role != Role::Guard {
+        // The root fixture injects at the raw socket. Recipients remain armed
+        // without consuming their output pipes until the guard has rejected it.
+        if !wait() {
+            return 3;
+        }
+        let mut poll = libc::pollfd {
+            fd: 8,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let clear = unsafe { libc::poll(&mut poll, 1, 0) } == 0;
+        if !event(
+            &manifest,
+            Phase::Done,
+            vec![observe(Check::NoForwardedPayload, manifest.role, clear, 0)],
+        ) {
+            return 4;
+        }
+        wait();
+        return if clear { 0 } else { 1 };
+    }
     // All raw argv/stderr bytes are deliberately untrusted and must be bounded
     // and discarded by the supervisor instead of copied into audit.
     bytes(2, b"dummy-stderr-marker\n");
     let mut values = checks(&manifest);
     if manifest.role == Role::Guard {
-        for (input, output) in [(3, 10), (8, 9)] {
-            let Ok(value) = ancillary::receive(input) else {
-                event(&manifest, Phase::GuardRejected, values);
-                wait();
-                return 4;
+        let directions = if manifest.scenario.reverse() {
+            [(8, 9), (3, 10)]
+        } else {
+            [(3, 10), (8, 9)]
+        };
+        for (input, output) in directions {
+            let received = if manifest.scenario == Scenario::ControlTruncation {
+                ancillary::receive_truncated_control(input)
+            } else {
+                ancillary::receive(input)
+            };
+            let value = match received {
+                Ok(value) => value,
+                Err(rejection) => {
+                    let rejected = Event {
+                        bootstrap: None,
+                        rejection: Some(rejection),
+                        role: manifest.role,
+                        nonce: manifest.nonce,
+                        phase: Phase::GuardRejected,
+                        checks: values,
+                        canary_address: MEMORY.as_ptr() as u64,
+                    };
+                    if let Ok(mut raw) = serde_json::to_vec(&rejected) {
+                        raw.push(b'\n');
+                        bytes(5, &raw);
+                    }
+                    wait();
+                    return 4;
+                }
             };
             let framed = ancillary::frame(&value);
             if !bytes(output, &framed) {
