@@ -135,6 +135,16 @@ EIOケースもfirst_fault・最終reason・Verified・PIDFD死亡・資源不�
 追加診断では次世代の段階・終了コード・固定progress・path存在を元probeと分け、
 許可した例外型とfixture内行番号だけを保存します。例外本文やtraceback本文は公開しません。
 
+診断追加版`a51ed85`の再実行は、EOFケースのfixture内262行で
+`resources_removed=true`の確認に失敗しました（exit=1、58.766秒、completed_cases=0）。
+`first_fault=report_eof`のassertは通過していますが、ROOT/RUNが残留し、回収完了を主張できません。
+終了後の読み取りでROOTと3 roleのcgroup.procsは空、すべてpopulated=0と確認しました。
+残留ROOTはdev=28/inode=50290、RUNはdev=25/inode=6044で、削除・再採用せず証拠として保持しています。
+詳細は実行環境の`/tmp/tempest-primary-fault-a51ed85{,-meta}.json`と
+`/tmp/tempest-a51ed85-residual.json`に保存しました。元probeの詳細なparent statusは
+失敗diagnosticに保存していないため、この記録だけで回収失敗の理由を断定できません。
+2026-11-15のルーム投稿#16068で管理者から休止指示があり、この未解決状態で作業を区切ります。
+
 親による回収中に親も死亡する二重故障では、新たな guardian を自動生成しません。
 結果が記録されず、payload/cgroup/RUN が残る可能性があります。
 次の probe は既存 ROOT/RUN を採用せず拒否し、専用 VM 管理者が所有 identity と証拠を確認して回収します。
