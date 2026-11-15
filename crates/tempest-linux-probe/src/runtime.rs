@@ -413,6 +413,22 @@ fn injection(
     Ok(observed)
 }
 
+fn wait_dead(processes: &[&Process]) -> Result<(), Fault> {
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        let alive = processes.iter().try_fold(false, |alive, process| {
+            Ok::<_, Fault>(alive | process.alive()?)
+        })?;
+        if !alive {
+            return Ok(());
+        }
+        if Instant::now() >= until {
+            return Err(Fault::Kernel(libc::EBUSY));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn baseline(
     code: &Snapshot,
     libraries: &[Snapshot],
@@ -674,7 +690,10 @@ fn baseline(
                 attempts: 1,
                 denials: 1,
             });
-        } else if scenario == Scenario::DetachedGrandchild {
+        } else if matches!(
+            scenario,
+            Scenario::DetachedGrandchild | Scenario::CgroupKillNoop
+        ) {
             let worker = workers
                 .iter()
                 .find(|worker| worker.role == Role::A)
@@ -738,8 +757,41 @@ fn baseline(
         }
         Ok(observations)
     })();
-    let killed = group.kill();
-    let leaders = workers.iter().try_for_each(|w| w.process.kill());
+    let targets = workers
+        .iter()
+        .map(|worker| &worker.process)
+        .chain(descendants.iter())
+        .collect::<Vec<_>>();
+    let attest_kill = matches!(
+        scenario,
+        Scenario::PidsLimit | Scenario::DetachedGrandchild | Scenario::CgroupKillNoop
+    );
+    let live_before = if attest_kill {
+        targets.iter().try_fold(true, |alive, process| {
+            Ok::<_, Fault>(alive & process.alive()?)
+        })
+    } else {
+        Ok(true)
+    };
+    // Fixed negative fixture: omit the kernel operation entirely. Success of
+    // the later fallback must never masquerade as cgroup.kill effectiveness.
+    let killed = if scenario == Scenario::CgroupKillNoop {
+        Ok(())
+    } else {
+        group.kill()
+    };
+    // Observe pidfd death BEFORE sending any leader signal or reaping. If the
+    // cgroup operation fails, fallback shutdown still runs but cannot pass.
+    let group_stopped = if killed.is_ok() {
+        wait_dead(&targets)
+    } else {
+        Err(Fault::Identity)
+    };
+    let leaders = if group_stopped.is_ok() {
+        Ok(())
+    } else {
+        workers.iter().try_for_each(|worker| worker.process.kill())
+    };
     let reaped = workers.iter().try_for_each(|w| reap(&w.process));
     // Raw stdout/stderr is never public audit. These fields keep capture pipes
     // private and live until termination, including an error path.
@@ -751,6 +803,47 @@ fn baseline(
     reaped?;
     if !group.empty()? {
         return Err(Fault::Kernel(libc::EBUSY));
+    }
+    if scenario == Scenario::CgroupKillNoop {
+        // Do not let successful fallback mask an earlier payload/identity error.
+        result.as_ref().map_err(|fault| *fault)?;
+        if descendants.len() != 1 || targets.len() != 4 {
+            return Err(Fault::Identity);
+        }
+        if group_stopped != Err(Fault::Kernel(libc::EBUSY)) || !live_before? {
+            return Err(Fault::Identity);
+        }
+        for target in &targets {
+            if target.alive()? {
+                return Err(Fault::Identity);
+            }
+        }
+        result = Err(Fault::CgroupKillFailureRecovered);
+    } else {
+        group_stopped?;
+    }
+    if attest_kill {
+        if !live_before? {
+            return Err(Fault::Identity);
+        }
+        if let Ok(observations) = &mut result {
+            observations.push(Observation {
+                scenario: Some(scenario),
+                check: contract::Check::CgroupKillStopped,
+                role: None,
+                passed: true,
+                attempts: targets.len() as u64,
+                denials: 0,
+            });
+            observations.push(Observation {
+                scenario: Some(scenario),
+                check: contract::Check::CgroupEmpty,
+                role: None,
+                passed: true,
+                attempts: 1,
+                denials: 0,
+            });
+        }
     }
     if !descendants.is_empty() {
         for descendant in &descendants {
@@ -769,8 +862,10 @@ fn baseline(
             });
         }
     }
-    if matches!(result, Err(Fault::ForeignReady | Fault::LibraryRejected(_)))
-        || (scenario.lifecycle() && matches!(result, Err(Fault::ReportEof | Fault::ReportTimeout)))
+    if matches!(
+        result,
+        Err(Fault::ForeignReady | Fault::LibraryRejected(_) | Fault::CgroupKillFailureRecovered)
+    ) || (scenario.lifecycle() && matches!(result, Err(Fault::ReportEof | Fault::ReportTimeout)))
     {
         // Payload entry writes a fixed stderr marker only AFTER Go. Do not
         // consume or publish any bytes; inspect the pipe counters independently.
@@ -889,6 +984,35 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 }
                 observed.extend(baseline(&code, &libraries, &group, &mut phase, scenario)?);
             }
+            for role in Role::ALL {
+                fs::remove_dir(Path::new(RUN).join(role.name()))?;
+            }
+            match baseline(
+                &code,
+                &libraries,
+                &group,
+                &mut phase,
+                Scenario::CgroupKillNoop,
+            ) {
+                Err(Fault::CgroupKillFailureRecovered) => {
+                    for (check, attempts) in [
+                        (contract::Check::CgroupKillFailureDetected, 1),
+                        (contract::Check::RolesReaped, 3),
+                        (contract::Check::CgroupEmpty, 1),
+                    ] {
+                        observed.push(Observation {
+                            scenario: Some(Scenario::CgroupKillNoop),
+                            check,
+                            role: None,
+                            passed: true,
+                            attempts,
+                            denials: 0,
+                        });
+                    }
+                }
+                Err(error) => return Err(error),
+                Ok(_) => return Err(Fault::Identity),
+            }
             for scenario in Scenario::LIFECYCLE {
                 for role in Role::ALL {
                     fs::remove_dir(Path::new(RUN).join(role.name()))?;
@@ -1005,6 +1129,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 Fault::RunCleanup => "run_cleanup",
                 Fault::ReportTimeout => "report_timeout",
                 Fault::ReportEof => "report_eof",
+                Fault::CgroupKillFailureRecovered => "cgroup_kill_failure_recovered",
                 Fault::LibraryRejected(_) => "library_rejected",
             };
             let errno = match fault {

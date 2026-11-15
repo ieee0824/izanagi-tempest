@@ -24,6 +24,7 @@ pub(super) enum Fault {
     RunCleanup,
     ReportTimeout,
     ReportEof,
+    CgroupKillFailureRecovered,
     LibraryRejected(super::contract::Scenario),
 }
 

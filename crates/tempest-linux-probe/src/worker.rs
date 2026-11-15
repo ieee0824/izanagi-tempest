@@ -175,7 +175,7 @@ fn resource_checks(manifest: &Manifest) -> Vec<Observation> {
                 denials: u64::from(denied),
             }
         }
-        Scenario::DetachedGrandchild => {
+        Scenario::DetachedGrandchild | Scenario::CgroupKillNoop => {
             let child = unsafe { libc::fork() };
             if child == 0 {
                 if unsafe { libc::setsid() } < 0 {

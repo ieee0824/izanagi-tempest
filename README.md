@@ -138,6 +138,10 @@ B/G の正対照は A の上限到達後に実行し、終了後は子の pidfd 
 残った孫の親が A、group=session が A と異なり孫自身の PID とも異なることを照合し、
 uid/cap/NNP/seccomp/namespace/code/FD/cgroup が A の隔離状態を継承することを実測します。
 通常 cleanup 後も孫の pidfd 死亡を確認します。
+pids/孫ケースでは全対象の生存確認→cgroup.kill→pidfd 死亡観測を行い、
+個別 leader kill や reap より前に停止を確認します。その後に reap/cgroup 空/全体回収を別に確認します。
+固定負例では cgroup.kill の write を省き、3秒以内に停止しないことを検出してから
+個別 kill で回収します。fallback が成功しても cgroup.kill 成功には読み替えません。
 report EOF の固定ケースでは、生存中の A が FD5 だけを閉じ、監督が実際の pipe EOF を検出します。
 report timeout の固定ケースでは、全 role が生存・隔離されたまま、通常の30秒 overall deadline まで応答を止めます。
 両ケースで故障時の kernel identity（EOF は FD5 のみ除外）、出力0、全3 role の reap と cgroup 空を照合します。

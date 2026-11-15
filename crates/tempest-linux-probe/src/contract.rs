@@ -33,6 +33,7 @@ pub(super) enum Scenario {
     DetachedGrandchild,
     ReportTimeout,
     ReportEof,
+    CgroupKillNoop,
 }
 
 impl Scenario {
@@ -61,7 +62,7 @@ impl Scenario {
         Self::LIFECYCLE.contains(&self)
     }
     pub(super) fn resource(self) -> bool {
-        Self::RESOURCES.contains(&self)
+        Self::RESOURCES.contains(&self) || self == Self::CgroupKillNoop
     }
     pub(super) fn library_fault(self) -> bool {
         Self::LIBRARY_FAULTS.contains(&self)
@@ -177,6 +178,8 @@ pub(super) enum Check {
     TmpfsBounded,
     DescendantsKilled,
     CgroupEmpty,
+    CgroupKillStopped,
+    CgroupKillFailureDetected,
     ResourcesRemoved,
     AuditBounded,
     ReportTimeoutDetected,
