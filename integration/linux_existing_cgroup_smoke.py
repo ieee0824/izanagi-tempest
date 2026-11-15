@@ -135,6 +135,18 @@ def valid_follow_details(diagnostic):
                  and progress['scenario'] in scenarios and progress['phase'] in {'barrier', 'payload', 'collector', 'other'}))
 
 
+def valid_audit_basename(diagnostic):
+    basename = diagnostic.get('audit_basename')
+    scenario = diagnostic.get('scenario')
+    if scenario == 'snapshot_exit_race':
+        pattern = r'tempest-snapshot-race-audit-[a-z0-9_]{8}\.json'
+    elif scenario in {'primary_eof_guardian_death', 'primary_output_cleanup_eio'}:
+        pattern = r'tempest-primary-fault-audit-[a-z0-9_]{8}\.json'
+    else:
+        return basename is None
+    return basename is None or isinstance(basename, str) and re.fullmatch(pattern, basename) is not None
+
+
 def run_fixture(fixture, failure_reason, timeout=25):
     if len(sys.argv) != 1 or sys.platform != 'linux' or os.geteuid() == 0:
         print(json.dumps({'status': 'rejected', 'reason': 'nonroot_dedicated_vm_entry_required'}))
@@ -184,7 +196,7 @@ def run_fixture(fixture, failure_reason, timeout=25):
                             and type(diagnostic.get('probe_removed', False)) is bool
                             and diagnostic.get('failure_kind', 'assertion') in {'timeout', 'parse', 'assertion'}
                             and type(diagnostic.get('completed_cases',0)) is int and 0 <= diagnostic.get('completed_cases',0) <= 4
-                            and (diagnostic.get('audit_basename') is None or isinstance(diagnostic['audit_basename'], str) and re.fullmatch(r'tempest-(?:primary-fault|snapshot-race)-audit-[a-z0-9_]{8}\.json', diagnostic['audit_basename']) is not None)
+                            and valid_audit_basename(diagnostic)
                             and valid_follow_details(diagnostic)
                             and valid_snapshot_details
                             and (diagnostic.get('exit_code') is None or type(diagnostic['exit_code']) is int and -128 <= diagnostic['exit_code'] <= 255)
