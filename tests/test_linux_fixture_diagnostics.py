@@ -134,6 +134,7 @@ class RunnerOversizeDiagnosticTests(unittest.TestCase):
         output = StringIO()
         with mock.patch.object(MODULE, 'privileged', side_effect=privileged), \
              mock.patch.object(MODULE.os, 'geteuid', return_value=1000), \
+             mock.patch.object(MODULE.sys, 'platform', 'linux'), \
              mock.patch.object(MODULE.sys, 'argv', ['fixture']), \
              redirect_stdout(output):
             result = MODULE.run_fixture('fixture', 'generic_failure')
