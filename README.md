@@ -137,6 +137,7 @@ ACKのwrite直後に親のtimeoutが先行する場合も、親がidentityを受
 通常suiteは旧90秒超のlease更新を固定回帰試験にするため、機能case終了後も主watchdog開始から95秒まで
 空cgroupのままheartbeatを継続します。payloadの30秒期限や外側driverの120秒timeoutは延長しません。
 lease境界・guardian自身の異常終了/fork前異常などの全故障時点は、別の未完gateです。
+通常実行中のguardian異常終了後の親単独回収は[専用設計](docs/LINUX_GUARDIAN_RECOVERY.md)に条件を固定しています（実装前）。
 
 現 WIP は baseline が成功しても `status: "incomplete"`・終了コード 1 を返します。
 rootless unit・API compile-fail 試験と baseline の観測は、M1 全体の合格や本番隔離の証明には使いません。
