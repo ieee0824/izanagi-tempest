@@ -115,7 +115,13 @@ impl Process {
             )
         };
         if result == 0 && unsafe { info.si_pid() } != 0 {
-            Fault::Child(unsafe { info.si_status() })
+            let status = unsafe { info.si_status() };
+            match info.si_code {
+                libc::CLD_EXITED => Fault::Child(status),
+                libc::CLD_KILLED => Fault::ChildSignal(status, false),
+                libc::CLD_DUMPED => Fault::ChildSignal(status, true),
+                _ => Fault::Identity,
+            }
         } else {
             Fault::Identity
         }
@@ -263,6 +269,57 @@ fn status(value: &str, identity: Identity) -> Result<State, Fault> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn normal_exit_nine_is_distinct_from_sigkill_without_reaping() {
+        struct Child(i32);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                // This is our own unreaped child, so its PID cannot be reused.
+                unsafe {
+                    libc::kill(self.0, libc::SIGKILL);
+                    libc::waitpid(self.0, std::ptr::null_mut(), 0);
+                }
+            }
+        }
+        for killed in [false, true] {
+            let (read, write) = super::super::os::pipe().unwrap();
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0);
+            if pid == 0 {
+                use std::os::fd::AsRawFd;
+                let mut byte = 0_u8;
+                unsafe {
+                    libc::read(read.as_raw_fd(), (&mut byte as *mut u8).cast(), 1);
+                    libc::_exit(9);
+                }
+            }
+            let _child = Child(pid);
+            let process = super::Process::bind(pid as u32).unwrap();
+            if killed {
+                process.kill().unwrap();
+            } else {
+                use std::os::fd::AsRawFd;
+                assert_eq!(
+                    unsafe { libc::write(write.as_raw_fd(), b"G".as_ptr().cast(), 1) },
+                    1
+                );
+            }
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while process.alive().unwrap() {
+                assert!(std::time::Instant::now() < until);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert_eq!(
+                process.exited(),
+                if killed {
+                    super::Fault::ChildSignal(libc::SIGKILL, false)
+                } else {
+                    super::Fault::Child(9)
+                }
+            );
+        }
+    }
+
     #[test]
     fn process_lineage_matches_independent_kernel_calls() {
         let process = super::Process::bind(std::process::id()).unwrap();

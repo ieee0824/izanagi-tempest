@@ -614,6 +614,77 @@ fn baseline(
             if (scenario.resource() || scenario.lifecycle()) && worker.role != Role::A {
                 worker.start.send(b"G")?;
             }
+            if scenario == Scenario::MemoryOom && worker.role == Role::A {
+                let mut armed = event(worker, until)?;
+                if armed.role != Role::A
+                    || armed.nonce != nonce
+                    || armed.phase != Phase::MemoryArmed
+                    || armed.bootstrap.is_some()
+                    || armed.library_fault.is_some()
+                    || armed.rejection.is_some()
+                    || armed.checks.len() != 1
+                    || armed.checks[0].check != contract::Check::MemoryMapped
+                    || !armed.checks[0].passed
+                    || armed.checks[0].role != Some(Role::A)
+                    || armed.checks[0].scenario.is_some()
+                {
+                    return Err(Fault::Identity);
+                }
+                let state = worker
+                    .process
+                    .observe(group, Role::A, &worker.descriptors)?;
+                if !contract::ready(Role::A, &worker.expected, &state, &nonce, &nonce) {
+                    return Err(Fault::Identity);
+                }
+                let before = group.memory_events(Some(Role::A))?;
+                let parent_before = group.memory_events(None)?;
+                let b_before = group.memory_events(Some(Role::B))?;
+                let guard_before = group.memory_events(Some(Role::Guard))?;
+                worker.start.send(b"G")?;
+                while worker.process.alive()? {
+                    if Instant::now() >= until {
+                        return Err(Fault::ReportTimeout);
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let exit = worker.process.exited();
+                if exit != Fault::ChildSignal(libc::SIGKILL, false) {
+                    return Err(exit);
+                }
+                let after = group.memory_events(Some(Role::A))?;
+                if !after
+                    .iter()
+                    .zip(before)
+                    .all(|(after, before)| *after > before)
+                    || group.memory_events(None)? != parent_before
+                    || group.memory_events(Some(Role::B))? != b_before
+                    || group.memory_events(Some(Role::Guard))? != guard_before
+                {
+                    return Err(Fault::Identity);
+                }
+                for peer in workers.iter().filter(|peer| peer.role != Role::A) {
+                    let state = peer.process.observe(group, peer.role, &peer.descriptors)?;
+                    if !contract::ready(peer.role, &peer.expected, &state, &nonce, &nonce) {
+                        return Err(Fault::Identity);
+                    }
+                }
+                armed.checks[0].scenario = Some(scenario);
+                observations.extend(armed.checks);
+                for check in [
+                    contract::Check::MemoryBounded,
+                    contract::Check::ChildSignalObserved,
+                ] {
+                    observations.push(Observation {
+                        scenario: Some(scenario),
+                        check,
+                        role: Some(Role::A),
+                        passed: true,
+                        attempts: 1,
+                        denials: 0,
+                    });
+                }
+                continue;
+            }
             let received = event(worker, until);
             if worker.role == Role::A && scenario.lifecycle() {
                 let expected_fault = match scenario {
@@ -843,6 +914,23 @@ fn baseline(
                 attempts: 1,
                 denials: 0,
             });
+        }
+    }
+    if scenario == Scenario::MemoryOom {
+        if let Ok(observations) = &mut result {
+            for (check, attempts) in [
+                (contract::Check::RolesReaped, 3),
+                (contract::Check::CgroupEmpty, 1),
+            ] {
+                observations.push(Observation {
+                    scenario: Some(scenario),
+                    check,
+                    role: None,
+                    passed: true,
+                    attempts,
+                    denials: 0,
+                });
+            }
         }
     }
     if !descendants.is_empty() {
@@ -1117,6 +1205,12 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             } else {
                 None
             };
+            let (child_signal, child_core_dumped) = if let Fault::ChildSignal(signal, core) = fault
+            {
+                (Some(signal), Some(core))
+            } else {
+                (None, None)
+            };
             let reason = match fault {
                 Fault::Identity => "identity",
                 Fault::Ownership => "ownership",
@@ -1124,6 +1218,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 Fault::Seal => "seal",
                 Fault::Kernel(_) => "kernel",
                 Fault::Child(_) => "child_exit",
+                Fault::ChildSignal(_, _) => "child_signal",
                 Fault::Bootstrap(_, _) => "bootstrap",
                 Fault::ForeignReady => "foreign_ready",
                 Fault::RunCleanup => "run_cleanup",
@@ -1141,7 +1236,8 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 "{}",
                 serde_json::json!({"schema_version":1,"status":"failed",
                 "formal_eligible":false,"model_launched":false,"errno":errno,
-                "resources_removed":removed,"phase":phase,"reason":reason,"child_exit":child_exit})
+                "resources_removed":removed,"phase":phase,"reason":reason,"child_exit":child_exit,
+                "child_signal":child_signal,"child_core_dumped":child_core_dumped})
             );
             std::process::ExitCode::from(1)
         }

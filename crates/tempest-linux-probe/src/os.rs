@@ -19,6 +19,7 @@ pub(super) enum Fault {
     Seal,
     Kernel(i32),
     Child(i32),
+    ChildSignal(i32, bool),
     Bootstrap(u8, i32),
     ForeignReady,
     RunCleanup,

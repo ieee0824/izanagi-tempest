@@ -146,10 +146,15 @@ report EOF の固定ケースでは、生存中の A が FD5 だけを閉じ、�
 report timeout の固定ケースでは、全 role が生存・隔離されたまま、通常の30秒 overall deadline まで応答を止めます。
 両ケースで故障時の kernel identity（EOF は FD5 のみ除外）、出力0、全3 role の reap と cgroup 空を照合します。
 監督は report/stdout/stderr の read end だけを保持し、不要な write end で EOF を隠しません。
-これらは memory/CPU/output/audit の枯渇や、他の停止時点の回収を代替しません。
+memory ケースでは A の上限128 MiB・swap0を照合後、固定160 MiB mmap の各pageに触れます。
+A の SIGKILL 終了と local max/oom/oom_kill 増加を照合し、親・B/G の local counter 不変と
+A 終了後の B/G 正対照、全3 role の reap/cgroup空を確認します。
+local counter の意味は [kernel の cgroup v2 仕様](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files) を参照。
+通常 exit code と signal/core flag は区別し、exit9 と SIGKILL の取り違えを実 child で試験します。
+これらは CPU/output/audit の枯渇や、他の停止時点の回収を代替しません。
 library 配置と write fd の追加負例、PID/UID/run 混入、
 資源枯渇・監査容量不足・bootstrap/control の EOF・cancel・他の timeout/監督異常時点と孫 process の回収等が残っています。
-失敗の診断は固定 stage/reason と数値 errno に限り、raw argv/env/stderr/任意 path や credential を出しません。
+失敗の診断は固定 stage/reason・数値 errno・child exit/signal/core flag に限り、raw argv/env/stderr/任意 path や credential を出しません。
 `/run/tempest-linux-isolation-probe` または `/sys/fs/cgroup/tempest-linux-isolation-probe` が残った場合は、
 成功にせず新規 probe を拒否します。driver は未知の残留資源を削除しません。
 

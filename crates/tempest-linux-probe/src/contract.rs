@@ -34,6 +34,7 @@ pub(super) enum Scenario {
     ReportTimeout,
     ReportEof,
     CgroupKillNoop,
+    MemoryOom,
 }
 
 impl Scenario {
@@ -55,8 +56,12 @@ impl Scenario {
         Self::LibrarySymlink,
         Self::LibraryReplacement,
     ];
-    pub(super) const RESOURCES: [Self; 3] =
-        [Self::PidsLimit, Self::TmpfsFull, Self::DetachedGrandchild];
+    pub(super) const RESOURCES: [Self; 4] = [
+        Self::PidsLimit,
+        Self::TmpfsFull,
+        Self::DetachedGrandchild,
+        Self::MemoryOom,
+    ];
     pub(super) const LIFECYCLE: [Self; 2] = [Self::ReportTimeout, Self::ReportEof];
     pub(super) fn lifecycle(self) -> bool {
         Self::LIFECYCLE.contains(&self)
@@ -180,6 +185,9 @@ pub(super) enum Check {
     CgroupEmpty,
     CgroupKillStopped,
     CgroupKillFailureDetected,
+    MemoryMapped,
+    MemoryBounded,
+    ChildSignalObserved,
     ResourcesRemoved,
     AuditBounded,
     ReportTimeoutDetected,

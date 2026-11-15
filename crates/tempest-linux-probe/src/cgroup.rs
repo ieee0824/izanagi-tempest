@@ -223,6 +223,39 @@ impl Group {
             .collect()
     }
 
+    pub(super) fn memory_events(&self, role: Option<Role>) -> Result<[u64; 3], Fault> {
+        self.verify()?;
+        let directory = if let Some(role) = role {
+            open_at(
+                &self.directory,
+                role.name(),
+                libc::O_RDONLY | libc::O_DIRECTORY,
+            )?
+        } else {
+            self.directory.try_clone()?
+        };
+        let limit = if role.is_some() {
+            "134217728"
+        } else {
+            "536870912"
+        };
+        if read(&directory, "memory.max")?.trim() != limit
+            || read(&directory, "memory.swap.max")?.trim() != "0"
+        {
+            return Err(Fault::Identity);
+        }
+        let events = read(&directory, "memory.events.local")?;
+        let counter = |key: &str| -> Result<u64, Fault> {
+            events
+                .lines()
+                .find_map(|line| line.strip_prefix(key))
+                .ok_or(Fault::Identity)?
+                .parse()
+                .map_err(|_| Fault::Identity)
+        };
+        Ok([counter("max ")?, counter("oom ")?, counter("oom_kill ")?])
+    }
+
     pub(super) fn kill(&self) -> Result<(), Fault> {
         self.verify()?;
         write(&self.directory, "cgroup.kill", "1")

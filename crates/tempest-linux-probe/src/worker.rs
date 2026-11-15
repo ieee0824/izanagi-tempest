@@ -30,6 +30,7 @@ pub(super) enum Phase {
     Entered,
     Done,
     GuardRejected,
+    MemoryArmed,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -437,6 +438,41 @@ pub(super) fn run() -> i32 {
     }
     if !event(&manifest, Phase::Entered, Vec::new()) {
         return 3;
+    }
+    if manifest.scenario == Scenario::MemoryOom && manifest.role == Role::A {
+        const LENGTH: usize = 160 * 1024 * 1024;
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                LENGTH,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if mapping == libc::MAP_FAILED {
+            return 92;
+        }
+        if !event(
+            &manifest,
+            Phase::MemoryArmed,
+            vec![observe(Check::MemoryMapped, manifest.role, true, 0)],
+        ) || !wait()
+        {
+            return 3;
+        }
+        // Fixed upper bound; touch every base page only after the supervisor
+        // verifies limits/counter baselines. The memcg must kill this role.
+        for offset in (0..LENGTH).step_by(4096) {
+            unsafe {
+                std::ptr::write_volatile(mapping.cast::<u8>().add(offset), 1);
+            }
+        }
+        unsafe {
+            libc::munmap(mapping, LENGTH);
+        }
+        return 93; // Surviving the entire allocation is a failure, never OOM.
     }
     if manifest.scenario.lifecycle() && manifest.role == Role::A {
         if manifest.scenario == Scenario::ReportEof {
