@@ -1,4 +1,6 @@
 //! Fixed dummy KVM investigation. No image, command, path or launch permit API.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod abi;
 pub const GUEST: [u8; 5] = [0xb0, 0x2a, 0xe6, 0xe9, 0xf4];
 pub const RAM_BYTES: usize = 2 * 1024 * 1024;
 
