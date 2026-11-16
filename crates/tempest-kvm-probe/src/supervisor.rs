@@ -25,6 +25,28 @@ impl Outcome {
         if self.passed() { 0 } else { 1 }
     }
 }
+fn decode_record(record: &[u8], status: i32) -> io::Result<Outcome> {
+    let invalid = || io::Error::from_raw_os_error(libc::EPROTO);
+    if record.len() != 12 || &record[..4] != b"KVM1" {
+        return Err(invalid());
+    }
+    let primary = i32::from_le_bytes(record[4..8].try_into().unwrap());
+    let cleanup = i32::from_le_bytes(record[8..12].try_into().unwrap());
+    if !(0..=4095).contains(&primary)
+        || !(0..=4095).contains(&cleanup)
+        || !libc::WIFEXITED(status)
+        || libc::WEXITSTATUS(status) != i32::from(primary != 0 || cleanup != 0)
+    {
+        return Err(invalid());
+    }
+    Ok(Outcome {
+        deadline_exceeded: false,
+        child_terminal_reaped: true,
+        explicit_cleanup_complete: cleanup == 0,
+        primary_errno: (primary != 0).then_some(primary),
+        cleanup_errno: (cleanup != 0).then_some(cleanup),
+    })
+}
 
 fn terminal(pid: i32, until: Instant) -> io::Result<i32> {
     loop {
@@ -161,23 +183,10 @@ fn supervise_inner(
                     record.len(),
                 )
             };
-            if count != 12 || &record[..4] != b"KVM1" {
+            if count < 0 {
                 return Err(io::Error::from_raw_os_error(libc::EPROTO));
             }
-            let primary = i32::from_le_bytes(record[4..8].try_into().unwrap());
-            let cleanup = i32::from_le_bytes(record[8..12].try_into().unwrap());
-            if primary < 0 || cleanup < 0 {
-                return Err(io::Error::from_raw_os_error(libc::EPROTO));
-            }
-            Ok(Outcome {
-                deadline_exceeded: false,
-                child_terminal_reaped: true,
-                explicit_cleanup_complete: cleanup == 0
-                    && libc::WIFEXITED(status)
-                    && libc::WEXITSTATUS(status) == i32::from(primary != 0 || cleanup != 0),
-                primary_errno: (primary != 0).then_some(primary),
-                cleanup_errno: (cleanup != 0).then_some(cleanup),
-            })
+            decode_record(&record[..count as usize], status)
         }
         Err(error) if error.raw_os_error() != Some(libc::ECHILD) => {
             let killed = unsafe {
@@ -223,6 +232,24 @@ pub fn run() -> io::Result<Outcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn malformed_records_and_terminal_mismatches_never_pass() {
+        let mut record = [0_u8; 13];
+        record[..4].copy_from_slice(b"KVM1");
+        assert!(decode_record(&record[..12], 0).unwrap().passed());
+        for length in [0, 3, 4, 11, 13] {
+            assert!(decode_record(&record[..length], 0).is_err());
+        }
+        assert!(decode_record(&record[..12], 256).is_err());
+        assert!(decode_record(&record[..12], libc::SIGKILL).is_err());
+        record[0] ^= 1;
+        assert!(decode_record(&record[..12], 0).is_err());
+        record[0] ^= 1;
+        for errno in [-1_i32, 4096, i32::MAX] {
+            record[4..8].copy_from_slice(&errno.to_le_bytes());
+            assert!(decode_record(&record[..12], 256).is_err());
+        }
+    }
     #[test]
     fn primary_and_cleanup_status_are_independent_and_cli_never_masks_failure() {
         for (primary, cleanup) in [

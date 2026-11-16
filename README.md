@@ -123,6 +123,19 @@ driverの`passed`は`dummy_independent_home_only`限定で、probe本体の`inco
 監査JSONはroot所有0600の一時fileへ保存し、公開結果にはbasenameだけを出します。
 root fixtureの実行中は同じ固定資源を使う別probeを並行実行しません。
 
+KVM最小検証器は独立crate `tempest-kvm-probe` で開発中です。native Linux/x86_64と
+C compiler・Linux UAPI headerが必要です。以下はdeviceを開かないビルド・unit検証です。
+
+```bash
+cargo build --locked -p tempest-kvm-probe
+cargo test --locked -p tempest-kvm-probe
+cargo clippy --locked -p tempest-kvm-probe --all-targets -- -D warnings
+```
+
+unitは固定IO→HLTのABI/境界とdummy childの期限・回収だけを検証し、KVM成立を証明しません。
+binaryのdevice実行と専用user作成はartifact監査後の管理者checkpointです。
+[管理者手順](docs/LINUX_KVM_ADMIN_GATE.md)と[固定検証器設計](docs/LINUX_KVM_MINIMAL_PROBE.md)を参照してください。
+
 旧 WIP（0f5d190）では固定90秒 watchdog と増加した suite の衝突に整合する失敗を
 91,092 ms・`frame_oversize` Ready の child SIGKILL/watchdog exit1/RUN残留として再現しました。
 当時の ownership 遷移は未記録で、過去事象の実行時因果確定とは区別します。残留は root0700 で証拠保全済みです。
