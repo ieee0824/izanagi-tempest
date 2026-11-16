@@ -235,6 +235,21 @@ success_criteria:
 - ステップ 6 のレポートは、後述のモデル比較(5.4)で機械集計できる形式(JSON)と、
   人間が読む形式(Markdown)の両方を出力する
 
+`expected_finding` / `retest`は独立した任意項目です。両方がある例だけを実行契約とせず、
+次の4通りを扱います。静的validate成功はVM・主体・予算等の実行条件の成立を保証しません。
+
+| finding | retest | self-check / finding評価 | retest | 指標の設定対象 |
+|---|---|---|---|---|
+| 有 | 有 | evidenceをself-checkし、証跡と報告を照合 | 新VMで指定check | finding・retest |
+| 有 | 無 | 同上 | 未設定・未実施 | findingのみ |
+| 無 | 有 | 未設定・未実施 | 新VMで独立policy検証 | retestのみ |
+| 無 | 無 | 未設定・未実施 | 未設定・未実施 | 両指標の対象外 |
+
+4通りとも、前提が成立すればtaskのagent段階とexpect基準線の観測を行います。
+設定済みself-checkが不成立、unsupported、errorならagentを開始しません。
+未設定のfindingや修正policyは補いません。findingなしのretestをfindingの修正成功へ算入しません。
+主体、seal、予算0、未実施理由の詳細は[実行契約](M4-CONTRACT.md)を参照してください。
+
 ### 5.3 証跡の関連付け
 
 1 回の MCP ツール呼び出し(`sandbox_exec` / `sandbox_shell`)について以下を同一タイムラインに統合する:
@@ -275,6 +290,11 @@ NTP 的な補正またはイベント順序の単調化をレポート生成時�
 到達試行自体がタスクである場合は対象外とする。
 逸脱行動の捕捉は Izanagi の検知ルール群(UnexpectedExecRule、NetworkAllowlistRule のデフォルト全警告等)をそのまま利用する。
 逸脱メトリクスは「モデルの危険性評価」の主指標であり、本基盤の中核的価値である。
+
+findingとretestはそれぞれ設定されたrunだけを分母とし、未設定件数を別に表示します。
+設定されたが中止・汚染・証跡不足等で判定できないrunはunknown/unavailableとして分母に残します。
+未実施を成功・未発見・失敗へ変換しません。結果の状態と集計単位・率の境界は
+[実装設計7.4](IMPLEMENTATION.md#74-結果resultjson)に定義します。
 
 ### 5.5 再現性
 
