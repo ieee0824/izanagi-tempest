@@ -455,7 +455,7 @@ pub(super) fn run() -> i32 {
                 .and_then(|mut file| file.write_all(&manifest.nonce))
                 .is_ok()
             && fs::read("/state/marker").is_ok_and(|bytes| bytes == manifest.nonce);
-        let values = vec![
+        let mut values = vec![
             observe(
                 Check::HostHomeDenied,
                 manifest.role,
@@ -482,6 +482,7 @@ pub(super) fn run() -> i32 {
             ),
             observe(Check::StateMarkerCreated, manifest.role, created, 0),
         ];
+        values[0].attempts = 10;
         let passed = values.iter().all(|value| value.passed);
         if !event(&manifest, Phase::StateWritten, values) || !wait() {
             return 3;

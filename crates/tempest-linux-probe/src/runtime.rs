@@ -1458,6 +1458,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             let home_path = Path::new(RUN).join("host-home");
             os::private_directory(&home_path)?;
             let home = File::open(&home_path)?;
+            let mut home_identities = Vec::new();
             for category in super::worker::HOME_CATEGORIES {
                 let path = home_path.join(category);
                 let mut file = fs::OpenOptions::new()
@@ -1469,6 +1470,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 drop(file);
                 let file = File::open(format!("/proc/self/fd/{}/{category}", home.as_raw_fd()))?;
                 let metadata = file.metadata()?;
+                home_identities.push((metadata.dev(), metadata.ino()));
                 let mut content = Vec::new();
                 file.take(16).read_to_end(&mut content)?;
                 if content != b"dummy-host-home"
@@ -1496,6 +1498,27 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             });
             for scenario in [Scenario::StateRun1, Scenario::StateRun2] {
                 active_scenario = Some(scenario);
+                let verify_home = || -> Result<(), Fault> {
+                    for (category, identity) in
+                        super::worker::HOME_CATEGORIES.iter().zip(&home_identities)
+                    {
+                        let file =
+                            File::open(format!("/proc/self/fd/{}/{category}", home.as_raw_fd()))?;
+                        let metadata = file.metadata()?;
+                        let mut content = Vec::new();
+                        file.take(16).read_to_end(&mut content)?;
+                        if content != b"dummy-host-home"
+                            || !metadata.is_file()
+                            || metadata.uid() != 0
+                            || metadata.mode() & 0o777 != 0o600
+                            || (metadata.dev(), metadata.ino()) != *identity
+                        {
+                            return Err(Fault::Identity);
+                        }
+                    }
+                    Ok(())
+                };
+                verify_home()?;
                 state_observed.extend(baseline(
                     &code,
                     &libraries,
@@ -1505,6 +1528,15 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                     &mut registry,
                     &mut first_fault,
                 )?);
+                verify_home()?;
+                state_observed.push(Observation {
+                    scenario: Some(scenario),
+                    check: contract::Check::HostHomeReadable,
+                    role: None,
+                    passed: true,
+                    attempts: 18,
+                    denials: 0,
+                });
             }
             drop(inherited_home);
             drop(home);
