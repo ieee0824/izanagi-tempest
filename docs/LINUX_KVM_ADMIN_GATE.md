@@ -41,11 +41,12 @@ API version成功を必要ioctl、VM起動、Izanagi成功へ拡張しません�
 必要extension列挙とioctl、KVM_CREATE_VM、固定最小vCPU/guest memory、
 KVM_RUNの決められたexit、全FD/child/resource回収を順に独立gateとします。
 固定検証binary `tempest-kvm-probe` は実装・build-only検証済みで、device実行は未実施です。
-`86f4624`のnative Linux/x86_64 debug binary SHA256は
-`02c497a648dfff4bb6622f1f5db4edac7c781150bbd355428d060d2d629ae0bf`です。
+`623b34b`のnative Linux/x86_64 debug binary SHA256は
+`d6c746bd13d8b219eb11086d83d50ee03b38a90989179cd6c5563f69ef6089e3`です。
 専用identity照合、VM/vCPU/RAM、固定IO→HLT、親5秒deadline、PIDFD回収、
 primary/cleanup別診断を実装しています。unitはKVMを開かず、実hardware gateは未達です。
-stage別failure injectionとartifact監査を完了してから管理者向け実行commandを確定します。
+test backendでのstage別failure injectionは追加済みです。[artifact報告](LINUX_KVM_ARTIFACT.md)の
+範囲と残件を監査してから管理者向け実行commandを確定します。
 任意VM/image/command入力を受けない検証器をレビューし、root所有・非書換えpathへinstall、
 配置後も同じbinary hashを再確認してから専用userで実行する段階です。
 
