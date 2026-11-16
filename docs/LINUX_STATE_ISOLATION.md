@@ -50,6 +50,23 @@ run1またはcleanupが不完全ならrun2を開始しません。
 
 ## 受入と非主張
 
+### 段階実装の現在地（2026-11-16）
+
+`706f289`の専用Linux実測では、両runのA/B/Gについてhost HOME非到達、private HOME正読取、
+旧marker不在、marker作成・親観測と世代結合の固定checkがすべてtrueでした。
+実行binary SHA256は`1b689f3a04632e50c714f3602bf02d499e613e2a60d53f989915f162f79aa873`です。
+最終`resources_removed=true`、guardian終了・reapを確認しました。全体statusは`incomplete`であり、
+`integration/linux_isolation_smoke.py`の全体`passed`条件は満たしていません。
+
+`2e42c55`はrun境界のIPC socket明示閉鎖・EBADF確認とhost mountinfoのrole配下mount不在確認を追加しました。
+`71ab7a4`は各run直前・直後のhost canary再読取とdev/inode・owner・mode・内容照合を追加しました。
+これらを含む固定hashのLinux実測は進行中です。FD40はCLOEXECも閉鎖に寄与するため、
+workerでのEBADFは継承非到達を支持しますが、`close_except`単独動作の証明とは扱いません。
+
+現在のfixtureは各分類を固定fileで表現し、親保持dirfd経由で検証します。
+設計上のdriver側独立正対照、同run内のmount ID再照合、run1 marker digest保持の実装・受入監査は残っています。
+上記の部分的実測を、この節全体のgate完了や本番実行許可とは扱いません。
+
 rootless unitではmanifest/checkのexact schema、未知field拒否、run順序、identity比較を検証します。
 専用Linux root integrationではhost正対照、全role負例、各role正対照、nonce/RecordIdによる世代結合、
 新規tmpfsと`O_EXCL`生成、各run完全回収を実測します。
