@@ -9,6 +9,100 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct RecordId(u64);
 
+/// Data-only evidence; no namespace or root descriptor survives cleanup.
+#[derive(Default)]
+#[allow(dead_code)] // Connected to the fixed two-run supervisor in the next step.
+pub(super) struct StateSequence {
+    active: Option<([u8; 16], [RecordId; 3])>,
+    previous: Option<([u8; 16], [RecordId; 3])>,
+    completed: u8,
+    failed: bool,
+}
+
+#[allow(dead_code)]
+impl StateSequence {
+    pub(super) fn begin(
+        &mut self,
+        run: u8,
+        nonce: [u8; 16],
+        records: [RecordId; 3],
+    ) -> Result<(), Fault> {
+        let unique =
+            records[0] != records[1] && records[0] != records[2] && records[1] != records[2];
+        let fresh = self.previous.is_none_or(|(old_nonce, old_records)| {
+            nonce != old_nonce
+                && records
+                    .iter()
+                    .all(|id| old_records.iter().all(|old| id.0 > old.0))
+        });
+        if self.failed
+            || self.active.is_some()
+            || run != self.completed + 1
+            || run > 2
+            || !unique
+            || !fresh
+        {
+            self.failed = true;
+            return Err(Fault::Identity);
+        }
+        self.active = Some((nonce, records));
+        Ok(())
+    }
+
+    pub(super) fn finish(
+        &mut self,
+        nonce: [u8; 16],
+        records: [RecordId; 3],
+        cleanup_complete: bool,
+    ) -> Result<(), Fault> {
+        if self.failed || self.active != Some((nonce, records)) || !cleanup_complete {
+            self.failed = true;
+            return Err(Fault::Identity);
+        }
+        self.previous = self.active.take();
+        self.completed += 1;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod state_sequence_tests {
+    use super::*;
+    fn ids(start: u64) -> [RecordId; 3] {
+        [RecordId(start), RecordId(start + 1), RecordId(start + 2)]
+    }
+    #[test]
+    fn two_generations_require_completed_cleanup() {
+        let mut sequence = StateSequence::default();
+        sequence.begin(1, [1; 16], ids(1)).unwrap();
+        sequence.finish([1; 16], ids(1), true).unwrap();
+        sequence.begin(2, [2; 16], ids(4)).unwrap();
+        sequence.finish([2; 16], ids(4), true).unwrap();
+        assert!(sequence.begin(3, [3; 16], ids(7)).is_err());
+    }
+    #[test]
+    fn invalid_order_nonce_records_and_cleanup_fail_closed() {
+        let mut sequence = StateSequence::default();
+        assert!(sequence.begin(2, [2; 16], ids(4)).is_err());
+        for (nonce, records, cleanup) in [
+            ([2; 16], ids(1), true),
+            ([1; 16], ids(4), true),
+            ([1; 16], ids(1), false),
+        ] {
+            let mut sequence = StateSequence::default();
+            sequence.begin(1, [1; 16], ids(1)).unwrap();
+            assert!(sequence.finish(nonce, records, cleanup).is_err());
+            assert!(sequence.begin(2, [3; 16], ids(7)).is_err());
+        }
+        for (nonce, records) in [([1; 16], ids(4)), ([2; 16], ids(1))] {
+            let mut sequence = StateSequence::default();
+            sequence.begin(1, [1; 16], ids(1)).unwrap();
+            sequence.finish([1; 16], ids(1), true).unwrap();
+            assert!(sequence.begin(2, nonce, records).is_err());
+        }
+    }
+}
+
 struct Entry {
     id: RecordId,
     process: Process,

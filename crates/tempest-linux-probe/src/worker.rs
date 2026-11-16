@@ -31,6 +31,7 @@ pub(super) enum Phase {
     Done,
     GuardRejected,
     MemoryArmed,
+    StateWritten,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -607,4 +608,51 @@ pub(super) fn run() -> i32 {
     }
     wait();
     if ok { 0 } else { 1 }
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+
+    #[test]
+    fn manifest_rejects_unknown_inputs_and_invalid_nonce() {
+        let manifest = Manifest {
+            scenario: Scenario::Baseline,
+            role: Role::A,
+            nonce: [17; 16],
+            supervisor: 42,
+            peers: [43, 44, 45],
+        };
+        let mut value = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 5);
+        let decoded: Manifest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(decoded.nonce, manifest.nonce);
+        value["command"] = serde_json::json!("dummy");
+        assert!(serde_json::from_value::<Manifest>(value.clone()).is_err());
+        value.as_object_mut().unwrap().remove("command");
+        value["nonce"] = serde_json::json!([17]);
+        assert!(serde_json::from_value::<Manifest>(value).is_err());
+    }
+
+    #[test]
+    fn event_rejects_unknown_phase_and_observation_fields() {
+        let event = Event {
+            bootstrap: None,
+            library_fault: None,
+            rejection: None,
+            role: Role::A,
+            nonce: [17; 16],
+            phase: Phase::Done,
+            checks: vec![observe(Check::PositiveCanary, Role::A, true, 0)],
+            canary_address: 0,
+        };
+        let value = serde_json::to_value(event).unwrap();
+        assert!(serde_json::from_value::<Event>(value.clone()).is_ok());
+        let mut invalid = value.clone();
+        invalid["phase"] = serde_json::json!("arbitrary_phase");
+        assert!(serde_json::from_value::<Event>(invalid).is_err());
+        let mut invalid = value;
+        invalid["checks"][0]["path"] = serde_json::json!("dummy");
+        assert!(serde_json::from_value::<Event>(invalid).is_err());
+    }
 }

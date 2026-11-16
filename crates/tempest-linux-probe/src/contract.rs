@@ -13,6 +13,8 @@ pub(super) enum Role {
 #[serde(rename_all = "snake_case")]
 pub(super) enum Scenario {
     Baseline,
+    StateRun1,
+    StateRun2,
     ForeignReady,
     FdFileA,
     FdFileB,
@@ -181,6 +183,12 @@ pub(super) fn separate(states: &[State; 3], host: &[u64; 3]) -> bool {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Check {
+    PrivateHomeReadable,
+    StateMarkerCreated,
+    StateMarkerObserved,
+    PreviousStateAbsent,
+    StateGenerationBound,
+    StateCleanupComplete,
     PositiveCanary,
     PositiveIpc,
     HostPathsDenied,
