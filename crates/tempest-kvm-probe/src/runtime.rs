@@ -327,6 +327,163 @@ fn execute_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Default)]
+    struct Fake {
+        fail: &'static str,
+        hit: bool,
+        runs: usize,
+        fds: Vec<(i32, u64)>,
+        maps: Vec<(usize, usize)>,
+    }
+    thread_local! { static FAKE: std::cell::RefCell<Fake> = std::cell::RefCell::new(Fake::default()); }
+    fn checkpoint(stage: &'static str) -> io::Result<()> {
+        FAKE.with(|state| {
+            let mut state = state.borrow_mut();
+            if state.fail == stage {
+                state.hit = true;
+                Err(io::Error::from_raw_os_error(libc::EIO))
+            } else {
+                Ok(())
+            }
+        })
+    }
+    fn fake_fd() -> io::Result<i32> {
+        let raw = unsafe { libc::memfd_create(c"fixed-kvm-test".as_ptr(), libc::MFD_CLOEXEC) };
+        if raw < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let file = unsafe { std::fs::File::from_raw_fd(raw) };
+        let inode = file.metadata()?.ino();
+        FAKE.with(|state| state.borrow_mut().fds.push((raw, inode)));
+        Ok(file.into_raw_fd())
+    }
+    fn fake_ioctl(_fd: i32, request: libc::c_ulong, argument: libc::c_ulong) -> io::Result<i32> {
+        let stage = match request {
+            0xae00 => "api",
+            0xae03 => "extension",
+            0xae04 => "map_size",
+            0xae01 => "vm",
+            0xae47 => "tss",
+            0xae41 => "vcpu",
+            0x4020ae46 => {
+                let region = unsafe { &*(argument as *const MemoryRegion) };
+                if region.memory_size == 0 {
+                    "slot_remove"
+                } else {
+                    "slot"
+                }
+            }
+            0x8138ae83 => "sregs_get",
+            0x4138ae84 => "sregs_set",
+            0x4090ae82 => "regs_set",
+            0x8090ae81 => "regs_get",
+            0xae80 => FAKE.with(|state| {
+                if state.borrow().runs == 0 {
+                    "run_io"
+                } else {
+                    "run_hlt"
+                }
+            }),
+            _ => panic!("unexpected fixed ioctl"),
+        };
+        checkpoint(stage)?;
+        match request {
+            0xae00 => Ok(12),
+            0xae03 => Ok(1),
+            0xae04 => Ok(4096),
+            0xae01 | 0xae41 => fake_fd(),
+            0x8090ae81 => {
+                let registers = unsafe { &mut *(argument as *mut Registers) };
+                registers.general[0] = 0x2a;
+                registers.rip = 0x1005;
+                Ok(0)
+            }
+            0xae80 => FAKE.with(|state| {
+                let mut state = state.borrow_mut();
+                let (pointer, length) = *state.maps.last().unwrap();
+                let bytes = unsafe { std::slice::from_raw_parts_mut(pointer as *mut u8, length) };
+                bytes[8..12]
+                    .copy_from_slice(&(if state.runs == 0 { 2_u32 } else { 5 }).to_le_bytes());
+                bytes[32] = 1;
+                bytes[33] = 1;
+                bytes[34..36].copy_from_slice(&0xe9_u16.to_le_bytes());
+                bytes[36..40].copy_from_slice(&1_u32.to_le_bytes());
+                bytes[40..48].copy_from_slice(&128_u64.to_le_bytes());
+                bytes[128] = 0x2a;
+                state.runs += 1;
+                Ok(0)
+            }),
+            _ => Ok(0),
+        }
+    }
+    fn fake_map(length: usize, fd: i32, _flags: i32, sink: &Cleanup) -> io::Result<Mapping> {
+        checkpoint(if fd == -1 { "ram" } else { "run_map" })?;
+        let mapping = Mapping::new(length, -1, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, sink)?;
+        FAKE.with(|state| {
+            state
+                .borrow_mut()
+                .maps
+                .push((mapping.pointer as usize, length))
+        });
+        Ok(mapping)
+    }
+    #[test]
+    fn every_initialization_stage_converges_on_real_resource_cleanup() {
+        for stage in [
+            "",
+            "api",
+            "extension",
+            "map_size",
+            "vm",
+            "tss",
+            "ram",
+            "slot",
+            "vcpu",
+            "run_map",
+            "sregs_get",
+            "sregs_set",
+            "regs_set",
+            "run_io",
+            "run_hlt",
+            "regs_get",
+            "slot_remove",
+        ] {
+            FAKE.with(|state| {
+                *state.borrow_mut() = Fake {
+                    fail: stage,
+                    ..Fake::default()
+                }
+            });
+            let sink = Rc::new(Cell::new(None));
+            let kvm = Tracked::new(std::fs::File::open("/dev/null").unwrap(), &sink);
+            let result = execute_device(kvm, &sink, fake_ioctl, fake_map);
+            if stage.is_empty() {
+                assert!(result.unwrap().passed());
+            } else {
+                FAKE.with(|state| assert!(state.borrow().hit, "stage not reached: {stage}"));
+                match result {
+                    Ok(report) => assert!(!report.passed()),
+                    Err(error) => assert_eq!(error.raw_os_error(), Some(libc::EIO)),
+                }
+            }
+            FAKE.with(|state| {
+                let state = state.borrow();
+                for &(fd, inode) in &state.fds {
+                    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+                    let result = unsafe { libc::fstat(fd, metadata.as_mut_ptr()) };
+                    assert!(result == -1 || unsafe { metadata.assume_init() }.st_ino != inode);
+                }
+                for &(address, length) in &state.maps {
+                    let mut vector = vec![0; length.div_ceil(4096)];
+                    let result =
+                        unsafe { libc::mincore(address as *mut _, length, vector.as_mut_ptr()) };
+                    let errno = io::Error::last_os_error().raw_os_error();
+                    assert_eq!(result, -1, "mapping retained after {stage}");
+                    assert_eq!(errno, Some(libc::ENOMEM));
+                }
+            });
+        }
+    }
     #[test]
     fn early_failure_closes_registered_fd_and_unmaps_memory() {
         let sink = Rc::new(Cell::new(None));
