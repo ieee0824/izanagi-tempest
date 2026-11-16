@@ -77,6 +77,29 @@ binary SHA256は`7cf4e16d7ba3f58dcb0bff1e53bb6fed0b01f9f5a7fd20ac5f0beefc0314a0a
 設計上のdriver側独立正対照と追加実装の受入監査は残っています。
 上記の部分的実測を、この節全体のgate完了や本番実行許可とは扱いません。
 
+### driver独立正対照の固定捕捉点案（未実装）
+
+専用root fixtureは自分がspawnしたsupervisorだけをptraceし、PIDFDと
+`/proc/<pid>/stat`のparent/birthを開始前後に照合します。TRACEFORKは使いません。
+捕捉点は既存`runtime::baseline`の`progress(scenario, "barrier")`にある
+SYS_writeの正常終了直後です。次の`worker.start.send(b"G")`より前なので全roleはReady待機中です。
+write入口でFDの保持object、固定RUN/progressのdev/inode・owner・modeを照合し、
+上限128byteでpayloadを読み、state_run1/barrierまたはstate_run2/barrierだけを受理します。
+write出口で戻り値がpayload全長と一致することを確認して初めて捕捉成立とします。
+
+各捕捉で別processのfixtureがRUN/host-homeをNOFOLLOW保持dirfdで開き、
+9固定fileをopenatして内容・type・uid0・mode0600・dev/inodeを確認します。
+run2はrun1のdata-only identityと照合し、同じhost fixtureが実在し続けることを確認します。
+driverはroot/host-home/file FDをrun内で閉じ、run間に保持するのはidentity値だけです。
+捕捉順序はrun1→run2、各1回、合計2回/18読取を必須とし、重複・見逃し・誤FDは失敗です。
+
+各停止区間は100ms以内を要求し、超過時は成功扱いせず直ちに再開・失敗回収へ進みます。
+productionのlease/overall期限は変更せず、通常signalをtraceeへ転送します。
+run2捕捉後はdetachして通常終了を待ちます。例外時は停止中traceeを確実に再開/detachし、
+必要時には自所有supervisorをPIDFD kill/reapします。既存guardianの回収を有界待機し、
+同世代ROOT/RUNのidentity確認なしの削除や新run開始を行いません。
+driver正対照とprobe監査は別artifactとし、両者のbinary/run identityを結んで受入判定します。
+
 rootless unitではmanifest/checkのexact schema、未知field拒否、run順序、identity比較を検証します。
 専用Linux root integrationではhost正対照、全role負例、各role正対照、nonce/RecordIdによる世代結合、
 新規tmpfsと`O_EXCL`生成、各run完全回収を実測します。
