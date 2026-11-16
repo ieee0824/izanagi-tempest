@@ -1193,6 +1193,34 @@ fn baseline(
         group_stopped?;
         drop(targets);
         drop(workers);
+        let socket_fds = [a.as_raw_fd(), b.as_raw_fd(), ga.as_raw_fd(), gb.as_raw_fd()];
+        drop(a);
+        drop(b);
+        drop(ga);
+        drop(gb);
+        drop(to_a);
+        drop(to_b);
+        for fd in socket_fds {
+            if unsafe { libc::fcntl(fd, libc::F_GETFD) } != -1
+                || io::Error::last_os_error().raw_os_error() != Some(libc::EBADF)
+            {
+                return Err(Fault::Identity);
+            }
+        }
+        // Children have no descendants in these fixed scenarios. Their dead,
+        // reaped namespace leaders and closed observer FDs release the private
+        // mounts. Also reject any accidental mount in the host namespace.
+        let mounts = fs::read_to_string("/proc/self/mountinfo")?;
+        if mounts.lines().any(|line| {
+            line.split_whitespace().nth(4).is_some_and(|path| {
+                Role::ALL.iter().any(|role| {
+                    let root = format!("{RUN}/{}", role.name());
+                    path == root || path.starts_with(&format!("{root}/"))
+                })
+            })
+        }) {
+            return Err(Fault::Identity);
+        }
         for role in Role::ALL {
             let path = Path::new(RUN).join(role.name());
             fs::remove_dir(&path)?;
