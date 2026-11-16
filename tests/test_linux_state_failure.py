@@ -1,6 +1,7 @@
 import copy
 from pathlib import Path
 import sys
+import os
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +11,17 @@ from linux_state_trace import StateTrace
 
 
 class FailureProjectionTests(unittest.TestCase):
+    def test_close_releases_pinned_progress_and_process_descriptors(self):
+        trace = StateTrace.__new__(StateTrace)
+        trace.pidfd = os.open('/dev/null', os.O_RDONLY | os.O_CLOEXEC)
+        trace.progress_fd = os.open('/dev/null', os.O_RDONLY | os.O_CLOEXEC)
+        descriptors = (trace.pidfd, trace.progress_fd)
+        trace.close()
+        self.assertIsNone(trace.progress_fd)
+        for fd in descriptors:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
     def test_architecture_is_rejected_before_process_or_register_access(self):
         with patch('linux_state_trace.platform.machine', return_value='aarch64'):
             with self.assertRaisesRegex(ValueError, '^unsupported_trace_architecture$'):

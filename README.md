@@ -110,6 +110,19 @@ driver は固定の `target/debug/tempest` を root 所有・0700 の `/var/lib/
 へ一時配置し、空の環境で起動して回収します。`/run` の noexec 等の既存 mount 設定は変更しません。
 sudoers/service/user/group/AppArmor/nft の永続設定も変更しません。
 
+HOME正対照の独立観測fixtureは、同じ専用VM上で次を実行します。
+
+```bash
+python3 -m unittest discover -s tests -p 'test_linux_state_*.py' -v
+python3 integration/linux_state_home_smoke.py
+```
+
+rootless unittestとroot fixtureは順番に実行します。fixtureは自所有supervisorだけをptraceし、
+両runの固定barrierで9分類ずつを保持dirfdから読み、各run21件のexact checkと回収を照合します。
+driverの`passed`は`dummy_independent_home_only`限定で、probe本体の`incomplete`を維持します。
+監査JSONはroot所有0600の一時fileへ保存し、公開結果にはbasenameだけを出します。
+root fixtureの実行中は同じ固定資源を使う別probeを並行実行しません。
+
 旧 WIP（0f5d190）では固定90秒 watchdog と増加した suite の衝突に整合する失敗を
 91,092 ms・`frame_oversize` Ready の child SIGKILL/watchdog exit1/RUN残留として再現しました。
 当時の ownership 遷移は未記録で、過去事象の実行時因果確定とは区別します。残留は root0700 で証拠保全済みです。

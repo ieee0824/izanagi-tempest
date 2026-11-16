@@ -41,6 +41,7 @@ class StateTrace:
         self.captures = []
         self.previous = None
         self.nonces = {}
+        self.progress_fd = None
 
     def bound(self):
         if (lineage(self.process.pid) != self.birth
@@ -108,19 +109,30 @@ class StateTrace:
                 if size > 128 or run != ['state_run1', 'state_run2'][len(self.captures)]:
                     raise ValueError('capture_order')
                 fd_path = Path(f'/proc/{self.process.pid}/fd/{registers[14]}')
-                metadata = fd_path.stat()
+                self.progress_fd = os.open(fd_path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+                metadata = os.fstat(self.progress_fd)
                 named = (RUN / 'progress').lstat()
                 if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0
                         or stat.S_IMODE(metadata.st_mode) != 0o600
                         or (metadata.st_dev, metadata.st_ino) != (named.st_dev, named.st_ino)):
                     raise ValueError('progress_identity')
-                pending = run, size
+                pending = run, size, (metadata.st_dev, metadata.st_ino)
             elif pending is not None:
                 started = time.monotonic()
-                run, size = pending
+                run, size, progress_identity = pending
                 pending = None
                 if registers[10] != size or run not in self.nonces:
                     raise ValueError('progress_write_failed')
+                after = os.fstat(self.progress_fd)
+                named = (RUN / 'progress').lstat()
+                raw = os.pread(self.progress_fd, 129, 0)
+                if ((after.st_dev, after.st_ino) != progress_identity
+                        or (named.st_dev, named.st_ino) != progress_identity
+                        or len(raw) > 128
+                        or json.loads(raw) != {'scenario':run, 'phase':'barrier'}):
+                    raise ValueError('progress_changed')
+                os.close(self.progress_fd)
+                self.progress_fd = None
                 self.bound()
                 fd = os.open(RUN, DIRECTORY_FLAGS)
                 try:
@@ -135,4 +147,7 @@ class StateTrace:
         return self.captures
 
     def close(self):
+        if self.progress_fd is not None:
+            os.close(self.progress_fd)
+            self.progress_fd = None
         os.close(self.pidfd)
