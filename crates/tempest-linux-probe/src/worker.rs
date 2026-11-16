@@ -53,6 +53,9 @@ pub(super) struct Event {
 }
 
 static MEMORY: &[u8] = b"synthetic-memory-only";
+pub(super) const HOME_CATEGORIES: [&str; 9] = [
+    "settings", "hooks", "plugins", "mcp", "session", "project", "cache", "lock", "backup",
+];
 
 fn bytes(fd: RawFd, value: &[u8]) -> bool {
     let mut offset = 0;
@@ -453,6 +456,18 @@ pub(super) fn run() -> i32 {
                 .is_ok()
             && fs::read("/state/marker").is_ok_and(|bytes| bytes == manifest.nonce);
         let values = vec![
+            observe(
+                Check::HostHomeDenied,
+                manifest.role,
+                HOME_CATEGORIES.iter().all(|category| {
+                    fs::symlink_metadata(format!(
+                        "/run/tempest-linux-isolation-probe/host-home/{category}"
+                    ))
+                    .is_err_and(|error| error.raw_os_error() == Some(libc::ENOENT))
+                }) && unsafe { libc::fcntl(40, libc::F_GETFD) } == -1
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF),
+                10,
+            ),
             observe(
                 Check::PrivateHomeReadable,
                 manifest.role,

@@ -778,11 +778,12 @@ fn baseline(
                     || written.bootstrap.is_some()
                     || written.library_fault.is_some()
                     || written.rejection.is_some()
-                    || written.checks.len() != 3
+                    || written.checks.len() != 4
                     || !written
                         .checks
                         .iter()
                         .zip([
+                            contract::Check::HostHomeDenied,
                             contract::Check::PrivateHomeReadable,
                             contract::Check::PreviousStateAbsent,
                             contract::Check::StateMarkerCreated,
@@ -1426,6 +1427,45 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         drop(canary);
         let mut observed = (|| {
             let mut state_observed = Vec::new();
+            let home_path = Path::new(RUN).join("host-home");
+            os::private_directory(&home_path)?;
+            let home = File::open(&home_path)?;
+            for category in super::worker::HOME_CATEGORIES {
+                let path = home_path.join(category);
+                let mut file = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&path)?;
+                file.write_all(b"dummy-host-home")?;
+                drop(file);
+                let file = File::open(format!("/proc/self/fd/{}/{category}", home.as_raw_fd()))?;
+                let metadata = file.metadata()?;
+                let mut content = Vec::new();
+                file.take(16).read_to_end(&mut content)?;
+                if content != b"dummy-host-home"
+                    || !metadata.is_file()
+                    || metadata.uid() != 0
+                    || metadata.mode() & 0o777 != 0o600
+                {
+                    return Err(Fault::Identity);
+                }
+            }
+            if unsafe { libc::fcntl(40, libc::F_GETFD) } != -1
+                || io::Error::last_os_error().raw_os_error() != Some(libc::EBADF)
+            {
+                return Err(Fault::Identity);
+            }
+            os::syscall(unsafe { libc::dup3(home.as_raw_fd(), 40, libc::O_CLOEXEC) })?;
+            let inherited_home = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(40) };
+            state_observed.push(Observation {
+                scenario: None,
+                check: contract::Check::HostHomeReadable,
+                role: None,
+                passed: true,
+                attempts: 9,
+                denials: 0,
+            });
             for scenario in [Scenario::StateRun1, Scenario::StateRun2] {
                 active_scenario = Some(scenario);
                 state_observed.extend(baseline(
@@ -1438,6 +1478,8 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                     &mut first_fault,
                 )?);
             }
+            drop(inherited_home);
+            drop(home);
             active_scenario = Some(Scenario::Baseline);
             let mut observed = baseline(
                 &code,

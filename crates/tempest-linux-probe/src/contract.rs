@@ -184,6 +184,8 @@ pub(super) fn separate(states: &[State; 3], host: &[u64; 3]) -> bool {
 #[serde(rename_all = "snake_case")]
 pub(super) enum Check {
     PrivateHomeReadable,
+    HostHomeReadable,
+    HostHomeDenied,
     StateMarkerCreated,
     StateMarkerObserved,
     PreviousStateAbsent,
