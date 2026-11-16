@@ -14,6 +14,8 @@ use std::{
     rc::Rc,
 };
 type Cleanup = Rc<Cell<Option<i32>>>;
+type Ioctl = fn(i32, libc::c_ulong, libc::c_ulong) -> io::Result<i32>;
+type Map = fn(usize, i32, i32, &Cleanup) -> io::Result<Mapping>;
 fn record(sink: &Cleanup, result: io::Result<impl Sized>) {
     let mut first = sink.get();
     remember(&mut first, result);
@@ -73,6 +75,7 @@ struct SlotGuard {
     vm: i32,
     armed: bool,
     sink: Cleanup,
+    remove_ioctl: Ioctl,
 }
 impl SlotGuard {
     fn remove(&mut self) -> io::Result<i32> {
@@ -81,7 +84,7 @@ impl SlotGuard {
         }
         self.armed = false;
         let empty = MemoryRegion::default();
-        ioctl(
+        (self.remove_ioctl)(
             self.vm,
             0x4020ae46,
             (&empty as *const MemoryRegion) as libc::c_ulong,
@@ -193,6 +196,18 @@ fn execute(sink: &Cleanup) -> io::Result<ChildReport> {
     {
         return Err(rejected());
     }
+    execute_device(kvm, sink, ioctl, Mapping::new)
+}
+
+// Native entry supplies only the fixed syscall functions above. Unit tests
+// substitute resource-producing backends without opening /dev/kvm.
+fn execute_device(
+    kvm: Tracked<std::fs::File>,
+    sink: &Cleanup,
+    ioctl: Ioctl,
+    map: Map,
+) -> io::Result<ChildReport> {
+    let rejected = || io::Error::from_raw_os_error(libc::EPERM);
     if ioctl(kvm.as_raw_fd(), 0xae00, 0)? != 12 {
         return Err(rejected());
     }
@@ -210,7 +225,7 @@ fn execute(sink: &Cleanup) -> io::Result<ChildReport> {
         sink,
     );
     ioctl(vm.as_raw_fd(), 0xae47, 0xfffbd000)?;
-    let mut ram = Mapping::new(RAM_BYTES, -1, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, sink)?;
+    let mut ram = map(RAM_BYTES, -1, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, sink)?;
     unsafe {
         std::ptr::copy_nonoverlapping(
             GUEST.as_ptr(),
@@ -229,6 +244,7 @@ fn execute(sink: &Cleanup) -> io::Result<ChildReport> {
         vm: vm.as_raw_fd(),
         armed: true,
         sink: sink.clone(),
+        remove_ioctl: ioctl,
     };
     ioctl(
         vm.as_raw_fd(),
@@ -241,7 +257,7 @@ fn execute(sink: &Cleanup) -> io::Result<ChildReport> {
             unsafe { OwnedFd::from_raw_fd(ioctl(vm.as_raw_fd(), 0xae41, 0)?) },
             sink,
         );
-        let mut run = Mapping::new(length, vcpu.as_raw_fd(), libc::MAP_SHARED, sink)?;
+        let mut run = map(length, vcpu.as_raw_fd(), libc::MAP_SHARED, sink)?;
         let executed = (|| {
             let mut special = SpecialRegisters::default();
             ioctl(
@@ -359,6 +375,7 @@ mod tests {
                 vm: fd.as_raw_fd(),
                 armed: true,
                 sink: sink.clone(),
+                remove_ioctl: ioctl,
             };
             Err(io::Error::from_raw_os_error(libc::EPERM))
         };
