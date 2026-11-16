@@ -10,8 +10,21 @@ kvm groupはgid993でmemberなし。ubuntu(uid1000)はkvm非所属です。
 root管理者が次を実行します。作業者ubuntuのgroupやsudoers、device modeは変更しません。
 
 ```sh
-getent passwd tempest-kvm
-getent group tempest-kvm
+set -eu
+if getent passwd tempest-kvm; then
+  echo 'tempest-kvm user already exists; stop for review' >&2
+  exit 1
+else
+  lookup_status=$?
+  test "$lookup_status" -eq 2
+fi
+if getent group tempest-kvm; then
+  echo 'tempest-kvm group already exists; stop for review' >&2
+  exit 1
+else
+  lookup_status=$?
+  test "$lookup_status" -eq 2
+fi
 sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --groups kvm tempest-kvm
 getent passwd tempest-kvm
 id tempest-kvm
@@ -19,6 +32,9 @@ sudo passwd --status tempest-kvm
 stat -c '%a %U %G %t:%T' /dev/kvm
 id ubuntu
 ```
+
+`getent`の「対象なし」(exit 2)だけを作成前の期待結果とし、既存entryやlookup失敗なら
+useraddへ進みません。以降も各コマンドの失敗で中止します。
 
 受入条件はsystem UID、login不可shell、home未作成、password locked、
 追加groupはkvmのみ、ubuntuはkvm非所属、deviceはroot:kvm 0660の維持です。
