@@ -37,15 +37,17 @@ systemd NSSもloader --listで解決先を確認しましたが、実user lookup
 既存destinationがあれば上書きせず中止します。現在このコマンドへの実行移行はしていません。
 
 ```sh
+set -eu
 getent passwd tempest-kvm
 getent group tempest-kvm
 namei -l /var/lib
 test ! -e /var/lib/tempest-kvm-probe
 test ! -L /var/lib/tempest-kvm-probe
-sha256sum /home/ubuntu/izanagi-tempest/target/debug/tempest-kvm-probe
+test "$(sha256sum /home/ubuntu/izanagi-tempest/target/debug/tempest-kvm-probe | cut -d ' ' -f 1)" = d6c746bd13d8b219eb11086d83d50ee03b38a90989179cd6c5563f69ef6089e3
 sudo install -d -o root -g tempest-kvm -m 0750 /var/lib/tempest-kvm-probe
 sudo install -o root -g tempest-kvm -m 0550 /home/ubuntu/izanagi-tempest/target/debug/tempest-kvm-probe /var/lib/tempest-kvm-probe/probe
 sudo sha256sum /var/lib/tempest-kvm-probe/probe
+test "$(sudo sha256sum /var/lib/tempest-kvm-probe/probe | cut -d ' ' -f 1)" = d6c746bd13d8b219eb11086d83d50ee03b38a90989179cd6c5563f69ef6089e3
 sudo namei -l /var/lib/tempest-kvm-probe/probe
 sudo -u tempest-kvm test -x /var/lib/tempest-kvm-probe/probe
 sudo -u tempest-kvm test ! -w /var/lib/tempest-kvm-probe
