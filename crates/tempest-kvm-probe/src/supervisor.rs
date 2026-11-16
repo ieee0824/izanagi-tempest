@@ -106,7 +106,7 @@ pub fn run() -> io::Result<Outcome> {
     }
     supervise(
         || {
-            if crate::runtime::child().is_ok() {
+            if crate::runtime::child().is_ok_and(|report| report.passed()) {
                 0
             } else {
                 1

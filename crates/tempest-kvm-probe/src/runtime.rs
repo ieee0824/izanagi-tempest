@@ -7,7 +7,7 @@ use std::{
     fs::OpenOptions,
     io,
     os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd},
+        fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd},
         unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
     },
 };
@@ -59,11 +59,32 @@ impl Drop for Mapping {
     }
 }
 
-pub(crate) fn child() -> io::Result<()> {
-    let rejected = || io::Error::from_raw_os_error(libc::EPERM);
-    if !crate::identity::current().is_some_and(|user| user.valid()) {
-        return Err(rejected());
+pub(crate) struct ChildReport {
+    pub primary_errno: Option<i32>,
+    pub cleanup_errno: Option<i32>,
+}
+impl ChildReport {
+    pub fn passed(&self) -> bool {
+        self.primary_errno.is_none() && self.cleanup_errno.is_none()
     }
+}
+fn close(fd: impl IntoRawFd) -> io::Result<()> {
+    if unsafe { libc::close(fd.into_raw_fd()) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+fn remember(first: &mut Option<i32>, result: io::Result<impl Sized>) {
+    if let Err(error) = result {
+        first.get_or_insert(error.raw_os_error().unwrap_or(libc::EIO));
+    }
+}
+pub(crate) fn child() -> io::Result<ChildReport> {
+    let rejected = || io::Error::from_raw_os_error(libc::EPERM);
+    let user = crate::identity::current()
+        .filter(|user| user.valid())
+        .ok_or_else(rejected)?;
     let kvm = OpenOptions::new()
         .read(true)
         .write(true)
@@ -71,6 +92,7 @@ pub(crate) fn child() -> io::Result<()> {
         .open("/dev/kvm")?;
     let metadata = kvm.metadata()?;
     if !metadata.file_type().is_char_device()
+        || metadata.gid() != user.kvm_gid
         || metadata.uid() != 0
         || metadata.mode() & 0o777 != 0o660
         || libc::major(metadata.rdev()) != 10
@@ -110,53 +132,60 @@ pub(crate) fn child() -> io::Result<()> {
         0x4020ae46,
         (&region as *const MemoryRegion) as libc::c_ulong,
     )?;
+    let mut cleanup_errno = None;
     let result = (|| {
         let vcpu = unsafe { OwnedFd::from_raw_fd(ioctl(vm.as_raw_fd(), 0xae41, 0)?) };
         let mut run = Mapping::new(length, vcpu.as_raw_fd(), libc::MAP_SHARED)?;
-        let mut special = SpecialRegisters::default();
-        ioctl(
-            vcpu.as_raw_fd(),
-            0x8138ae83,
-            (&mut special as *mut SpecialRegisters) as libc::c_ulong,
-        )?;
-        special.segments[0].base = 0;
-        special.segments[0].selector = 0;
-        special.cr0 &= !1;
-        ioctl(
-            vcpu.as_raw_fd(),
-            0x4138ae84,
-            (&special as *const SpecialRegisters) as libc::c_ulong,
-        )?;
-        let mut registers = Registers {
-            rip: 0x1000,
-            rflags: 2,
-            ..Registers::default()
-        };
-        registers.general[6] = 0x2000;
-        ioctl(
-            vcpu.as_raw_fd(),
-            0x4090ae82,
-            (&registers as *const Registers) as libc::c_ulong,
-        )?;
-        let mut sequence = ExitSequence::default();
-        for _ in 0..2 {
-            ioctl(vcpu.as_raw_fd(), 0xae80, 0)?;
-            let bytes = unsafe { std::slice::from_raw_parts(run.pointer.cast::<u8>(), length) };
-            if !sequence.accept(bytes) {
+        let executed = (|| {
+            let mut special = SpecialRegisters::default();
+            ioctl(
+                vcpu.as_raw_fd(),
+                0x8138ae83,
+                (&mut special as *mut SpecialRegisters) as libc::c_ulong,
+            )?;
+            special.segments[0].base = 0;
+            special.segments[0].selector = 0;
+            special.cr0 &= !1;
+            ioctl(
+                vcpu.as_raw_fd(),
+                0x4138ae84,
+                (&special as *const SpecialRegisters) as libc::c_ulong,
+            )?;
+            let mut registers = Registers {
+                rip: 0x1000,
+                rflags: 2,
+                ..Registers::default()
+            };
+            registers.general[6] = 0x2000;
+            ioctl(
+                vcpu.as_raw_fd(),
+                0x4090ae82,
+                (&registers as *const Registers) as libc::c_ulong,
+            )?;
+            let mut sequence = ExitSequence::default();
+            for _ in 0..2 {
+                ioctl(vcpu.as_raw_fd(), 0xae80, 0)?;
+                let bytes = unsafe { std::slice::from_raw_parts(run.pointer.cast::<u8>(), length) };
+                if !sequence.accept(bytes) {
+                    return Err(rejected());
+                }
+            }
+            ioctl(
+                vcpu.as_raw_fd(),
+                0x8090ae81,
+                (&mut registers as *mut Registers) as libc::c_ulong,
+            )?;
+            if !sequence.complete()
+                || registers.general[0] & 0xff != 0x2a
+                || registers.rip != 0x1005
+            {
                 return Err(rejected());
             }
-        }
-        ioctl(
-            vcpu.as_raw_fd(),
-            0x8090ae81,
-            (&mut registers as *mut Registers) as libc::c_ulong,
-        )?;
-        if !sequence.complete() || registers.general[0] & 0xff != 0x2a || registers.rip != 0x1005 {
-            return Err(rejected());
-        }
-        run.close()?;
-        drop(vcpu);
-        Ok(())
+            Ok(())
+        })();
+        remember(&mut cleanup_errno, run.close());
+        remember(&mut cleanup_errno, close(vcpu));
+        executed
     })();
     region.memory_size = 0;
     let removed = ioctl(
@@ -164,10 +193,39 @@ pub(crate) fn child() -> io::Result<()> {
         0x4020ae46,
         (&region as *const MemoryRegion) as libc::c_ulong,
     );
-    drop(vm);
+    remember(&mut cleanup_errno, removed);
+    remember(&mut cleanup_errno, close(vm));
     let unmapped = ram.close();
-    drop(kvm);
-    removed?;
-    unmapped?;
-    result
+    remember(&mut cleanup_errno, unmapped);
+    remember(&mut cleanup_errno, close(kvm));
+    Ok(ChildReport {
+        primary_errno: result
+            .err()
+            .map(|error: io::Error| error.raw_os_error().unwrap_or(libc::EIO)),
+        cleanup_errno,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cleanup_fault_does_not_replace_primary_fault_or_become_success() {
+        let mut cleanup = None;
+        remember(
+            &mut cleanup,
+            Err::<(), _>(io::Error::from_raw_os_error(libc::EIO)),
+        );
+        remember(
+            &mut cleanup,
+            Err::<(), _>(io::Error::from_raw_os_error(libc::EBADF)),
+        );
+        let report = ChildReport {
+            primary_errno: Some(libc::EPERM),
+            cleanup_errno: cleanup,
+        };
+        assert_eq!(report.primary_errno, Some(libc::EPERM));
+        assert_eq!(report.cleanup_errno, Some(libc::EIO));
+        assert!(!report.passed());
+    }
 }
