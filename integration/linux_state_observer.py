@@ -23,7 +23,7 @@ def observe_home(run_fd, previous=None):
             raise ValueError('home_owner_mode')
         entries = []
         for category in CATEGORIES:
-            fd = os.open(category, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            fd = os.open(category, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
                          dir_fd=home_fd)
             try:
                 before = os.fstat(fd)

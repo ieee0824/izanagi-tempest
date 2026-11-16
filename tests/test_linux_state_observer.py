@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 import tempfile
+import signal
+import time
 import unittest
 from unittest.mock import patch
 
@@ -57,3 +59,33 @@ class ObserverTests(unittest.TestCase):
         path.symlink_to(self.home / 'hooks')
         with self.assertRaises(OSError):
             observe_home(self.fd)
+
+    def test_writerless_fifo_is_rejected_without_blocking(self):
+        path = self.home / 'settings'
+        path.unlink()
+        os.mkfifo(path, 0o600)
+        pid = os.fork()
+        if pid == 0:
+            try:
+                observe_home(self.fd)
+            except ValueError:
+                os._exit(0)
+            except BaseException:
+                os._exit(2)
+            os._exit(1)
+        status = None
+        try:
+            until = time.monotonic() + 1
+            while time.monotonic() < until:
+                waited, value = os.waitpid(pid, os.WNOHANG)
+                if waited:
+                    status = value
+                    break
+                time.sleep(0.001)
+        finally:
+            if status is None:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+        self.assertIsNotNone(status, 'FIFO observation blocked')
+        self.assertTrue(os.WIFEXITED(status))
+        self.assertEqual(os.WEXITSTATUS(status), 0)
