@@ -15,11 +15,7 @@ fn main() {
                         .cleanup_errno
                         .map_or_else(|| "null".into(), |value| value.to_string())
                 );
-                std::process::exit(if result.explicit_cleanup_complete {
-                    0
-                } else {
-                    1
-                });
+                std::process::exit(result.exit_code());
             }
             Err(_) => {
                 println!("{{\"status\":\"rejected_or_unconfirmed\"}}");

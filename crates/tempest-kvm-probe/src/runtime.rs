@@ -69,6 +69,31 @@ struct Mapping {
     length: usize,
     sink: Cleanup,
 }
+struct SlotGuard {
+    vm: i32,
+    armed: bool,
+    sink: Cleanup,
+}
+impl SlotGuard {
+    fn remove(&mut self) -> io::Result<i32> {
+        if !self.armed {
+            return Ok(0);
+        }
+        self.armed = false;
+        let empty = MemoryRegion::default();
+        ioctl(
+            self.vm,
+            0x4020ae46,
+            (&empty as *const MemoryRegion) as libc::c_ulong,
+        )
+    }
+}
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        let result = self.remove();
+        record(&self.sink, result);
+    }
+}
 impl Mapping {
     fn new(length: usize, fd: i32, flags: i32, sink: &Cleanup) -> io::Result<Self> {
         let pointer = unsafe {
@@ -193,10 +218,17 @@ fn execute(sink: &Cleanup) -> io::Result<ChildReport> {
             GUEST.len(),
         );
     }
-    let mut region = MemoryRegion {
+    let region = MemoryRegion {
         memory_size: RAM_BYTES as u64,
         userspace_addr: ram.pointer as u64,
         ..MemoryRegion::default()
+    };
+    // Arm before registration: even a failed registration converges on the
+    // same explicit removal attempt while VM and RAM are still alive.
+    let mut slot = SlotGuard {
+        vm: vm.as_raw_fd(),
+        armed: true,
+        sink: sink.clone(),
     };
     ioctl(
         vm.as_raw_fd(),
@@ -261,12 +293,8 @@ fn execute(sink: &Cleanup) -> io::Result<ChildReport> {
         remember(&mut cleanup_errno, close(vcpu));
         executed
     })();
-    region.memory_size = 0;
-    let removed = ioctl(
-        vm.as_raw_fd(),
-        0x4020ae46,
-        (&region as *const MemoryRegion) as libc::c_ulong,
-    );
+    let removed = slot.remove();
+    drop(slot);
     remember(&mut cleanup_errno, removed);
     remember(&mut cleanup_errno, close(vm));
     let unmapped = ram.close();

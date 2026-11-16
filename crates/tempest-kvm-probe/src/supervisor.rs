@@ -13,6 +13,18 @@ pub struct Outcome {
     pub primary_errno: Option<i32>,
     pub cleanup_errno: Option<i32>,
 }
+impl Outcome {
+    pub fn passed(&self) -> bool {
+        !self.deadline_exceeded
+            && self.child_terminal_reaped
+            && self.explicit_cleanup_complete
+            && self.primary_errno.is_none()
+            && self.cleanup_errno.is_none()
+    }
+    pub fn exit_code(&self) -> i32 {
+        if self.passed() { 0 } else { 1 }
+    }
+}
 
 fn terminal(pid: i32, until: Instant) -> io::Result<i32> {
     loop {
@@ -160,10 +172,9 @@ fn supervise_inner(
             Ok(Outcome {
                 deadline_exceeded: false,
                 child_terminal_reaped: true,
-                explicit_cleanup_complete: primary == 0
-                    && cleanup == 0
+                explicit_cleanup_complete: cleanup == 0
                     && libc::WIFEXITED(status)
-                    && libc::WEXITSTATUS(status) == 0,
+                    && libc::WEXITSTATUS(status) == i32::from(primary != 0 || cleanup != 0),
                 primary_errno: (primary != 0).then_some(primary),
                 cleanup_errno: (cleanup != 0).then_some(cleanup),
             })
@@ -212,6 +223,36 @@ pub fn run() -> io::Result<Outcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn primary_and_cleanup_status_are_independent_and_cli_never_masks_failure() {
+        for (primary, cleanup) in [
+            (Some(libc::EPERM), None),
+            (None, Some(libc::EIO)),
+            (Some(libc::EPERM), Some(libc::EIO)),
+        ] {
+            // Fixed child function pointers, no device access.
+            let child: fn() -> ChildReport = match (primary.is_some(), cleanup.is_some()) {
+                (true, false) => || ChildReport {
+                    primary_errno: Some(libc::EPERM),
+                    cleanup_errno: None,
+                },
+                (false, true) => || ChildReport {
+                    primary_errno: None,
+                    cleanup_errno: Some(libc::EIO),
+                },
+                _ => || ChildReport {
+                    primary_errno: Some(libc::EPERM),
+                    cleanup_errno: Some(libc::EIO),
+                },
+            };
+            let result = supervise(child, Duration::from_secs(1)).unwrap();
+            assert_eq!(result.primary_errno, primary);
+            assert_eq!(result.cleanup_errno, cleanup);
+            assert_eq!(result.explicit_cleanup_complete, cleanup.is_none());
+            assert!(!result.passed());
+            assert_eq!(result.exit_code(), 1);
+        }
+    }
     #[test]
     fn closed_gate_reader_becomes_epipe_and_owned_child_is_reaped() {
         let result = supervise_inner(
