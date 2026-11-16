@@ -269,6 +269,36 @@ mod tests {
             "initialization_tool_listing":unobserved})
     }
     #[test]
+    fn listing_accepts_only_listing_source_and_valid_digest() {
+        let base = report();
+        for (source, scope, accepted) in [
+            ("stream_json_listing", "initialization_tool_listing", true),
+            ("agent_self_report", "agent_claim", false),
+            ("os_observation", "process_isolation", false),
+            ("pinned_binary_static", "binary_configuration", false),
+        ] {
+            let mut value = base.clone();
+            value["initialization_tool_listing"] = serde_json::json!({"state":"observed",
+                "value":"e".repeat(64),"sources":[{"source":source,"scope":scope,
+                    "binding":base["binding"],"artifact_sha256":"d".repeat(64)}]});
+            assert_eq!(
+                serde_json::from_value::<DirectInvestigationReport>(value)
+                    .unwrap()
+                    .valid(),
+                accepted
+            );
+        }
+        let mut value = base.clone();
+        value["configured_budget"] = serde_json::json!({"state":"observed","value":20,
+            "sources":[{"source":"pinned_binary_static","scope":"binary_configuration",
+                "binding":base["binding"],"artifact_sha256":"d".repeat(64)}]});
+        assert!(
+            serde_json::from_value::<DirectInvestigationReport>(value)
+                .unwrap()
+                .valid()
+        );
+    }
+    #[test]
     fn report_rejects_forged_observed_requests_and_invalid_listing_digests() {
         let base = report();
         let source = serde_json::json!({"source":"stream_json_listing",

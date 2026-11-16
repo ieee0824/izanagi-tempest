@@ -37,15 +37,19 @@ SREGS/TSS/extensionの具体ABI layoutは実装時に固定header由来の型と
 生成後fork/dup/SCM_RIGHTSは行いません。全FDはCLOEXEC、実行childはexecしません。
 parentはPIDFDとbirth/lineageへ結合し、monotonic全体5秒を上限にします。
 期限時はchildをPIDFDでkillし、terminal wait/reapまで成功を返しません。
-通常・失敗ともkvm_run unmap、vCPU close、memory slot削除、VM close、RAM unmap、
-KVM closeを明示し、child terminalを親が検証します。cleanup失敗は本処理成功を覆します。
+通常終了と協調的な失敗ではkvm_run unmap、vCPU close、memory slot削除、VM close、RAM unmap、
+KVM closeを明示し、`explicit_cleanup_complete`として記録します。cleanup失敗は本処理成功を覆します。
+SIGKILL期限経路ではこの明示cleanupは実行不能なのでfalseとし、親がPIDFD死亡とterminal reapを確認した
+`child_terminal_reaped`を別checkにします。最後のFD参照消滅によるkernel回収を、
+明示unmap/slot削除成功へ読み替えません。期限は常に失敗で、回収成功でも上書きしません。
 公開診断は固定stage/check/errno番号/exit/signalと回収boolだけで、guest memoryは出力しません。
 
 ## 配布・受入
 
 管理者はレビュー済みcommitをlocked buildし、SHA256を記録してroot所有0700 directory内の
-root所有0755固定binaryへinstallします。専用userから親directoryが通過可能なmodeを
-別途選定し、書換え不能を全ancestorで検査します（0700のままでは専用userが実行不能）。
+root所有0755固定binaryへinstallします。配布時にはdirectoryをroot:tempest-kvm 0750、
+binaryをroot:tempest-kvm 0550へ固定し、専用userの通過・実行可能性と書換え不能を
+全ancestorで検査します。build staging用0700 directoryを配布先として流用しません。
 最終install path/hashはartifact作成後に固定し、placeholder commandは実行させません。
 
 受入には正常IO→HLT、unsupported extension、異常exit、deadline、cleanup失敗の負例、
