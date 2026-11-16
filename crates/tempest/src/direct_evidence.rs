@@ -1,10 +1,35 @@
 //! Investigation data only. No conversion into a launch proof or permit.
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DirectMode {
     LinuxDirectInvestigation,
+}
+
+/// Static investigation identity, deliberately without executable/path/argv.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectInvestigationProfile {
+    pub schema_version: u64,
+    pub mode: DirectMode,
+    pub cli_version: String,
+    pub binary_sha256: String,
+}
+
+impl DirectInvestigationProfile {
+    pub fn valid(&self) -> bool {
+        self.schema_version == 1 && self.cli_version == "2.1.325" && hex(&self.binary_sha256, 64)
+    }
+    /// Digest of this typed profile's compact serde_json serialization.
+    /// Not a digest of an arbitrary input JSON byte stream.
+    pub fn digest(&self) -> Option<String> {
+        self.valid()
+            .then(|| serde_json::to_vec(self).ok())
+            .flatten()
+            .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -137,6 +162,12 @@ pub struct DirectInvestigationReport {
 }
 
 impl DirectInvestigationReport {
+    pub fn valid_for_profile(&self, profile: &DirectInvestigationProfile) -> bool {
+        self.valid()
+            && profile.valid()
+            && profile.binary_sha256 == self.binding.binary_sha256
+            && profile.digest().as_deref() == Some(self.binding.profile_sha256.as_str())
+    }
     pub fn valid(&self) -> bool {
         self.schema_version == 1
             && self.binding.valid()
@@ -162,6 +193,30 @@ impl DirectInvestigationReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn profile_report_binding_and_relay_separation() {
+        let mut profile = DirectInvestigationProfile {
+            schema_version: 1,
+            mode: DirectMode::LinuxDirectInvestigation,
+            cli_version: "2.1.325".into(),
+            binary_sha256: "c".repeat(64),
+        };
+        let mut report: DirectInvestigationReport = serde_json::from_value(report()).unwrap();
+        report.binding.profile_sha256 = profile.digest().unwrap();
+        assert!(report.valid_for_profile(&profile));
+        let value = serde_json::to_value(&profile).unwrap();
+        assert!(
+            serde_json::from_value::<crate::capability_proof::LauncherProfile>(value.clone())
+                .is_err()
+        );
+        let mut mixed = value;
+        mixed["acceptance_request_count"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<DirectInvestigationProfile>(mixed).is_err());
+        profile.binary_sha256 = "d".repeat(64);
+        assert!(!report.valid_for_profile(&profile));
+        profile.cli_version = "other".into();
+        assert!(profile.digest().is_none());
+    }
     #[test]
     fn evidence_boundaries_and_cross_field_scope_fail_closed() {
         let value = report();
@@ -212,6 +267,40 @@ mod tests {
             "request_headers":unobserved,"request_count":unobserved,"retry_count":unobserved,
             "budget_enforced":unobserved,"configured_budget":unobserved,
             "initialization_tool_listing":unobserved})
+    }
+    #[test]
+    fn report_rejects_forged_observed_requests_and_invalid_listing_digests() {
+        let base = report();
+        let source = serde_json::json!({"source":"stream_json_listing",
+            "scope":"initialization_tool_listing","binding":base["binding"],
+            "artifact_sha256":"d".repeat(64)});
+        for (field, value) in [
+            ("request_catalog_sha256", serde_json::json!("e".repeat(64))),
+            ("request_schema_sha256", serde_json::json!("e".repeat(64))),
+            ("request_headers", serde_json::json!(true)),
+            ("request_count", serde_json::json!(0)),
+            ("retry_count", serde_json::json!(0)),
+            ("budget_enforced", serde_json::json!(true)),
+        ] {
+            let mut invalid = base.clone();
+            invalid[field] =
+                serde_json::json!({"state":"observed","value":value,"sources":[source]});
+            assert!(
+                !serde_json::from_value::<DirectInvestigationReport>(invalid)
+                    .unwrap()
+                    .valid()
+            );
+        }
+        for digest in ["", "not-a-digest", &"e".repeat(63), &"G".repeat(64)] {
+            let mut invalid = base.clone();
+            invalid["initialization_tool_listing"] = serde_json::json!({"state":"observed",
+                "value":digest,"sources":[source]});
+            assert!(
+                !serde_json::from_value::<DirectInvestigationReport>(invalid)
+                    .unwrap()
+                    .valid()
+            );
+        }
     }
     #[test]
     fn direct_report_is_not_a_relay_profile_and_never_promotes_request_claims() {
