@@ -10,7 +10,7 @@ use super::{
 };
 use std::{
     fs::{self, File},
-    io::{self, Write},
+    io::{self, Read, Write},
     os::{
         fd::{AsRawFd, OwnedFd, RawFd},
         unix::fs::{MetadataExt, OpenOptionsExt},
@@ -566,6 +566,7 @@ fn baseline(
     let mut workers = Vec::new();
     let until = Instant::now() + OVERALL;
     let mut descendants = Vec::new();
+    let mut state_records = None;
     let pids_before = if scenario == Scenario::PidsLimit {
         Some(group.pids_events()?)
     } else {
@@ -596,6 +597,24 @@ fn baseline(
                 group,
                 registry,
             )?);
+        }
+        if matches!(scenario, Scenario::StateRun1 | Scenario::StateRun2) {
+            let records = workers
+                .iter()
+                .map(|worker| worker.record)
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|_| Fault::Identity)?;
+            registry.state_sequence.begin(
+                if scenario == Scenario::StateRun1 {
+                    1
+                } else {
+                    2
+                },
+                nonce,
+                records,
+            )?;
+            state_records = Some(records);
         }
         let peers: [u32; 3] = workers
             .iter()
@@ -750,6 +769,116 @@ fn baseline(
         }
         progress(scenario, "collector")?;
         let mut observations = Vec::new();
+        if matches!(scenario, Scenario::StateRun1 | Scenario::StateRun2) {
+            for worker in &workers {
+                let written = event(worker, until, &workers)?;
+                if written.role != worker.role
+                    || written.nonce != nonce
+                    || written.phase != Phase::StateWritten
+                    || written.bootstrap.is_some()
+                    || written.library_fault.is_some()
+                    || written.rejection.is_some()
+                    || written.checks.len() != 3
+                    || !written
+                        .checks
+                        .iter()
+                        .zip([
+                            contract::Check::PrivateHomeReadable,
+                            contract::Check::PreviousStateAbsent,
+                            contract::Check::StateMarkerCreated,
+                        ])
+                        .all(|(value, check)| {
+                            value.check == check
+                                && value.passed
+                                && value.role == Some(worker.role)
+                                && value.scenario.is_none()
+                        })
+                {
+                    return Err(Fault::Identity);
+                }
+                let state = worker
+                    .process
+                    .observe(group, worker.role, &worker.descriptors)?;
+                if !contract::ready(worker.role, &worker.expected, &state, &nonce, &nonce) {
+                    return Err(Fault::Identity);
+                }
+                // The proc root is intentionally followed only for the already
+                // PIDFD-bound live child. All subsequent traversal uses dirfds.
+                let root = File::open(format!("/proc/{}/root", worker.process.pid))?;
+                let state_fd = unsafe {
+                    libc::openat(
+                        root.as_raw_fd(),
+                        c"state".as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                };
+                if state_fd < 0 {
+                    return Err(io::Error::last_os_error().into());
+                }
+                let directory =
+                    unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(state_fd) };
+                let marker_fd = unsafe {
+                    libc::openat(
+                        directory.as_raw_fd(),
+                        c"marker".as_ptr(),
+                        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                };
+                if marker_fd < 0 {
+                    return Err(io::Error::last_os_error().into());
+                }
+                let mut marker =
+                    unsafe { <File as std::os::fd::FromRawFd>::from_raw_fd(marker_fd) };
+                let metadata = marker.metadata()?;
+                let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+                os::syscall(unsafe { libc::fstatfs(marker.as_raw_fd(), filesystem.as_mut_ptr()) })?;
+                let filesystem = unsafe { filesystem.assume_init() };
+                let mut mount = std::mem::MaybeUninit::<libc::statx>::zeroed();
+                os::syscall(unsafe {
+                    libc::statx(
+                        marker.as_raw_fd(),
+                        c"".as_ptr(),
+                        libc::AT_EMPTY_PATH,
+                        libc::STATX_MNT_ID | libc::STATX_INO,
+                        mount.as_mut_ptr(),
+                    )
+                })?;
+                let mount = unsafe { mount.assume_init() };
+                let mut content = Vec::new();
+                Read::by_ref(&mut marker)
+                    .take(17)
+                    .read_to_end(&mut content)?;
+                if content != nonce
+                    || filesystem.f_type != libc::TMPFS_MAGIC
+                    || mount.stx_mask & (libc::STATX_MNT_ID | libc::STATX_INO)
+                        != (libc::STATX_MNT_ID | libc::STATX_INO)
+                    || mount.stx_mnt_id == 0
+                    || mount.stx_ino != metadata.ino()
+                    || !metadata.is_file()
+                    || metadata.uid() != worker.role.uid()
+                    || metadata.mode() & 0o777 != 0o600
+                    || !worker.process.alive()?
+                {
+                    return Err(Fault::Identity);
+                }
+                drop(marker);
+                drop(directory);
+                drop(root);
+                for mut value in written.checks {
+                    value.scenario = Some(scenario);
+                    observations.push(value);
+                }
+                observations.push(Observation {
+                    scenario: Some(scenario),
+                    check: contract::Check::StateMarkerObserved,
+                    role: Some(worker.role),
+                    passed: true,
+                    attempts: 1,
+                    denials: 0,
+                });
+                worker.start.send(b"G")?;
+            }
+        }
         for worker in &workers {
             if (scenario.resource() || scenario.lifecycle()) && worker.role != Role::A {
                 worker.start.send(b"G")?;
@@ -1053,6 +1182,45 @@ fn baseline(
     if !group.empty()? {
         return Err(Fault::Kernel(libc::EBUSY));
     }
+    if let Some(records) = state_records {
+        // Channels remain owned by Worker until dropped. Verify all PIDFDs
+        // before releasing them, then remove only the fixed empty host roots.
+        let dead = workers.iter().try_fold(true, |dead, worker| {
+            Ok::<_, Fault>(dead && !worker.process.alive()?)
+        })?;
+        result.as_ref().map_err(|fault| *fault)?;
+        group_stopped?;
+        drop(targets);
+        drop(workers);
+        for role in Role::ALL {
+            let path = Path::new(RUN).join(role.name());
+            fs::remove_dir(&path)?;
+            if !fs::symlink_metadata(&path)
+                .is_err_and(|error| error.raw_os_error() == Some(libc::ENOENT))
+            {
+                return Err(Fault::Identity);
+            }
+        }
+        registry
+            .state_sequence
+            .finish(nonce, records, dead && group.empty()?)?;
+        if let Ok(values) = &mut result {
+            for check in [
+                contract::Check::StateGenerationBound,
+                contract::Check::StateCleanupComplete,
+            ] {
+                values.push(Observation {
+                    scenario: Some(scenario),
+                    check,
+                    role: None,
+                    passed: true,
+                    attempts: 3,
+                    denials: 0,
+                });
+            }
+        }
+        return result;
+    }
     if scenario == Scenario::CgroupKillNoop {
         // Do not let successful fallback mask an earlier payload/identity error.
         result.as_ref().map_err(|fault| *fault)?;
@@ -1257,6 +1425,19 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         canary.write_all(b"dummy-fd-canary")?;
         drop(canary);
         let mut observed = (|| {
+            let mut state_observed = Vec::new();
+            for scenario in [Scenario::StateRun1, Scenario::StateRun2] {
+                active_scenario = Some(scenario);
+                state_observed.extend(baseline(
+                    &code,
+                    &libraries,
+                    &group,
+                    &mut phase,
+                    scenario,
+                    &mut registry,
+                    &mut first_fault,
+                )?);
+            }
             active_scenario = Some(Scenario::Baseline);
             let mut observed = baseline(
                 &code,
@@ -1267,6 +1448,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
                 &mut registry,
                 &mut first_fault,
             )?;
+            observed.extend(state_observed);
             observed.push(Observation {
                 scenario: None,
                 check: contract::Check::WatchdogHandoff,

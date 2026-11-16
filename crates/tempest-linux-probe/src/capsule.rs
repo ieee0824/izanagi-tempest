@@ -264,6 +264,21 @@ pub(super) fn enter(
     }
     chown(&root.join("work"), role.uid())?;
     chown(&root.join("tmp"), role.uid())?;
+    if matches!(scenario, Scenario::StateRun1 | Scenario::StateRun2) {
+        for directory in ["home", "state"] {
+            let path = root.join(directory);
+            fs::DirBuilder::new().mode(0o700).create(&path)?;
+            chown(&path, role.uid())?;
+        }
+        let path = root.join("home/private.canary");
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(b"dummy-private-home")?;
+        chown(&path, role.uid())?;
+    }
     if role == Role::A {
         chown(&root.join("private"), role.uid())?;
         let path = root.join("private/credential.canary");

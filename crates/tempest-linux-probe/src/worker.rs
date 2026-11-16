@@ -440,6 +440,47 @@ pub(super) fn run() -> i32 {
     if !event(&manifest, Phase::Entered, Vec::new()) {
         return 3;
     }
+    if matches!(manifest.scenario, Scenario::StateRun1 | Scenario::StateRun2) {
+        let previous_absent = fs::symlink_metadata("/state/marker")
+            .is_err_and(|error| error.raw_os_error() == Some(libc::ENOENT));
+        let created = previous_absent
+            && fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open("/state/marker")
+                .and_then(|mut file| file.write_all(&manifest.nonce))
+                .is_ok()
+            && fs::read("/state/marker").is_ok_and(|bytes| bytes == manifest.nonce);
+        let values = vec![
+            observe(
+                Check::PrivateHomeReadable,
+                manifest.role,
+                fs::read("/home/private.canary").is_ok_and(|bytes| bytes == b"dummy-private-home"),
+                0,
+            ),
+            observe(
+                Check::PreviousStateAbsent,
+                manifest.role,
+                previous_absent,
+                1,
+            ),
+            observe(Check::StateMarkerCreated, manifest.role, created, 0),
+        ];
+        let passed = values.iter().all(|value| value.passed);
+        if !event(&manifest, Phase::StateWritten, values) || !wait() {
+            return 3;
+        }
+        if !event(
+            &manifest,
+            Phase::Done,
+            vec![observe(Check::StateMarkerCreated, manifest.role, passed, 0)],
+        ) {
+            return 4;
+        }
+        wait();
+        return if passed { 0 } else { 1 };
+    }
     if manifest.scenario == Scenario::MemoryOom && manifest.role == Role::A {
         const LENGTH: usize = 160 * 1024 * 1024;
         let mapping = unsafe {

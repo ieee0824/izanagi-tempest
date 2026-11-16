@@ -11,7 +11,6 @@ pub(super) struct RecordId(u64);
 
 /// Data-only evidence; no namespace or root descriptor survives cleanup.
 #[derive(Default)]
-#[allow(dead_code)] // Connected to the fixed two-run supervisor in the next step.
 pub(super) struct StateSequence {
     active: Option<([u8; 16], [RecordId; 3])>,
     previous: Option<([u8; 16], [RecordId; 3])>,
@@ -19,7 +18,6 @@ pub(super) struct StateSequence {
     failed: bool,
 }
 
-#[allow(dead_code)]
 impl StateSequence {
     pub(super) fn begin(
         &mut self,
@@ -113,6 +111,7 @@ struct Entry {
 
 #[derive(Default)]
 pub(super) struct Registry {
+    pub(super) state_sequence: StateSequence,
     entries: Vec<Entry>,
     next_id: u64,
 }
