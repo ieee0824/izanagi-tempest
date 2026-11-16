@@ -17,6 +17,7 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 | owner-private configの生成、login、検査、run、cleanup | 未実装・login未承認 | fresh subscription loginと本番callは段階承認#15836/#15839の範囲外（Issue comment 6877675122） |
 | run間のstate独立性 | 未実装 | Claude 2.1.325のsession保存停止、config/session/cache/lock/backupの連続2 run非到達と両run cleanupが必要 |
 | subscription通信境界 | 未実装 | 法務制約によりOAuth tokenのTempest介在を禁止。Claude親direct egress allowlistとMCP子の外部network拒否を別に実装する。既存API-key/mock relayを根拠にしない |
+| direct profile・report schema | 未実装 | 固定binary、OS隔離、宛先制限、stream-json開始時のtool一覧、model自己申告は別々の証拠とする。request catalog/schema/header/budget/retryはdirect TLS内で未観測のため`unknown`であり、既存relayの検査済み契約を流用しない |
 | 秘密の成果物・log・process metadata非露出 | 部分実装 | dummy診断はraw argv/env/stderr/任意pathを公開しない。実credentialを使う正負試験は未実施 |
 | 本番B固定VM経路 | 未実装 | Linux direct probeをIzanagi/guest/HTTP MCPへ結線していない |
 | KVM段階gate | 承認済・未達 | #15865/#15872で非login専用system userだけのKVM利用を承認。現userは`/dev/kvm` EACCES。専用userでopen、必要ioctl、最小VM、固定Izanagi最小起動を順に確認する（Issue comments 6891158817、6891364329） |
@@ -30,6 +31,8 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 
 1. 通常HOME、既存Claude config、既存MCPを表すcanaryを用意し、固定dummy A/B/Gからの非到達と、許可したprivate HOMEだけの正到達をroot integrationで検証する。
 2. 異なるprivate run stateで連続2 runを行い、前runのartifact/session/lockへ次runから到達できず、両runの終了後に自所有資源が残らないことを検証する。
+
+具体的な受入設計は[Linux HOME・run state隔離gate](LINUX_STATE_ISOLATION.md)に固定します。
 
 本番B/VM/KVMへは結線しません。KVMの永続host変更は承認済み設計に従う管理者checkpointとして分離し、
 失敗時にroot QEMU、TCG、既存macOS/aarch64実測へfallbackしません。
