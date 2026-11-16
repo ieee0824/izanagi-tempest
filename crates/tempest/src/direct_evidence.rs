@@ -109,6 +109,15 @@ impl<T> Evidence<T> {
     pub fn is_unobserved(&self) -> bool {
         matches!(self, Self::Unobserved { .. })
     }
+    fn valid_for(&self, binding: &Binding, scope: Scope) -> bool {
+        self.valid(binding)
+            && match self {
+                Self::Unobserved { .. } => true,
+                Self::Unknown { sources, .. } | Self::Observed { sources, .. } => {
+                    sources.iter().all(|source| source.scope == scope)
+                }
+            }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -137,14 +146,64 @@ impl DirectInvestigationReport {
             && self.request_count.is_unobserved()
             && self.retry_count.is_unobserved()
             && self.budget_enforced.is_unobserved()
-            && self.configured_budget.valid(&self.binding)
-            && self.initialization_tool_listing.valid(&self.binding)
+            && self
+                .configured_budget
+                .valid_for(&self.binding, Scope::BinaryConfiguration)
+            && self
+                .initialization_tool_listing
+                .valid_for(&self.binding, Scope::InitializationToolListing)
+            && match &self.initialization_tool_listing {
+                Evidence::Observed { value, .. } => hex(value, 64),
+                _ => true,
+            }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn evidence_boundaries_and_cross_field_scope_fail_closed() {
+        let value = report();
+        let binding: Binding = serde_json::from_value(value["binding"].clone()).unwrap();
+        let source = EvidenceRef {
+            source: Source::StreamJsonListing,
+            scope: Scope::InitializationToolListing,
+            binding: binding.clone(),
+            artifact_sha256: "d".repeat(64),
+        };
+        for count in [0, 9] {
+            let evidence = Evidence::Observed {
+                value: 0,
+                sources: vec![source.clone(); count],
+            };
+            assert!(!evidence.valid(&binding));
+        }
+        for field in ["run_id", "profile_sha256", "binary_sha256"] {
+            let mut wrong = serde_json::to_value(&source).unwrap();
+            wrong["binding"][field] =
+                serde_json::json!("e".repeat(if field == "run_id" { 32 } else { 64 }));
+            let wrong: EvidenceRef = serde_json::from_value(wrong).unwrap();
+            assert!(
+                !Evidence::Observed {
+                    value: 0,
+                    sources: vec![wrong]
+                }
+                .valid(&binding)
+            );
+        }
+        let mut invalid = value;
+        invalid["configured_budget"] = serde_json::to_value(Evidence::Observed {
+            value: 0,
+            sources: vec![source],
+        })
+        .unwrap();
+        assert!(
+            !serde_json::from_value::<DirectInvestigationReport>(invalid)
+                .unwrap()
+                .valid()
+        );
+    }
     fn report() -> serde_json::Value {
         let unobserved = serde_json::json!({"state":"unobserved","reason":"no_measurement_path"});
         serde_json::json!({"schema_version":1,"mode":"linux_direct_investigation",
