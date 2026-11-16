@@ -1185,6 +1185,9 @@ dependencies = [
 [[package]]
 name = "tempest-kvm-probe"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "tempest-linux-probe"
