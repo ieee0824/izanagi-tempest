@@ -1,6 +1,9 @@
 name: KVM probe unit checks
 
 on:
+  push:
+    branches:
+      - 'pronnia/linux-direct-stage'
   pull_request:
     paths:
       - '.github/workflows/kvm-unit.yml'
