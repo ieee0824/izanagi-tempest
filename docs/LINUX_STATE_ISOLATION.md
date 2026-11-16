@@ -25,7 +25,8 @@ private HOMEとrun stateはそのtmpfs内に作り、role UIDだけがread/write
 2. 各roleは自分のprivate HOME canaryをreadし、run stateへ固定markerを`O_CREAT|O_EXCL`で書いてread backする。
 3. workerはmarker作成後に固定phaseで停止する。親はworkerのPIDFDとmount namespace identityを照合し、
    `/proc/<pid>/root`の保持dirfdからmarkerを開いて内容、dev/inode、mount IDを記録する。
-4. 親が続行を許可した後に全roleを終了・reapし、cgroup空、role tmpfs/mount消滅、socket/path不在を確認する。
+4. 親が続行を許可した後、同run照合用のroot/marker/namespace FDを閉じてから全roleを終了・reapし、
+   cgroup空、role tmpfs/mount消滅、socket/path不在を確認する。保持FDをrun境界の外へ持ち越さない。
 
 host側canaryの同時正読取、worker側のpath非到達とFD閉鎖、private HOMEの正到達を組にします。
 従って、存在しない固定pathへの単発`ENOENT`だけを成功根拠にしません。
@@ -33,13 +34,15 @@ host側canaryの同時正読取、worker側のpath非到達とFD閉鎖、private
 ## 連続2 run
 
 同じsynthetic host HOMEを保持したまま、run1を完全回収してからrun2を開始します。
-run ID、nonce、worker PIDFD、mount namespace、tmpfs mount ID、marker dev/inodeはrunごとに異なることを要求します。
+親が発行するrun nonceとPID由来でない単調増加の世代RecordIdをrunへ結びます。PID、dev/inode、
+namespace inode、mount IDの数値差はkernel再利用のため要求せず、数値の一致を同一世代の根拠にもしません。
 
 - run1では`previous` markerがないことを確認してからrun1 markerを書き、親が生存中に保持FDで存在を証明する。
 - run1終了後、全roleのPIDFD死亡/reap、cgroup空、socket/path/mount残留0を確認するまでrun2を開始しない。
-- run2は同じ論理pathでrun1 markerを読めないことを確認する。同時に親が保存したrun1の固定digest・identity記録と、
-  run2の異なるmount IDを照合し、run1 markerが実在した別mountだったことを証明する。
-- run2は自分のmarkerを新規作成してread/write成功を確認し、run1と同じ完全回収条件を通す。
+- run2は新規tmpfsの作成成功を同runの保持FDから確認し、同じ論理pathでrun1 markerを読めないことを確認する。
+  親が保存したrun1のnonce・世代RecordId・固定digestは、run1 markerが実在し検証済みだった証拠として残す。
+- run2はrun2 nonceを含むmarkerを`O_CREAT|O_EXCL`で新規作成してread/write成功を確認し、
+  run1と同じ完全回収条件を通す。
 
 公開監査は固定check名、run番号、role、attempt/denial件数、namespace/mount identityの一致・不一致boolだけを出します。
 canary本文、任意path、raw errno文字列、argv/envは出しません。失敗したrunを後続runの成功で上書きせず、
@@ -48,7 +51,8 @@ run1またはcleanupが不完全ならrun2を開始しません。
 ## 受入と非主張
 
 rootless unitではmanifest/checkのexact schema、未知field拒否、run順序、identity比較を検証します。
-専用Linux root integrationではhost正対照、全role負例、各role正対照、2 run identity差、各run完全回収を実測します。
+専用Linux root integrationではhost正対照、全role負例、各role正対照、nonce/RecordIdによる世代結合、
+新規tmpfsと`O_EXCL`生成、各run完全回収を実測します。
 
 このgateはdummy capsuleのHOME・state分離だけを支持します。Claude Code 2.1.325の実際のsettings探索、
 session保存停止、subscription credential、direct API通信、本番B/VM、KVM/imageの成立は証明しません。
