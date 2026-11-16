@@ -9,6 +9,7 @@ mod collection;
 pub mod comparison_plan;
 pub mod comparison_runner;
 pub mod deviation;
+pub mod direct_evidence;
 pub mod evaluate;
 mod guest_transport;
 mod host_io;
