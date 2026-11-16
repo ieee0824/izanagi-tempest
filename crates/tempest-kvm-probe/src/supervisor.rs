@@ -32,9 +32,16 @@ fn terminal(pid: i32, until: Instant) -> io::Result<i32> {
 }
 
 fn supervise(child: fn() -> ChildReport, budget: Duration) -> io::Result<Outcome> {
+    supervise_inner(child, budget, false)
+}
+fn supervise_inner(
+    child: fn() -> ChildReport,
+    budget: Duration,
+    missing_gate_reader: bool,
+) -> io::Result<Outcome> {
     // Fixed standalone probe policy; EPIPE must become a diagnostic, not death.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    if unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) } == libc::SIG_ERR {
+        return Err(io::Error::last_os_error());
     }
     let mut gate = [-1; 2];
     if unsafe { libc::pipe2(gate.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -57,6 +64,17 @@ fn supervise(child: fn() -> ChildReport, budget: Duration) -> io::Result<Outcome
     if pid == 0 {
         drop(write);
         drop(report_read);
+        // Private fault fixture: acknowledge reader closure, then wait for
+        // parent PIDFD recovery. Production always passes false.
+        if missing_gate_reader {
+            drop(read);
+            unsafe {
+                libc::write(report_write.as_raw_fd(), c"E".as_ptr().cast(), 1);
+                loop {
+                    libc::pause();
+                }
+            }
+        }
         let mut byte = 0_u8;
         let armed = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } == 0
             && unsafe { libc::getppid() } == parent;
@@ -90,6 +108,30 @@ fn supervise(child: fn() -> ChildReport, budget: Duration) -> io::Result<Outcome
         return Err(io::Error::from_raw_os_error(libc::ENOSYS));
     }
     let pidfd = unsafe { OwnedFd::from_raw_fd(fd) };
+    if missing_gate_reader {
+        let mut poll = libc::pollfd {
+            fd: report_read.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let mut byte = 0_u8;
+        if unsafe { libc::poll(&mut poll, 1, 1000) } != 1
+            || unsafe { libc::read(report_read.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) } != 1
+            || byte != b'E'
+        {
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    pidfd.as_raw_fd(),
+                    libc::SIGKILL,
+                    0,
+                    0,
+                );
+            }
+            terminal(pid, Instant::now() + Duration::from_secs(2))?;
+            return Err(io::Error::from_raw_os_error(libc::EPROTO));
+        }
+    }
     let sent = unsafe { libc::write(write.as_raw_fd(), c"G".as_ptr().cast(), 1) } == 1;
     drop(write);
     let result = if sent {
@@ -170,6 +212,19 @@ pub fn run() -> io::Result<Outcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn closed_gate_reader_becomes_epipe_and_owned_child_is_reaped() {
+        let result = supervise_inner(
+            || panic!("payload must not start"),
+            Duration::from_secs(2),
+            true,
+        )
+        .unwrap();
+        assert_eq!(result.primary_errno, Some(libc::EPIPE));
+        assert!(result.child_terminal_reaped);
+        assert!(!result.explicit_cleanup_complete);
+        assert!(!result.deadline_exceeded);
+    }
     #[test]
     fn normal_failure_and_deadline_are_distinct_without_kvm() {
         let normal = supervise(

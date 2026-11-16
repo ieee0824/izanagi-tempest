@@ -4,10 +4,16 @@ fn main() {
         match tempest_kvm_probe::supervisor::run() {
             Ok(result) => {
                 println!(
-                    "{{\"deadline_exceeded\":{},\"child_terminal_reaped\":{},\"explicit_cleanup_complete\":{}}}",
+                    "{{\"deadline_exceeded\":{},\"child_terminal_reaped\":{},\"explicit_cleanup_complete\":{},\"primary_errno\":{},\"cleanup_errno\":{}}}",
                     result.deadline_exceeded,
                     result.child_terminal_reaped,
-                    result.explicit_cleanup_complete
+                    result.explicit_cleanup_complete,
+                    result
+                        .primary_errno
+                        .map_or_else(|| "null".into(), |value| value.to_string()),
+                    result
+                        .cleanup_errno
+                        .map_or_else(|| "null".into(), |value| value.to_string())
                 );
                 std::process::exit(if result.explicit_cleanup_complete {
                     0
