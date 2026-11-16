@@ -9,7 +9,8 @@ device実行・専用user作成・installは未実施です。
 
 `cargo fmt --all -- --check`、`cargo build --workspace --locked`、
 `cargo clippy --workspace --all-targets --locked -- -D warnings`は成功しました。
-`cargo test --locked -p tempest-kvm-probe`は11 tests成功、workspace全testは実行中です。
+`cargo test --locked -p tempest-kvm-probe`は11 tests成功、
+`cargo test --workspace --locked`も全体exit0で完了しました。
 
 | 根拠 | 確認範囲 |
 | --- | --- |
