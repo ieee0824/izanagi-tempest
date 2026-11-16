@@ -77,7 +77,13 @@ binary SHA256は`7cf4e16d7ba3f58dcb0bff1e53bb6fed0b01f9f5a7fd20ac5f0beefc0314a0a
 独立driver `f469ad4`はcapture2/read18/各run21checkを実測し、driver exit0、probe incomplete、
 elapsed110027ms、guardian回収、最終ROOT/RUN不在を確認しました。
 private監査JSON SHA256は`f63d2ef3bc98cacfcb21b8de2afff16652a5796c1d3dc20b9152cb861d8a0736`です。
-cleanup診断とprogress保持FDを強化した最新版fixtureの最終受入は継続中です。
+最終fixture `d598243`の独立実測もdriver exit0、wall112.81秒、capture2/read18/各run21checkを確認しました。
+binary SHA256は上記`7cf4e16d…`と同じで、private監査JSON SHA256は
+`9a282b775fa7110880ae0e77c9137f9c98fcc94a211aed2b4236f74ed1fd47f1`です。
+probe elapsed108365ms、guardian normal_completion/verified・exit0・reap済み、最終ROOT/RUN不在です。
+probe statusはincomplete、production_authorized=falseを維持します。
+driver stderrは出力なしを観測しましたが専用byte counter未保存のため件数は未測定です。
+追加root実測は行わず、このdummy checkpointを本番gateと分けて受入監査へ渡します。
 上記の部分的実測を、この節全体のgate完了や本番実行許可とは扱いません。
 
 ### driver独立正対照の固定捕捉点（実装済み・最終受入継続）

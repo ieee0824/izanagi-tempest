@@ -65,5 +65,14 @@ const _: () = {
     assert!(size_of::<SpecialRegisters>() == 312);
     assert!(size_of::<MemoryRegion>() == 32);
     assert!(std::mem::offset_of!(Registers, rip) == 128);
+    assert!(std::mem::offset_of!(Registers, general) == 0);
+    assert!(std::mem::offset_of!(Registers, general) + 6 * size_of::<u64>() == 48);
+    assert!(std::mem::offset_of!(Registers, rflags) == 136);
+    assert!(std::mem::offset_of!(SpecialRegisters, segments) == 0);
     assert!(std::mem::offset_of!(SpecialRegisters, cr0) == 224);
+    assert!(std::mem::offset_of!(MemoryRegion, slot) == 0);
+    assert!(std::mem::offset_of!(MemoryRegion, flags) == 4);
+    assert!(std::mem::offset_of!(MemoryRegion, guest_phys_addr) == 8);
+    assert!(std::mem::offset_of!(MemoryRegion, memory_size) == 16);
+    assert!(std::mem::offset_of!(MemoryRegion, userspace_addr) == 24);
 };

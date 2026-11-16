@@ -5,6 +5,11 @@ fn main() {
     {
         return;
     }
+    assert_eq!(
+        std::env::var("HOST").unwrap(),
+        std::env::var("TARGET").unwrap(),
+        "KVM ABI verification supports native Linux/x86_64 builds only"
+    );
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("abi_check.o");
     let result = std::process::Command::new("cc")
         .args(["-std=c11", "-Wall", "-Werror", "-c", "abi_check.c", "-o"])
