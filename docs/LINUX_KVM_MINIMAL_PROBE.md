@@ -1,6 +1,6 @@
 # 固定x86_64最小KVM検証器案
 
-未実装の設計案です。[管理者checkpoint](LINUX_KVM_ADMIN_GATE.md)のstage2用で、
+固定binaryを実装し、build-only検証を行っています。[管理者checkpoint](LINUX_KVM_ADMIN_GATE.md)のstage2用で、
 Izanagi/image/network/credentialは扱いません。
 APIの根拠は[Linux公式KVM API](https://docs.kernel.org/virt/kvm/api.html)です。
 
@@ -29,7 +29,8 @@ command、path、環境設定を受けません。x86_64以外とroot実行を�
    想定外exit、shutdown、internal error、余分なIO、繰返し上限超過は失敗です。
 
 CPU/host差で上記列が成立しない場合も成功へfallbackしません。
-SREGS/TSS/extensionの具体ABI layoutは実装時に固定header由来の型とsizeテストで再確認します。
+実使用するABI layout・offset・ioctl値はnative Linux/x86_64 build時にC headerとRustの静的検査で照合します。
+実hardwareでのioctl成立は未検証です。実装commit・hash・試験範囲は[成果物監査](LINUX_KVM_ARTIFACT.md)を参照してください。
 
 ## 期限と回収
 
