@@ -1183,6 +1183,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempest-kvm-probe"
+version = "0.1.0"
+
+[[package]]
 name = "tempest-linux-probe"
 version = "0.1.0"
 dependencies = [
