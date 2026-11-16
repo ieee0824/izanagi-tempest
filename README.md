@@ -79,6 +79,11 @@ VM の `--guest-probe`・`--guest-file`・`--agent-probe` と固定バイナリ�
 
 ## 開発: Linux direct 方式の隔離調査（Issue #36、WIP）
 
+dummy HOME・連続2 runのcheckpointは`71ab7a4`で実測済みです。両run各21checkがtrue、
+最終ROOT/RUNは不在、guardianは正常終了・reap済みでした。全体statusは`incomplete`です。
+実HOME・Claude設定探索・本番実行許可へは拡張しません。
+binary/監査JSON hash、検証範囲と残りの条件は[HOME・run state隔離gate](docs/LINUX_STATE_ISOLATION.md)を参照してください。
+
 `tempest-linux-probe` は Linux/x86_64 専用の固定 dummy probe です。
 既存の M1 シナリオ検証とは別の調査段階で、model adapter や LaunchPermit を提供しません。
 同じ `tempest` binary の固定 A/B/guard G だけを別 UID・mount/PID/net namespace へ起動し、

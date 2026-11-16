@@ -13,9 +13,9 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 | Linux固定A/B/Gの基本隔離 | 実装・実測済（dummy限定） | UID、mount/PID/net namespace、cgroup、seccomp、権限drop、親proc/fd/env、ptrace/signal、外部network/KVM等の負例を専用Linuxで実測。READMEのWIP範囲に限定する |
 | 異常時回収と再加入 | 実装・実測済（dummy限定） | `651fd36`のprimary faultと`37b1075`のsnapshot race。後者はルーム#16180、Issue comment 6903490736。probeの保守的残留後にfixture限定回収した結果であり、自動回復ではない |
 | 固定CLIのcredential保存先・必要access | 部分実測 | Claude Code 2.1.325の既存loginで非秘密auth statusとmetadata不変を確認（Issue comment 6877497099）。fresh専用configの保存挙動は未測定 |
-| 通常HOME・既存設定・既存MCPの非到達 | 未実装 | 既存`~/.claude`は1078 entryで正式runへ流用不可（Issue comment 6877548720）。dummy canaryによる明示的な正負試験が必要 |
+| 通常HOME・既存設定・既存MCPの非到達 | dummy checkpoint実測済・本番未達 | `71ab7a4`でsynthetic HOME 9分類の各run前後正読取、A/B/G負例とprivate HOME正例を実測。実HOME/Claude探索は未検証。[範囲とhash](LINUX_STATE_ISOLATION.md) |
 | owner-private configの生成、login、検査、run、cleanup | 未実装・login未承認 | fresh subscription loginと本番callは段階承認#15836/#15839の範囲外（Issue comment 6877675122） |
-| run間のstate独立性 | 未実装 | Claude 2.1.325のsession保存停止、config/session/cache/lock/backupの連続2 run非到達と両run cleanupが必要 |
+| run間のstate独立性 | dummy checkpoint実測済・本番未達 | `71ab7a4`で両run各21check true、nonce/RecordId結合、tmpfs marker、socket/mount/終了回収を実測。Claude session保存停止は未検証。追加digest/mount再照合は別hashで実測中 |
 | subscription通信境界 | 未実装 | 法務制約によりOAuth tokenのTempest介在を禁止。Claude親direct egress allowlistとMCP子の外部network拒否を別に実装する。既存API-key/mock relayを根拠にしない |
 | direct profile・report schema | 未実装 | 固定binary、OS隔離、宛先制限、stream-json開始時のtool一覧、model自己申告は別々の証拠とする。request catalog/schema/header/budget/retryはdirect TLS内で未観測のため`unknown`であり、既存relayの検査済み契約を流用しない |
 | 秘密の成果物・log・process metadata非露出 | 部分実装 | dummy診断はraw argv/env/stderr/任意pathを公開しない。実credentialを使う正負試験は未実施 |
