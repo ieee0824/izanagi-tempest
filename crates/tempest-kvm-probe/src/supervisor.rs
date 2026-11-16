@@ -1,3 +1,4 @@
+use crate::runtime::ChildReport;
 use std::{
     io,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
@@ -9,6 +10,8 @@ pub struct Outcome {
     pub deadline_exceeded: bool,
     pub child_terminal_reaped: bool,
     pub explicit_cleanup_complete: bool,
+    pub primary_errno: Option<i32>,
+    pub cleanup_errno: Option<i32>,
 }
 
 fn terminal(pid: i32, until: Instant) -> io::Result<i32> {
@@ -28,13 +31,23 @@ fn terminal(pid: i32, until: Instant) -> io::Result<i32> {
     }
 }
 
-fn supervise(child: fn() -> i32, budget: Duration) -> io::Result<Outcome> {
+fn supervise(child: fn() -> ChildReport, budget: Duration) -> io::Result<Outcome> {
+    // Fixed standalone probe policy; EPIPE must become a diagnostic, not death.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
     let mut gate = [-1; 2];
     if unsafe { libc::pipe2(gate.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
         return Err(io::Error::last_os_error());
     }
     let read = unsafe { OwnedFd::from_raw_fd(gate[0]) };
     let write = unsafe { OwnedFd::from_raw_fd(gate[1]) };
+    let mut reports = [-1; 2];
+    if unsafe { libc::pipe2(reports.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let report_read = unsafe { OwnedFd::from_raw_fd(reports[0]) };
+    let report_write = unsafe { OwnedFd::from_raw_fd(reports[1]) };
     let parent = unsafe { libc::getpid() };
     let until = Instant::now() + budget;
     let pid = unsafe { libc::fork() };
@@ -43,6 +56,7 @@ fn supervise(child: fn() -> i32, budget: Duration) -> io::Result<Outcome> {
     }
     if pid == 0 {
         drop(write);
+        drop(report_read);
         let mut byte = 0_u8;
         let armed = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } == 0
             && unsafe { libc::getppid() } == parent;
@@ -50,10 +64,23 @@ fn supervise(child: fn() -> i32, budget: Duration) -> io::Result<Outcome> {
             && unsafe { libc::read(read.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) } == 1
             && byte == b'G';
         drop(read);
+        if !admitted {
+            unsafe {
+                libc::_exit(125);
+            }
+        }
+        let result = child();
+        let mut record = [0_u8; 12];
+        record[..4].copy_from_slice(b"KVM1");
+        record[4..8].copy_from_slice(&result.primary_errno.unwrap_or(0).to_le_bytes());
+        record[8..12].copy_from_slice(&result.cleanup_errno.unwrap_or(0).to_le_bytes());
+        let sent =
+            unsafe { libc::write(report_write.as_raw_fd(), record.as_ptr().cast(), 12) } == 12;
         unsafe {
-            libc::_exit(if admitted { child() } else { 125 });
+            libc::_exit(if sent && result.passed() { 0 } else { 1 });
         }
     }
+    drop(report_write);
     drop(read);
     // Unreaped direct child + blocked gate prevents PID reuse before PIDFD bind.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
@@ -71,11 +98,34 @@ fn supervise(child: fn() -> i32, budget: Duration) -> io::Result<Outcome> {
         Err(io::Error::from_raw_os_error(libc::EPIPE))
     };
     match result {
-        Ok(status) => Ok(Outcome {
-            deadline_exceeded: false,
-            child_terminal_reaped: true,
-            explicit_cleanup_complete: libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
-        }),
+        Ok(status) => {
+            let mut record = [0_u8; 13];
+            let count = unsafe {
+                libc::read(
+                    report_read.as_raw_fd(),
+                    record.as_mut_ptr().cast(),
+                    record.len(),
+                )
+            };
+            if count != 12 || &record[..4] != b"KVM1" {
+                return Err(io::Error::from_raw_os_error(libc::EPROTO));
+            }
+            let primary = i32::from_le_bytes(record[4..8].try_into().unwrap());
+            let cleanup = i32::from_le_bytes(record[8..12].try_into().unwrap());
+            if primary < 0 || cleanup < 0 {
+                return Err(io::Error::from_raw_os_error(libc::EPROTO));
+            }
+            Ok(Outcome {
+                deadline_exceeded: false,
+                child_terminal_reaped: true,
+                explicit_cleanup_complete: primary == 0
+                    && cleanup == 0
+                    && libc::WIFEXITED(status)
+                    && libc::WEXITSTATUS(status) == 0,
+                primary_errno: (primary != 0).then_some(primary),
+                cleanup_errno: (cleanup != 0).then_some(cleanup),
+            })
+        }
         Err(error) if error.raw_os_error() != Some(libc::ECHILD) => {
             let killed = unsafe {
                 libc::syscall(
@@ -94,6 +144,8 @@ fn supervise(child: fn() -> i32, budget: Duration) -> io::Result<Outcome> {
                 deadline_exceeded: error.raw_os_error() == Some(libc::ETIMEDOUT),
                 child_terminal_reaped: true,
                 explicit_cleanup_complete: false,
+                primary_errno: Some(error.raw_os_error().unwrap_or(libc::EIO)),
+                cleanup_errno: None,
             })
         }
         Err(error) => Err(error),
@@ -106,11 +158,10 @@ pub fn run() -> io::Result<Outcome> {
     }
     supervise(
         || {
-            if crate::runtime::child().is_ok_and(|report| report.passed()) {
-                0
-            } else {
-                1
-            }
+            crate::runtime::child().unwrap_or_else(|error| ChildReport {
+                primary_errno: Some(error.raw_os_error().unwrap_or(libc::EIO)),
+                cleanup_errno: Some(libc::ENODATA),
+            })
         },
         Duration::from_secs(5),
     )
@@ -121,9 +172,25 @@ mod tests {
     use super::*;
     #[test]
     fn normal_failure_and_deadline_are_distinct_without_kvm() {
-        let normal = supervise(|| 0, Duration::from_secs(1)).unwrap();
+        let normal = supervise(
+            || ChildReport {
+                primary_errno: None,
+                cleanup_errno: None,
+            },
+            Duration::from_secs(1),
+        )
+        .unwrap();
         assert!(normal.explicit_cleanup_complete && normal.child_terminal_reaped);
-        let failed = supervise(|| 1, Duration::from_secs(1)).unwrap();
+        let failed = supervise(
+            || ChildReport {
+                primary_errno: Some(libc::EPERM),
+                cleanup_errno: Some(libc::EIO),
+            },
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(failed.primary_errno, Some(libc::EPERM));
+        assert_eq!(failed.cleanup_errno, Some(libc::EIO));
         assert!(!failed.explicit_cleanup_complete && !failed.deadline_exceeded);
         let timeout = supervise(
             || {
