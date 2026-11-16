@@ -315,15 +315,57 @@ mod tests {
     fn early_failure_closes_registered_fd_and_unmaps_memory() {
         let sink = Rc::new(Cell::new(None));
         let mut observed_fd = -1;
+        let mut address = std::ptr::null_mut();
         let result = (|| -> io::Result<()> {
             let tracked = Tracked::new(std::fs::File::open("/dev/null")?, &sink);
             observed_fd = tracked.as_raw_fd();
-            let _mapping = Mapping::new(4096, -1, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, &sink)?;
+            let mapping = Mapping::new(4096, -1, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, &sink)?;
+            address = mapping.pointer;
+            let mut residency = 0_u8;
+            assert_eq!(unsafe { libc::mincore(address, 4096, &mut residency) }, 0);
             Err(io::Error::from_raw_os_error(libc::EPERM))
         })();
+        let mut residency = 0_u8;
+        let mapped = unsafe { libc::mincore(address, 4096, &mut residency) };
+        let errno = io::Error::last_os_error().raw_os_error();
+        assert_eq!(mapped, -1);
+        assert_eq!(errno, Some(libc::ENOMEM));
         assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EPERM));
         assert_eq!(unsafe { libc::fcntl(observed_fd, libc::F_GETFD) }, -1);
         assert_eq!(sink.get(), None);
+    }
+    #[test]
+    fn failed_unmap_is_recorded_and_does_not_hide_live_mapping() {
+        let sink = Rc::new(Cell::new(None));
+        let mut mapping =
+            Mapping::new(4096, -1, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, &sink).unwrap();
+        let original = mapping.pointer;
+        // Fixed invalid alignment forces munmap EINVAL; no device access.
+        mapping.pointer = unsafe { original.cast::<u8>().add(1).cast() };
+        drop(mapping);
+        let mut residency = 0_u8;
+        let still_mapped = unsafe { libc::mincore(original, 4096, &mut residency) };
+        let recovered = unsafe { libc::munmap(original, 4096) };
+        assert_eq!(sink.get(), Some(libc::EINVAL));
+        assert_eq!(still_mapped, 0);
+        assert_eq!(recovered, 0);
+    }
+    #[test]
+    fn slot_registration_failure_attempts_cleanup_and_preserves_primary() {
+        let sink = Rc::new(Cell::new(None));
+        let fd = std::fs::File::open("/dev/null").unwrap();
+        let fail_registration = || -> io::Result<()> {
+            let _slot = SlotGuard {
+                vm: fd.as_raw_fd(),
+                armed: true,
+                sink: sink.clone(),
+            };
+            Err(io::Error::from_raw_os_error(libc::EPERM))
+        };
+        let primary = fail_registration().unwrap_err();
+        assert_eq!(primary.raw_os_error(), Some(libc::EPERM));
+        assert_eq!(sink.get(), Some(libc::ENOTTY));
+        assert!(fd.metadata().is_ok());
     }
     #[test]
     fn cleanup_fault_does_not_replace_primary_fault_or_become_success() {
