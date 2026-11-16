@@ -882,6 +882,7 @@ fn baseline(
                 {
                     return Err(Fault::Identity);
                 }
+                registry.state_sequence.observed(worker.record, &content)?;
                 drop(marker);
                 drop(directory);
                 drop(root);

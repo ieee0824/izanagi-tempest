@@ -1,6 +1,7 @@
 //! Bounded, root-owned PIDFD ledger independent of a baseline's Worker values.
 use super::{contract::Role, identity::Process, os::Fault, watchdog::DeadGuardian};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{
     io,
     time::{Duration, Instant},
@@ -14,6 +15,8 @@ pub(super) struct RecordId(u64);
 pub(super) struct StateSequence {
     active: Option<([u8; 16], [RecordId; 3])>,
     previous: Option<([u8; 16], [RecordId; 3])>,
+    markers: [Option<[u8; 32]>; 3],
+    previous_markers: [Option<[u8; 32]>; 3],
     completed: u8,
     failed: bool,
 }
@@ -29,6 +32,10 @@ impl StateSequence {
             records[0] != records[1] && records[0] != records[2] && records[1] != records[2];
         let fresh = self.previous.is_none_or(|(old_nonce, old_records)| {
             nonce != old_nonce
+                && self
+                    .previous_markers
+                    .iter()
+                    .all(|digest| *digest == Some(Sha256::digest(old_nonce).into()))
                 && records
                     .iter()
                     .all(|id| old_records.iter().all(|old| id.0 > old.0))
@@ -44,6 +51,22 @@ impl StateSequence {
             return Err(Fault::Identity);
         }
         self.active = Some((nonce, records));
+        self.markers = [None; 3];
+        Ok(())
+    }
+
+    pub(super) fn observed(&mut self, record: RecordId, content: &[u8]) -> Result<(), Fault> {
+        let valid = self.active.and_then(|(nonce, records)| {
+            records
+                .iter()
+                .position(|id| *id == record)
+                .filter(|index| content == nonce && self.markers[*index].is_none())
+        });
+        if self.failed || valid.is_none() {
+            self.failed = true;
+            return Err(Fault::Identity);
+        }
+        self.markers[valid.ok_or(Fault::Identity)?] = Some(Sha256::digest(content).into());
         Ok(())
     }
 
@@ -53,11 +76,16 @@ impl StateSequence {
         records: [RecordId; 3],
         cleanup_complete: bool,
     ) -> Result<(), Fault> {
-        if self.failed || self.active != Some((nonce, records)) || !cleanup_complete {
+        if self.failed
+            || self.active != Some((nonce, records))
+            || !cleanup_complete
+            || self.markers.iter().any(Option::is_none)
+        {
             self.failed = true;
             return Err(Fault::Identity);
         }
         self.previous = self.active.take();
+        self.previous_markers = self.markers;
         self.completed += 1;
         Ok(())
     }
@@ -69,12 +97,35 @@ mod state_sequence_tests {
     fn ids(start: u64) -> [RecordId; 3] {
         [RecordId(start), RecordId(start + 1), RecordId(start + 2)]
     }
+    fn observed(sequence: &mut StateSequence, nonce: [u8; 16], start: u64) {
+        for record in ids(start) {
+            sequence.observed(record, &nonce).unwrap();
+        }
+    }
+    #[test]
+    fn missing_duplicate_foreign_and_wrong_nonce_observations_fail_closed() {
+        let mut sequence = StateSequence::default();
+        sequence.begin(1, [1; 16], ids(1)).unwrap();
+        assert!(sequence.finish([1; 16], ids(1), true).is_err());
+        for (record, content) in [(RecordId(4), [1; 16]), (RecordId(1), [2; 16])] {
+            let mut sequence = StateSequence::default();
+            sequence.begin(1, [1; 16], ids(1)).unwrap();
+            assert!(sequence.observed(record, &content).is_err());
+            assert!(sequence.observed(RecordId(1), &[1; 16]).is_err());
+        }
+        let mut sequence = StateSequence::default();
+        sequence.begin(1, [1; 16], ids(1)).unwrap();
+        sequence.observed(RecordId(1), &[1; 16]).unwrap();
+        assert!(sequence.observed(RecordId(1), &[1; 16]).is_err());
+    }
     #[test]
     fn two_generations_require_completed_cleanup() {
         let mut sequence = StateSequence::default();
         sequence.begin(1, [1; 16], ids(1)).unwrap();
+        observed(&mut sequence, [1; 16], 1);
         sequence.finish([1; 16], ids(1), true).unwrap();
         sequence.begin(2, [2; 16], ids(4)).unwrap();
+        observed(&mut sequence, [2; 16], 4);
         sequence.finish([2; 16], ids(4), true).unwrap();
         assert!(sequence.begin(3, [3; 16], ids(7)).is_err());
     }
@@ -89,12 +140,14 @@ mod state_sequence_tests {
         ] {
             let mut sequence = StateSequence::default();
             sequence.begin(1, [1; 16], ids(1)).unwrap();
+            observed(&mut sequence, [1; 16], 1);
             assert!(sequence.finish(nonce, records, cleanup).is_err());
             assert!(sequence.begin(2, [3; 16], ids(7)).is_err());
         }
         for (nonce, records) in [([1; 16], ids(4)), ([2; 16], ids(1))] {
             let mut sequence = StateSequence::default();
             sequence.begin(1, [1; 16], ids(1)).unwrap();
+            observed(&mut sequence, [1; 16], 1);
             sequence.finish([1; 16], ids(1), true).unwrap();
             assert!(sequence.begin(2, nonce, records).is_err());
         }
