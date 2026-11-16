@@ -455,17 +455,43 @@ mod tests {
                 }
             });
             let sink = Rc::new(Cell::new(None));
-            let kvm = Tracked::new(std::fs::File::open("/dev/null").unwrap(), &sink);
+            // Track the initial device substitute alongside VM/vCPU FDs.
+            let device = unsafe { std::fs::File::from_raw_fd(fake_fd().unwrap()) };
+            let kvm = Tracked::new(device, &sink);
             let result = execute_device(kvm, &sink, fake_ioctl, fake_map);
             if stage.is_empty() {
-                assert!(result.unwrap().passed());
+                let report = result.unwrap();
+                assert_eq!(report.primary_errno, None);
+                assert_eq!(report.cleanup_errno, None);
+                assert!(report.passed());
             } else {
                 FAKE.with(|state| assert!(state.borrow().hit, "stage not reached: {stage}"));
                 match result {
-                    Ok(report) => assert!(!report.passed()),
-                    Err(error) => assert_eq!(error.raw_os_error(), Some(libc::EIO)),
+                    Ok(report) => {
+                        let cleanup_failure = stage == "slot_remove";
+                        assert_eq!(
+                            report.primary_errno,
+                            (!cleanup_failure).then_some(libc::EIO),
+                            "primary error after {stage}"
+                        );
+                        assert_eq!(
+                            report.cleanup_errno,
+                            cleanup_failure.then_some(libc::EIO),
+                            "cleanup error after {stage}"
+                        );
+                        assert!(!report.passed());
+                    }
+                    Err(error) => {
+                        assert_ne!(stage, "slot_remove");
+                        assert_eq!(error.raw_os_error(), Some(libc::EIO));
+                    }
                 }
             }
+            assert_eq!(
+                sink.get(),
+                None,
+                "unexpected guard cleanup error after {stage}"
+            );
             FAKE.with(|state| {
                 let state = state.borrow();
                 for &(fd, inode) in &state.fds {
