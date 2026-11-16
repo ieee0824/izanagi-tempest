@@ -7,6 +7,7 @@ import select
 import signal
 import stat
 import time
+import platform
 
 from linux_state_observer import DIRECTORY_FLAGS, observe_home
 
@@ -30,6 +31,8 @@ def lineage(pid):
 
 class StateTrace:
     def __init__(self, process):
+        if platform.machine() != 'x86_64':
+            raise ValueError('unsupported_trace_architecture')
         self.process = process
         self.birth = lineage(process.pid)
         if self.birth[0] != os.getpid():

@@ -156,7 +156,7 @@ def valid_output_byte_counts(diagnostic):
             and (not snapshot_oversize or 65537 in values))
 
 
-def run_fixture(fixture, failure_reason, timeout=25):
+def run_fixture(fixture, failure_reason, timeout=25, failure_validator=None):
     if len(sys.argv) != 1 or sys.platform != 'linux' or os.geteuid() == 0:
         print(json.dumps({'status': 'rejected', 'reason': 'nonroot_dedicated_vm_entry_required'}))
         return 2
@@ -172,6 +172,12 @@ def run_fixture(fixture, failure_reason, timeout=25):
             raise RuntimeError
         result = privileged('/usr/bin/python3', '-c', fixture, str(installed), timeout=timeout)
         if result.returncode != 0:
+            if failure_validator is not None:
+                diagnostic = json.loads(result.stdout)
+                if not failure_validator(diagnostic):
+                    raise ValueError('invalid_fixed_failure')
+                print(json.dumps(diagnostic))
+                return 1
             try:
                 diagnostic = json.loads(result.stdout)
                 snapshot_state = diagnostic.get('cleanup_state') if isinstance(diagnostic, dict) else None
