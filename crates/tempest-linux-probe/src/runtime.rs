@@ -849,7 +849,27 @@ fn baseline(
                 Read::by_ref(&mut marker)
                     .take(17)
                     .read_to_end(&mut content)?;
+                let mut after = std::mem::MaybeUninit::<libc::statx>::zeroed();
+                os::syscall(unsafe {
+                    libc::statx(
+                        marker.as_raw_fd(),
+                        c"".as_ptr(),
+                        libc::AT_EMPTY_PATH,
+                        libc::STATX_MNT_ID | libc::STATX_INO,
+                        after.as_mut_ptr(),
+                    )
+                })?;
+                let after = unsafe { after.assume_init() };
+                let after_metadata = marker.metadata()?;
                 if content != nonce
+                    || after.stx_mask & (libc::STATX_MNT_ID | libc::STATX_INO)
+                        != (libc::STATX_MNT_ID | libc::STATX_INO)
+                    || (after.stx_mnt_id, after.stx_ino) != (mount.stx_mnt_id, mount.stx_ino)
+                    || (
+                        after_metadata.dev(),
+                        after_metadata.ino(),
+                        after_metadata.len(),
+                    ) != (metadata.dev(), metadata.ino(), 16)
                     || filesystem.f_type != libc::TMPFS_MAGIC
                     || mount.stx_mask & (libc::STATX_MNT_ID | libc::STATX_INO)
                         != (libc::STATX_MNT_ID | libc::STATX_INO)

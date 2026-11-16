@@ -60,11 +60,17 @@ run1またはcleanupが不完全ならrun2を開始しません。
 
 `2e42c55`はrun境界のIPC socket明示閉鎖・EBADF確認とhost mountinfoのrole配下mount不在確認を追加しました。
 `71ab7a4`は各run直前・直後のhost canary再読取とdev/inode・owner・mode・内容照合を追加しました。
-これらを含む固定hashのLinux実測は進行中です。FD40はCLOEXECも閉鎖に寄与するため、
+`71ab7a4`固定binaryの実測は両run各21checkがすべてtrue、各runのhost正対照は18attemptでした。
+binary SHA256は`3441032367564835393d05c5c7497c11ee7e147b142584aad2a7979a4ae29065`、
+保存監査JSONのSHA256は`0be78f17771523e7d53049e63fd552d0d20d7dc6de0764751902821565400005`です。
+socket閉鎖・host mount検査を含むcleanupを通過し、最終ROOT/RUNは不在、guardianはexit0・reap済み、
+terminalは`normal_completion/verified`、経過時間は97177msでした。全体statusは`incomplete`です。
+FD40はCLOEXECも閉鎖に寄与するため、
 workerでのEBADFは継承非到達を支持しますが、`close_except`単独動作の証明とは扱いません。
 
 現在のfixtureは各分類を固定fileで表現し、親保持dirfd経由で検証します。
-設計上のdriver側独立正対照、同run内のmount ID再照合、run1 marker digest保持の実装・受入監査は残っています。
+同runの保持marker FDについて読取り前後のmount ID・inode・dev・length照合を追加しました（root実測待ち）。
+設計上のdriver側独立正対照とrun1 marker digest保持の実装・受入監査は残っています。
 上記の部分的実測を、この節全体のgate完了や本番実行許可とは扱いません。
 
 rootless unitではmanifest/checkのexact schema、未知field拒否、run順序、identity比較を検証します。
