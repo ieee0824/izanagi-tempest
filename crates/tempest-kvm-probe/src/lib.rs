@@ -3,6 +3,9 @@
 pub mod abi;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod identity;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[allow(dead_code)] // Private until the next parent deadline implementation.
+mod runtime;
 pub const GUEST: [u8; 5] = [0xb0, 0x2a, 0xe6, 0xe9, 0xf4];
 pub const RAM_BYTES: usize = 2 * 1024 * 1024;
 
