@@ -70,7 +70,11 @@ workerでのEBADFは継承非到達を支持しますが、`close_except`単独�
 
 現在のfixtureは各分類を固定fileで表現し、親保持dirfd経由で検証します。
 同runの保持marker FDについて読取り前後のmount ID・inode・dev・length照合を追加しました（root実測待ち）。
-設計上のdriver側独立正対照とrun1 marker digest保持の実装・受入監査は残っています。
+`c5e26e0`で親が観測したmarker digestをnonce/RecordIdへ結合し、全roleの証拠を完了条件に追加しました。
+その固定binary実測も両run各21check true、ROOT/RUN不在、guardian正常終了・reap済みでした。
+binary SHA256は`7cf4e16d7ba3f58dcb0bff1e53bb6fed0b01f9f5a7fd20ac5f0beefc0314a0aa`、
+監査JSON SHA256は`ac4acd658c3efe9fcabd060c1c6be0e0de99f6a1cfcdec374d4d02c5ecba5a2c`です。
+設計上のdriver側独立正対照と追加実装の受入監査は残っています。
 上記の部分的実測を、この節全体のgate完了や本番実行許可とは扱いません。
 
 rootless unitではmanifest/checkのexact schema、未知field拒否、run順序、identity比較を検証します。

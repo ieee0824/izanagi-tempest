@@ -55,3 +55,26 @@ OSのPIDFD/cgroup観測もprovider request内容・回数を直接証明しま�
 - direct reportの全観測がtrueでも既存relay LaunchPermitの入力にはしない。
 
 この案の型実装・負例テスト・受入は未完です。
+
+## semantic validatorの固定条件
+
+未改変direct方式ではrequest単位catalog/schema/header/count/retry/budget強制は
+`Unobserved`を必須にします。上記4種のEvidenceRefがあっても`Observed`や`Unknown`へ
+昇格させません。wire観測経路を追加する場合は新しいmode/schemaと別の受入が必要です。
+
+EvidenceRefは固定source enum、固定scope enum、run ID、profile SHA256、binary SHA256、
+artifact SHA256から構成します。run IDは親発行16-byte nonceの32桁hex、digestは64桁hexです。
+report本体のrun/profile/binary bindingとの完全一致を必須にします。
+sourceは1〜8件、同じsource/scope/artifactの重複を拒否します。
+
+| source | 許可scope |
+| --- | --- |
+| stream_json_listing | initialization_tool_listing |
+| agent_self_report | agent_claim |
+| pinned_binary_static | binary_configuration |
+| os_observation | process_isolation |
+
+request_wire scopeはこのmodeに存在しません。source単独を信頼度の序列へ変換せず、
+scopeの異なる観測を合成してrequest観測へ昇格させないvalidatorにします。
+負例にはbinding不一致、source/scope不一致、0件/9件/重複source、
+各request項目のObserved/Unknown偽装を含めます。
