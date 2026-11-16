@@ -69,15 +69,18 @@ FD40はCLOEXECも閉鎖に寄与するため、
 workerでのEBADFは継承非到達を支持しますが、`close_except`単独動作の証明とは扱いません。
 
 現在のfixtureは各分類を固定fileで表現し、親保持dirfd経由で検証します。
-同runの保持marker FDについて読取り前後のmount ID・inode・dev・length照合を追加しました（root実測待ち）。
+同runの保持marker FDについて読取り前後のmount ID・inode・dev・length照合を追加し、以下の実測へ含めました。
 `c5e26e0`で親が観測したmarker digestをnonce/RecordIdへ結合し、全roleの証拠を完了条件に追加しました。
 その固定binary実測も両run各21check true、ROOT/RUN不在、guardian正常終了・reap済みでした。
 binary SHA256は`7cf4e16d7ba3f58dcb0bff1e53bb6fed0b01f9f5a7fd20ac5f0beefc0314a0aa`、
 監査JSON SHA256は`ac4acd658c3efe9fcabd060c1c6be0e0de99f6a1cfcdec374d4d02c5ecba5a2c`です。
-設計上のdriver側独立正対照と追加実装の受入監査は残っています。
+独立driver `f469ad4`はcapture2/read18/各run21checkを実測し、driver exit0、probe incomplete、
+elapsed110027ms、guardian回収、最終ROOT/RUN不在を確認しました。
+private監査JSON SHA256は`f63d2ef3bc98cacfcb21b8de2afff16652a5796c1d3dc20b9152cb861d8a0736`です。
+cleanup診断とprogress保持FDを強化した最新版fixtureの最終受入は継続中です。
 上記の部分的実測を、この節全体のgate完了や本番実行許可とは扱いません。
 
-### driver独立正対照の固定捕捉点案（未実装）
+### driver独立正対照の固定捕捉点（実装済み・最終受入継続）
 
 専用root fixtureは自分がspawnしたsupervisorだけをptraceし、PIDFDと
 `/proc/<pid>/stat`のparent/birthを開始前後に照合します。TRACEFORKは使いません。

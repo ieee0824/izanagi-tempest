@@ -15,9 +15,9 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 | 固定CLIのcredential保存先・必要access | 部分実測 | Claude Code 2.1.325の既存loginで非秘密auth statusとmetadata不変を確認（Issue comment 6877497099）。fresh専用configの保存挙動は未測定 |
 | 通常HOME・既存設定・既存MCPの非到達 | dummy checkpoint実測済・本番未達 | `71ab7a4`でsynthetic HOME 9分類の各run前後正読取、A/B/G負例とprivate HOME正例を実測。実HOME/Claude探索は未検証。[範囲とhash](LINUX_STATE_ISOLATION.md) |
 | owner-private configの生成、login、検査、run、cleanup | 未実装・login未承認 | fresh subscription loginと本番callは段階承認#15836/#15839の範囲外（Issue comment 6877675122） |
-| run間のstate独立性 | dummy checkpoint実測済・本番未達 | `71ab7a4`で両run各21check true、nonce/RecordId結合、tmpfs marker、socket/mount/終了回収を実測。Claude session保存停止は未検証。追加digest/mount再照合は別hashで実測中 |
+| run間のstate独立性 | dummy checkpoint実測済・本番未達 | `c5e26e0`でdigest/mount再照合込み両run各21check true。独立driver `f469ad4`もcapture2/read18/各21checkと最終回収を実測。最新版fixtureの最終受入は継続中。Claude session保存停止は未検証 |
 | subscription通信境界 | 未実装 | 法務制約によりOAuth tokenのTempest介在を禁止。Claude親direct egress allowlistとMCP子の外部network拒否を別に実装する。既存API-key/mock relayを根拠にしない |
-| direct profile・report schema | 未実装 | 固定binary、OS隔離、宛先制限、stream-json開始時のtool一覧、model自己申告は別々の証拠とする。request catalog/schema/header/budget/retryはdirect TLS内で未観測のため`unknown`であり、既存relayの検査済み契約を流用しない |
+| direct profile・report schema | 純粋型・負例実装/レビュー済 | `b27e88d`で独立profile/report型・semantic validator・7test。request catalog/schema/header/count/retry/budget強制はUnobserved必須、既存relay契約へ変換不可。実artifact生成・正式比較受入は未完。[schema](DIRECT_PROFILE_SCHEMA.md) |
 | 秘密の成果物・log・process metadata非露出 | 部分実装 | dummy診断はraw argv/env/stderr/任意pathを公開しない。実credentialを使う正負試験は未実施 |
 | 本番B固定VM経路 | 未実装 | Linux direct probeをIzanagi/guest/HTTP MCPへ結線していない |
 | KVM段階gate | 承認済・未達 | #15865/#15872で非login専用system userだけのKVM利用を承認。現userは`/dev/kvm` EACCES。専用userでopen、必要ioctl、最小VM、固定Izanagi最小起動を順に確認する（Issue comments 6891158817、6891364329） |
