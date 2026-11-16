@@ -30,6 +30,14 @@ IO/HLT/最終regs、slot除去へ失敗を注入し、同じ実行本体から�
 VM作成・登録・実行・slot削除成立の証明とは扱いません。
 実device gateとstage別primary/cleanupの詳細診断・artifact受入監査は残っています。
 
+## 独立Linux CI
+
+`dfe9573`でstage別primary/cleanup期待値と初期device代替FDの回収観測を強化しました。
+これを含む`3161333`の[GitHub Actions実行](https://github.com/ieee0824/izanagi-tempest/actions/runs/43786676394)で、
+Ubuntu 24.04/x86_64、Rust 1.100.0の12 tests、当該crateのall-target clippy、workspace fmtが成功しました。
+共有実行本体へのstage注入とprimary/cleanup独立判定のテスト実行をログで確認済みです。
+KVM deviceは開かず、実hardware gateや専用hostのbinary hash・loader/library監査の代替にはしません。
+
 ## 配置案（未実行）
 
 管理者は専用user作成checkpoint後、`/var/lib/tempest-kvm-probe`を

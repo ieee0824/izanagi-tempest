@@ -2,7 +2,8 @@
 
 最終更新: 2026-11-16、branch `pronnia/linux-direct-stage`。
 dummy HOME最終独立実測は`d598243`、KVM build-only実装は`623b34b`、
-失敗時assert強化は`dfe9573`（Linux再検証結果待ち）です。
+失敗時assert強化は`dfe9573`、これを含む`3161333`の
+[Linux CI](https://github.com/ieee0824/izanagi-tempest/actions/runs/43786676394)で12test・clippy・fmt成功を確認しました。
 
 本書は[Issue #36](https://github.com/ieee0824/izanagi-tempest/issues/36)の旧完了条件と、
 subscription OAuthをTempestが読取・copy・parse・relayしないLinux direct方針への変更後のgateを対応付けます。
@@ -22,7 +23,7 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 | direct profile・report schema | 純粋型・負例実装/レビュー済 | `b27e88d`で独立profile/report型・semantic validator・7test。request catalog/schema/header/count/retry/budget強制はUnobserved必須、既存relay契約へ変換不可。実artifact生成・正式比較受入は未完。[schema](DIRECT_PROFILE_SCHEMA.md) |
 | 秘密の成果物・log・process metadata非露出 | 部分実装 | dummy診断はraw argv/env/stderr/任意pathを公開しない。実credentialを使う正負試験は未実施 |
 | 本番B固定VM経路 | 未実装 | Linux direct probeをIzanagi/guest/HTTP MCPへ結線していない |
-| KVM段階gate | 固定binary実装・実device未達 | #15865/#15872で非login専用system userだけのKVM利用を承認。`623b34b`でmock ioctlと実memfd/mapによる12testを報告、`dfe9573`のassert強化はLinux再検証待ち。専用user作成・install・device実行は未実施。[成果物監査](LINUX_KVM_ARTIFACT.md)後にopen、必要ioctl/最小VM、固定Izanagiを段階確認する |
+| KVM段階gate | 固定binary実装・実device未達 | #15865/#15872で非login専用system userだけのKVM利用を承認。`dfe9573`のassert強化を含むLinux CIでmock ioctlと実memfd/mapによる12test・clippy・fmt成功。専用user作成・install・device実行は未実施。[成果物監査](LINUX_KVM_ARTIFACT.md)後にopen、必要ioctl/最小VM、固定Izanagiを段階確認する |
 | x86_64 guest/image再構築 | 計画のみ | KVM全gate成功後にagent/sidecar/LWS/tempest-guest/imageをx86_64で再構築し、manifest、owner/firewall/doas、mailbox、control、clock/timeoutを再測定する（Issue comment 6891290403） |
 | owner手動login後の初回1 run | 未承認・未実施 | usage credits無効のowner確認を外部前提とし、fresh loginと1 runは別承認が必要。反復・複数modelも別承認 |
 | Issue #7での最終受入 | 未完 | direct接続で失うrequest単位監査と正式比較条件を再合意する必要がある |
@@ -34,7 +35,7 @@ synthetic HOME非到達と連続2 runのstate独立性は`d598243`までのdummy
 
 次はKVM固定プローブの管理者checkpointを具体化します。
 
-1. `dfe9573`のLinux test/clippyを確認し、最終commit・実行file hashを固定する。
+1. Linux unit CI成功を踏まえ、専用hostでの最終commit・実行file hashを固定する。
 2. loader/library closure、owner/mode、全ancestorの書換え不能性と専用userの通過可能性を監査する。
 3. [管理者checkpoint](LINUX_KVM_ADMIN_GATE.md)の専用user・配置・実行コマンドを確定し、実deviceの段階gateへ進む。
 
