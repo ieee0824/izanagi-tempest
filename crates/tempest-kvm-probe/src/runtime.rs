@@ -4,13 +4,56 @@ use crate::{
     abi::{MemoryRegion, Registers, SpecialRegisters},
 };
 use std::{
+    cell::Cell,
     fs::OpenOptions,
     io,
     os::{
         fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd},
         unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
     },
+    rc::Rc,
 };
+type Cleanup = Rc<Cell<Option<i32>>>;
+fn record(sink: &Cleanup, result: io::Result<impl Sized>) {
+    let mut first = sink.get();
+    remember(&mut first, result);
+    sink.set(first);
+}
+struct Tracked<T: IntoRawFd + AsRawFd> {
+    value: Option<T>,
+    sink: Cleanup,
+}
+impl<T: IntoRawFd + AsRawFd> Tracked<T> {
+    fn new(value: T, sink: &Cleanup) -> Self {
+        Self {
+            value: Some(value),
+            sink: sink.clone(),
+        }
+    }
+}
+impl<T: IntoRawFd + AsRawFd> std::ops::Deref for Tracked<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.value.as_ref().unwrap()
+    }
+}
+impl<T: IntoRawFd + AsRawFd> AsRawFd for Tracked<T> {
+    fn as_raw_fd(&self) -> i32 {
+        self.value.as_ref().unwrap().as_raw_fd()
+    }
+}
+impl<T: IntoRawFd + AsRawFd> IntoRawFd for Tracked<T> {
+    fn into_raw_fd(mut self) -> i32 {
+        self.value.take().unwrap().into_raw_fd()
+    }
+}
+impl<T: IntoRawFd + AsRawFd> Drop for Tracked<T> {
+    fn drop(&mut self) {
+        if let Some(value) = self.value.take() {
+            record(&self.sink, close(value));
+        }
+    }
+}
 
 fn ioctl(fd: i32, request: libc::c_ulong, argument: libc::c_ulong) -> io::Result<i32> {
     let result = unsafe { libc::ioctl(fd, request, argument) };
@@ -24,9 +67,10 @@ fn ioctl(fd: i32, request: libc::c_ulong, argument: libc::c_ulong) -> io::Result
 struct Mapping {
     pointer: *mut libc::c_void,
     length: usize,
+    sink: Cleanup,
 }
 impl Mapping {
-    fn new(length: usize, fd: i32, flags: i32) -> io::Result<Self> {
+    fn new(length: usize, fd: i32, flags: i32, sink: &Cleanup) -> io::Result<Self> {
         let pointer = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -40,7 +84,11 @@ impl Mapping {
         if pointer == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { pointer, length })
+        Ok(Self {
+            pointer,
+            length,
+            sink: sink.clone(),
+        })
     }
     fn close(&mut self) -> io::Result<()> {
         if self.length == 0 {
@@ -55,7 +103,8 @@ impl Mapping {
 }
 impl Drop for Mapping {
     fn drop(&mut self) {
-        let _ = self.close();
+        let result = self.close();
+        record(&self.sink, result);
     }
 }
 
@@ -81,15 +130,34 @@ fn remember(first: &mut Option<i32>, result: io::Result<impl Sized>) {
     }
 }
 pub(crate) fn child() -> io::Result<ChildReport> {
+    let sink = Rc::new(Cell::new(None));
+    let result = execute(&sink);
+    Ok(match result {
+        Ok(mut report) => {
+            if report.cleanup_errno.is_none() {
+                report.cleanup_errno = sink.get();
+            }
+            report
+        }
+        Err(error) => ChildReport {
+            primary_errno: Some(error.raw_os_error().unwrap_or(libc::EIO)),
+            cleanup_errno: sink.get(),
+        },
+    })
+}
+fn execute(sink: &Cleanup) -> io::Result<ChildReport> {
     let rejected = || io::Error::from_raw_os_error(libc::EPERM);
     let user = crate::identity::current()
         .filter(|user| user.valid())
         .ok_or_else(rejected)?;
-    let kvm = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open("/dev/kvm")?;
+    let kvm = Tracked::new(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open("/dev/kvm")?,
+        sink,
+    );
     let metadata = kvm.metadata()?;
     if !metadata.file_type().is_char_device()
         || metadata.gid() != user.kvm_gid
@@ -112,9 +180,12 @@ pub(crate) fn child() -> io::Result<ChildReport> {
     if !(4096..=1024 * 1024).contains(&length) {
         return Err(rejected());
     }
-    let vm = unsafe { OwnedFd::from_raw_fd(ioctl(kvm.as_raw_fd(), 0xae01, 0)?) };
+    let vm = Tracked::new(
+        unsafe { OwnedFd::from_raw_fd(ioctl(kvm.as_raw_fd(), 0xae01, 0)?) },
+        sink,
+    );
     ioctl(vm.as_raw_fd(), 0xae47, 0xfffbd000)?;
-    let mut ram = Mapping::new(RAM_BYTES, -1, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS)?;
+    let mut ram = Mapping::new(RAM_BYTES, -1, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, sink)?;
     unsafe {
         std::ptr::copy_nonoverlapping(
             GUEST.as_ptr(),
@@ -134,8 +205,11 @@ pub(crate) fn child() -> io::Result<ChildReport> {
     )?;
     let mut cleanup_errno = None;
     let result = (|| {
-        let vcpu = unsafe { OwnedFd::from_raw_fd(ioctl(vm.as_raw_fd(), 0xae41, 0)?) };
-        let mut run = Mapping::new(length, vcpu.as_raw_fd(), libc::MAP_SHARED)?;
+        let vcpu = Tracked::new(
+            unsafe { OwnedFd::from_raw_fd(ioctl(vm.as_raw_fd(), 0xae41, 0)?) },
+            sink,
+        );
+        let mut run = Mapping::new(length, vcpu.as_raw_fd(), libc::MAP_SHARED, sink)?;
         let executed = (|| {
             let mut special = SpecialRegisters::default();
             ioctl(
@@ -209,6 +283,20 @@ pub(crate) fn child() -> io::Result<ChildReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn early_failure_closes_registered_fd_and_unmaps_memory() {
+        let sink = Rc::new(Cell::new(None));
+        let mut observed_fd = -1;
+        let result = (|| -> io::Result<()> {
+            let tracked = Tracked::new(std::fs::File::open("/dev/null")?, &sink);
+            observed_fd = tracked.as_raw_fd();
+            let _mapping = Mapping::new(4096, -1, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, &sink)?;
+            Err(io::Error::from_raw_os_error(libc::EPERM))
+        })();
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EPERM));
+        assert_eq!(unsafe { libc::fcntl(observed_fd, libc::F_GETFD) }, -1);
+        assert_eq!(sink.get(), None);
+    }
     #[test]
     fn cleanup_fault_does_not_replace_primary_fault_or_become_success() {
         let mut cleanup = None;
