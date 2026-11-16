@@ -11,7 +11,7 @@ def valid_failure(value):
             'stderr_bytes', 'audit_basename', 'captures_by_run'}
     return (isinstance(value, dict) and set(value) == keys
             and value['status'] == 'failed'
-            and value['stage'] in {'spawn', 'initial_stop', 'capture', 'wait', 'validate', 'save'}
+            and value['stage'] in {'spawn', 'initial_stop', 'capture', 'wait', 'validate', 'save', 'cleanup'}
             and value['exception'] in {'ValueError', 'AssertionError', 'OSError', 'TimeoutExpired', 'Other'}
             and type(value['captures']) is int and 0 <= value['captures'] <= 2
             and type(value['host_reads']) is int and value['host_reads'] == value['captures'] * 9
@@ -71,33 +71,40 @@ try:
     with os.fdopen(fd, 'w') as saved:
         json.dump({'binary_sha256':digest, 'captures':captures, 'probe':report}, saved,
                   sort_keys=True)
-    print(json.dumps({'status':'passed', 'scope':'dummy_independent_home_only',
+    success = {'status':'passed', 'scope':'dummy_independent_home_only',
         'production_authorized':False, 'binary_sha256':digest,
         'captures':len(captures), 'host_reads':18, 'checks_per_run':21,
-        'probe_status':report['status'], 'audit_basename':Path(audit).name}))
+        'probe_status':report['status'], 'audit_basename':Path(audit).name}
 except BaseException as exception:
     failure = exception
-    raise
 finally:
-    if process is not None and process.returncode is None:
+    try:
+        if process is not None and process.returncode is None:
+            try:
+                if trace is not None:
+                    signal.pidfd_send_signal(trace.pidfd, signal.SIGKILL)
+                else:
+                    os.kill(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            # A trace stop is not terminal; continue until real exit and reap.
+            until = time.monotonic() + 5
+            while time.monotonic() < until:
+                waited, status = os.waitpid(process.pid, os.WNOHANG | 0x40000000)
+                if waited:
+                    if os.WIFEXITED(status) or os.WIFSIGNALED(status):
+                        process.returncode = os.waitstatus_to_exitcode(status)
+                        break
+                    if os.WIFSTOPPED(status):
+                        ptrace(7, process.pid, data=signal.SIGKILL)
+                time.sleep(0.001)
+            assert process.returncode is not None
+    except BaseException as cleanup_error:
+        if failure is None:
+            failure, stage = cleanup_error, 'cleanup'
+    finally:
         if trace is not None:
-            signal.pidfd_send_signal(trace.pidfd, signal.SIGKILL)
-        else:
-            os.kill(process.pid, signal.SIGKILL)
-        # A trace stop is not terminal; continue until real exit and reap.
-        until = time.monotonic() + 5
-        while time.monotonic() < until:
-            waited, status = os.waitpid(process.pid, os.WNOHANG | 0x40000000)
-            if waited:
-                if os.WIFEXITED(status) or os.WIFSIGNALED(status):
-                    process.returncode = os.waitstatus_to_exitcode(status)
-                    break
-                if os.WIFSTOPPED(status):
-                    ptrace(7, process.pid, data=signal.SIGKILL)
-            time.sleep(0.001)
-        assert process.returncode is not None
-    if trace is not None:
-        trace.close()
+            trace.close()
     error.seek(0)
     stderr_bytes = len(error.read(65537))
     output.close()
@@ -105,6 +112,8 @@ finally:
     until = time.monotonic() + 15
     while (root.exists() or RUN.exists()) and time.monotonic() < until:
         time.sleep(0.01)
+    if failure is None and (root.exists() or RUN.exists()):
+        failure, stage = ValueError('resources_remain'), 'cleanup'
     if failure is not None:
         kind = type(failure).__name__
         diagnostic = {'status':'failed', 'stage':stage,
@@ -122,7 +131,8 @@ finally:
             json.dump(diagnostic, saved, sort_keys=True)
         diagnostic['audit_basename'] = Path(audit).name
         print(json.dumps(diagnostic))
-    assert not root.exists() and not RUN.exists()
+        raise SystemExit(1)
+    print(json.dumps(success))
 '''
 
 if __name__ == '__main__':
