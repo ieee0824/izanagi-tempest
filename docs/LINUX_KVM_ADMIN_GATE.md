@@ -2,7 +2,24 @@
 
 2026-11-16のread-only確認: x86_64、`/dev/kvm`はroot:kvm 0660、char 10:232、
 kvm groupはgid993でmemberなし。ubuntu(uid1000)はkvm非所属です。
-`tempest-kvm` user/groupは未作成です。この文書のコマンドは未実行です。
+この時点では`tempest-kvm` user/groupは未作成でした。
+
+## 2026-11-18の段階1実測
+
+room承認request #15865とdecision #15872を承認APIで照合し、両者の
+`approval_verified=true`、decisionの`approval_target_verified=true`と
+`approval_authorized=true`を確認しました。decisionはbrowserの
+server-authenticated記録であり、user署名の`verified=true`とは区別します。
+
+`6a68ad1`の以下の手順を実行しました。作成前のpasswd/group lookupは双方exit 2。
+作成後はUID 999、private GID 988、補助groupはkvm(GID 993)のみ、
+shell `/usr/sbin/nologin`、home `/nonexistent`は未作成、password status `L`でした。
+ubuntuはkvm非所属、`/dev/kvm`はroot:kvm 0660、char 10:232を維持しています。
+
+専用userで下記段階1の固定診断を実行し、open、API version 12、closeまで成功しました。
+出力は`{"api_version": 12, "passed": true}`、exit 0です。
+install、VM/vCPU作成、guest実行は行っていません。段階2以降は未達です。
+専用user作成手順の再実行は既存entry検出で停止します。
 
 ## 管理者が行う専用user作成
 
