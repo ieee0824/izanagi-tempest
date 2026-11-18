@@ -81,8 +81,11 @@ python3 -m unittest discover -s tests -p test_image_x86.py -v
 固定入力のx86 full image生成とlock-down検査は
 [試行003の記録](https://github.com/ieee0824/izanagi-tempest/blob/ac88482/docs/LINUX_X86_FULL_BUILD_003.md)
 で確認した。実kernel引数と無人インストール完走を観測している。
-実guestのeBPF採取・owner/firewall/doas/mailbox/外部到達拒否は未検証であり、
-image生成成功を本番相当VMの受入に置き換えない。
+実guestのeBPF採取とowner/firewall/doas/mailboxのdummy検査は
+[smoke002](https://github.com/ieee0824/izanagi-tempest/blob/8ddf75f/docs/LINUX_X86_IMAGE_SMOKE_002.md)
+で確認した。固定構成の観測範囲であり、全route・全lifetimeの完全性を意味しない。
+HTTP sidecar実起動とpositive control付き外部到達拒否は未検証のまま残す。
+image生成成功だけを本番相当VMの受入に置き換えない。
 実build前には専用userのroot所有・非write入力snapshotと回収可能な単発commandを監査する。
 
 固定ISOはinclude先`spkgtk.cfg`で30秒後にspeech installerを起動するため、
