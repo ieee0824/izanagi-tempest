@@ -52,18 +52,22 @@ def main():
     for name in ['izanagi-source', 'lws-source', 'iso', 'agent', 'ebpf', 'http', 'lws', 'guest', 'output']:
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--delivery-race-fixture', action='store_true', help='TEST IMAGE ONLY: force deliver to overlap export freeze')
+    parser.add_argument('--architecture', choices=['aarch64', 'x86_64'], default='aarch64')
     args = parser.parse_args()
     try:
         source = args.izanagi_source.resolve()
         source_commit(source, IZANAGI)
         source_commit(args.lws_source.resolve(), LWS)
         template = (source / 'packer/debian.pkr.hcl').read_text()
+        if args.architecture == 'x86_64':
+            from x86_template import derive
+            template = derive(template)
         iso_hash = re.search(r'default = "sha256:([0-9a-f]{64})"', template).group(1)
         if sha(args.iso) != iso_hash:
             raise ValueError('ISO does not match pinned upstream SHA-256')
         assets = {name: getattr(args, name).resolve() for name in ['agent', 'ebpf', 'http', 'lws', 'guest']}
         for name, path in assets.items():
-            linux_elf(path, 247 if name == 'ebpf' else 183)
+            linux_elf(path, 247 if name == 'ebpf' else (62 if args.architecture == 'x86_64' else 183))
     except (ValueError, OSError) as error:
         parser.error(str(error))
     output = args.output.resolve()
@@ -77,12 +81,15 @@ def main():
     template = template.replace('iso_url      = local.iso_url', 'iso_url      = ' + json.dumps(str(args.iso.resolve())))
     own = Path(__file__).resolve().parent
     derived = {name: (own / name).read_bytes() for name in ['prepare.py', 'provision.sh', 'dispatcher.py', 'quiesce.py']}
+    if args.architecture == 'x86_64':
+        derived['x86_template.py'] = (own / 'x86_template.py').read_bytes()
     if args.delivery_race_fixture:
         from delivery_race_fixture import instrument
         dispatcher, quiesce = instrument(derived['dispatcher.py'].decode(), derived['quiesce.py'].decode())
         derived['dispatcher.py'], derived['quiesce.py'] = dispatcher.encode(), quiesce.encode()
         derived['delivery_race_fixture.py'] = (own / 'delivery_race_fixture.py').read_bytes()
-    metadata = {**helper_source(), 'schema_version': 1, 'izanagi_commit': IZANAGI, 'lws_commit': LWS,
+    metadata = {**helper_source(), 'schema_version': 1, 'architecture': args.architecture,
+                'izanagi_commit': IZANAGI, 'lws_commit': LWS,
                 'tempest_guest_version': tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['version'],
                 'tempest_guest_source_commit': subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
                 'built_at': datetime.now(timezone.utc).isoformat(),
