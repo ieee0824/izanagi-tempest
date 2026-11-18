@@ -162,6 +162,30 @@ class HostFixtureTests(unittest.TestCase):
                 E.wait_observer(Path(directory) / 'absent', value['identity'], Receiver(), timeout=0)
 
 
+    def test_fifo_ack_does_not_block_and_partial_receiver_stops(self):
+        class Receiver:
+            def snapshot(self): return {'thread_alive': True, 'errors': []}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'ack'
+            os.mkfifo(path, 0o600)
+            with self.assertRaises(ValueError):
+                E.wait_observer(path, sample()['identity'], Receiver())
+        receiver = E.EndpointReceiver(NONCE)
+        connection = socket.create_connection(('127.0.0.1', receiver.identity['port']), timeout=1)
+        try:
+            connection.sendall(b'{')
+            deadline = time.monotonic() + 2
+            while receiver.snapshot()['accepts'] != 1 and time.monotonic() < deadline:
+                time.sleep(.01)
+            started = time.monotonic()
+            receiver.close()
+            self.assertFalse(receiver.thread.is_alive())
+            self.assertLess(time.monotonic() - started, 3.1)
+        finally:
+            connection.close()
+            receiver.close()
+
+
 class RunnerTests(unittest.TestCase):
     def main(self):
         source = ROOT / 'integration/image_smoke.py'
