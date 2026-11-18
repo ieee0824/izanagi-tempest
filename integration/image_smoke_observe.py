@@ -21,6 +21,7 @@ ATTEMPTS = {
     'proc-exposure-002': ('tempest-izanagi-proc-exposure-002.service', '/var/lib/tempest-izanagi-proc-exposure-002'),
     'proc-exposure-003': ('tempest-izanagi-proc-exposure-003.service', '/var/lib/tempest-izanagi-proc-exposure-003'),
     'sidecar-001': ('tempest-izanagi-sidecar-001.service', '/var/lib/tempest-izanagi-sidecar-001'),
+    'host-endpoint-001': ('tempest-izanagi-host-endpoint-001.service', '/var/lib/tempest-izanagi-host-endpoint-001'),
 }
 
 
@@ -68,6 +69,12 @@ def main():
     invocation = None
     unit, root = ATTEMPTS[args.attempt]
     lifetime = VmLifetime(root)
+    receiver = None
+    if args.attempt == 'host-endpoint-001':
+        spec = importlib.util.spec_from_file_location('network_receiver_observe', Path(__file__).resolve().parent / 'network_receiver_observe.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        receiver = module.ReceiverLifetime(Path(root))
     start = time.monotonic()
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as stream:
@@ -78,15 +85,19 @@ def main():
                 if invocation and current != invocation:
                     raise RuntimeError('smoke unit invocation changed')
                 invocation = current
+            lifetime.observe(row)
+            if receiver is not None:
+                row['host_receiver'] = receiver.observe(row)
             stream.write(json.dumps(row) + '\n')
             stream.flush()
-            lifetime.observe(row)
             if invocation and row['unit'].get('ActiveState') in ('inactive', 'failed'):
                 if row['unit'].get('LoadState') != 'loaded' or current != invocation:
                     raise RuntimeError('same-invocation terminal attributes not captured')
                 if row['cgroup_pids']:
                     raise RuntimeError('terminal smoke unit retains processes')
                 lifetime.require_observed()
+                if receiver is not None:
+                    receiver.require_complete()
                 return
             if not invocation and time.monotonic() - start > 60:
                 raise RuntimeError('smoke unit not observed within startup window')
