@@ -2,7 +2,7 @@
 
 ## 状態
 
-build001の実行結果を待っている段階の計画である。runtime用root・snapshot・VMは未作成で、以下の試験は未実施。
+[build001のビルド・offline照合](LINUX_X86_DELIVERY_RACE_BUILD_001.md)は完了し、結果監査とruntimeの具体snapshot/argv準備を待つ段階である。runtime用root・snapshot・VMは未作成で、以下の試験は未実施。
 [build計画](LINUX_X86_DELIVERY_RACE_BUILD_001_PLAN.md)の完了をruntime成功の代用にしない。
 
 ## ビルド後の開始条件

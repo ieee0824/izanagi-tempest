@@ -1,5 +1,10 @@
 # Linux x86 delivery-race fixture build001 recipe案
 
+## 後続結果
+
+単発buildと読取専用offline照合は完了した。[実測結果](LINUX_X86_DELIVERY_RACE_BUILD_001.md)を参照。
+以下は計画・準備時点の記録であり、各「未開始」はその時点を表す。fixture runtimeは引き続き未実施。
+
 ## 状態と範囲
 
 現在は標準prepareと定義full validateまで完了し、room16796で固定source64f0429から新root snapshot作成・UID999事前検査だけを依頼済み。実snapshot結果は未受領であり、Packer build・VM開始は未実施。以下の草案時点の未実施記述は、その段階の記録として残す。
