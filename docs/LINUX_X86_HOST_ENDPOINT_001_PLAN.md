@@ -2,6 +2,8 @@
 
 ## 状態と対象
 
+単発VMとcollector回収は完了。[結果](LINUX_X86_HOST_ENDPOINT_001.md)を参照。以下は固定計画・実施前準備記録として保持する。
+
 room16754/16756/16757の議論に基づく草案。room16763の最終interface指定に合わせ試験名・root/unit/profileをhost-endpoint-001とする。
 root /var/lib/tempest-izanagi-host-endpoint-001、unit tempest-izanagi-host-endpoint-001.service。
 まだrunner/helper/interface/具体上限は未確定であり、新root/snapshot/VMを作成しない。
