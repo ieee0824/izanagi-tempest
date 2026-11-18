@@ -457,7 +457,8 @@ findingありで上流中止なら`configured=true, performed=false, reason=upst
 省略を静的エラーに変えず、実行時の未解決actorや前提不成立を別に診断します。
 
 複数 setup.users でも全ポリシー・API・リソースの静的検証はできる。
-expect / evidence の主体を自然文から推定せず、実行時の主体選択は後続で設計する。
+expect / evidence の主体を自然文から推定しない。実行時は単一userを一意に選択し、複数なら
+明示的な`--actor`を要求する。probe・prompt・finding評価のbindingは[M4実行契約](M4-CONTRACT.md)を参照。
 入力経路は yaml_serde=0.10.7 の native Value（重複拒否）→特殊値検査→JSON互換値→共有型→意味検証。
 非文字列キー、custom tag、merge key、非有限数、複数 document を拒否する。
 未知フィールド・型エラーも拒否し、失敗には経路と理由を付ける。
