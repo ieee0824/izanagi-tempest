@@ -35,3 +35,9 @@ QEMU1台、PID/starttime/cwd、image snapshot=on、readonly mapped share、restr
 
 4presence、HTTP sidecar、外部到達拒否positive control、forced delivery race、全route、正式モデル比較は未証明のまま。
 mock/ダミーのみ、実model/実credential/AWSは使わない。
+
+## 可逆準備の定義
+
+[service](../integration/tempest-izanagi-runtime-seed-loss-001.service)、[固定caller](evidence/runtime-seed-loss-001/run_once.py)、[snapshot helper](evidence/runtime-seed-loss-001/prepare_snapshot.py)、[UID検査](evidence/runtime-seed-loss-001/check_preparation.py) を用意した。
+service構文/ExecStart一致とhelper構文を確認済み。未実行で、marker修正とobserverの固定attempt対応が揃ってからsnapshotを作成する。
+正常001の全input hash不変照合も新snapshot helperへ追加した。
