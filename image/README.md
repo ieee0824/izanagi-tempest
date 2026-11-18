@@ -252,3 +252,5 @@ receiverへの直接対照、許可fixtureへのproxy転送、許可Hostの別po
 bodyをmetadataへ保存した場合は失敗する。exec/log/behaviorの管理目印scanは保持する。
 全期間のsidecar可用性、稼働exe hashの直接読取、writer attribution、分類精度、外部egress、実model/credentialをこの検査で保証しない。
 この実装の追加だけでは実VM成功を意味せず、固定単発VMの結果を別に監査する。
+
+固定Linux sidecar001の単発結果は[検証範囲](../docs/SIDECAR-EVIDENCE.md)を参照する。正常転送/2種類の拒否とmetadataを確認済みだが、外部egressや#36全体の受入とは別である。
