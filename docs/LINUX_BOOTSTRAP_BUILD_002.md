@@ -41,3 +41,8 @@ helperを、既存lockへ`passwd -l`を再適用する代わりにshadowの該�
 shadow内容やhashは出力しません。空・未lock・不在・重複は拒否します。
 実helperのpredicateを使う7fixtureの検証と`sh -n`が成功しました。
 これはguestでの修正成功の証明ではなく、次attemptの定義・snapshot・unit・command再監査が必要です。
+
+修正helper SHA256は`839bfe907c6103a81a538ce5c94aaf3c335db208df159613752884e20bef1f8a`です。
+これを含む定義004の生成と固定pluginでのfull Packer validateも成功しました。
+observerを含むPython全5testが成功し、既存CIは`test_*.py`で新しい負例も対象に含みます。
+次attemptのroot配置・buildはまだ行っていません。
