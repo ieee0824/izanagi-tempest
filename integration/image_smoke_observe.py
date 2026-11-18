@@ -16,6 +16,7 @@ ROOT = '/var/lib/tempest-izanagi-image-smoke-001-v2'
 ATTEMPTS = {
     '001': (UNIT, ROOT),
     '002': ('tempest-izanagi-image-smoke-002.service', '/var/lib/tempest-izanagi-image-smoke-002'),
+    'exec-exposure-001': ('tempest-izanagi-exec-exposure-001.service', '/var/lib/tempest-izanagi-exec-exposure-001'),
 }
 
 
