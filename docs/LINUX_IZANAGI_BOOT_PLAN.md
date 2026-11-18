@@ -20,7 +20,8 @@ Cargo.lock SHA256は`9085ec0bc69678c4c060e82dd8dfa7ce32dd932dd6406c3a4f4a081e28a
 定義SHA256は`77c17773d03badbcce8b95e94222b2d750b730ffc8a1aa5746307e17c5d6f531`。
 ISO候補は`https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-virt-3.23.3-x86_64.iso`、
 上流固定SHA256は`366285bfa4d25429e0a9d1c5cbe3c2e35e84e1ad5e0620e8b5a20b5e39e7e02b`です。
-ISO自体は未取得・未照合、完成qcow2 hashは未確定です。これは派生Debianの代替ではありません。
+ISO取得後の照合で不一致が判明しました（下記）。完成qcow2 hashは未確定です。
+これは派生Debianの代替ではありません。
 
 hostの`src/qemu_sandbox.rs`はx86_64でqemu-system-x86_64、KVM、q35、cpu hostを選びます。
 image defaultはaarch64名なので、固定x86_64 imageの絶対pathを明示する必要があります。
@@ -53,6 +54,32 @@ PackerはAPT候補なし。公式`https://releases.hashicorp.com/packer/1.15.0/p
 本体は未取得で、plugin versionとchecksumもまだ未確定です。
 agent固有Cargo.lock SHA256は`9db17aed3c43477d9bc16dfe65b453b6dc0bb36d4f8e8fc8e7b9814edf200bc6`。
 hostのinstalled Rust targetはx86_64-unknown-linux-gnuのみで、musl toolchain準備も必要です。
+
+## 取得・buildの結果（2026-11-18）
+
+固定sourceで以下を実行し、exit 0、54.08秒で完了しました。default featuresです。
+
+```sh
+cargo build --manifest-path /tmp/tempest-izanagi-upstream-review/Cargo.toml --release --locked --target-dir /tmp/tempest-izanagi-bootstrap-host-target
+```
+
+host binary SHA256は`088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8`。
+x86_64 native ELF、dynamic interpreterは`/lib64/ld-linux-x86-64.so.2`です。
+source cleanを維持し、本体は未起動です。
+
+Packer 1.15.0 zipは上記公式checksumと一致しました。展開binaryのSHA256は
+`ec8feb5888368fae6838caac5b919b4c2ced6e0a0b4da5450861b1111c233fe8`、
+`packer version`はv1.15.0です。plugin取得・image buildはまだ行っていません。
+
+ISOは固定URLから取得しましたが、実体SHA256は
+`d91fb5c7a73528c89e0a1aa9a7d959f9deb9ca3dc5211e39bd73fd7df0d9070e`で、
+上流templateの`366285bf…e7e02b`と一致しません。
+同URLの`.iso.sha256`公開sidecarは取得実体の`d91fb5c7…d9070e`と一致しました。
+この一致は元の固定値の正当性や変更理由を説明しません。
+ISOを使用せず、固定入力変更の監査までimage buildを停止します。
+上流sourceのchecksumを暗黙に置換しません。
+
+APT exact追加一覧と影響は[package simulation](LINUX_BOOTSTRAP_PACKAGES.md)へ記録しました。
 
 ## 起動前に具体化する手順
 
