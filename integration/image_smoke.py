@@ -19,6 +19,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'image'))
 from transport import Mailbox
+from trace_evidence import trace_probe_evidence
 
 
 def sha(path):
@@ -448,6 +449,14 @@ def main():
             assert body in payload_capture, 'expected HTTP response absent from capture'
         report['checks']['capture_proxy_and_backend'] = {'passed': True, 'decoded_packet_lines': len(parsed.stdout.splitlines())}
         report['checks']['recording_boundary'] = {'passed': True, 'agent_api_rows': len(rows)}
+        probe_code = ("import os,json; p='/tmp/tempest-trace-smoke-probe'; "
+                      "fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); "
+                      "os.write(fd,b'LOCAL-DUMMY'); os.close(fd); "
+                      "print(json.dumps({'pid':os.getpid(),'path':p}))")
+        probe = execute('/usr/bin/python3', '-c', probe_code)
+        if probe.returncode != 0:
+            raise RuntimeError('dummy trace probe command failed')
+        report['trace_probe'] = json.loads(probe.stdout)
         report['status'] = 'collected_requires_review'
         save()
     except Exception as error:
@@ -478,10 +487,18 @@ def main():
     instance = Path.home() / '.izanagi/instances' / hashlib.sha256(str(box.workspace).encode()).hexdigest()
     logs = output / 'izanagi-logs'
     logs.mkdir(mode=0o700)
-    for name in ['events.log', 'alerts.log']:
-        source = instance / 'logs' / name
-        if source.is_file():
-            shutil.copyfile(source, logs / name)
+    for prefix in ['events.log', 'alerts.log']:
+        for source in (instance / 'logs').glob(prefix + '*'):
+            if source.name in [prefix] + [prefix + '.' + str(n) for n in range(1, 4)] and source.is_file():
+                shutil.copyfile(source, logs / source.name)
+    try:
+        report['checks']['ebpf_trace_probe'] = trace_probe_evidence(
+            sorted(logs.glob('events.log*')), report['trace_probe']['pid'], report['trace_probe']['path'])
+    except (ValueError, RuntimeError, OSError) as error:
+        report['status'] = 'trace_evidence_failed'
+        report['failure'] = str(error)
+        save()
+        raise
     observations = list(logs.glob('*')) + [output / 'up.stdout', output / 'up.stderr']
     leaked = [path.name for path in observations if any(marker.encode() in path.read_bytes() for marker in secret_markers)]
     report['checks']['host_logs_private_markers'] = {'passed': not leaked, 'files_examined': [p.name for p in observations], 'leaked_files': leaked}
