@@ -41,3 +41,16 @@ installerのbuild時network/loopback HTTP・SSH・VNC条件は親full003と同�
 新unit/port/serial/debug/output未使用、owner/nonwrite/hash、ELF/loader/GLIBC親同一、実QEMUcwd/単一VM/build listenerを観測する。
 失敗時は当該unitだけ回収しpartialを保持、暗黙retryや既存root再利用をしない。
 生成物hash/format/backingなし/明示fixture manifest/provenanceと同Invocation trusted終了・cgroup/UID/port回収を保存し、結果監査後に別runtime計画へ進む。
+
+## 純粋recipeと容量の具体化
+
+[derive.py](evidence/delivery-race-build-001/derive.py)は受け取った親file bytesを変更せずchild bytesを返す草案で、filesystem公開/CLI build入口をまだ持たない。
+固定親script/instrumenter/変換後SHAをassertし、変更対象6file以外を拒否、元compile metadata/input SHAを保持する。
+追加fixture-provenance.jsonとguestへ渡すimage.json/host inputs.jsonへ同じ親manifest/file SHA・recipe revisionを束縛する。
+実親定義16fileでメモリ内導出を確認し、child17file/変更6file、compile metadata/ISO/全binary SHA維持を確認した。recipe revisionはこの非保存検査では明示placeholderを使い、実行済みsource revisionと偽っていない。
+正負2testsで実instrumenter適用・無関係file不変と、改変親/既fixture/偽compile情報/誤binary path/instrumenter差分/不正revisionの拒否を確認した。
+
+親全26input合計915586311 bytes（定義53000 bytes）、親生成image2145124352 bytes、virtual diskは4294967296 bytes。
+調査時free23387049984 bytes。新input約0.916GB＋4GiB diskを3個分（installer/変換/完成の保守的仮枠）＋log/partial/margin各1GiBを見込むと約16GiB以内だが、実Packer temp使用量の保証値ではない。
+開始案はcopy前free20GiB以上/copy後18GiB以上を要求し、実templateのdisk_size・temp/output配置と正確argvを次監査で固定する。
+旧証拠削除や旧image再利用で容量を空けず、不足時は開始しない。新root/build/VMは未開始。
