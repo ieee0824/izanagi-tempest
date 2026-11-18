@@ -17,9 +17,10 @@ work/tmp/cacheはtempest-kvm所有0700。旧13入力hashは配置後も不変で
 
 ## attemptを混ぜない起動・観測案
 
-observerは`--attempt 002`を追加し、選択肢を001/002に限定しました。
+observerは`--attempt 002`を追加し、指定必須・選択肢を001/002に限定しました。
 unit/cgroup照合、Invocation変更拒否、listen確認の条件は同じです。
-2testとPython compileに成功しました。
+旧001のcgroupを002として受け入れない負例を含む3testとPython compileに成功しました。
+実hostの`sample`も明示002でLoadState=not-found/Invocationなしを確認し、旧failed001とは区別しました。
 
 ```sh
 sudo -n /usr/bin/python3 integration/izanagi-bootstrap/observe.py --attempt 002 \

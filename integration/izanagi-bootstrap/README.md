@@ -55,7 +55,7 @@ QEMUのnetwork引数だけをprivate JSONLへ保存します。rootでの読取�
 
 ```sh
 python3 -m unittest discover -s integration/izanagi-bootstrap -p test_observe.py -v
-sudo -n /usr/bin/python3 integration/izanagi-bootstrap/observe.py --output /tmp/tempest-bootstrap-build-observation-001.jsonl
+sudo -n /usr/bin/python3 integration/izanagi-bootstrap/observe.py --attempt 001 --output /tmp/tempest-bootstrap-build-observation-001.jsonl
 ```
 
 全argvや環境を保存しません。非loopback listen、別InvocationID、観測失敗や期限時は

@@ -1,9 +1,20 @@
 import unittest
+from unittest.mock import patch
 
-from observe import loopback
+from observe import loopback, sample
 
 
 class ListenerBoundaryTests(unittest.TestCase):
+    def test_attempt002_rejects_attempt001_control_group(self):
+        with patch("observe.command", return_value=(
+            "ControlGroup=/system.slice/tempest-izanagi-bootstrap-build-001.service\n"
+            "InvocationID=old-attempt\n"
+        )) as call:
+            with self.assertRaisesRegex(RuntimeError, "unexpected control group"):
+                sample("tempest-izanagi-bootstrap-build-002.service")
+            self.assertEqual(call.call_args.args[0][2],
+                             "tempest-izanagi-bootstrap-build-002.service")
+
     def test_loopback_ipv4_and_ipv6(self):
         for endpoint in ("127.0.0.1:18081", "[::1]:5901"):
             with self.subTest(endpoint=endpoint):
