@@ -29,3 +29,5 @@ claim 後は root helper の既存 attest.exe_sha256 と build 入力 agent hash
 これは offline image byte 照合とは別の実行中 agent 照合であり、eBPF event probe や sidecar 起動の証明を代替しない。
 
 検証: Python 全72件成功（専用 venv）、固定 guest snippet compile 成功。VM 再実行は未実施。
+
+room16570 の指摘に従い provenance に残存記録由来の argv/UID/env と欠測を補足した。元 caller transcript 全体と sfdisk wrapper source は回収できておらず、独立した実行証跡とは扱わない。再変換・再抽出はしていない。

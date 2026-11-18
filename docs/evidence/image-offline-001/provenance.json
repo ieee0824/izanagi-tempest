@@ -11,5 +11,45 @@
   },
   "free_bytes_at_recording": 46475866112,
   "extract_caller_exit": "not recovered; process absent and complete report inspected",
-  "vm_boot_for_inspection": false
+  "vm_boot_for_inspection": false,
+  "stage_invocation_record": {
+    "execution_uid": 999,
+    "environment": {
+      "PATH": "/usr/bin:/bin",
+      "TZ": "UTC",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "HOME": "/var/lib/tempest-izanagi-image-offline-001/work/home",
+      "TMPDIR": "/var/lib/tempest-izanagi-image-offline-001/work/tmp"
+    },
+    "environment_cleared": true,
+    "record_basis": "retained conversation tool-call record; no independent complete caller transcript retained",
+    "qemu_img_argv": [
+      "/usr/bin/qemu-img",
+      "convert",
+      "-f",
+      "qcow2",
+      "-O",
+      "raw",
+      "/var/lib/tempest-izanagi-image-smoke-001-v2/inputs/image.qcow2",
+      "/var/lib/tempest-izanagi-image-offline-001/work/disk.raw"
+    ],
+    "helpers_interpreter_argv": [
+      "/usr/bin/python3",
+      "-I",
+      "-B"
+    ],
+    "helper_paths": [
+      "/var/lib/tempest-izanagi-image-offline-001/inputs/select_partition.py",
+      "/var/lib/tempest-izanagi-image-offline-001/inputs/extract_artifacts.py"
+    ],
+    "timeout_argv": [
+      "/usr/bin/timeout",
+      "--signal=TERM",
+      "--kill-after=10s",
+      "600s"
+    ],
+    "sfdisk_argv_record": "--json on work/disk.raw confirmed by retained record; exact complete wrapper argv not independently recovered",
+    "missing": "complete original stage1/stage2 caller transcripts and sfdisk Python wrapper source; no re-execution to replace missing evidence"
+  }
 }
