@@ -44,7 +44,7 @@ Python -I -B/env-i で ambient credentials を排除し、run独立dummy HMACを
 ## 成功範囲と停止
 
 既存M3の owner/mapped-xattr/readonly/private mailbox/doas/fw_cfg/proc/cgroup/firewall、claim/seed、dummy LWS200/403/501、並行ciphertext、子process境界、export barrier、dummy HTTP/API/PCAP、実nonce/PID/pathのopen eventを検査する。
-sidecar実起動、独立Rust MCP route、forced delivery race、二run reset、正式モデル比較は未証明のまま残す。実AWSは使わない。
+sidecar実起動、独立Rust MCP route、forced delivery race、二run reset、正式モデル比較は未証明のまま残す。外部到達拒否と正常 positive control の組も未証明であり、既存 firewall / API / PCAP 検査と区別する。実AWSは使わない。
 observer異常/失敗/期限超過は当該unitだけ停止回収し、部分証拠を保持する。別retryや権限緩和、tracer無効化で合格にしない。
 caller終端、unit最終状態、exit recorder、trusted journal、cgroup/UID999/agent port回収を別々に確認する。
 正常時も image/inputs/旧証拠不変を確認し、公開は選別結果/hashのみ。dummy keyは結果照合後に削除し値/hashを公開しない。
@@ -58,3 +58,5 @@ input rows SHA256 は 45f58b03a569e99d8aecb095f4daf30c26b0ead1b157e1bd5711b01c37
 専用userによる全input read可能/write不可、global runtime SHA一致、prefix/version/AES、--help、private work、xattr roundtripを確認した。
 unitはnot-found/inactive/Invocation空、準備検査終了後UID999 processなし、free44276301824 bytesだった。
 この値は実行直前に再確認する。snapshotのimage/core/CLIは従前と同一で、offline reportと新moduleを追加した。
+
+実 systemd-run argv は [固定 caller](evidence/image-smoke-002/run_once.py) の COMMAND に保存した。現在は未実行。observer は上記固定 command を先行し、caller はこの script を Python -I -B で一度だけ呼ぶ。
