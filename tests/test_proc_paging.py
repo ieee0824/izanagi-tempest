@@ -114,6 +114,19 @@ class PagingTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             P.frame({'data': 'X' * P.core.MAX_OUTPUT})
 
+    def test_enumeration_stops_at_budget_before_reading_process_details(self):
+        emitted = []
+        class Proc:
+            def iterdir(self):
+                for pid in range(1, 10000):
+                    emitted.append(pid)
+                    yield Path(str(pid))
+        with patch.object(P, 'MAX_ENUMERATED', 2), patch.object(P.core, 'identity') as read:
+            with self.assertRaises(RuntimeError):
+                P.enumerate_processes(Proc())
+        self.assertEqual(emitted, [1, 2, 3])
+        read.assert_not_called()
+
     def test_guard_failure_precedes_any_proc_enumeration(self):
         with patch.object(P.core, 'require_guest', side_effect=RuntimeError('guard')), \
              patch.object(P, 'enumerate_processes') as read:
