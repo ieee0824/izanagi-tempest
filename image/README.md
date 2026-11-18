@@ -233,3 +233,22 @@ python3 integration/runtime_delivery_race.py --tempest /absolute/path/to/tempest
 
 大証跡caseは1MiBのローカルdummy objectを29回読み、64MiBのhost上限に近いPCAPを作る。
 上限付近のサイズ・29要求の保持・認証済みexport・freeze時間・安全回収を検査する。
+
+### HTTP sidecar専用のloopback検査
+
+`integration/image_smoke.py --sidecar-evidence --exec-evidence` は、固定Izanagiのbehavior sidecarをguest内loopbackのfixtureだけで検査する専用モード。
+通常の必須引数（`--izanagi`、`--image`、`--output`、必要な`--build-inputs`）を指定し、VM前の固定計画・専用root/UID/snapshot監査を経て実行する。
+`--proc-evidence`、`--tempest`、`--delivery-race-fixture`との同時指定は拒否する。
+ネットワーク制限とread-only共有を保ち、分類器はmock/allow_export=false、proxy18080、許可fixture19090、対照receiver19091をguest loopbackに固定する。
+公開sourceは`proc_evidence.py`と`sidecar_probe.py`だけをguest root所有/0444へmapped配置する。秘密や任意targetをhelperへ渡さない。
+
+共通の起動・artifact/権限・共有検査後、通常M3のclaim/seed/API/PCAP試験を実行せず、専用receiver/clientへ分岐する。
+sidecarのproxy環境注入が通常M3のloopback通信へ干渉するためであり、M3成功の代替とはしない。
+receiverへの直接対照、許可fixtureへのproxy転送、許可Hostの別port拒否、非許可Host拒否を、status・dummy body応答・receiver件数で照合する。
+拒否時client statusは固定版では502。別portはpolicy=allowed/outcome=failed、非許可Hostはpolicy=denied/outcome=rejectedとして区別する。
+
+公開nonce/actor/sidecar PID-starttime/guest bootと有限観測区間をprivate execへ保存し、receiver thread/socketを同一execで回収する。
+終了後に唯一のfresh behavior sessionのbounded auditをprivate保存し、client socket→request ID→outcome、boot/session/source、bytes・privacyと拒否時upstream0を照合する。
+bodyをmetadataへ保存した場合は失敗する。exec/log/behaviorの管理目印scanは保持する。
+全期間のsidecar可用性、稼働exe hashの直接読取、writer attribution、分類精度、外部egress、実model/credentialをこの検査で保証しない。
+この実装の追加だけでは実VM成功を意味せず、固定単発VMの結果を別に監査する。
