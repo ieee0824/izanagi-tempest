@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -53,6 +54,24 @@ class ReceiverTests(unittest.TestCase):
             with self.assertRaises(ValueError):N.private_json(p,owner)
             p.write_text('{}');p.chmod(0o644)
             with self.assertRaises(ValueError):N.private_json(p,owner)
+
+    def test_transient_second_link_waits_but_replaced_inode_is_rejected(self):
+        for replace in (False, True):
+            with self.subTest(replace=replace),tempfile.TemporaryDirectory() as directory:
+                path=Path(directory)/'ready';pending=Path(directory)/'pending'
+                pending.write_text(json.dumps(ready()));pending.chmod(0o600);os.link(pending,path)
+                def finish():
+                    if replace:
+                        path.unlink();path.write_text('{}');path.chmod(0o600)
+                    else:
+                        pending.unlink()
+                timer=threading.Timer(.03,finish);timer.start()
+                try:
+                    if replace:
+                        with self.assertRaises(ValueError):N.private_json(path,(os.getuid(),os.getgid(),0o600))
+                    else:
+                        self.assertEqual(N.private_json(path,(os.getuid(),os.getgid(),0o600)),ready())
+                finally:timer.join()
 
     def test_phase_ack_once_then_closed_and_no_remaining_listener(self):
         closed=dict(schema_version=1,identity=ready(),receiver_closed=True,host_monotonic_ns=99)

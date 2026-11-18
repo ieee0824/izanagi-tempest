@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import secrets
 import stat
+import time
 
 ROOT = Path('/var/lib/tempest-izanagi-host-endpoint-001')
 UNIT = 'tempest-izanagi-host-endpoint-001.service'
@@ -37,9 +38,22 @@ def private_json(path, owner=(999, 988, 0o600)):
         return None
     with os.fdopen(descriptor, 'rb') as stream:
         before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 \
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink not in (1, 2) \
                 or (before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)) != owner:
             raise ValueError('receiver state owner/mode/type')
+        publication_deadline = time.monotonic() + 1
+        while before.st_nlink == 2:
+            current = path.lstat()
+            if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+                raise ValueError('receiver publication inode replaced')
+            if time.monotonic() >= publication_deadline:
+                raise ValueError('receiver publication did not become single-link')
+            time.sleep(.01)
+            before = os.fstat(stream.fileno())
+        current = path.lstat()
+        if before.st_nlink != 1 or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino) \
+                or (before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)) != owner:
+            raise ValueError('receiver publication identity changed')
         data = stream.read(4097)
         after = os.fstat(stream.fileno())
         if len(data) > 4096 or len(data) != before.st_size \
