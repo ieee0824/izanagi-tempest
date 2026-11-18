@@ -2,7 +2,7 @@
 
 ## 状態
 
-[build001のビルド・offline照合](LINUX_X86_DELIVERY_RACE_BUILD_001.md)は完了し、room16811で結果監査を受理された。[M3 forced-reader smoke001](LINUX_X86_DELIVERY_RACE_SMOKE_001.md)はroom16821、[固定host CLI completed001](LINUX_X86_DELIVERY_RACE_COMPLETED_001.md)はroom16834で結果監査を受理された。限定RAW cleanupで容量を確保し、次の[大容量control案](LINUX_X86_DELIVERY_RACE_LARGE_001_PLAN.md)を監査へ提示する段階である。以下の3の大容量controlは未実施。
+[build001のビルド・offline照合](LINUX_X86_DELIVERY_RACE_BUILD_001.md)は完了し、room16811で結果監査を受理された。[M3 forced-reader smoke001](LINUX_X86_DELIVERY_RACE_SMOKE_001.md)はroom16821、[固定host CLI completed001](LINUX_X86_DELIVERY_RACE_COMPLETED_001.md)はroom16834で結果監査を受理された。[大容量control001](LINUX_X86_DELIVERY_RACE_LARGE_001_PLAN.md)はroom16838監査後にsnapshot作成・UID検査まで完了し、開始前の結果監査待ちである。以下の3の大容量VM試験は未実施。
 [build計画](LINUX_X86_DELIVERY_RACE_BUILD_001_PLAN.md)の完了をruntime成功の代用にしない。
 
 ## ビルド後の開始条件

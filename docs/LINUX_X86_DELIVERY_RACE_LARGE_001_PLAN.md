@@ -1,5 +1,14 @@
 # Linux x86大容量配送control001案
 
+## 後続の準備結果
+
+room16838監査後、prepare42858とUID check17638は各同handleで終了コード0。
+[実snapshot](LINUX_X86_DELIVERY_RACE_LARGE_SNAPSHOT_001.json)は1311項目、canonical tree `2354bff963ee837ef2de59cf927828ecd3242a0cead6ae59b12bc489613a9308`。
+[準備検査結果](LINUX_X86_DELIVERY_RACE_LARGE_PREPARATION_001.json)へhash/owner-mode/read可write不可、固定Python/AES/runtime-help/CLI-help/xattr/artifact bindingと出力不在を保存した。
+181 directoryはroot:988/0750、work/home/tmp/evidenceは999:988/0700。copy後free10239275008 bytesで8GiB条件を満たす。
+20固定source/data・外部runtime・前段入力と保持証拠は不変。RAW cleanup provenanceも新inputへ束縛した。
+新root/snapshotだけを作成し、run_once・VMは未実行。以下の「未作成」は草案時点を表す。
+
 ## 事前期待値と状態
 
 room16830/16834に従い、`--expect completed --large-evidence`を実行前の期待値として固定する。
