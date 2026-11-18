@@ -51,3 +51,12 @@ room16737の固定source契約では、guestの単一exec内で有限期限のre
 結果はprivate exec stdoutのbounded JSONとし、共有書込やbackground残留を使わない。
 別loopback portの失敗はclient502/HttpRequest.policy=allowed/HttpOutcome=failed/status=null/upstream_bytes_written0であり、denied/403と記録しない。
 非許可Hostはclient502/policy=denied/outcome=rejectedとして区別する。具体schema/遅延上限/固定argvは実装source共有後に確定する。
+
+## 専用runner mode案
+
+room16739に従い、--sidecar-evidenceと--exec-evidenceを組み合わせ、proc/tempest/forced-race同時指定は拒否する。
+sidecarはExecへHTTP_PROXY/no_proxy空を注入するため、既存LWS/AWS CLI正常シナリオと混ぜない。
+共通artifact/権限/read-only/bootstrap後、専用loopback fixtureだけを実行し、共通終了・保存・scanへ合流する。
+既存artifact/trace検査は維持し、実行しないM3操作を今回の成功実績へ含めない。
+追加closure予定はpublic sidecar_probe.py/proc_evidence.pyとhost pure sidecar_evidence.py。具体source/hashは実装監査後に固定する。
+[caller草案](evidence/sidecar-001/run_once.py)と[service草案](../integration/tempest-izanagi-sidecar-001.service)は専用flagsを指定する。まだsource/依存未確定であり実行しない。
