@@ -52,3 +52,13 @@ receiverはpayload読取件数とは別にaccept総数を記録する。guestの
 host-before/host-after対照の2接続以外のacceptはfail-closeとする。未知nonce/phaseや途中EOFも予算内の明示的失敗として保持する。
 observerはhost dummy listenerの正確endpoint/PID/starttime/socket所有と役割を記録し、QEMUのhostforward listenerとは別に照合する。
 既存単一QEMU/restrict=on/storage/read-only/cwd/同Invocationの検査を緩めない。receiverの正確PID/socket実装契約を待ってprofileへ固定する。
+
+## ready/ackによるreceiverの独立観測案
+
+room16761/16762の案として、runnerは固定output/network-receiver.ready.jsonへschema/公開nonce/host_pid/127.0.0.1/port/socket_inodeをatomic0600で公開する。
+observerは通常単link/999:988/0600・有限bytes/厳密schemaをO_NOFOLLOWで確認し、受信JSON内の任意pathを使用しない。
+同unit MainPID/Invocation/currentboot/cgroupとPID stat前後starttime、fd socket inode、ss exact endpoint/PIDを独立照合する。QEMU listenerとは別roleで、port衝突・共有owner・identity変化を拒否する。
+固定work/evidence/network-receiver-observed.jsonへroot:988/0440のackを排他的にatomic保存する。
+pending0600でwrite/fsync→fchown/fchmod→link EXCL→pending削除/parent fsyncとし、既存ackを上書きしない。
+runnerは有限10秒だけ正確nonce/pid/port/inode/Invocation/starttimeのroot-owned ackを待ち、未観測のままguest試行へ進めない。
+ack後もreceiverの生存・identityを追跡し、終了後回収と区別する。ready公開時点・厳密field/最大bytes/starttime単位は実装interface共有後に確定する。
