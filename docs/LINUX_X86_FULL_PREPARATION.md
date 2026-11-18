@@ -77,3 +77,20 @@ userspace は ELF machine 62、interpreter、NEEDED、GLIBC symbol requirements 
 - Packer の HTTP/SSH/VNC は loopback 固定、build 時の package fetch と実験時 restrict=on を区別する。固定 immutable 入力、Invocation、listener、終了状態、cgroup/子 process 回収を採取し、旧 artifacts/evidence を保持する。
 
 追加 install/full build/VM の具体 command と snapshot は、この準備・依存閉包・成果物のレビュー後に確定する。
+
+## bpf-linker の非実行検査結果
+
+room #16446 の監査後、download session 97993 は exit 0。専用 0700 `/tmp/tempest-x86-full-tool-inputs` へ取得した archive は 27975135 bytes、前記固定 SHA に一致した。member は `bpf-linker` の通常 file 1 件（103959440 bytes）のみ。link/special entry はなく、全展開せず選択 bytes を O_EXCL|O_NOFOLLOW、0600 の `bpf-linker.inspected` へ読み出した。
+
+binary SHA-256 は `c974140662f783c37bf0267436409caa8f4708ec10b558d9d1c594385489fe2f`。file/readelf は ELF64 little-endian x86-64 EXEC、静的リンク、PT_INTERP なし、dynamic section なし。PATH 配置・実行は未実施。この検査から追加 host LLVM APT を必要とする動的依存は見つからなかった。
+
+nightly の公式 manifest と sidecar も独立照合し、SHA-256 `3addb500ea35b558cb820e44c98217aa931a0eab0066233b3e8254d91ad6566e` に一致した。これは HTTPS/sidecar の照合であり署名検証ではない。
+
+| nightly-2026-02-12 archive | manifest xz SHA-256 |
+|---|---|
+| rustc x86_64-unknown-linux-gnu | ecff4a1dd40734c2614c56b28f265eb8d771d7dd1a3c3cb4ed0740d95deec8a7 |
+| cargo x86_64-unknown-linux-gnu | c8ec4b723d4d1085f3f5dbad8ef0f4ec5337098db13e68c85ef2c3d149ac168b |
+| rust-std x86_64-unknown-linux-gnu | 6cbe23fabbcd1b519b8310b72722c6d2ed5107fb172633d54141f74cf70cc51b |
+| rust-src | a806f00ff962f3460447aee4699a17b74a81e02679381287eccada79a241e643 |
+
+nightly の導入は未実施。既存領域とは独立した `/tmp/tempest-x86-full-rust/{rustup,cargo}` を候補とし、具体 command を room へ提示した。
