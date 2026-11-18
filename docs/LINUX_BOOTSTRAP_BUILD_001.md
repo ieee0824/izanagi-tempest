@@ -53,3 +53,19 @@ unit reset、途中image/log削除は行っていません。
 
 次は固定ISOのpartition構成と上流setupの仮定を照合し、上流source不変更の派生差分を監査します。
 修正後も新しい入力hash・出力・unit名・具体commandで再監査し、無断で再buildしません。
+
+## 停止後のread-only照合と修正準備
+
+固定answersは`DISKOPTS="-m sys -s 0 /dev/vda"`でswapなしです。
+停止済みqcow2から専用userの`qemu-img dd`で先頭1MiBを別fileへ読み出しました。
+MBR署名55aa、partition1はtype83/start2048/614400 sectors、partition2は
+type83/start616448/3577856 sectors、partition3/4はtype0/start0/size0でした。
+先頭1MiB SHA256は`ef1c26e292db2204f44d9569e717c81b4575fc0f46c17af03bd21eed69918e93`です。
+これも画面のboot=vda1/root=vda2と整合します。host mountや再起動は行っていません。
+
+生成器で派生setupのみを変更し、vda2 block存在・vda3不在を要求してからvda2をmount、
+mount後にalpine-releaseとetc/sshの存在を確認する差分を準備しました。
+元source/旧snapshot/途中imageは変更せず、manifestには元setup hashと派生setup hashを別記します。
+派生setup SHA256は`bc345d9f3d21db0385d60df0ae4ac73ec669a4f0d5242eba97934aa49e382de9`です。
+定義003の生成、`sh -n`、固定pluginでのfull Packer validateが成功しました。
+修正のguest内実行は未確認であり、再buildはしていません。

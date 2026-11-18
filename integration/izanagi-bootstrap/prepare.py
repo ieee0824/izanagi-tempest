@@ -75,6 +75,17 @@ def main():
 
 '''
     template = template.replace(anchor, extra + anchor)
+    setup = (source / "packer/http/setup.sh").read_text()
+    answers = (source / "packer/http/answers").read_text()
+    if setup.count("mount /dev/vda3 /mnt") != 1 or 'DISKOPTS="-m sys -s 0 /dev/vda"' not in answers:
+        raise SystemExit("unexpected fixed installer partition configuration")
+    setup = setup.replace("mount /dev/vda3 /mnt", """# Fixed x86_64 no-swap installer produces boot=vda1, root=vda2.
+# Refuse a different layout rather than guessing another partition.
+test -b /dev/vda2
+test ! -b /dev/vda3
+mount /dev/vda2 /mnt
+test -f /mnt/etc/alpine-release
+test -d /mnt/etc/ssh""")
     # Refuse existing destinations, including dangling symlinks.
     output.mkdir(mode=0o700)
     inputs = {}
@@ -84,6 +95,7 @@ def main():
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dst)
         inputs[name] = digest(src)
+    (output / "http/setup.sh").write_text(setup)
     helper = Path(__file__).with_name("guest-bootstrap.sh")
     shutil.copyfile(helper, output / helper.name)
     (output / "bootstrap.pkr.hcl").write_text(template)
@@ -95,6 +107,8 @@ def main():
         "iso_signature_primary_fingerprint": "0482D84022F52DF1C4E7CD43293ACD0907D9495A",
         "iso_override_review_room_post": 16352,
         "agent_sha256": digest(agent), "upstream_inputs_sha256": inputs,
+        "derived_inputs_sha256": {"http/setup.sh": digest(output / "http/setup.sh")},
+        "partition_fix_evidence": "docs/LINUX_BOOTSTRAP_BUILD_001.md",
         "guest_bootstrap_sha256": digest(helper),
         "derived_template_sha256": digest(output / "bootstrap.pkr.hcl"),
         "variables_sha256": digest(output / "bootstrap.pkrvars.json"),
