@@ -1,6 +1,8 @@
 # 専用userによる最小bootstrap image build計画
 
-本書はroom #16358の起動前監査資料です。image buildは未実施です。
+本書はroom #16358の起動前監査資料です。
+単発build001はpartition仮定の不一致で失敗し、停止・回収しました。
+[実測結果](LINUX_BOOTSTRAP_BUILD_001.md)を参照してください。以下は当時の計画です。
 [入力・署名根拠](LINUX_IZANAGI_BOOT_PLAN.md)と[生成手順](../integration/izanagi-bootstrap/README.md)を前提にします。
 
 ## 入力snapshotと書込み先
