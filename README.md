@@ -133,7 +133,7 @@ python3 integration/guest_smoke.py --lws /private/tmp/tempest-m2-lws-source/targ
 
 一時データ・空きport・ローカルのダミー資格情報だけを使い、実 AWS へ接続しません。
 ホスト試験は development モードであり、VM の doas・owner 制限やホスト→VMの秘密配送の実証とは分けます。
-配送の残る調査は [Issue #13](https://github.com/ieee0824/izanagi-tempest/issues/13) で追跡しています。
+配送方式・上限・固定Linuxの限定観測と未確認範囲は[配送証拠表](docs/ISSUE-13-DELIVERY-EVIDENCE.md)を参照してください（[Issue #13](https://github.com/ieee0824/izanagi-tempest/issues/13)）。
 
 ## 開発: M3 の VM イメージ
 
