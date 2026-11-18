@@ -32,7 +32,7 @@ assert sha(source_image)=='5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad9
 shutil.copyfile(source_image,inputs/'image.qcow2')
 cli=Path('/tmp/tempest-izanagi-bootstrap-host-target/release/izanagi');assert sha(cli)=='088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8';shutil.copyfile(cli,inputs/'izanagi');os.chmod(inputs/'izanagi',0o550)
 shutil.copyfile('/var/lib/tempest-izanagi-full-build-003/inputs/definition/inputs.json',inputs/'build-inputs.json')
-for name in ['integration/image_smoke.py','integration/image_smoke_observe.py','integration/izanagi-bootstrap/observe.py','image/transport.py','image/trace_evidence.py','image/artifact_evidence.py','tools/m0/izanagi.example.toml']:
+for name in ['integration/image_smoke.py','integration/image_smoke_observe.py','integration/izanagi-bootstrap/observe.py','image/transport.py','image/trace_evidence.py','image/artifact_evidence.py','image/exec_evidence.py','tools/m0/izanagi.example.toml']:
  src=repo/name;assert src.is_file() and not src.is_symlink();dest=inputs/'repo'/name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,dest)
 offline=repo/'docs/evidence/image-offline-001/report.json'
 assert sha(offline)==sha('/var/lib/tempest-izanagi-image-offline-001/work/report.json')
