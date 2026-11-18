@@ -449,7 +449,9 @@ def main():
             assert body in payload_capture, 'expected HTTP response absent from capture'
         report['checks']['capture_proxy_and_backend'] = {'passed': True, 'decoded_packet_lines': len(parsed.stdout.splitlines())}
         report['checks']['recording_boundary'] = {'passed': True, 'agent_api_rows': len(rows)}
-        probe_code = ("import os,json; p='/tmp/tempest-trace-smoke-probe'; "
+        trace_nonce = secrets.token_hex(16)
+        trace_path = '/tmp/tempest-trace-' + trace_nonce
+        probe_code = ("import os,json; p=" + repr(trace_path) + "; "
                       "fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); "
                       "os.write(fd,b'LOCAL-DUMMY'); os.close(fd); "
                       "print(json.dumps({'pid':os.getpid(),'path':p}))")
@@ -457,6 +459,8 @@ def main():
         if probe.returncode != 0:
             raise RuntimeError('dummy trace probe command failed')
         report['trace_probe'] = json.loads(probe.stdout)
+        if report['trace_probe']['path'] != trace_path:
+            raise RuntimeError('dummy trace probe run/path mismatch')
         report['status'] = 'collected_requires_review'
         save()
     except Exception as error:

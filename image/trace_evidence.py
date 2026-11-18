@@ -10,7 +10,7 @@ EVENT = re.compile(r'^\[[^\]\r\n]+\] INFO pid=(\d+) [^:\r\n]+: (open|openat)\((.
 def trace_probe_evidence(paths, pid, path):
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         raise ValueError('invalid trace probe PID')
-    if not path.startswith('/tmp/tempest-trace-'):
+    if not isinstance(path, str) or not re.fullmatch(r'/tmp/tempest-trace-[0-9a-f]{32}', path):
         raise ValueError('invalid trace probe path')
     quoted = json.dumps(path)
     matches = 0
