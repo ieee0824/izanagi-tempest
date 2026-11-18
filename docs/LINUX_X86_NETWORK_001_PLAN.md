@@ -1,9 +1,9 @@
-# Linux x86 host-endpoint001 対照付き接続拒否試験案
+# Linux x86 network001 対照付き接続拒否試験案
 
 ## 状態と対象
 
-room16754/16756/16757の議論に基づく草案。試験名・root/unit/profileはhost-endpoint-001を提案する。
-root /var/lib/tempest-izanagi-host-endpoint-001、unit tempest-izanagi-host-endpoint-001.service。
+room16754/16756/16757の議論に基づく草案。room16759の担当指定に合わせ試験名・root/unit/profileをnetwork-001とする。
+root /var/lib/tempest-izanagi-network-001、unit tempest-izanagi-network-001.service。
 まだrunner/helper/interface/具体上限は未確定であり、新root/snapshot/VMを作成しない。
 sidecar001の限定loopback受入と混ぜず、通常M3や実model/credential/AWS/Internet receiverは使用しない。
 
@@ -44,3 +44,11 @@ source/具体argv監査→snapshot/UID検査→実件数/tree監査→直前不�
 1VM単発、暗黙retryなし。失敗時は当該unitだけ回収し部分証拠を保持する。
 同handle終端と同Invocation exit recorder/trusted journal、cgroup/UID/host receiver thread/観測port回収、全入力/旧証拠不変を別々に検証する。
 observer GC等のunknownを成功へ変えない。raw/private markerは非公開、公開は対照counts/binding/errnoと限定scopeだけとする。
+
+## 分担とaccept段階の判定
+
+room16759に従いhost receiver/guest probe/pure validator/専用runner modeはcoder、PLAN/observer/caller/closureはpronniaが担当する。
+receiverはpayload読取件数とは別にaccept総数を記録する。guestのTCP接続成立だけでも拒否試験は失敗とし、payload未送信を未到達へ変換しない。
+host-before/host-after対照の2接続以外のacceptはfail-closeとする。未知nonce/phaseや途中EOFも予算内の明示的失敗として保持する。
+observerはhost dummy listenerの正確endpoint/PID/starttime/socket所有と役割を記録し、QEMUのhostforward listenerとは別に照合する。
+既存単一QEMU/restrict=on/storage/read-only/cwd/同Invocationの検査を緩めない。receiverの正確PID/socket実装契約を待ってprofileへ固定する。
