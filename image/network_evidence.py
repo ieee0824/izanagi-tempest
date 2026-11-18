@@ -90,6 +90,9 @@ class EndpointReceiver:
         if self.socket.getsockname() != ('127.0.0.1', self.identity['port']) \
                 or os.fstat(self.socket.fileno()).st_ino != self.identity['socket_inode']:
             raise RuntimeError('host receiver bind changed')
+        return self.counters()
+
+    def counters(self):
         with self.lock:
             return {'identity': dict(self.identity), 'accepts': self.accepts,
                     'phases': list(self.messages), 'errors': list(self.errors),
@@ -200,6 +203,11 @@ def validate(value):
     if before['accepts'] != 1 or after['accepts'] != 1 or final['accepts'] != 2 \
             or before['phases'] != ['before'] or after['phases'] != ['before'] or final['phases'] != ['before', 'after']:
         raise ValueError('unexpected connection reached the host endpoint')
+    closed = value['closed_state']
+    if closed['identity'] != identity or closed['accepts'] != 2 or closed['phases'] != ['before', 'after'] \
+            or closed['errors'] or closed['thread_alive'] is not False \
+            or closed['host_monotonic_ns'] < final['host_monotonic_ns']:
+        raise ValueError('host receiver final arrivals or cleanup mismatch')
     if not before['host_monotonic_ns'] <= value['call_started_host_ns'] \
             <= value['call_ended_host_ns'] <= after['host_monotonic_ns'] <= final['host_monotonic_ns']:
         raise ValueError('host interval binding failed')
@@ -256,7 +264,8 @@ def run(execute, output):
         try:
             receiver.close()
         finally:
-            value['receiver_closed'] = receiver.socket.fileno() == -1 and not receiver.thread.is_alive()
+            value['closed_state'] = receiver.counters()
+            value['receiver_closed'] = receiver.socket.fileno() == -1 and not value['closed_state']['thread_alive']
             publish(output / 'network-receiver.closed.json',
                     {'schema_version': 1, 'identity': receiver.identity,
                      'receiver_closed': value['receiver_closed'], 'host_monotonic_ns': time.monotonic_ns()})
