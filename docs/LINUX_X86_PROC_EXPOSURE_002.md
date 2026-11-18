@@ -29,3 +29,8 @@ VM/helper実procや秘密値を使用していない。production修正とregres
 001のPID上限失敗・collector終了unknownも維持する。
 
 collector94576は同handle終端exit0。全1309入力・外部runtime・旧proc001/exec/presence/normal/seed-loss1537tree/reservation/full/smoke証拠不変とtrusted同Invocation開始/起動を照合した。
+
+## 監査後の鍵回収追補
+
+room16713のsource監査後、同Invocation failed/cgroup消失/UID999残留なしを再確認し、全親path実体directoryと当該HMACの通常単link/999:988/0600を照合して当該fileだけ削除した。
+値/単体hash非読取で非存在を確認し、[別追補metadata](LINUX_X86_PROC_EXPOSURE_002_KEY_CLEANUP.json)を保存した。元RESULTと固定入力・原本は保持する。
