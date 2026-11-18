@@ -193,3 +193,36 @@ class SeedLossObserverTests(unittest.TestCase):
                 OBS.main()
             self.assertTrue(all(call.args == (OBS.PROFILES['seed-loss'][1],) for call in read.call_args_list))
             binding.assert_called_once_with(OBS.PROFILES['seed-loss'][2][0])
+
+
+class PresenceObserverTests(unittest.TestCase):
+    def row(self, index):
+        row = sample(0)
+        qemu = row['qemu_network'][0]
+        qemu.update(pid=100 + index, starttime_ticks=1000 + index, cwd=OBS.PRESENCE_STAGES[index])
+        qemu['storage_args'][0][1] = 'file=' + OBS.PRESENCE_ROOT + '/inputs/image.qcow2,snapshot=on'
+        return row
+
+    def test_six_vm_order_matches_optional_retests(self):
+        expected = ['finding-1-retest-1/sandbox', 'finding-1-retest-1/retest/sandbox',
+                    'finding-1-retest-0/sandbox', 'finding-0-retest-1/sandbox',
+                    'finding-0-retest-1/retest/sandbox', 'finding-0-retest-0/sandbox']
+        self.assertEqual([path.removeprefix(OBS.PRESENCE_ROOT + '/work/runs/')
+                          for path in OBS.PRESENCE_STAGES], expected)
+        sessions = OBS.Sessions('presence')
+        for index in range(6):
+            self.assertEqual(sessions.observe(self.row(index)), index)
+            sessions.bind(index, launch(index))
+            if index < 5:
+                with self.assertRaisesRegex(RuntimeError, 'not all planned'):
+                    sessions.require_complete()
+        sessions.require_complete()
+        self.assertEqual(len(sessions.snapshot()), 6)
+
+    def test_omitted_retest_and_other_trial_cannot_be_observed(self):
+        for path in [OBS.PRESENCE_ROOT + '/work/runs/finding-1-retest-0/retest/sandbox',
+                     OBS.PRESENCE_ROOT + '/work/runs/finding-0-retest-0/retest/sandbox', OBS.STAGES[0]]:
+            row = self.row(0)
+            row['qemu_network'][0]['cwd'] = path
+            with self.subTest(path=path), self.assertRaisesRegex(RuntimeError, 'unexpected runtime workspace'):
+                OBS.Sessions('presence').observe(row)

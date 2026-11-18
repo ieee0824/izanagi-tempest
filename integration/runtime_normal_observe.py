@@ -19,8 +19,14 @@ STAGES = [ROOT + '/work/runs/normal-' + str(run) + suffix + '/sandbox'
           for run in (1, 2) for suffix in ('', '/retest')]
 
 SEED_ROOT = '/var/lib/tempest-izanagi-runtime-seed-loss-001'
+PRESENCE_ROOT = '/var/lib/tempest-izanagi-runtime-presence-001'
+PRESENCE_STAGES = tuple(
+    PRESENCE_ROOT + '/work/runs/finding-' + str(finding) + '-retest-' + str(retest) + suffix + '/sandbox'
+    for finding, retest in ((1, 1), (1, 0), (0, 1), (0, 0))
+    for suffix in (('', '/retest') if retest else ('',)))
 PROFILES = {
     'normal': (ROOT, UNIT, tuple(STAGES)),
+    'presence': (PRESENCE_ROOT, 'tempest-izanagi-runtime-presence-001.service', PRESENCE_STAGES),
     'seed-loss': (SEED_ROOT, 'tempest-izanagi-runtime-seed-loss-001.service',
                   (SEED_ROOT + '/work/runs/seed-reply-loss/sandbox',)),
 }
@@ -117,7 +123,8 @@ class Sessions:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--trial', choices=tuple(PROFILES), default='normal')
+    parser.add_argument('--trial', choices=tuple(PROFILES), default='normal',
+                        help='fixed unit/root/stages: normal=4, seed-loss=1, presence=6 VMs')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if os.geteuid() != 0:
