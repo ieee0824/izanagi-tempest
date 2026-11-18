@@ -56,7 +56,9 @@ artifactは`/var/lib/tempest-izanagi-bootstrap-002`、runは`/run/tempest-izanag
 INVOCATION_IDの一致を確認してprivate run領域へ保存する案です。
 選択した終了metadataだけを記録し、secretや全環境は出力しません。
 ExecStopPost時点はdeactivatingになり得るため、最終terminal/cgroup空/journal確認と区別します。
-現在はmock testsとservice静的verifyだけで、実unitでの収集は未検証です。
+boot002では実unitのExecStopPost収集と独立回収を確認しました。
+GCでobserverが最終属性を取得できなかった点はunknownのままとし、
+最終journalと組み合わせた範囲は[実測記録](../../docs/LINUX_IZANAGI_BOOT_002.md)を参照してください。
 
 ## buildの外側観測
 
@@ -67,6 +69,15 @@ QEMUのnetwork引数だけをprivate JSONLへ保存します。rootでの読取�
 ```sh
 python3 -m unittest discover -s integration/izanagi-bootstrap -p test_observe.py -v
 sudo -n /usr/bin/python3 integration/izanagi-bootstrap/observe.py --attempt 001 --output /tmp/tempest-bootstrap-build-observation-001.jsonl
+```
+
+full Debian image用は`--phase image --attempt 001`で
+`tempest-izanagi-bootstrap-image-001.service`だけを観測します。
+imageのattempt002以降は未定義として観測開始前に拒否します。
+これは観測対象の追加であり、full image buildの成功記録ではありません。
+
+```sh
+sudo -n /usr/bin/python3 integration/izanagi-bootstrap/observe.py --phase image --attempt 001 --output /tmp/tempest-x86-image-observation-001.jsonl
 ```
 
 全argvや環境を保存しません。非loopback listen、別InvocationID、観測失敗や期限時は
