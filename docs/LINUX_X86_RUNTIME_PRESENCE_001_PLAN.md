@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-草案、snapshot/VM未実施。#14のfinding/retest有無4通りを正式runtimeのmockで確認する。
+固定snapshotと専用UID検査は完了、VM未実施。#14のfinding/retest有無4通りを正式runtimeのmockで確認する。
 root /var/lib/tempest-izanagi-runtime-presence-001、unit tempest-izanagi-runtime-presence-001.service。
 host CLI4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f、Izanagi CLI/image/manifestは正常001/seed-loss001と同じ固定実体をコピーする。
 production Rust/guest/image/global設定は変更せず、実model/credential/AWSは使用しない。
@@ -34,3 +34,22 @@ GCはobserver terminal unknownとして保持し、同Invocation exit recorder/t
 
 HTTP sidecar、外部到達拒否positive control、forced delivery race、全route/正式モデル比較は別gateのまま。
 旧seed-loss001の失敗原本と予約拒否の独立追加証拠は変更しない。
+
+## 固定準備結果とcommand
+
+[1307入力snapshot](LINUX_X86_RUNTIME_PRESENCE_SNAPSHOT_001.json)、[専用UID検査](LINUX_X86_RUNTIME_PRESENCE_PREPARATION_001.json) を保存。
+source3741d15、tree SHAeb2a12e122559eb18dd993d0005d25f60de8410d1c2ee17a49de51ff843b4f7c。
+作成45883とUID検査99963は同handle終端exit0。Linux全92Python＋bootstrap13成功。
+root/inputs0750、全file owner/mode/hash/read可write不可、venv prefix/version/AES/help/xattr/0700work、新runs/exit/log不在を確認。
+unit not-found/inactive/Invocation空、UID999 processなし、KVM root:kvm0660、free37008715776 bytes。
+旧seed-loss全1537treeと予約拒否の証拠hash、旧normal/full/smoke/build archiveを準備時照合した。実行直前に再確認する。
+
+先行observer:
+
+```sh
+sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-runtime-presence-001/inputs/repo/integration/runtime_normal_observe.py --trial presence --output /tmp/tempest-runtime-presence-observation-001.jsonl
+```
+
+続く固定callerは `python3 -I -B docs/evidence/runtime-presence-001/run_once.py`。
+[service](../integration/tempest-izanagi-runtime-presence-001.service) と [caller COMMAND](evidence/runtime-presence-001/run_once.py) の一致/verify成功、unitはinstall/enableしていない。
+上記command/snapshotの最終監査後に一度だけ実行する。現在はobserver/callerとも未実行。
