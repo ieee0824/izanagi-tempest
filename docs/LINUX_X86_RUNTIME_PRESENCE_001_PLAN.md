@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-固定snapshotと専用UID検査は完了、VM未実施。#14のfinding/retest有無4通りを正式runtimeのmockで確認する。
+未実行v1 snapshotと専用UID検査は完了。集計計画の接続不足（room16644）のため実行不可、VM未実施。#14のfinding/retest有無4通りを正式runtimeのmockで確認する。
 root /var/lib/tempest-izanagi-runtime-presence-001、unit tempest-izanagi-runtime-presence-001.service。
 host CLI4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f、Izanagi CLI/image/manifestは正常001/seed-loss001と同じ固定実体をコピーする。
 production Rust/guest/image/global設定は変更せず、実model/credential/AWSは使用しない。
@@ -53,3 +53,10 @@ sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-runtime-presence-001/inp
 続く固定callerは `python3 -I -B docs/evidence/runtime-presence-001/run_once.py`。
 [service](../integration/tempest-izanagi-runtime-presence-001.service) と [caller COMMAND](evidence/runtime-presence-001/run_once.py) の一致/verify成功、unitはinstall/enableしていない。
 上記command/snapshotの最終監査後に一度だけ実行する。現在はobserver/callerとも未実行。
+
+## 実行保留: aggregate計画の事前接続
+
+room16644でaggregate::generate_innerがruns/aggregate-plan.jsonと各resultのverified comparison bindingを要求するのに、v1 runner/scriptには計画生成と--comparison-plan/slot接続がないことを確認した。
+既存1307inputとv1 metadataは未実行原本として保持する。runnerはinterface提示まで変更しない。
+修正版は実行前に4slot計画を固定し、aggregate selection committed4/unavailable0/unplanned0も要求する。portfolio件数だけでは欠測を合格にしない。
+posthoc計画作成は行わず、新closure/計画/最終監査が揃うまでobserver/caller/VMを開始しない。
