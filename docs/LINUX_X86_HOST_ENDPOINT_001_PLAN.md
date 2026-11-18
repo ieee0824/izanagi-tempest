@@ -94,3 +94,22 @@ collectorはnetwork-host.private.jsonのclosed_stateも含むpure validator再�
 旧sidecar001入力/RESULT参照file/鍵削除追補不在もroot作成前に照合する。旧proc/exec等原本の保全検査を維持する。
 [UID検査草案](evidence/host-endpoint-001/check_preparation.py)はstdin sourceで入力権限/環境/helpだけを検査し、hostでguest main/10.0.2.2試行/実proc probeを行わない。
 まだ新root/snapshot/UID検査/caller/observer/VMは未実施。source/observer監査後に固定準備へ進む。
+
+## 固定準備結果
+
+[1314入力snapshot](LINUX_X86_HOST_ENDPOINT_SNAPSHOT_001.json)と[専用UID検査](LINUX_X86_HOST_ENDPOINT_PREPARATION_001.json)を保存した。
+source ae9c9ae、canonical tree e8ca4e0177cdd1f2d5cb8eec3293e68a3f78a7f740e18b0c1a67c666e06e5195。
+prepare24072/UID85966は同handle終端exit0。全hash/owner/mode/read可write不可・外部runtime/venv/AES/help/xattr/privatework/newoutput/exit/log不在を確認した。
+help/importのみでhost上のguest main/実proc probe/10.0.2.2試行は行っていない。
+先行productionのLinux164tests/skip0を維持し、portable gid fixture追補後のreceiver10testsとbootstrap13testsも成功。
+準備直前unit/root未使用/UID999なし/free25582862336 bytes、準備時に旧sidecar/proc/exec等の全入力/RESULT参照証拠/鍵不在とseed-loss全treeを照合した。
+
+先行observer予定:
+
+```sh
+sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-host-endpoint-001/inputs/repo/integration/image_smoke_observe.py --attempt host-endpoint-001 --output /tmp/tempest-host-endpoint-observation-001.jsonl
+```
+
+続くfixedcallerは `python3 -I -B docs/evidence/host-endpoint-001/run_once.py`。
+--network-evidence --exec-evidence/固定offline artifact reportとservice ExecStart一致を維持する。実行直前に不変/容量/残留/未使用unitを再照合する。
+現時点ではobserver/caller/VMは未実施。
