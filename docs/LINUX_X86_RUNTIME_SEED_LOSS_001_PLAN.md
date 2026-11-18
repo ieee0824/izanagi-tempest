@@ -11,7 +11,7 @@ root /var/lib/tempest-izanagi-runtime-seed-loss-001、unit tempest-izanagi-runti
 
 [固定runner](evidence/runtime-seed-loss-001/run_seed_loss.py) を inputs/run_seed_loss.py に固定し、修正済み runtime_faults.seed_reply_loss だけを実行する。
 新runs/seed-reply-lossにprimary VMを1つ起動し、seed成功応答をdecodeした後、controllerへ渡す前に破棄する。
-成功応答であることと実施1回を、秘密値なしのprivate markerで証明する方式を実装担当と調整中。
+PR47の修正では成功応答/worker key発行/管理鍵ローテーション3flagを検証し、秘密値なしの0600 witnessをruns直下へO_EXCL保存する。host controlのseed started1/failed1/completed0とdelivery read回数を別途照合する。
 access_keys/authorization/raw decoded responseを公開しない。未知/失敗応答は適用成功と数えない。
 agent/export/retestは開始せず、aborted/partial/unknownとして評価され、VM廃棄・一時material不在・artifact inventoryを検査する。
 
@@ -41,3 +41,7 @@ mock/ダミーのみ、実model/実credential/AWSは使わない。
 [service](../integration/tempest-izanagi-runtime-seed-loss-001.service)、[固定caller](evidence/runtime-seed-loss-001/run_once.py)、[snapshot helper](evidence/runtime-seed-loss-001/prepare_snapshot.py)、[UID検査](evidence/runtime-seed-loss-001/check_preparation.py) を用意した。
 service構文/ExecStart一致とhelper構文を確認済み。未実行で、marker修正とobserverの固定attempt対応が揃ってからsnapshotを作成する。
 正常001の全input hash不変照合も新snapshot helperへ追加した。
+
+main27d19bf（PR46/47）を共有branchへmergeした。固定host CLIの元archive全fileのSHAは引き続き照合する。
+現treeとの差分はreport.rsのcfg(test) module内追加とseed_controller integration testsだけで、production Rust/Cargo/templateは同一。
+seed snapshot helperは旧archive全体と現production sourceを照合し、report.rsはcfg(test)境界前の完全一致を要求する。host CLIは再buildしない。

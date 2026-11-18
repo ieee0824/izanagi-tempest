@@ -34,9 +34,18 @@ for name in ['integration/runtime_faults.py','integration/runtime_normal_observe
  src=repo/name;assert src.is_file() and not src.is_symlink();dest=inputs/'repo'/name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,dest)
 host_build=json.loads((repo/'docs/LINUX_X86_HOST_CLI_001_RESULT.json').read_text())
 assert host_build['exit_code']==0
+build_source=Path('/tmp/tempest-host-cli-build-001/source')
 for name,digest in host_build['source_files_sha256'].items():
+ assert sha(build_source/name)==digest,'fixed build source changed: '+name
  if name.startswith('crates/') or name in ('Cargo.toml','Cargo.lock','tools/m0/izanagi.example.toml'):
-  assert sha(repo/name)==digest,'host build source changed: '+name
+  if name.startswith('crates/tempest/tests/'):
+   continue # Reviewed test-only main additions do not alter the fixed binary.
+  if name=='crates/tempest/src/report.rs':
+   marker='\n#[cfg(test)]\nmod tests {'
+   original=(build_source/name).read_text();current=(repo/name).read_text()
+   assert original.count(marker)==current.count(marker)==1
+   assert original.split(marker)[0]==current.split(marker)[0],'production report source changed'
+  else:assert sha(repo/name)==digest,'host build source changed: '+name
 host=Path(host_build['binary']['path']);assert sha(host)==host_build['binary']['sha256']
 shutil.copyfile(host,inputs/'tempest');os.chmod(inputs/'tempest',0o550)
 shutil.copyfile(repo/'docs/evidence/runtime-seed-loss-001/run_seed_loss.py',inputs/'run_seed_loss.py')
