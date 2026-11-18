@@ -1,0 +1,35 @@
+name: Image definition unit checks
+
+on:
+  push:
+    branches:
+      - 'pronnia/linux-direct-stage'
+    paths:
+      - '.github/workflows/image-definition-unit.yml'
+      - 'image/prepare.py'
+      - 'image/x86_template.py'
+      - 'tests/test_image_x86.py'
+      - 'tests/fixtures/izanagi-16d-debian.pkr.hcl'
+  pull_request:
+    paths:
+      - '.github/workflows/image-definition-unit.yml'
+      - 'image/prepare.py'
+      - 'image/x86_template.py'
+      - 'tests/test_image_x86.py'
+      - 'tests/fixtures/izanagi-16d-debian.pkr.hcl'
+
+permissions:
+  contents: read
+
+jobs:
+  image-definition-unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Test fixed image derivation without building an image
+        run: python3 -m unittest discover -s tests -p test_image_x86.py -v
+      - name: Check syntax
+        run: python3 -m py_compile image/prepare.py image/x86_template.py

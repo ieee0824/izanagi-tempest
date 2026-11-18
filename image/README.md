@@ -50,6 +50,48 @@ SHA-256、helper version、作成日時、Rust source tree digest/dirty flag、�
 その source から作られたことを `prepare.py` だけで証明するものではない。ビルドログも保持する。
 ビルド用 root 認証と SSH は上流 lock-down/verify-image により除去する。
 
+## Linux x86_64 向け導出（実VM検証待ち）
+
+`prepare.py --architecture x86_64` は固定上流の Debian template の実bytesを検査し、
+ELF machine=62（eBPFのみ247）、QEMU `/usr/bin/qemu-system-x86_64` / q35 / KVM、
+Debian 13.7.0 amd64 ISO、BIOS installer の `/install.amd` へ導出する。
+省略時は従来のaarch64を使用する。上流checkoutは変更しない。
+ISOは[公式署名検証](https://www.debian.org/CD/verify)を行い、
+固定SHA256 `a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355`
+と実bytesを照合してから使用する。prepareはhash検査のみで、署名検証を代行しない。
+
+Packer pluginは1.1.8、HTTP/SSH/VNCは127.0.0.1の18082/22222/5902へ固定する。
+guestのHTTP取得先はSLIRP host alias 10.0.2.2である。agentはeBPF feature付き、
+HTTP/LWS/tempest-guestはx86向けの別artifactを用意し、build commandとlock/hashを保持する。
+
+```bash
+python3 image/prepare.py --architecture x86_64 \
+  --izanagi-source /absolute/path/to/pinned-izanagi \
+  --lws-source /absolute/path/to/pinned-lws \
+  --iso /absolute/path/to/debian-13.7.0-amd64-netinst.iso \
+  --agent /absolute/path/to/x86_64/izanagi-agent \
+  --ebpf /absolute/path/to/izanagi-ebpf \
+  --http /absolute/path/to/x86_64/izanagi-http-capture \
+  --lws /absolute/path/to/x86_64/lws \
+  --guest /absolute/path/to/x86_64/tempest-guest \
+  --output /private/tmp/tempest-x86-image-definition-001
+python3 -m unittest discover -s tests -p test_image_x86.py -v
+```
+
+固定入力のx86 full image生成とlock-down検査は
+[試行003の記録](https://github.com/ieee0824/izanagi-tempest/blob/ac88482/docs/LINUX_X86_FULL_BUILD_003.md)
+で確認した。実kernel引数と無人インストール完走を観測している。
+実guestのeBPF採取・owner/firewall/doas/mailbox/外部到達拒否は未検証であり、
+image生成成功を本番相当VMの受入に置き換えない。
+実build前には専用userのroot所有・非write入力snapshotと回収可能な単発commandを監査する。
+
+固定ISOはinclude先`spkgtk.cfg`で30秒後にspeech installerを起動するため、
+x86派生の`boot_wait`は10秒とする（#41）。元upstreamとarm64の60秒設定は変更しない。
+serial出力とkernel consoleを有効にし、`quiet`を外して起動段階を記録する。
+固定plugin1.1.8はQEMUのcwdを変更しないため、`installer-serial.log`は
+専用unitのprivate work directoryへ書かれる。実行前に同file不在を確認する。
+Packer debugも新private logへ保存し、全文をroomやGitへ公開しない。
+
 ## 実VM試験
 
 リポジトリに戻り、ホスト用の固定 Izanagi CLI を指定する。
