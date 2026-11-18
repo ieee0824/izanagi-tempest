@@ -47,6 +47,13 @@ Packer/pluginは1.15.0/1.1.8へ固定し、buildはまだ実行しません。
 private run領域と空のread-only share、dummy secretを別に作成してhash/owner/modeを照合します。
 これらの配置と起動commandの監査はまだ必要です。
 
+最小boot unit名は`tempest-izanagi-bootstrap-boot-001.service`を予定しています。
+`record_exit.py`をroot所有の固定pathへ配置し、ExecStopPostでmain終了属性と
+INVOCATION_IDの一致を確認してprivate run領域へ保存する案です。
+選択した終了metadataだけを記録し、secretや全環境は出力しません。
+ExecStopPost時点はdeactivatingになり得るため、最終terminal/cgroup空/journal確認と区別します。
+現在はmock testsとservice静的verifyだけで、実unitでの収集は未検証です。
+
 ## buildの外側観測
 
 `observe.py`は固定build unitの状態・InvocationID・cgroup配下PID・TCP listenと
