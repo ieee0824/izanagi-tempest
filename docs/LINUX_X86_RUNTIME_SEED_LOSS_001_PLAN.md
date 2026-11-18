@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-草案。snapshot未作成、VM未起動。runtime_faults.pyの偽陽性修正と検査証拠方式の監査が先行する。
+固定snapshotと専用UID検査は完了。VM未起動、最終snapshot/command監査待ち。
 #15に関係する、seed適用後の成功応答喪失→agent未開始→VM discardを単発検査する。
 root /var/lib/tempest-izanagi-runtime-seed-loss-001、unit tempest-izanagi-runtime-seed-loss-001.service を予約する。
 [正常2回結果](LINUX_X86_RUNTIME_NORMAL_001.md) と同じ固定host CLI/Izanagi/image/manifestを使い、core/guest/global設定は変更しない。
@@ -54,3 +54,24 @@ seed snapshot helperは旧archive全体と現production sourceを照合し、rep
 未binding・正常系root/imageの混入・予定外retest・同stageのVM置換は拒否する。
 JSONLはsampleとobserved_sessionsを別行で保存し、GC後の終端unknownを成功へ読み替えない。
 Mac上のobserver回帰12件（seed-loss 3件を含む）を確認済み。実VMはまだ未実施。
+
+## 固定準備結果
+
+[全1307入力](LINUX_X86_RUNTIME_SEED_LOSS_SNAPSHOT_001.json) と [専用UID検査](LINUX_X86_RUNTIME_SEED_LOSS_PREPARATION_001.json) を保存した。
+input tree SHA256は8c2360e2761369182ed592d18af42f169a6e411fc9df1bcdcfe741f594993dea。
+snapshot作成61457、UID検査8263はいずれも同handleで終端exit0。
+Linux Python全85件＋bootstrap13件成功。全input/root owner/mode/外部runtime、prefix/AES/help/xattr/private work、新runs/exit/log未作成を検査した。
+unitはnot-found/inactive/Invocation空、検査後UID999 processなし、KVM root:kvm0660、free39293460480 bytes。
+旧normal/full/smoke入力・証拠と固定host build元archiveの不変を照合した。
+
+先行observer:
+
+```sh
+sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-runtime-seed-loss-001/inputs/repo/integration/runtime_normal_observe.py --trial seed-loss --output /tmp/tempest-runtime-seed-loss-observation-001.jsonl
+```
+
+続く単発callerは `python3 -I -B docs/evidence/runtime-seed-loss-001/run_once.py`。
+正確なsystemd-run argvは同fileに固定、serviceとExecStart一致/verify成功。
+同ID予約拒否の追加CLIは固定fault script内部でEEXISTを検査し、予定外VMを起動しない。
+VM実行後はwitnessとseed control1/1/0を[projection](evidence/runtime-seed-loss-001/seed_projection.py)で照合し、
+run aborted/partial/agent-export-retest未開始、discard/cleanup、一時key不在、trusted terminal/回収、入力・旧証拠不変を保存する。
