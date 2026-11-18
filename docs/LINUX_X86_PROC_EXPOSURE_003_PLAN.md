@@ -2,6 +2,8 @@
 
 ## 状態と旧試験の保持
 
+単発VM試験とcollector回収は完了。[結果](LINUX_X86_PROC_EXPOSURE_003.md)を参照。以下は固定計画・実施前準備の記録として保持する。
+
 PR58のxattr設定順序修正を使用する別試験。新root /var/lib/tempest-izanagi-proc-exposure-003、unit tempest-izanagi-proc-exposure-003.service、observer profile proc-exposure-003。
 まだroot/snapshot/UID検査/caller/observer/VMは未実施。source監査後にだけ固定準備へ進む。
 [001のPID集合上限失敗](LINUX_X86_PROC_EXPOSURE_001.md)と[002のVM前配置失敗](LINUX_X86_PROC_EXPOSURE_002.md)の固定入力・原本・歴史的判定を保持する。001collector終端unknownを再実行で埋めない。
