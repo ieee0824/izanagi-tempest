@@ -16,7 +16,7 @@ nonce trace probe、runtime ABI inventory、M3 claim/seed/200-403-501/HTTP-PCAP/
 
 caller25131とobserver49792はともにexit1。ExecStopPostは同Invocationのservice_result=exit-code/exit_status1をstop-post中に保存し、最終systemctlもloaded/failed/ExecMainStatus1を保持した。trusted PID1/UID0の同Invocation/currentboot lifecycleも別に採取した。
 
-[結果JSON](LINUX_X86_IMAGE_SMOKE_001_RESULT.json)へ観測row、最後のunit、exit recorder、checkの選別状態、private各fileのhash、trusted UNIT/MESSAGE_ID等を保存。private原本のsummary/up stdout/stderr/CLI events等は公開せず、transport key値や単体hashも記録していない。選別private log8件にtransport keyの一致はなかった。key fileはprivateで結果監査まで保持している。
+[結果JSON](LINUX_X86_IMAGE_SMOKE_001_RESULT.json)へ観測row、最後のunit、exit recorder、checkの選別状態、private各fileのhash、trusted UNIT/MESSAGE_ID等を保存。private原本のsummary/up stdout/stderr/CLI events等は公開せず、transport key値や単体hashも記録していない。選別private log8件にtransport keyの一致はなかった。key fileはprivateで結果監査まで保持し、room #16557の監査後に当該fileだけ削除して非存在を確認した。値/単体hashは読まず、原本log/summary等は保持した。
 
 独立確認でunit cgroup消失、uid999processなし、agent port39833閉。実行がすでにfailed/回収済みだったため追加stop/killは不要。全1304input/hash/modeとv1、旧full001002003証拠は不変。symlink targetとdirectoryのowner/modeも再確認した。この実行はlocal dummy準備のみで、外部credential/API/model比較は利用していない。
 

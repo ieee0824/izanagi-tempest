@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "source_image": "/var/lib/tempest-izanagi-image-smoke-001-v2/inputs/image.qcow2",
+  "source_image_sha256_before": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e",
+  "source_image_sha256_after": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e",
+  "raw_disk": {
+    "path": "/var/lib/tempest-izanagi-image-offline-001/work/disk.raw",
+    "bytes": 4294967296,
+    "sha256": "2786433364ccdbf54a5dff71024e246d5775266734e4ae5fd69410094538ba20"
+  },
+  "partition": {
+    "start_sector": 2048,
+    "sectors": 7194624,
+    "byte_offset": 1048576,
+    "bytes": 3683647488,
+    "sha256": "fc0d00e15817285952ed756609c8fe27a154c067ae6c34a071f8ff05c325c1b1",
+    "ext4_magic": "53ef",
+    "image_virtual_bytes": 4294967296
+  },
+  "data_partitions_nonoverlapping": true,
+  "extended_logical_containment_verified": true,
+  "debugfs_write_flag_used": false,
+  "commands": [
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /usr/local/bin/izanagi-agent",
+      "/var/lib/tempest-izanagi-image-offline-001/work/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /usr/local/bin/izanagi-agent /var/lib/tempest-izanagi-image-offline-001/work/artifacts/agent",
+      "/var/lib/tempest-izanagi-image-offline-001/work/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /usr/local/bin/izanagi-http-capture",
+      "/var/lib/tempest-izanagi-image-offline-001/work/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /usr/local/bin/izanagi-http-capture /var/lib/tempest-izanagi-image-offline-001/work/artifacts/http",
+      "/var/lib/tempest-izanagi-image-offline-001/work/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /opt/izanagi/izanagi-ebpf.o",
+      "/var/lib/tempest-izanagi-image-offline-001/work/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /opt/izanagi/izanagi-ebpf.o /var/lib/tempest-izanagi-image-offline-001/work/artifacts/ebpf",
+      "/var/lib/tempest-izanagi-image-offline-001/work/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /etc/tempest/image.json",
+      "/var/lib/tempest-izanagi-image-offline-001/work/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /etc/tempest/image.json /var/lib/tempest-izanagi-image-offline-001/work/artifacts/image_metadata",
+      "/var/lib/tempest-izanagi-image-offline-001/work/root.partition"
+    ]
+  ],
+  "artifacts": {
+    "agent": {
+      "guest_path": "/usr/local/bin/izanagi-agent",
+      "guest_mode": "0551",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "bytes": 4125448,
+      "sha256": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+      "extracted_path": "/var/lib/tempest-izanagi-image-offline-001/work/artifacts/agent",
+      "host_mode": "0600",
+      "elf_machine": 62
+    },
+    "http": {
+      "guest_path": "/usr/local/bin/izanagi-http-capture",
+      "guest_mode": "0755",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "bytes": 7716640,
+      "sha256": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+      "extracted_path": "/var/lib/tempest-izanagi-image-offline-001/work/artifacts/http",
+      "host_mode": "0600",
+      "elf_machine": 62
+    },
+    "ebpf": {
+      "guest_path": "/opt/izanagi/izanagi-ebpf.o",
+      "guest_mode": "0440",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "bytes": 29464,
+      "sha256": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+      "extracted_path": "/var/lib/tempest-izanagi-image-offline-001/work/artifacts/ebpf",
+      "host_mode": "0600",
+      "elf_machine": 247
+    },
+    "image_metadata": {
+      "guest_path": "/etc/tempest/image.json",
+      "guest_mode": "0644",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "bytes": 2309,
+      "sha256": "7317d7e83328fb0f94189540f5814bf773831796fc13ee056b6e79a39419b9be",
+      "extracted_path": "/var/lib/tempest-izanagi-image-offline-001/work/artifacts/image_metadata",
+      "host_mode": "0600"
+    }
+  },
+  "offline_metadata_matches_guest_read": true,
+  "guest_runtime_hashes_attested": false,
+  "vm_boot_executed_for_inspection": false,
+  "extracted_files_executed": false
+}
