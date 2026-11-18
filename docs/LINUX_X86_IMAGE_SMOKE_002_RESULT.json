@@ -1,0 +1,313 @@
+{
+  "status": "collected_requires_review_observer_terminal_unknown",
+  "caller_exit": 0,
+  "observer_exit": 1,
+  "observer_failure": "same-invocation terminal attributes not captured after GC",
+  "unit": "tempest-izanagi-image-smoke-002.service",
+  "invocation_id": "6724ab53f2dd4acfb9f9499281466071",
+  "host_boot_id": "30389abc903c40ae89a5c6268ec1c432",
+  "exit_recorder": {
+    "unit_name": "tempest-izanagi-image-smoke-002.service",
+    "invocation_id": "6724ab53f2dd4acfb9f9499281466071",
+    "unit": {
+      "Result": "success",
+      "ExecMainCode": "1",
+      "ExecMainStatus": "0",
+      "ControlGroup": "/system.slice/tempest-izanagi-image-smoke-002.service",
+      "ActiveState": "deactivating",
+      "SubState": "stop-post",
+      "InvocationID": "6724ab53f2dd4acfb9f9499281466071"
+    },
+    "service_result": "success",
+    "exit_code": "exited",
+    "exit_status": "0",
+    "scope": "ExecStopPost snapshot; final cgroup and journal checks are separate"
+  },
+  "trusted_lifecycle": [
+    {
+      "UNIT": "tempest-izanagi-image-smoke-002.service",
+      "MESSAGE_ID": "7d4958e842da4a758f6c1cdc7b36dcc5",
+      "__REALTIME_TIMESTAMP": "1795010593822781",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "6724ab53f2dd4acfb9f9499281466071"
+    },
+    {
+      "UNIT": "tempest-izanagi-image-smoke-002.service",
+      "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
+      "__REALTIME_TIMESTAMP": "1795010593834907",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "6724ab53f2dd4acfb9f9499281466071"
+    },
+    {
+      "UNIT": "tempest-izanagi-image-smoke-002.service",
+      "MESSAGE_ID": "7ad2d189f7e94e70a38c781354912448",
+      "__REALTIME_TIMESTAMP": "1795010639434493",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "6724ab53f2dd4acfb9f9499281466071"
+    },
+    {
+      "UNIT": "tempest-izanagi-image-smoke-002.service",
+      "MESSAGE_ID": "ae8f7b866b0347b9af31fe1c80b127c0",
+      "__REALTIME_TIMESTAMP": "1795010639434780",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "6724ab53f2dd4acfb9f9499281466071"
+    }
+  ],
+  "observed_samples": 52,
+  "observed_qemu": {
+    "pid": 285545,
+    "starttime_ticks": 35315195,
+    "cwd": "/var/lib/tempest-izanagi-image-smoke-002/work/output/workspace"
+  },
+  "check_results": {
+    "offline_artifacts": {
+      "passed": true
+    },
+    "inventory": {
+      "passed": true,
+      "returncode": 0
+    },
+    "image_manifest": {
+      "passed": true,
+      "returncode": 0
+    },
+    "build_guest_binding": {
+      "passed": true
+    },
+    "izanagi_installed_artifacts": {
+      "passed": true,
+      "returncode": 0
+    },
+    "installed_artifact_binding": {
+      "passed": true
+    },
+    "runtime_abi_inventory": {
+      "passed": true,
+      "returncode": 0
+    },
+    "metadata_and_mapping": {
+      "passed": true,
+      "returncode": 0
+    },
+    "uid_collision_positive": {
+      "passed": true,
+      "returncode": 0
+    },
+    "uid_collision_before_mapping": {
+      "passed": true,
+      "returncode": 0
+    },
+    "uid_collision_after_mapping": {
+      "passed": true,
+      "returncode": 0
+    },
+    "private_directories": {
+      "passed": true,
+      "returncode": 0
+    },
+    "readonly": {
+      "passed": true,
+      "returncode": 0
+    },
+    "known_id_claim": {},
+    "daemon_identity": {},
+    "running_agent_build_binding": {
+      "passed": true
+    },
+    "claim_nonreissue": {},
+    "known_id_seed": {},
+    "wrong_token_seed": {},
+    "seed": {
+      "passed": true
+    },
+    "preseal_closed": {
+      "passed": true,
+      "returncode": 0
+    },
+    "probe_allow": {},
+    "probe_deny": {},
+    "probe_unsupported": {},
+    "backend_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "rpc_direct_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "rpc_direct_ipv6_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "rpc_gateway_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "fw_cfg_secret_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "cgroup_actor_write_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "lws_environ_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "lws_service_uid": {
+      "passed": true,
+      "returncode": 0
+    },
+    "private_socket_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "root_proc_private_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "doas_other_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "doas_native_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "doas_watch_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "tokenless_seed_denied": {
+      "passed": true,
+      "returncode": 0
+    },
+    "descendant_normal": {},
+    "descendant_timeout": {},
+    "descendant_abnormal": {},
+    "agent_proxy": {
+      "passed": true,
+      "returncode": 0
+    },
+    "sealed_seed_rejected": {},
+    "agent_proxy_final": {
+      "passed": true,
+      "returncode": 0
+    },
+    "known_id_export": {},
+    "wrong_daemon_export_rejected": {},
+    "escaped_live_before_export": {
+      "passed": true,
+      "returncode": 0
+    },
+    "cgroup_detached_descendant_killed": {
+      "passed": true
+    },
+    "export": {},
+    "capture_proxy_and_backend": {
+      "passed": true
+    },
+    "recording_boundary": {
+      "passed": true
+    },
+    "ebpf_trace_probe": {
+      "passed": true
+    },
+    "host_logs_private_markers": {
+      "passed": true
+    }
+  },
+  "selected_evidence": {
+    "installed_artifact_binding": {
+      "passed": true,
+      "actor_observations": {
+        "agent": {
+          "read_errno": 13
+        },
+        "http": {
+          "sha256": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+          "elf_machine": 62
+        },
+        "ebpf": {
+          "read_errno": 13
+        }
+      }
+    },
+    "running_agent_build_binding": {
+      "passed": true,
+      "exe_sha256": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa"
+    },
+    "ebpf_trace_probe": {
+      "passed": true,
+      "pid": 1600,
+      "path": "/tmp/tempest-trace-c8b1e10f8f058540e50415bad9e26eb3",
+      "matched_open_events": 1,
+      "files": [
+        {
+          "name": "events.log",
+          "sha256": "39b28abd87120ac6067f9a3059238b6db53f9a45bd803a6fcad08d39a2b966f6",
+          "bytes": 4683091
+        },
+        {
+          "name": "events.log.1",
+          "sha256": "0c41168201854a0d310a8b3658d1edc0f30a765358abb6f994460386674e8f02",
+          "bytes": 10485623
+        }
+      ],
+      "scope": "one dummy PID/path; not full route coverage"
+    },
+    "recording_boundary": {
+      "passed": true,
+      "agent_api_rows": 2
+    },
+    "host_logs_private_markers": {
+      "passed": true,
+      "files_examined": [
+        "alerts.log",
+        "events.log",
+        "events.log.1",
+        "up.stdout",
+        "up.stderr"
+      ],
+      "leaked_files": []
+    },
+    "runtime_abi_unreadable_paths": [
+      "/usr/local/bin/izanagi-agent"
+    ]
+  },
+  "input_count_unchanged": 1306,
+  "old_inputs_evidence_unchanged": true,
+  "external_runtime_unchanged": true,
+  "cgroup_absent": true,
+  "uid999_absent": true,
+  "agent_port_closed": true,
+  "free_bytes": 44244877312,
+  "files": {
+    "/var/lib/tempest-izanagi-image-smoke-002/work/output/summary.json": {
+      "sha256": "cabd7a1ced1c59863c9f65037adb0dc867f4f8e0a9de383de93262789f08afc4",
+      "bytes": 21673
+    },
+    "/var/lib/tempest-izanagi-image-smoke-002/work/evidence/exit-status.json": {
+      "sha256": "a3f6b032322cee1459716cc65be3da5c70615af7da6dc6e10384ae8e9897905a",
+      "bytes": 518
+    },
+    "/tmp/tempest-image-smoke-002.log": {
+      "sha256": "ff90ac92ba551bbdb343d79aa811d395eb47e8f6b28a51f577ff0bdc53f9e0aa",
+      "bytes": 297
+    },
+    "/tmp/tempest-image-smoke-observation-002.jsonl": {
+      "sha256": "ba1db597521114687b2bc411cd855a3d5a254290719098db5371964da76d41a1",
+      "bytes": 42638
+    }
+  },
+  "dummy_transport_key": "retained private pending result review; no standalone hash published"
+}
