@@ -190,6 +190,9 @@ def main():
         for field in ['izanagi_commit', 'lws_commit', 'tempest_guest_version', 'tempest_guest_source_commit',
                       'tempest_guest_source_tree_sha256', 'tempest_guest_source_dirty', 'input_sha256', 'derivation_sha256']:
             assert image_manifest[field] == build_inputs[field], 'build/guest provenance mismatch: ' + field
+        for field in ['architecture', 'iso_sha256']:
+            if field in build_inputs:
+                assert image_manifest.get(field) == build_inputs[field], 'build/guest provenance mismatch: ' + field
         assert image_manifest['installed_sha256']['/usr/local/libexec/tempest-guest-native'] == build_inputs['input_sha256']['guest']
         assert image_manifest['installed_sha256']['/usr/local/bin/lws'] == build_inputs['input_sha256']['lws']
         assert image_manifest['installed_sha256']['/usr/local/bin/tempest-guest'] == build_inputs['derivation_sha256']['dispatcher.py']
@@ -197,6 +200,25 @@ def main():
         if args.delivery_race_fixture:
             assert image_manifest.get('delivery_race_fixture') is True, 'guest is not the instrumented fixture'
         report['checks']['build_guest_binding'] = {'passed': True}
+        artifact_paths = {'agent': '/usr/local/bin/izanagi-agent',
+                          'http': '/usr/local/bin/izanagi-http-capture',
+                          'ebpf': '/opt/izanagi/izanagi-ebpf.o'}
+        artifact_code = ("import json,hashlib; from pathlib import Path; p=" + repr(artifact_paths)
+                         + "; out={}\nfor name,path in p.items():\n"
+                         " b=Path(path).read_bytes(); assert b[:6]==b'\\x7fELF\\x02\\x01'; "
+                         "out[name]={'sha256':hashlib.sha256(b).hexdigest(),'elf_machine':int.from_bytes(b[18:20],'little')}\n"
+                         "print(json.dumps(out))")
+        installed = json.loads(check('izanagi_installed_artifacts', 'python3 -c ' + shlex.quote(artifact_code)))
+        expected_machine = {'x86_64': 62, 'aarch64': 183}.get(build_inputs.get('architecture'))
+        for name, observed in installed.items():
+            assert observed['sha256'] == build_inputs['input_sha256'][name], 'installed artifact mismatch: ' + name
+            if name == 'ebpf' or expected_machine is not None:
+                assert observed['elf_machine'] == (247 if name == 'ebpf' else expected_machine)
+        abi_inventory = check('runtime_abi_inventory', 'set -eu; uname -r; getconf GNU_LIBC_VERSION; '
+              'dpkg-query -W libc6 libgcc-s1; '
+              'ldd /usr/local/bin/izanagi-agent /usr/local/bin/izanagi-http-capture '
+              '/usr/local/bin/lws /usr/local/libexec/tempest-guest-native')
+        assert 'not found' not in abi_inventory, 'guest runtime library missing'
         metadata_code = ("import json,os,hashlib,stat; from pathlib import Path; "
                          "m=json.loads(Path('/etc/tempest/image.json').read_bytes()); "
                          "assert m['izanagi_commit']=='16d0b55947006a166cfa29dcb8bfe71f65f8c36a'; "
