@@ -73,7 +73,7 @@ def sample(unit=UNIT):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--attempt", choices=("001", "002"), required=True)
+    parser.add_argument("--attempt", choices=("001", "002", "003"), required=True)
     args = parser.parse_args()
     unit = f"tempest-izanagi-bootstrap-build-{args.attempt}.service"
     if os.geteuid() != 0:
