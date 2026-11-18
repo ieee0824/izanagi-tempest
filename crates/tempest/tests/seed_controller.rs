@@ -373,3 +373,47 @@ async fn a_retest_registry_reusing_the_primary_key_invalidates_the_run() {
     assert!(controller.agent_prompt().is_err());
     assert!(controller.binding_metadata(Stage::Retest).is_err());
 }
+
+#[test]
+fn cli_reservation_refusal_uses_stdout_and_distinguishes_missing_bridge() {
+    let root = Root::new();
+    drop(root.controller("reserved"));
+    let image = root.0.join("image.qcow2");
+    let inputs = root.0.join("inputs.json");
+    fs::write(&image, []).unwrap();
+    fs::write(&inputs, b"{}").unwrap();
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let invoke = |bridge: PathBuf| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tempest"))
+            .arg("run")
+            .arg(repo.join("scenarios/s3-overread-001.yaml"))
+            .args(["--agent", "mock", "--mock-script"])
+            .arg(repo.join("integration/mock-s3-overread.json"))
+            .args(["--izanagi", "/usr/bin/false", "--image"])
+            .arg(&image)
+            .arg("--image-inputs")
+            .arg(&inputs)
+            .arg("--mailbox-bridge")
+            .arg(bridge)
+            .arg("--runs")
+            .arg(&root.0)
+            .args(["--run-id", "reserved"])
+            .output()
+            .unwrap()
+    };
+    for (bridge, errno) in [
+        (repo.join("image/host_bridge.py"), libc::EEXIST),
+        (root.0.join("missing.py"), libc::ENOENT),
+    ] {
+        let output = invoke(bridge);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stderr.is_empty());
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["scope"], "m5_evaluation");
+        assert_eq!(value["runs"], serde_json::json!([]));
+        let stopped = value["stopped"].as_str().unwrap();
+        assert!(stopped.starts_with("infrastructure:"));
+        assert!(stopped.ends_with(&format!("(os error {errno})")));
+        assert_eq!(fs::read_dir(root.0.join("reserved")).unwrap().count(), 0);
+    }
+}

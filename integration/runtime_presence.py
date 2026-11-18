@@ -27,8 +27,15 @@ def main():
     parser.add_argument('--image-inputs', type=Path, required=True)
     parser.add_argument('--python', type=Path, required=True)
     parser.add_argument('--runs', type=Path, required=True)
+    parser.add_argument('--comparison-plan', type=Path,
+                        help='precommitted four-slot plan; slot IDs must match presence run IDs')
     args = parser.parse_args()
+    plan_bytes = args.comparison_plan.read_bytes() if args.comparison_plan else None
     args.runs.mkdir(mode=0o700, parents=True, exist_ok=False)
+    plan = args.runs / 'aggregate-plan.json'
+    if plan_bytes is not None:
+        with plan.open('xb') as stream:
+            stream.write(plan_bytes)
     source = (ROOT / 'scenarios/s3-overread-001.yaml').read_text()
     completed = []
     with tempfile.TemporaryDirectory(prefix='tempest-presence-') as temporary:
@@ -45,6 +52,8 @@ def main():
                 str(ROOT / 'image/host_bridge.py'), '--python', str(args.python),
                 '--runs', str(args.runs), '--run-id', label,
             ]
+            if plan_bytes is not None:
+                command.extend(['--comparison-plan', str(plan), '--comparison-slot', label])
             result = subprocess.run(command, text=True, capture_output=True, timeout=360)
             if result.returncode != 0:
                 raise AssertionError(f'{label} failed: {result.stderr}')

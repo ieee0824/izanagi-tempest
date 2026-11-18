@@ -11,6 +11,22 @@ YAMLへ新しい主体フィールドは追加しない。`tempest validate`の�
 単一setup userは一意に選択し、複数なら`--actor`が必要。先頭、taskの文面、retest.userから推定しない。
 未解決・未知のactorは`runtime.actor`の診断であり、静的入力の不正とは区別する。
 
+### 主体選択の具体例
+
+次は各userのpolicy/resourceと`retest.user`が静的に妥当な入力の例である。
+
+| setup.users | CLI指定 | primaryの解決 | retest |
+|---|---|---|---|
+| workerのみ | 省略 | workerを一意に選ぶ（既存単一user例と互換） | user省略は静的検証でworkerへ補完 |
+| worker、admin | 省略 | `runtime.actor`: `multiple setup users require an explicit --actor; static validation remains valid` | 明示済みretest.userからprimaryを推定しない |
+| worker、admin | `--actor admin` | adminのprobe・prompt・expect・findingを使う | 指定したretest.userで別VMへseed |
+| worker、admin | `--actor missing` | `runtime.actor`: `unknown setup user` | VM/agentを起動しない |
+| worker、admin | `--actor worker`、retest.user=admin | primaryはworkerを維持 | adminのpolicyだけ置換、workerや他setupは保持。`different_actor`でありprimary findingの修正成功へ混ぜない |
+
+例えば既存単一userシナリオは `tempest plan scenarios/s3-overread-001.yaml` で解決する。
+`validate`は上表の複数user入力を静的に受理できるが、`plan`の未解決actor診断とは保証範囲が異なる。
+`plan`成功もVM実行・認可成功を証明しない。
+
 primaryのself-check、agentへ渡す唯一のworker資格情報、expect、finding照合は同一actorを使う。
 seed応答は全setup userについて重複のないキーが揃うことを検査する。
 bindingはrun ID、primary/retest段階、actor、typed policy JSON SHA-256、AccessKeyId SHA-256を束ねる。
@@ -187,7 +203,7 @@ runtimeはこの状態でVMを破棄する必要があり、タイムアウト�
 prompt/probeとclaim照合はcontrollerが保持するbindingだけを使う。
 primary/retestのregistryは別々に結び、audit metadataには生キーを出さない。
 全userのキー指紋を段階間で比較し、過去段階のキーを再利用したregistryも拒否する。
-`seed_controller`の8試験で再送禁止、intent先行記録、応答喪失、不正registry、キャンセル、run ID再利用拒否、
+`seed_controller`の9試験で再送禁止、intent先行記録、応答喪失、不正registry、キャンセル、run ID再利用拒否、
 段階ごとのpolicy/key照合・旧キー再利用拒否を確認した。複数userの明示actorについて、
 self-check/expect probe、agent prompt、監査指紋によるfinding評価を横断し、別userの成功や
 選択actorの観測欠落を成功へ混ぜないことも確認する。これはfixtureによる契約試験であり、
@@ -243,3 +259,16 @@ hostの`--max-evidence-bytes`は応答index受信後のcollection上限であり
 completeにせずunknownとして分母へ残し、VM cleanupが確認できなければ回収完了を主張しない。
 再試行で回復したrunはcontrol.jsonlの`delivery_read_retry`と観測categoryを保持し、将来の集計では
 回復件数と分類を通常の無再試行成功から区別して表示する。
+
+## #15の追加検証証拠
+
+主体選択はplanの8試験、probe/prompt/findingの横断と並行予約はseed_controllerで確認する。
+PR #49の実CLI回帰は既存IDのstdout EEXISTとbridge欠落のENOENTを区別し、予約directory不変を確認する。
+
+固定Linux imageの[正常2run/reset](https://github.com/ieee0824/izanagi-tempest/blob/e68b3e7/docs/LINUX_X86_RUNTIME_NORMAL_001.md)でfresh retestを確認した。
+[seed-loss001](https://github.com/ieee0824/izanagi-tempest/blob/2a4e3ab/docs/LINUX_X86_RUNTIME_SEED_LOSS_001.md)は成功返信の故意の喪失、同一seed IDのstarted1/failed1/completed0、agent未開始とVM廃棄を確認したが、最後の診断検査が誤っておりtrial全体は失敗した。
+旧retry出力は欠測であり、その失敗判定は変更しない。
+[独立した予約拒否検査](https://github.com/ieee0824/izanagi-tempest/blob/f96f795/docs/LINUX_X86_RUNTIME_RESERVATION_001.md)で既存IDのEEXISTを確認し、旧全1537項目の前後不変を照合した。
+後者はVM再起動やseed再送を行わない別検査であり、旧trialの遡及合格ではない。
+observerのGC終端unknownと、同InvocationのExecStopPost・trusted journal・回収は別証拠として保持する。
+これらはdummy/mockと固定構成についての証拠であり、実モデル・実credential・全配送経路の検証へ一般化しない。
