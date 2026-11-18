@@ -134,6 +134,20 @@ timeoutの部分出力も保存する。漏出時は応答を後続処理へ渡�
 従来のevents/alerts/up stdout/stderrの検査とは別の証拠であり、native helperのPIPEや全`/proc`の
 cmdline/env/FD・全期間の露出を検査したことにはしない。原本streamやdummy keyを公開しない。
 
+## actorからの限定proc観測
+
+`--exec-evidence --proc-evidence`を併用すると、claim前・seed後・export前の3時点で、
+guest actor UID1000から`/proc`のcmdline/environとFD一覧件数を読み取る。FDの内容は読まない。
+公開canaryをargvと初期envへ渡し、観測process自身で両方が読めたことと、自身のFD一覧取得をpositive controlとする。
+private管理tokenやreply keyをprobeへ渡すことはしない。
+
+最大128PID・各stream8192B・JSON出力128KiBに制限し、切詰め・想定外error・control不成立は
+completeにしない。読取拒否、消滅、読取成功を区別し、PID/starttimeの前後一致を記録する。
+raw snapshotはprivateなexec応答証拠だけへ保存し、summaryには件数・状態・control結果だけを載せる。
+exec応答のdummy目印scanが、観測できたcmdline/env本文にも適用される。
+これは3つのbounded snapshotであり、短命native helper・全PID・全期間・FD内容の非露出を証明しない。
+現在進行中の固定exec-exposure001へは追加せず、別の計画・固定入力で実測する。
+
 ## 配送契約
 
 固定 Izanagi CLI の exec は stdin を転送しない。
