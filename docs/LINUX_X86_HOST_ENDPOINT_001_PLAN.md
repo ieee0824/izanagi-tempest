@@ -84,3 +84,13 @@ bootstrapのunit内listener一覧だけをreceiver証明に流用しない。sta
 異常sampleは固定error metadataと共にflushしてから停止する。nlink2公開途中も同inodeの単link化だけ最大1秒待機する。
 専用receiver10tests/既存observer24tests、Linux全163tests/skip0成功。実Linuxのpublic loopback socketでもfresh ssのPID/inode一致とclose後不在を確認した。
 PR62の後続source追補（frame絶対期限・停止後counter）を取り込む前の結果として記録し、新root/snapshot/VMは未作成を維持する。
+
+## 最終source追補と固定準備草案
+
+PR62の28dde35/784cdf2を取り込み、Linux全164tests/skip0成功。ack FIFOはO_NONBLOCKで拒否、受信frame/返信は絶対期限を持ち、close/join後closed_stateでもaccepts2/phases before,after/errors0/thread_alive=falseを必須とする。
+collectorはnetwork-host.private.jsonのclosed_stateも含むpure validator再計算を行う。ready/ack/closed公開schemaは不変。
+[caller草案](evidence/host-endpoint-001/run_once.py)と[service草案](../integration/tempest-izanagi-host-endpoint-001.service)は--network-evidence --exec-evidenceとoffline artifact reportを固定し、具体ExecStart完全一致/service verify/構文を確認した。
+[snapshot草案](evidence/host-endpoint-001/prepare_snapshot.py)はsmoke/各module/observerの実hashをroot作成前にassertし、新network2moduleと独立receiver observerをclosureへ追加する。必須sidecar/proc importも保持する。
+旧sidecar001入力/RESULT参照file/鍵削除追補不在もroot作成前に照合する。旧proc/exec等原本の保全検査を維持する。
+[UID検査草案](evidence/host-endpoint-001/check_preparation.py)はstdin sourceで入力権限/環境/helpだけを検査し、hostでguest main/10.0.2.2試行/実proc probeを行わない。
+まだ新root/snapshot/UID検査/caller/observer/VMは未実施。source/observer監査後に固定準備へ進む。
