@@ -1,0 +1,24 @@
+{
+  "path": "/var/lib/tempest-izanagi-delivery-race-smoke-001/work/output/izanagi-hmac",
+  "room_result_audit": 16821,
+  "unit": "tempest-izanagi-delivery-race-smoke-001.service",
+  "invocation_id": "332f962b2818418fba1f221e843f3777",
+  "before": {
+    "uid": 999,
+    "gid": 988,
+    "mode": "0600",
+    "regular": true,
+    "nlink": 1
+  },
+  "parent_chain_real_directories": true,
+  "parent_directory_fd_identity_verified": true,
+  "contents_read": false,
+  "hash_computed": false,
+  "removed": true,
+  "absence_verified": true,
+  "uid999_empty": true,
+  "cgroup_absent": true,
+  "snapshot_items_unchanged": 1314,
+  "original_result_and_evidence_unchanged": true,
+  "scope": "only the audited smoke dummy transport key; original RESULT keeps its historical pending-key wording"
+}

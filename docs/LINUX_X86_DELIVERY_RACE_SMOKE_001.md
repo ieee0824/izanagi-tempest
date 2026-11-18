@@ -34,4 +34,5 @@ unit GC後の同Invocation終端属性を取得できずobserverは終了コー�
 専用UID999プロセス・cgroupは不在、観測したloopback port46235は閉じている。入力1314項目・外部runtime・旧証拠は不変。
 
 dummy transport keyは結果監査を待ってprivateのまま保持し、collectorは値・hashを読み出していない。cleanupは別記する。
+後続room16821監査後、[専用鍵cleanup追補](LINUX_X86_DELIVERY_RACE_SMOKE_001_KEY_CLEANUP.json)の通り正確な1pathだけをlstat/parent FD確認後に削除した。cleanup93331は終了コード0、値・hashは未読、入力1314項目と元RESULT/証拠は不変更。
 次はこの結果の監査後に、別rootの固定host CLI mock completed試験へ進む。[後続runtime計画](LINUX_X86_DELIVERY_RACE_RUNTIME_PLAN.md)を参照。
