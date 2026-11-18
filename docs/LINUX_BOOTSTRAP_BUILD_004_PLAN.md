@@ -1,6 +1,14 @@
 # bootstrap attempt004: 固定id allowlistの準備・再監査
 
 room #16409〜11に対応する準備です。image再build・再bootは未実施です。
+
+生成定義directory番号と実build attempt番号は別です。004を飛ばしたものではありません。
+001はbind修正前の構文検査、002はbind修正後でbuild001のsnapshot元、
+003はpartition修正後でbuild002、004はlock検証修正後でbuild003、
+005は今回allowlist修正後でbuild004のsnapshot元です。
+snapshot manifestのsource_manifest_sha256が各元定義manifestと一致することを再確認しました。
+今回の対応は定義005 → snapshot/build/unit004 → log/observation004です。
+過去定義を削除・番号変更・再生成していません。
 [boot001](LINUX_IZANAGI_BOOT_001.md)はReady/down成功・guest UID確認不成立であり、
 今回のExec拒否理由を遡って確定したとは扱いません。
 
