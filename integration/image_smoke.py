@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / 'image'))
 from transport import Mailbox
 from trace_evidence import trace_probe_evidence
 from artifact_evidence import PATHS as ARTIFACT_PATHS, validate_offline, validate_actor
+from exec_evidence import ExecEvidence, MarkerLeak
 
 
 def sha(path):
@@ -35,6 +36,8 @@ def main():
     parser.add_argument('--build-inputs', type=Path, help='prepare.py inputs.json; defaults to the standard build layout')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--offline-artifacts', type=Path, help='read-only image inspection report bound to this exact image')
+    parser.add_argument('--exec-evidence', action='store_true',
+                        help='retain private exec stdout/stderr and scan dummy management markers')
     parser.add_argument('--tempest', type=Path, help='exercise the independent Rust MCP supervisor/bridge for measured GETs')
     parser.add_argument('--delivery-race-fixture', action='store_true', help='Require forced root deliver PID in quiesce kill evidence')
     args = parser.parse_args()
@@ -78,11 +81,22 @@ def main():
         offline_artifacts = validate_offline(json.loads(args.offline_artifacts.read_bytes()), report['image_sha256'], build_inputs)
         report['checks']['offline_artifacts'] = {'passed': True, 'report_sha256': sha(args.offline_artifacts),
                                                    'scope': 'offline image bytes; runtime identity checked separately'}
+    exec_evidence = ExecEvidence(output / 'exec-evidence') if args.exec_evidence else None
     def save():
         (output / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
-    def execute(*command, timeout=30):
-        return subprocess.run(base + ['exec', '--', *command], cwd=box.workspace,
-                              capture_output=True, text=True, timeout=timeout, env=environment)
+    def execute(*command, timeout=30, evidence_context=None):
+        def invoke():
+            return subprocess.run(base + ['exec', '--', *command], cwd=box.workspace,
+                                  capture_output=True, text=True, errors='surrogateescape',
+                                  timeout=timeout, env=environment)
+        if exec_evidence is None:
+            return invoke()
+        try:
+            return exec_evidence.capture(invoke, secret_markers, evidence_context)
+        except (MarkerLeak, subprocess.TimeoutExpired):
+            report['checks']['exec_private_markers'] = exec_evidence.summary(secret_markers)
+            save()
+            raise
     def check(name, command, expected=0):
         result = execute('/bin/sh', '-c', command)
         report['checks'][name] = {'passed': result.returncode == expected,
@@ -99,7 +113,8 @@ def main():
         deadline = time.monotonic() + 260
         try:
             while time.monotonic() < deadline:
-                result = execute('/usr/bin/doas', '-n', '/usr/local/bin/tempest-guest', 'deliver', request.guest_path)
+                result = execute('/usr/bin/doas', '-n', '/usr/local/bin/tempest-guest', 'deliver', request.guest_path,
+                                 evidence_context={'operation': operation, 'expected_error': expected_error})
                 if operation == 'export':
                     category = ('reply' if result.returncode == 0 else
                                 'reply_unavailable' if result.stdout.strip() == '{"ok":false,"error":"reply_unavailable"}' else
@@ -535,6 +550,11 @@ def main():
         report['failure'] = str(error)
         save()
         raise
+    if exec_evidence is not None:
+        report['checks']['exec_private_markers'] = exec_evidence.summary(secret_markers)
+        save()
+        if not report['checks']['exec_private_markers']['passed']:
+            raise MarkerLeak('private marker found in captured exec streams')
     observations = list(logs.glob('*')) + [output / 'up.stdout', output / 'up.stderr']
     leaked = [path.name for path in observations if any(marker.encode() in path.read_bytes() for marker in secret_markers)]
     report['checks']['host_logs_private_markers'] = {'passed': not leaked, 'files_examined': [p.name for p in observations], 'leaked_files': leaked}

@@ -114,6 +114,26 @@ Packer debugも新private logへ保存し、全文をroomやGitへ公開しな�
 `restrict_network=true` / read-only 9p / snapshot のまま動かす。
 実 AWS、実データ、常用資格情報を投入しない。
 
+## exec応答の目印検査
+
+固定dummy試験でhost CLIのexec stdout/stderrを追加検査する場合は、次を使う。
+
+```bash
+python3 integration/image_smoke.py \
+  --izanagi /absolute/path/to/pinned/izanagi \
+  --image /absolute/path/to/tempest.qcow2 \
+  --build-inputs /absolute/path/to/inputs.json \
+  --output /private/tmp/tempest-exec-exposure-001 \
+  --exec-evidence
+```
+
+`exec-evidence/`は0700、stdout/stderrと操作種別・returncode・timeoutの記録は0600で保存する。
+各execの返却前に既知のdummy管理token・reply key・private payload目印を検査し、最後に全目印で再検査する。
+timeoutの部分出力も保存する。漏出時は応答を後続処理へ渡さず失敗し、raw証拠をprivateに保持する。
+`summary.json`の`checks.exec_private_markers`は件数・操作種別・漏出file名だけを記録し、目印値を含めない。
+従来のevents/alerts/up stdout/stderrの検査とは別の証拠であり、native helperのPIPEや全`/proc`の
+cmdline/env/FD・全期間の露出を検査したことにはしない。原本streamやdummy keyを公開しない。
+
 ## 配送契約
 
 固定 Izanagi CLI の exec は stdin を転送しない。
