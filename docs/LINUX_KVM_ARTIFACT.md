@@ -1,9 +1,28 @@
-# KVM固定検証器 artifact監査（build-only）
+# KVM固定検証器 artifact監査・最小VM実測
 
 対象実装commitは`623b34b`、native Linux/x86_64 debug ELFです。
 `target/debug/tempest-kvm-probe` SHA256:
 `d6c746bd13d8b219eb11086d83d50ee03b38a90989179cd6c5563f69ef6089e3`。
-device実行・専用user作成・installは未実施です。
+2026-11-18に専用user作成、固定配置、実deviceでの最小VM実行まで確認しました。
+
+## 専用hostでの実device実測（2026-11-18）
+
+[専用userとAPI12](LINUX_KVM_ADMIN_GATE.md)、[固定配置](LINUX_KVM_DEPENDENCIES.md)の
+監査後、room #16328の指示で次を1回実行しました。直前にinstalled SHA256を上記固定値へ再照合しています。
+
+```sh
+/usr/bin/sudo -n -u tempest-kvm /usr/bin/env -i /usr/bin/timeout --signal=TERM --kill-after=2s 15s /var/lib/tempest-kvm-probe/probe
+```
+
+exit 0、elapsed 0.027019秒、stderr空。固定stdoutは次のとおりです。
+
+```json
+{"deadline_exceeded":false,"child_terminal_reaped":true,"explicit_cleanup_complete":true,"primary_errno":null,"cleanup_errno":null}
+```
+
+実行前後の`ps -eo pid,ppid,uid,comm,args`でUID999のprocessは双方なしでした。
+固定実装によるVM/vCPU/RAM、IO→HLT、最終register照合と明示回収の正常経路を実deviceで通過しました。
+実deviceでのstage別異常注入は行っていません。Izanagi起動、image再構築、credential/live-callの証明にはしません。
 
 ## 検証
 
@@ -28,7 +47,7 @@ stage backendはAPI/extension/map size、VM/TSS/RAM/slot/vCPU/run map、sregs/re
 IO/HLT/最終regs、slot除去へ失敗を注入し、同じ実行本体からの回収を確認しています。
 各試験では指定stageへの到達を必須にします。ioctlはmockなので、実hardwareの
 VM作成・登録・実行・slot削除成立の証明とは扱いません。
-実device gateとstage別primary/cleanupの詳細診断・artifact受入監査は残っています。
+stage別異常系はこのunit試験の範囲であり、実device正常経路とは区別します。
 
 ## 独立Linux CI
 
@@ -38,11 +57,11 @@ Ubuntu 24.04/x86_64、Rust 1.100.0の12 tests、当該crateのall-target clippy�
 共有実行本体へのstage注入とprimary/cleanup独立判定のテスト実行をログで確認済みです。
 KVM deviceは開かず、実hardware gateや専用hostのbinary hash・loader/library監査の代替にはしません。
 
-## 配置案（未実行）
+## 固定配置（実施済み）
 
 管理者は専用user作成checkpoint後、`/var/lib/tempest-kvm-probe`を
 root:tempest-kvm 0750、配下`probe`をroot:tempest-kvm 0550に固定します。
 全ancestorのowner/modeと専用userの通過可能性、source/installed SHA256一致を検査します。
 共有workspaceのbinaryを専用userへ直接実行させず、環境は空、引数なしで扱います。
 dynamic loader/library closureとinstall時再検証もartifact監査の対象です。
-実行commandは残る監査後に確定し、現段階ではinstall/device実行を行いません。
+実施結果と再照合は[依存・配置監査](LINUX_KVM_DEPENDENCIES.md)、実行結果は上記に記録します。

@@ -69,15 +69,20 @@ sudo -u tempest-kvm /usr/bin/env -i /usr/bin/python3 -c 'import os,fcntl,json; f
 受入は専用userでopen成功・API version12・FD閉鎖・exit0です。
 API version成功を必要ioctl、VM起動、Izanagi成功へ拡張しません。
 
-## 段階2以降の未完条件
+## 段階2の実測と残件
+
+2026-11-18、固定検証器の最小VM正常経路が実deviceで成功しました。
+固定JSON・exit・elapsed・残留process確認は[artifact実測](LINUX_KVM_ARTIFACT.md)を参照してください。
+上記段階1時点の未実施範囲はこの実測で更新され、固定Izanagi起動は未実施です。
+以下は実装時の段階分割とIzanagiへ進む前の設計です。
 
 必要extension列挙とioctl、KVM_CREATE_VM、固定最小vCPU/guest memory、
 KVM_RUNの決められたexit、全FD/child/resource回収を順に独立gateとします。
-固定検証binary `tempest-kvm-probe` は実装・build-only検証済みで、device実行は未実施です。
+固定検証binary `tempest-kvm-probe` は実装・unit検証・実device正常経路の確認済みです。
 `623b34b`のnative Linux/x86_64 debug binary SHA256は
 `d6c746bd13d8b219eb11086d83d50ee03b38a90989179cd6c5563f69ef6089e3`です。
 専用identity照合、VM/vCPU/RAM、固定IO→HLT、親5秒deadline、PIDFD回収、
-primary/cleanup別診断を実装しています。unitはKVMを開かず、実hardware gateは未達です。
+primary/cleanup別診断を実装しています。unitはKVMを開かず、実device正常経路とは別証拠です。
 test backendでのstage別failure injectionは追加済みです。[artifact報告](LINUX_KVM_ARTIFACT.md)の
 範囲と残件を監査してから管理者向け実行commandを確定します。
 任意VM/image/command入力を受けない検証器をレビューし、root所有・非書換えpathへinstall、
