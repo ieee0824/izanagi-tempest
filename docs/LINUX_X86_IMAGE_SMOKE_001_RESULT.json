@@ -1,0 +1,453 @@
+{
+  "status": "failed_before_trace_probe",
+  "unit": "tempest-izanagi-image-smoke-001.service",
+  "invocation_id": "96b2852f82474fc9a282c965481ee4b0",
+  "host_boot_id": "30389abc903c40ae89a5c6268ec1c432",
+  "caller_exit": 1,
+  "observer_exit": 1,
+  "observer_failure": "fixed read-only mapped share not observed; fsdev path was relative dot; QEMU cwd not captured",
+  "observer_scope": "early failure; complete VM lifetime not established",
+  "observer_samples": [
+    {
+      "time": "2026-11-18T13:17:35.882823+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:36.897917+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:37.922781+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:38.946827+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:39.961540+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:40.980697+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:42.001559+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:43.025977+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:44.046891+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:45.071784+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:46.094289+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:47.123642+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:48.148407+00:00",
+      "unit": {
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "cgroup_pids": [],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:49.162963+00:00",
+      "unit": {
+        "MainPID": "284070",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "/system.slice/tempest-izanagi-image-smoke-001.service",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running",
+        "InvocationID": "96b2852f82474fc9a282c965481ee4b0"
+      },
+      "cgroup_pids": [
+        284070
+      ],
+      "listeners": [],
+      "qemu_network": [],
+      "external_listener_observed": false
+    },
+    {
+      "time": "2026-11-18T13:17:50.179444+00:00",
+      "unit": {
+        "MainPID": "284070",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "/system.slice/tempest-izanagi-image-smoke-001.service",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running",
+        "InvocationID": "96b2852f82474fc9a282c965481ee4b0"
+      },
+      "cgroup_pids": [
+        284070,
+        284074,
+        284079
+      ],
+      "listeners": [
+        {
+          "local": "127.0.0.1:39833",
+          "loopback": true,
+          "pids": [
+            284079
+          ]
+        }
+      ],
+      "qemu_network": [
+        {
+          "pid": 284079,
+          "starttime_ticks": 35042610,
+          "network_args": [
+            [
+              "-netdev",
+              "user,id=net0,restrict=on,hostfwd=tcp:127.0.0.1:39833-:9001"
+            ]
+          ],
+          "storage_args": [
+            [
+              "-drive",
+              "file=/var/lib/tempest-izanagi-image-smoke-001-v2/inputs/image.qcow2,format=qcow2,snapshot=on"
+            ],
+            [
+              "-fsdev",
+              "local,id=fs0,path=.,security_model=mapped-xattr,readonly=on"
+            ]
+          ]
+        }
+      ],
+      "external_listener_observed": false
+    }
+  ],
+  "final_unit": {
+    "Result": "exit-code",
+    "ExecMainCode": "1",
+    "ExecMainStatus": "1",
+    "ControlGroup": "",
+    "LoadState": "loaded",
+    "ActiveState": "failed",
+    "SubState": "failed",
+    "InvocationID": "96b2852f82474fc9a282c965481ee4b0"
+  },
+  "exit_recorder": {
+    "unit_name": "tempest-izanagi-image-smoke-001.service",
+    "invocation_id": "96b2852f82474fc9a282c965481ee4b0",
+    "unit": {
+      "Result": "exit-code",
+      "ExecMainCode": "1",
+      "ExecMainStatus": "1",
+      "ControlGroup": "/system.slice/tempest-izanagi-image-smoke-001.service",
+      "ActiveState": "deactivating",
+      "SubState": "stop-post",
+      "InvocationID": "96b2852f82474fc9a282c965481ee4b0"
+    },
+    "service_result": "exit-code",
+    "exit_code": "exited",
+    "exit_status": "1",
+    "scope": "ExecStopPost snapshot; final cgroup and journal checks are separate"
+  },
+  "summary_status": "incomplete",
+  "failure": "guest actor PermissionError EACCES reading /usr/local/bin/izanagi-agent",
+  "check_results": {
+    "inventory": {
+      "passed": true,
+      "returncode": 0
+    },
+    "image_manifest": {
+      "passed": true,
+      "returncode": 0
+    },
+    "build_guest_binding": {
+      "passed": true
+    },
+    "izanagi_installed_artifacts": {
+      "passed": false,
+      "returncode": 1
+    }
+  },
+  "trace_probe": "not reached",
+  "m3_claim_seed": "not reached",
+  "input_count_unchanged": 1304,
+  "v1_preserved": true,
+  "old_full_build_evidence_unchanged": true,
+  "cgroup_absent": true,
+  "uid999_absent": true,
+  "agent_port_closed": true,
+  "free_bytes": 52257210368,
+  "files": {
+    "/tmp/tempest-image-smoke-001.log": {
+      "sha256": "7145842807805dacd5063ffcb4189371767e1b24f62eb6dbf6bf786636bcb247",
+      "bytes": 994
+    },
+    "/tmp/tempest-image-smoke-observation-001.jsonl": {
+      "sha256": "5e0a6a7b76cd716d19a298a4b606ce9ff402bb7800f1375dec34d7129d363ec4",
+      "bytes": 5736
+    },
+    "/var/lib/tempest-izanagi-image-smoke-001-v2/work/evidence/exit-status.json": {
+      "sha256": "88bda49504fe5be05357ace4a0c66c5554b7d53e6cc6514c6be868101639e5cc",
+      "bytes": 522
+    },
+    "/var/lib/tempest-izanagi-image-smoke-001-v2/work/output/summary.json": {
+      "sha256": "0da50f0aea2307dfb065e202949c46ed2e1c86ccdbf5dce3ad45275dd9d6be20",
+      "bytes": 8856
+    },
+    "/var/lib/tempest-izanagi-image-smoke-001-v2/work/output/up.stdout": {
+      "sha256": "7937c735762e910192ed05c49ade3e4d09be599c4436cee0f090c9eeeb0481e9",
+      "bytes": 186
+    },
+    "/var/lib/tempest-izanagi-image-smoke-001-v2/work/output/up.stderr": {
+      "sha256": "696e1e2ab161c3f60f0da1a19df6657cd2622cd6f6621426f326b5a2106258f0",
+      "bytes": 301
+    },
+    "/var/lib/tempest-izanagi-image-smoke-001-v2/work/home/.izanagi/instances/9673c15638abf36cbec51b2a44d5e2c06f867efa7f072f142ea95d4ceea0dbef/logs/alerts.log": {
+      "sha256": "74f311aa3fedc9f62885c6bfad97cc21e75ccc895596bff5485b4fe24abcdab6",
+      "bytes": 268
+    },
+    "/var/lib/tempest-izanagi-image-smoke-001-v2/work/home/.izanagi/instances/9673c15638abf36cbec51b2a44d5e2c06f867efa7f072f142ea95d4ceea0dbef/logs/events.log": {
+      "sha256": "739c0451b2ee3b455c0501c3c5182e1c6377a2cdc8a5d917cbeabde8d0b1f21f",
+      "bytes": 39759
+    }
+  },
+  "transport_key_in_selected_private_logs": {
+    "checked_files": 8,
+    "leaked_paths": []
+  },
+  "trusted_lifecycle": [
+    {
+      "kind": "starting",
+      "UNIT": "tempest-izanagi-image-smoke-001.service",
+      "MESSAGE_ID": "7d4958e842da4a758f6c1cdc7b36dcc5",
+      "__REALTIME_TIMESTAMP": "1795007868387805",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "96b2852f82474fc9a282c965481ee4b0"
+    },
+    {
+      "kind": "started",
+      "UNIT": "tempest-izanagi-image-smoke-001.service",
+      "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
+      "__REALTIME_TIMESTAMP": "1795007868391907",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "96b2852f82474fc9a282c965481ee4b0"
+    },
+    {
+      "kind": "main_exited",
+      "UNIT": "tempest-izanagi-image-smoke-001.service",
+      "MESSAGE_ID": "98e322203f7a4ed290d09fe03c09fe15",
+      "__REALTIME_TIMESTAMP": "1795007888111509",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "96b2852f82474fc9a282c965481ee4b0"
+    },
+    {
+      "kind": "failed",
+      "UNIT": "tempest-izanagi-image-smoke-001.service",
+      "MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c",
+      "__REALTIME_TIMESTAMP": "1795007888168081",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "96b2852f82474fc9a282c965481ee4b0"
+    }
+  ],
+  "dummy_transport_key": "private file preserved pending result review; value and standalone hash not recorded"
+}

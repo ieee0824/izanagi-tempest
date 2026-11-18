@@ -1,6 +1,6 @@
 # Linux x86 image smoke001 の固定入力と単発計画
 
-room #16520/#16526 に対応する可逆準備。[full image build003](LINUX_X86_FULL_BUILD_003.md) の生成物を使用する。新imageのbootはまだ行っていない。この具体入力とcommandのレビュー後に一度実行する計画。
+room #16520/#16526 に対応する可逆準備。[full image build003](LINUX_X86_FULL_BUILD_003.md) の生成物を使用する。監査後に初回bootを一度実行し失敗・回収済み。[結果](LINUX_X86_IMAGE_SMOKE_001.md)を参照。以下は実行時の固定計画。
 
 ## 入力と依存の固定
 
@@ -20,7 +20,7 @@ Izanagi/LWS core sourceとguest imageは変更しない。host smokeは新root r
 - 独立random128bit nonceを含む `/tmp/tempest-trace-<nonce>` をguest PythonでO_EXCL作成し、同VM応答の実PID/pathを保存する。hostが期待したpathとの一致を確認し、終了後のevents.logおよび.1〜.3から当該PID/pathのopen/openat eventを検査する。probeのコードや期待値からeventsを生成する経路はない。
 - 空log/別PID/別run path/類似prefix/exec引数だけではtrace合格にしない。fixtureはparserの検査のみで実採取の代用ではない。生event引数を公開せず、該当数と証拠file hashを保存する。log rotationも保存・private marker検査対象に含める。
 
-## 実行順と固定command（未実行）
+## 実行時の順序と固定command
 
 直前に全hash/mode/owner/外部runtime SHA、work/output・exit-status・caller/observer log不在非symlink、unit未使用、uid999残留なし、既存image003と旧証拠不変、空き容量を再確認する。private work/home/tmp/evidenceとruntime envを照合し、ambient AWS/Izanagi credentialsを引き継がない。
 
@@ -33,7 +33,7 @@ sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-image-smoke-001-v2/input
 
 observerは固定unit/cgroup/Invocationと初回QEMU PID+process starttimeを保持し、観測identityの交代・PID再利用・identity不正/欠測・VM未観測terminalを拒否する。単一QEMU、user restrict=on、127.0.0.1の動的agent forward、固定base imageのsnapshot=on、固定workspace mapped-xattr/readonly=onを検査する。0QEMUの初期状態をpositive runtime証拠にせず、複数VM/制限緩和/非loopbackは失敗。raw fw_cfg/全argvは採取しない。観測失敗時はこのunitだけstop/必要時killし、別runへ移行しない。
 
-以下を新private `/tmp/tempest-image-smoke-001.log` へumask0077/noclobberで記録する。newimageの実bootを含むため、まだ実行していない。
+以下を新private `/tmp/tempest-image-smoke-001.log` へumask0077/noclobberで記録する。このcommandを一度実行した。
 
 ```sh
 sudo -n /usr/bin/systemd-run --unit=tempest-izanagi-image-smoke-001 --wait --pipe \
@@ -84,3 +84,5 @@ ExecStopPostは既存の実測済みrecorderを固定unit/outputへ導出し、�
 v2全1304input・外部runtime SHA・全directory owner/mode、uid999 readable/nonwritable、private work、xattr、root venv prefix/import/AES/--helpを再検査。旧v1全input SHA/modeも不変。空file/別run nonce pathのtrace負例、逐次PID交代・同PID/starttime交代・未観測terminalのobserver負例を含む全64testsが成功した。現行command/service/期待image/share pathはすべてv2を指す。新output/key/exit evidenceは未作成で、実VMはまだ0回。
 
 追加のLinux検証ではbootstrap全13testsも成功し、v2全hash、新output/exit/caller・observer log不在、unit未使用、uid999なし、free52258283520 bytesを確認した。実起動前にこれらは再検査する。
+
+実行後: smoke001は失敗・独立回収済み。以後の修正でこのunit/出力を再利用せず、別attemptを監査する。
