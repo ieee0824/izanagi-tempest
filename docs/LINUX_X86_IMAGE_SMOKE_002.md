@@ -20,7 +20,7 @@ observerは52samplesで同QEMU PID285545/starttime35315195と固定workspace cwd
 trusted PID1/UID0/currentboot journal の4 lifecycle rowsも同unit/Invocationに一致した。
 cgroup消失、UID999残留なし、動的agent port44571閉鎖、全1306inputとglobal runtime/旧full001002003証拠/旧001v1v2入力不変を別途確認した。
 [選別 collector](evidence/image-smoke-002/collect_result.py) は同handle85469終端exit0。
-追加stop/killや再実行は行っていない。独立dummy keyはprivateに保持し結果レビュー後に削除する。
+追加stop/killや再実行は行っていない。room16586 の結果監査後、当該runの独立dummy keyだけを削除し非存在を確認した。削除時は値/単体hashを読まず、ログ原本は保持した。
 
 ## 残る gate
 
