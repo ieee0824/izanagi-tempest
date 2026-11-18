@@ -36,3 +36,11 @@ host上でhelperのmainや実/proc採取を行わない。UID検査は固定入�
 caller/observerの同handle終端と同Invocation exit recorder/trusted journalを分けて保存し、unknownはunknownのままにする。
 input/旧証拠不変、cgroup/UID/port回収を確認し、安全なcounts/controls/coverageと検査scopeだけ公開する。
 001当該dummy keyの回収は結果監査後の別追補とし、rawや入力を削除しない。
+
+## 固定準備の草案
+
+[service](../integration/tempest-izanagi-proc-exposure-002.service)、[caller](evidence/proc-exposure-002/run_once.py)、[snapshot作成](evidence/proc-exposure-002/prepare_snapshot.py)、[UID検査](evidence/proc-exposure-002/check_preparation.py)を用意した。
+PR57のhelper2種とローカル拡張を保持したsmokeの実bytes hashをroot作成前に要求し、proc_paging.pyを必須closureへ追加する。
+旧proc001の入力と選別RESULT参照fileもroot作成前に不変照合する。旧exec001鍵削除追補と原本の検査も維持する。
+caller/serviceのExecStart完全一致、service verify、Python構文を確認した。Linux全122tests成功。
+まだ新root/snapshot/UID検査/caller/observer/VMは未実施。
