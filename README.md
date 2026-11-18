@@ -355,6 +355,10 @@ packer build -var-file=tempest.pkrvars.json debian.pkr.hcl
 ```
 
 実VMでの確認範囲、digest、既知の限界は [M3 検証記録](docs/M3-IMAGE.md) を参照してください。
+
+Linux x86_64/KVM向けには`image/prepare.py --architecture x86_64`で固定Debian定義を導出できます。
+固定入力からの無人image生成とlock-downは確認済みですが、x86 guestの採取・権限・通信境界は未検証です。
+固定ISO/ELF検査、loopback接続、serial診断と具体コマンドは[image/README.md](image/README.md)を参照してください。
 `restrict_network=true` のまま、M2操作、owner/doas分離、私有入力・応答、短時間PCAPを検証しています。
 一般のエージェント終了・回収フローは未実装です。
 
@@ -515,7 +519,8 @@ target/release/tempest recover /absolute/path/to/runs/<run-id>
 ```
 
 `runtime_presence.py`はfinding/retestの4通りを実行し、
-未設定の処理を生成せず、M5評価を成功扱いしないことを確認します。
+未設定段階のconfigured/performed・未実施理由と、primaryの制御監査におけるprobe要求/応答の件数を照合します。
+正常完了時は全4経路でM5評価を行い、未設定のfinding/retestを成功や正式指標の対象にしないことを確認します。
 
 
 `runtime_noop.py`はtoolを呼ばないmockを同じ固定VMで反復し、背景未確定候補を記録します。

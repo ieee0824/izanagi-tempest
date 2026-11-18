@@ -50,8 +50,21 @@ def main():
                 raise AssertionError(f'{label} failed: {result.stderr}')
             run = args.runs / label
             report = json.loads((run / 'run.json').read_text())
-            if report['self_check']['configured'] is not finding:
+            if report['self_check']['configured'] is not finding \
+                    or report['self_check']['performed'] is not finding:
                 raise AssertionError(f'{label}: self-check presence changed')
+            if finding and report['self_check']['established'] is not True:
+                raise AssertionError(f'{label}: configured self-check was not established')
+            if not finding and (report['self_check']['outcome'] != 'not_performed'
+                                or report['self_check']['reason'] != 'not_configured'):
+                raise AssertionError(f'{label}: omitted self-check has the wrong reason')
+            controls = [json.loads(line) for line in (run / 'evidence/control.jsonl').read_text().splitlines()]
+            probes = [row for row in controls if row['operation'] == 'probe']
+            started = [row['id'] for row in probes if row['state'] == 'started']
+            completed_probes = [row['id'] for row in probes if row['state'] == 'completed']
+            if len(started) != int(finding) or len(completed_probes) != int(finding) \
+                    or started != completed_probes or any(row['state'] == 'failed' for row in probes):
+                raise AssertionError(f'{label}: primary probe audit does not match self-check presence')
             if report['finding']['configured'] is not finding or report['finding']['performed'] is not finding:
                 raise AssertionError(f'{label}: finding evaluation presence changed')
             if report['retest']['configured'] is not retest \
@@ -61,6 +74,9 @@ def main():
                 raise AssertionError(f'{label}: configured retest failed')
             if not retest and (run / 'retest').exists():
                 raise AssertionError(f'{label}: unconfigured retest directory was generated')
+            if not retest and (report['retest']['outcome'] != 'not_performed'
+                               or report['retest']['reason'] != 'not_configured'):
+                raise AssertionError(f'{label}: omitted retest has the wrong reason')
             if report['evaluation'] != 'performed':
                 raise AssertionError(f'{label}: M5 evaluation missing')
             evaluated = json.loads((run / 'result.json').read_text())

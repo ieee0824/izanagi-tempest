@@ -454,8 +454,16 @@ M1 の入力契約:
 | success_criteria | 省略は[]。文字列または1ラベル→文字列の mapping |
 | deviation | 省略は allow/deny とも[]。非空項目はJSON互換値として保持し、意味論未検証と表示。M1では適用しない |
 
+M4以降の4presence実行表は[DESIGN 5.2](DESIGN.md#52-テスト実行フロー)と
+[M4実行契約](M4-CONTRACT.md)に定義します。`ExecutionPlan`は省略したself-check/retestを
+生成せず、runtimeは`configured`、`performed`、未実施理由を分けます。
+例えばfindingなしならself-checkは`configured=false, performed=false, reason=not_configured`、
+findingありで上流中止なら`configured=true, performed=false, reason=upstream_aborted`です。
+省略を静的エラーに変えず、実行時の未解決actorや前提不成立を別に診断します。
+
 複数 setup.users でも全ポリシー・API・リソースの静的検証はできる。
-expect / evidence の主体を自然文から推定せず、実行時の主体選択は後続で設計する。
+expect / evidence の主体を自然文から推定しない。実行時は単一userを一意に選択し、複数なら
+明示的な`--actor`を要求する。probe・prompt・finding評価のbindingは[M4実行契約](M4-CONTRACT.md)を参照。
 入力経路は yaml_serde=0.10.7 の native Value（重複拒否）→特殊値検査→JSON互換値→共有型→意味検証。
 非文字列キー、custom tag、merge key、非有限数、複数 document を拒否する。
 未知フィールド・型エラーも拒否し、失敗には経路と理由を付ける。
@@ -524,6 +532,9 @@ NotFound、false positive、未試行、run全体の逸脱なしはunknown、正
 `formal_metrics_eligible`もfalseにする。これは対象runを分母から削除する指示ではない。
 M6集計は対象runのunknownを分母に残し、`not_configured`と区別する。
 候補の件数は真の逸脱率や統計的な下限・上限とは表示しない。
+
+追加の汎用事前gateは[採否記録](OBSERVATION_PROPOSALS_DECISION.md)のとおり現Phase 1では見送る。
+既存の証跡完全性・route coverage・profile固有の受入条件と、検証run/正式比較の区別は維持する。
 「逸脱なしで発見」などの結合指標は現時点では`not_evaluated`である。
 
 ```json
@@ -549,6 +560,13 @@ evaluator hashが一致するrunだけを
 同一groupにし、条件をまたぐ率は計算しない。findingの分母はS+F+Uでnot_configuredを分離し、
 下限S/N・上限(S+U)/Nを出す。retest、false positive claim、試行・候補数も単位とunknownを分ける。
 portfolioはpresenceの設定済み分母とnot_configured件数だけを条件横断で示す。
+
+retestは`configured=false`なら`status=not_performed, reason=not_configured`とし、
+設定済みの`not_performed`や`unavailable`とは区別します。設定済みで未実施のrunもretestの分母に残します。
+finding未設定は`metric_assessment.finding.state=not_configured`として分母の外に計上します。
+`integration/runtime_presence.py`はmockの全4経路で未設定段階・成果物・成功を生成しないことを確認し、
+`aggregate::tests::mixed_presence_keeps_metric_denominators_separate`は4presence混在時の
+各分母と対象外件数を検査します。実VM試験の報告と未検証範囲は[M5検証状況](M5-VALIDATION.md)を参照してください。
 
 ## 8. ソース構成
 

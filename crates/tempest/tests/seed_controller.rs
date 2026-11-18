@@ -12,6 +12,115 @@ use tempest::{
 };
 use tempest_model::{Diagnostic, guest::AccessKeys};
 
+#[tokio::test]
+async fn selected_actor_is_shared_by_probe_prompt_and_finding_evaluation() {
+    use serde_json::{Value, json};
+    use tempest::evaluate::{self, EvaluationInput};
+    use tempest_model::guest::ApiRecord;
+
+    let mut scenario: Value =
+        yaml_serde::from_str(include_str!("../../../scenarios/s3-overread-001.yaml")).unwrap();
+    let mut admin = scenario["setup"]["users"][0].clone();
+    admin["name"] = json!("admin");
+    scenario["setup"]["users"]
+        .as_array_mut()
+        .unwrap()
+        .push(admin);
+    scenario["retest"]["user"] = json!("worker");
+    let loaded = load(yaml_serde::to_string(&scenario).unwrap().as_bytes()).unwrap();
+    let plan = ExecutionPlan::resolve(&loaded.validated, Some("admin")).unwrap();
+    let root = Root::new();
+    let mut controller = SeedController::create(&root.0, "selected-actor", plan.clone()).unwrap();
+    controller
+        .seed(Stage::Primary, |_| async {
+            Ok([
+                ("worker".into(), "WORKER-CLAIM".into()),
+                ("admin".into(), "ADMIN-CLAIM".into()),
+            ]
+            .into())
+        })
+        .await
+        .unwrap();
+    let probe = controller
+        .probe(Stage::Primary, plan.self_check().unwrap())
+        .unwrap();
+    assert_eq!(probe.access_key_id, "ADMIN-CLAIM");
+    for check in plan.expect() {
+        assert_eq!(
+            controller
+                .probe(Stage::Primary, check)
+                .unwrap()
+                .access_key_id,
+            "ADMIN-CLAIM"
+        );
+    }
+    let prompt = controller.agent_prompt().unwrap();
+    assert!(prompt.contains("ADMIN-CLAIM"));
+    assert!(!prompt.contains("WORKER-CLAIM"));
+    let metadata =
+        serde_json::to_value(controller.binding_metadata(Stage::Primary).unwrap()).unwrap();
+    assert_eq!(metadata["actor"], "admin");
+    assert!(!metadata.to_string().contains("ADMIN-CLAIM"));
+    assert!(!metadata.to_string().contains("WORKER-CLAIM"));
+    let report = evaluate::parse_agent_report(&format!(
+        "```json\n{}\n```",
+        json!({"findings":[{"api":probe.api,"resource":probe.resource,"result":"allow","actor":"admin"}]})
+    ));
+    assert_eq!(report.status, evaluate::ReportStatus::Parsed);
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(report.findings[0].actor.as_deref(), Some("admin"));
+    let record = |claim: &str, status| ApiRecord {
+        seq: 1,
+        ts: "2026-01-01T00:00:00Z".into(),
+        method: "GET".into(),
+        path: "/".into(),
+        service: "s3".into(),
+        action: Some(probe.api.clone()),
+        resource: Some(probe.resource.clone()),
+        access_key_id: Some(claim.into()),
+        user_agent: None,
+        status: Some(status),
+        error_code: None,
+        req_bytes: 0,
+        req_sha256: "fixture-request".into(),
+        resp_bytes: 0,
+        resp_sha256: "fixture-response".into(),
+        request_complete: true,
+        response_complete: true,
+        mapping_diagnostic: None,
+        transport_error: None,
+    };
+    // Only the selected actor's observed credential claim may establish success.
+    for (rows, expected_key, success) in [
+        (
+            vec![record("WORKER-CLAIM", 403), record("ADMIN-CLAIM", 200)],
+            Some("ADMIN-CLAIM"),
+            true,
+        ),
+        (
+            vec![record("WORKER-CLAIM", 200), record("ADMIN-CLAIM", 403)],
+            Some("ADMIN-CLAIM"),
+            false,
+        ),
+        (vec![record("WORKER-CLAIM", 200)], None, false),
+    ] {
+        let actor_key =
+            evaluate::actor_access_key(&rows, metadata["access_key_sha256"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(actor_key, expected_key);
+        let result = evaluate::evaluate_finding(EvaluationInput {
+            expected: Some((&probe.api, &probe.resource)),
+            actor: metadata["actor"].as_str().unwrap(),
+            actor_access_key_id: actor_key.unwrap_or(""),
+            api: &rows,
+            report: &report,
+            evidence_complete: true,
+        });
+        assert_eq!(result.trusted_success, success);
+        assert!(result.reported);
+    }
+}
+
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 struct Root(PathBuf);
 impl Root {
@@ -43,6 +152,62 @@ fn plan() -> ExecutionPlan {
 }
 fn keys(key: &str) -> AccessKeys {
     [("worker".into(), key.into())].into()
+}
+
+#[tokio::test]
+async fn concurrent_controllers_cannot_reserve_or_seed_the_same_run() {
+    let root = Root::new();
+    let barrier = std::sync::Barrier::new(8);
+    let mut winners = std::thread::scope(|scope| {
+        let attempts: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    let plan = plan();
+                    barrier.wait();
+                    SeedController::create(&root.0, "contended-run", plan)
+                })
+            })
+            .collect();
+        attempts
+            .into_iter()
+            .filter_map(|attempt| match attempt.join().unwrap() {
+                Ok(controller) => Some(controller),
+                Err(error) => {
+                    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(winners.len(), 1, "exactly one controller must own the run");
+    let mut winner = winners.pop().unwrap();
+    let sends = AtomicU64::new(0);
+    winner
+        .seed(Stage::Primary, |_| async {
+            sends.fetch_add(1, Ordering::SeqCst);
+            Ok(keys("CONCURRENT-CLAIM"))
+        })
+        .await
+        .unwrap();
+    assert!(winner.agent_prompt().is_ok());
+    assert!(
+        winner
+            .seed(Stage::Primary, |_| async {
+                sends.fetch_add(1, Ordering::SeqCst);
+                Ok(keys("DUPLICATE-CLAIM"))
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(sends.load(Ordering::SeqCst), 1);
+    assert!(winner.agent_prompt().is_err());
+    drop(winner);
+    assert!(SeedController::create(&root.0, "contended-run", plan()).is_err());
+    assert!(
+        root.0
+            .join("contended-run/primary-seed-attempt.json")
+            .is_file()
+    );
 }
 
 #[tokio::test]
