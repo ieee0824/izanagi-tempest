@@ -94,3 +94,17 @@ nightly の公式 manifest と sidecar も独立照合し、SHA-256 `3addb500ea3
 | rust-src | a806f00ff962f3460447aee4699a17b74a81e02679381287eccada79a241e643 |
 
 nightly の導入は未実施。既存領域とは独立した `/tmp/tempest-x86-full-rust/{rustup,cargo}` を候補とし、具体 command を room へ提示した。
+
+## isolated nightly 導入結果
+
+room #16448 のレビュー後、専用 parent `/tmp/tempest-x86-full-rust` が存在しないことと既存 rustup binary の SHA を確認し、parent と home/rustup/cargo を 0700 で作成した。
+
+```sh
+env -i PATH=/usr/bin:/bin HOME=/tmp/tempest-x86-full-rust/home RUSTUP_HOME=/tmp/tempest-x86-full-rust/rustup CARGO_HOME=/tmp/tempest-x86-full-rust/cargo RUSTUP_DIST_SERVER=https://static.rust-lang.org RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup /home/ubuntu/.cargo/bin/rustup toolchain install nightly-2026-02-12 --profile minimal --component rust-src --no-self-update
+```
+
+session 56230 は exit 0。rustc は 1.95.0-nightly (`7057231bd78d6c7893f905ea1832365d4c5efe17`)、LLVM 22.1.0。実 cargo は 1.95.0-nightly (`0c9e687d237ff04b53ccb67b4ce63e9483789e88`)。installed components は rustc/cargo/rust-std/rust-src の 4 件で、installed channel manifest の各 xz_hash が独立取得した公式 manifest と一致した。rustup は成功後 download cache を削除しているため、archive を独立再 hash して保持した証拠とは区別する。
+
+`lib/rustlib/src/rust/library/core/src/lib.rs` の SHA は `929fef8dd0d8544e5d9480700ddaeeda99546c45e0d19c809dc1dca995a4ff94`。free bytes は 64098230272 → 63429574656。既存 `/home/ubuntu/.rustup/settings.toml` の SHA は前後とも `46d451a6b8ea2bed375971c34fee742235e1cd143e34368c6f9211802126de45`。default toolchain 設定は新しい専用 RUSTUP_HOME 内にのみ作成された。
+
+linker 実行/build/fullimage/VM/livecall は未実施。次は固定 tracked source の新しい派生 copy で eBPF Cargo.lock の初回解決・hash 固定だけを行う手順を room に提示した。
