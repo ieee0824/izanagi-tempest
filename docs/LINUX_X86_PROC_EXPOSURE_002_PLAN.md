@@ -44,3 +44,22 @@ PR57のhelper2種とローカル拡張を保持したsmokeの実bytes hashをroo
 旧proc001の入力と選別RESULT参照fileもroot作成前に不変照合する。旧exec001鍵削除追補と原本の検査も維持する。
 caller/serviceのExecStart完全一致、service verify、Python構文を確認した。Linux全122tests成功。
 まだ新root/snapshot/UID検査/caller/observer/VMは未実施。
+
+## 固定準備結果
+
+[1309入力snapshot](LINUX_X86_PROC_EXPOSURE_SNAPSHOT_002.json)と[専用UID検査結果](LINUX_X86_PROC_EXPOSURE_PREPARATION_002.json)を保存した。
+source d4fd5cbc7189a8f522b84d68ddc1f10e292324f0、canonical tree b251ee2441c2506d1357c51db0dffcc8c0a0cb3d74b7f6af8d8373bd9fe15c41。
+prepare83950とUID検査48000は同handle終端exit0。初回のrepo絶対path指定は親directoryのEACCESでscript未実行/exit2となり、権限を変更せず同じsourceをstdinで渡して検査した。
+全input hash/owner/mode/nonwrite、外部runtime、新venv prefix/依存/AES/help/xattr/private work、新output/exit/log不在を確認した。
+helpはargparse終了だけで、host実/procを採取していない。Linux122testsとbootstrap13tests成功。
+unit not-found/inactive/Invocation空、UID999なし、cgroupなし、KVM root:kvm0660、空き30020497408 bytesを確認した。
+準備時に旧proc001/exec/presence/normal/seed-loss全tree/reservation/full/smoke証拠不変を照合し、実行直前にも再確認する。
+
+最終監査後の先行observerは以下を予定する。
+
+```sh
+sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-proc-exposure-002/inputs/repo/integration/image_smoke_observe.py --attempt proc-exposure-002 --output /tmp/tempest-proc-exposure-observation-002.jsonl
+```
+
+続くfixed callerは `python3 -I -B docs/evidence/proc-exposure-002/run_once.py`。
+現時点ではsnapshotとUID検査だけで、observer/caller/VMは未実施。
