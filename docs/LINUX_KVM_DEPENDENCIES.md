@@ -31,10 +31,17 @@ NSS設定はpasswd/groupとも`files systemd`です。libnss_systemdは直接NEE
 systemd NSSもloader --listで解決先を確認しましたが、実user lookup時のdlopenやIPCを観測した証拠ではありません。
 従って表は静的/loader解決closureであり、全実行時依存の網羅を主張しません。
 
-## 固定配置コマンド案（未実行）
+## 固定配置コマンド（2026-11-18実施済み）
 
 [専用user checkpoint](LINUX_KVM_ADMIN_GATE.md)が完了し、管理者が上記hash/closureを再検証してから実施します。
-既存destinationがあれば上書きせず中止します。現在このコマンドへの実行移行はしていません。
+既存destinationがあれば上書きせず中止します。
+
+room #16326の監査指示後、下記を実施し全commandがexit 0でした。
+source/installed SHA256はともに上記`d6c746bd…6089e3`と一致しました。
+`/`、`/var`、`/var/lib`はroot:root 0755、配置directoryは
+root:tempest-kvm 0750、binaryはroot:tempest-kvm 0550です。
+専用userのbinary実行権とdirectory/binaryの書換え不可を`test`で確認しました。
+この確認ではbinary自体を起動しておらず、VM作成も未実施です。
 
 ```sh
 set -eu
