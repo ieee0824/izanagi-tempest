@@ -74,3 +74,7 @@ caller/service/observerは準備済みだが、final source監査前にroot/snap
 PR60追補1f43e0bの終了health identity/audit保存検査を取り込んだ。Linux sidecar11testsのうち実socket fixture末尾の再bind検査がEADDRINUSEとなり、10成功/1error。
 fixture転送・receiver件数・thread終了の検査後に発生し、TIME_WAITと残留listenerを区別する必要があるためcoderへroom16745で報告した。
 先の136tests成功は追補前のsourceに対する結果として保持する。修正後の検査とfinal source監査前にroot/snapshot/VMを作成しない。
+
+追補10563c4/bc14167を取り込み、TCP TIME_WAITと残留listenerを区別するconnect_ex拒否＋thread終了検査へ修正した。production Receiver設定は変更していない。
+修正後はLinux全140tests/skip0成功（sidecar13件を含む）。先の再bind検査失敗は試行記録として残す。
+sidecar probe/evidenceのproduction bytesは最終PR60と一致し、prepareの固定hashも整合する。まだroot/snapshot/VMは未作成。
