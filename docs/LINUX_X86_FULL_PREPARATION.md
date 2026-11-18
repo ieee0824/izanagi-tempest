@@ -108,3 +108,25 @@ session 56230 は exit 0。rustc は 1.95.0-nightly (`7057231bd78d6c7893f905ea18
 `lib/rustlib/src/rust/library/core/src/lib.rs` の SHA は `929fef8dd0d8544e5d9480700ddaeeda99546c45e0d19c809dc1dca995a4ff94`。free bytes は 64098230272 → 63429574656。既存 `/home/ubuntu/.rustup/settings.toml` の SHA は前後とも `46d451a6b8ea2bed375971c34fee742235e1cd143e34368c6f9211802126de45`。default toolchain 設定は新しい専用 RUSTUP_HOME 内にのみ作成された。
 
 linker 実行/build/fullimage/VM/livecall は未実施。次は固定 tracked source の新しい派生 copy で eBPF Cargo.lock の初回解決・hash 固定だけを行う手順を room に提示した。
+
+## 派生 eBPF lock の初回固定
+
+room #16452 のレビュー後、新 0700 `/tmp/tempest-x86-ebpf-lock-001` に固定 commit の `git archive` から tracked 230 files をコピーした。git tree は `92ddde3ef69fb508c3be92e711a7a7503c90e422`、archive SHA-256 は `d1b1ffcb4cd1eec94678270fda6d99e27cefddb79585a508c97616bb982448f2`。各 file の hash 一覧を同 parent の `source-files.json` に保存した。
+
+専用 HOME/CARGO_HOME/RUSTUP_HOME と固定 nightly の bin のみを指定した env -i で、絶対 cargo の `generate-lockfile --manifest-path /tmp/tempest-x86-ebpf-lock-001/source/izanagi-ebpf/Cargo.toml` を一度実行した。session 88173 は exit 0、34 packages を固定。続く `metadata --no-deps --locked --format-version 1` も exit 0。全 tracked file hash と元 checkout clean を再確認した。
+
+生成 lock は [保存した Cargo.lock](locks/izanagi-ebpf-16d-x86.Cargo.lock)、SHA-256 `3bd3820e528bb91a78e0e5f2f699fdb9b32edc7bb5cf18e40134dea564fc262c`。これは今回初回解決した新入力であり、upstream が提供した lock ではない。以後この入力から --locked で進め、再解決で置き換えない。
+
+| Aya package | version | registry checksum |
+|---|---|---|
+| aya-build | 0.1.3 | 59bc42f3c5ddacc34eca28a420b47e3cbb3f0f484137cb2bf1ad2153d0eae52a |
+| aya-ebpf | 0.1.1 | d8dbaf5409a1a0982e5c9bdc0f499a55fe5ead39fe9c846012053faf0d404f73 |
+| aya-ebpf-bindings | 0.1.2 | 71ee8e6a617f040d8da7565ec4010aea75e33cda4662f64c019c66ee97d17889 |
+| aya-ebpf-cty | 0.2.3 | e6f33396742e7fd0f519c1e0de5141d84e1a8df69146a557c08cc222b0ceace4 |
+| aya-ebpf-macros | 0.1.2 | 96fd02363736177e7e91d6c95d7effbca07be87502c7b5b32fc194aed8b177a0 |
+| aya-log-common | 0.1.15 | befef9fe882e63164a2ba0161874e954648a72b0e1c4b361f532d590638c4eec |
+| aya-log-ebpf | 0.1.0 | 2a10bbadd0829895a91eb1cd2bb02d7af145704087f03812bed60cb9fe65dbb3 |
+| aya-log-ebpf-macros | 0.1.0 | f6d8251a75f56077db51892041aa6b77c70ef2723845d7a210979700b2f01bc4 |
+| aya-log-parser | 0.1.13 | 14b102eb5c88c9aa0b49102d3fbcee08ecb0dfa81014f39b373311de7a7032cb |
+
+上表の source は全て `registry+https://github.com/rust-lang/crates.io-index`。build script/compiler/linker はまだ実行しておらず、dependency crate 全取得も未実施。bpf_target_arch の実選択と guest tracepoint/BTF の互換確認は後続に残る。
