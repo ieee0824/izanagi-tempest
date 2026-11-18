@@ -2,6 +2,8 @@
 
 ## 状態と範囲
 
+room16784の提案をLinux側で再計算確認したため、採用案は固定旧source＋標準prepare明示flagとする。custom pure recipeは比較検討・検査記録として保持し、実導出には使わない。
+
 room16780の指示に基づくbuild-only草案。新root /var/lib/tempest-izanagi-delivery-race-build-001と専用unitを提案する。
 まだrecipe/source監査前で、新root・定義directory・Packer build・VM起動は未実施。
 既存full003 image/全入力/旧証拠は不変更。完成してもfixture runtimeやforced race実測の成功とは区別する。
@@ -54,3 +56,33 @@ installerのbuild時network/loopback HTTP・SSH・VNC条件は親full003と同�
 調査時free23387049984 bytes。新input約0.916GB＋4GiB diskを3個分（installer/変換/完成の保守的仮枠）＋log/partial/margin各1GiBを見込むと約16GiB以内だが、実Packer temp使用量の保証値ではない。
 開始案はcopy前free20GiB以上/copy後18GiB以上を要求し、実templateのdisk_size・temp/output配置と正確argvを次監査で固定する。
 旧証拠削除や旧image再利用で容量を空けず、不足時は開始しない。新root/build/VMは未開始。
+
+## 採用案: clean旧sourceから標準prepareを実行
+
+Linux git object7ab5d4ee98b009086d83a98320dc752c3372bf4fの93fileを同算法で再計算しtree680b42138d4a8d2b1ae2cd7db8f83721366d58ddc754ee590f3471ac0f4452c8を確認した。image6fileも現在版と全bytes一致。
+専用detached worktree /tmp/tempest-delivery-race-source-001を同commitで作成し、clean/helper_source dirty=false・同treeを確認した。これはsource snapshotだけで、新definition/root/build/VM作成ではない。
+/tmp/tempest-delivery-race-definition-001は未作成を確認済み。監査後に実行する具体標準prepare案は以下。
+
+```sh
+sudo -n /usr/bin/env -i PATH=/usr/bin:/bin HOME=/nonexistent \
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+  GIT_CONFIG_VALUE_0=/tmp/tempest-delivery-race-source-001 \
+  /usr/bin/python3 -E -s -B /tmp/tempest-delivery-race-source-001/image/prepare.py \
+  --architecture x86_64 --delivery-race-fixture \
+  --izanagi-source /tmp/tempest-izanagi-upstream-review \
+  --lws-source /tmp/tempest-lws-upstream-review \
+  --iso /var/lib/tempest-izanagi-full-build-003/inputs/base.iso \
+  --agent /var/lib/tempest-izanagi-full-build-003/inputs/agent \
+  --ebpf /var/lib/tempest-izanagi-full-build-003/inputs/ebpf \
+  --http /var/lib/tempest-izanagi-full-build-003/inputs/http \
+  --lws /var/lib/tempest-izanagi-full-build-003/inputs/lws \
+  --guest /var/lib/tempest-izanagi-full-build-003/inputs/guest \
+  --output /tmp/tempest-delivery-race-definition-001
+```
+
+rootは親の固定0440入力を読むためだけに用い、git safe.directoryはこのsource1pathだけを当該process環境へ指定する。user/global git設定を書換えない。
+Python -E/-sと空環境を使い、script directory内の固定x86/instrument helper importを維持する。
+入力binary・ISO SHA/ELFは親固定snapshotへ一致、guest source commit/tree/dirty/versionも親と一致することを要求する。
+許可metadata差分はbuilt_at、delivery_race_fixture false→true、実instrumenter/dispatcher/quiesceのderivation SHA、出力/入力path移設と対応template SHAだけ。元compile情報の書換えは禁止。
+標準prepare出力をsnapshot新rootへ束縛する際のpath置換/元manifest SHAと、親inputs/image.json hash・全file hashを別provenanceへ記録する。
+実prepare・新definition/root/build/VMはまだ未開始。command/source/許可差分の監査後に定義作成とfull validateだけへ進む。
