@@ -155,3 +155,22 @@ userspace は `/tmp/tempest-x86-userspace-001` の新 private HOME/CARGO と art
 | HTTP | 0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7 | 2.38 |
 
 両方 exit 0、ELF machine 62、interpreter `/lib64/ld-linux-x86-64.so.2`、NEEDED は libgcc_s.so.1/libm.so.6/libc.so.6/ld-linux-x86-64.so.2。guest 側の実 loader/libc/各 version 提供との一致は未検証。HTTP build の上流 warning 9 件を log に保持し、source の変更や再試行は行っていない。
+
+## 全 userspace artifact と実定義 validate
+
+親 session 6357 は exit 0。各 component の result は全て exit 0、lock hash は前後不変。LWS は Cargo 2m58s、guest は 35.49s。部分 manifest を [全 userspace manifest](LINUX_X86_FULL_ARTIFACTS.json) へ更新した。
+
+| artifact | SHA-256 | 最大 GLIBC version requirement |
+|---|---|---|
+| LWS | fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e | 2.38 |
+| tempest-guest | e551b35f3cc230ad1928d6d86c551ff4e4241e4714a4b1452578e63fcb36fd52 | 2.39 |
+
+両方 ELF machine 62。正確な loader/NEEDED は manifest に記録した。追加 host package install、core source 修正、build 再試行は行っていない。
+
+実 `image/prepare.py --architecture x86_64` を 5 artifact と検証済み ISO/clean pinned checkouts から `/tmp/tempest-x86-image-definition-001` へ実行した。生成 `inputs.json` の x86_64/source dirty false/全5入力 SHA を実生成物と照合した。固定 Packer/plugin で次の full validate は session 66880、exit 0。
+
+```sh
+env -i PATH=/usr/bin:/bin HOME=/tmp/tempest-x86-full-rust/home PACKER_PLUGIN_PATH=/tmp/tempest-bootstrap-inputs/packer-plugins CHECKPOINT_DISABLE=1 /tmp/tempest-bootstrap-inputs/packer-1.15.0/packer validate -var-file=/tmp/tempest-x86-image-definition-001/packer/tempest.pkrvars.json /tmp/tempest-x86-image-definition-001/packer/debian.pkr.hcl
+```
+
+実 image build/VM/load/採取は未実施。次は [fullbuild001 計画](LINUX_X86_FULL_BUILD_001_PLAN.md) に従う immutable root snapshot の準備と検査。observer は collaborator の `--phase image --attempt 001` を採用し、unit は `tempest-izanagi-bootstrap-image-001.service` に統一した。
