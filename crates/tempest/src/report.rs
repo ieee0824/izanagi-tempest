@@ -1550,6 +1550,66 @@ mod tests {
     }
 
     #[test]
+    fn aborted_reports_preserve_all_four_parent_presence_combinations() {
+        for finding in [false, true] {
+            for retest in [false, true] {
+                let root = std::env::temp_dir().join(format!(
+                    "tempest-presence-report-{}-{}",
+                    std::process::id(),
+                    host_io::random_hex().unwrap()
+                ));
+                host_io::directory(&root).unwrap();
+                let mut scenario: Value =
+                    yaml_serde::from_str(include_str!("../../../scenarios/s3-overread-001.yaml"))
+                        .unwrap();
+                if !finding {
+                    scenario.as_object_mut().unwrap().remove("expected_finding");
+                }
+                if !retest {
+                    scenario.as_object_mut().unwrap().remove("retest");
+                }
+                let scenario = yaml_serde::to_string(&scenario).unwrap();
+                let loaded = load(scenario.as_bytes()).unwrap();
+                host_io::write_new(&root.join("scenario.yaml"), scenario.as_bytes()).unwrap();
+                host_io::json_new(
+                    &root.join("run.json"),
+                    &json!({
+                        "run_id":"presence-aborted", "status":"aborted",
+                        "scenario_id":loaded.validated.scenario().id,
+                        "scenario_sha256":loaded.sha256, "plan":{"actor":"worker"},
+                        "self_check":{"configured":finding,"performed":false},
+                        "retest":{"configured":retest,"performed":false,"reason":"upstream_aborted"}
+                    }),
+                )
+                .unwrap();
+                let result = generate(&root).unwrap();
+                assert_eq!(result["evaluation"], "partial");
+                assert_eq!(result["formal_metrics_eligible"], false);
+                let expected_finding = if finding { "unknown" } else { "not_configured" };
+                assert_eq!(result["finding"]["outcome"], expected_finding);
+                assert_eq!(
+                    result["metric_assessment"]["finding"]["state"],
+                    expected_finding
+                );
+                assert_eq!(result["retest"]["configured"], retest);
+                assert_eq!(result["retest"]["status"], "not_performed");
+                assert_eq!(
+                    result["retest"]["reason"],
+                    if retest {
+                        "upstream_aborted"
+                    } else {
+                        "not_configured"
+                    }
+                );
+                assert!(!root.join("retest").exists());
+                assert!(root.join("report.md").is_file());
+                assert_eq!(read_committed(&root).unwrap(), result);
+                fs::remove_dir_all(root).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn missing_evidence_produces_partial_artifacts_with_diagnostics() {
         let root = std::env::temp_dir().join(format!(
             "tempest-partial-report-{}-{}",
