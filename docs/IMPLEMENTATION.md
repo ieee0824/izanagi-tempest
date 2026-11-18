@@ -181,6 +181,9 @@ doas は固定長 AES-GCM 暗号文の非破壊読取りだけに限定する。
 上のコマンド例は native helper の内部契約であり、VM の公開 doas インターフェースではない。
 固定VMで root owner/mode、read-only、既知 ID 並列再取得、proc/FD/ログを検証した。
 確認した対象と未検証項目を [M3-IMAGE.md](M3-IMAGE.md) に分けて記録する。
+固定Linuxでのexec保存scanと3時点の有限ページproc観測、配送方向別の上限・失敗時処理は
+[配送証拠表](ISSUE-13-DELIVERY-EVIDENCE.md)を参照する。全期間・短命native・FD内容は未確認であり、
+限定観測の成功を全routeの非露出や正式モデルrunの適格性へ一般化しない。
 
 ### 3.4 reset は VM の作り直し
 
