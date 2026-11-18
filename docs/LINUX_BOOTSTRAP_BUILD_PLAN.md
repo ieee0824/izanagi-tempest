@@ -36,6 +36,18 @@ manifest自身もroot所有0440とし、hash一覧の自己参照は含めませ
 snapshotのvarsで再度Packer validateを行い、既存source/private pathへの依存が残っていないか確認します。
 buildを開始する前にこの配置結果をルームへ提示します。
 
+### 2026-11-18の配置実測
+
+room #16365の監査指示後、上記配置を実施しました。
+[全13fileのinstalled hash/mode一覧](LINUX_BOOTSTRAP_SNAPSHOT.json)は元入力のhashと一致しました。
+全input fileを専用userがread可・write不可、全input directoryがwrite不可と確認しました。
+rootからdefinitionまでroot:tempest-kvm0750、template等0440、実行file0550です。
+work/tmp/cacheはtempest-kvm:tempest-kvm0700です。
+varsのISO/agentはsnapshot絶対pathへ変更し、元/新vars hashをroot所有manifestへ記録しました。
+専用userの空環境・固定Packer/pluginによるfull validateはexit0でした。
+固定3portはlistenなし、ubuntu非kvm、専用groups988+993、device root:kvm0660を再確認しました。
+Packer buildはまだ実行していません。
+
 ## 一時listen範囲
 
 QEMU plugin 1.1.8 source commit `ad7af6f6b764d5adf42cd3cd578c868b80f6bd87`を参照しました。
@@ -79,6 +91,31 @@ sudo -n /usr/bin/systemd-run --unit=tempest-izanagi-bootstrap-build-001 --wait -
 cgroup空、UID999残留なし、固定port閉鎖を照合します。期限/失敗時は同unitのcontrol-group回収後に確認し、
 作成途中imageは成功入力にしません。部分成果物は診断保全後に対象を限定して扱います。
 root QEMU/TCGや別architectureへのfallback、無断再実行はしません。
+
+## observer異常時の実行側停止手順
+
+observerは読取専用なので、異常終了だけではbuildは止まりません。
+build実行側はobserverのprocess/sessionとbuildのprocess/sessionを別に保持し、
+observerの非0、非loopback検出、Invocation変更、観測不能を確認したら直ちに固定unitへ次を実行します。
+
+```sh
+sudo -n /usr/bin/systemctl stop --no-block tempest-izanagi-bootstrap-build-001.service
+sudo -n /usr/bin/systemctl show tempest-izanagi-bootstrap-build-001.service \
+  -p InvocationID -p ActiveState -p SubState -p Result -p ExecMainCode -p ExecMainStatus -p ControlGroup
+```
+
+停止を発行しただけで回収完了とはしません。記録済みInvocationIDとcgroupに対し、
+TimeoutStopSec=10sを越えてもtaskが残る場合は、同unitを対象に次を発行します。
+
+```sh
+sudo -n /usr/bin/systemctl kill --kill-whom=all --signal=SIGKILL tempest-izanagi-bootstrap-build-001.service
+```
+
+その後もunit terminal、cgroup空、UID999残留なし、固定port閉鎖を確認し、
+達成できなければ回収未確認の失敗として報告します。observerの単なるtimeoutは新build開始理由にしません。
+`systemd-run --wait`の実clientは終了直前までunit参照を保持するため、
+別観測側で終了属性をclient終了前に保存します。保存できなければ証拠不足として成功にしません。
+観測記録・build log・途中imageは保持し、診断前にreset-failedやdirectory削除を行いません。
 
 完成imageは別のroot所有固定配置へ移し、同じhashを確認してから
 [最小boot harness](../integration/izanagi-bootstrap/README.md)の単発起動を別に監査します。
