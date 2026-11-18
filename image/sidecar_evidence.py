@@ -68,10 +68,6 @@ def validate_records(records, probe, nonce, session):
         event = record['payload'].get('Event')
         if event is None or not event['source_instance_id'].startswith('http-'):
             continue
-        # Normal sidecar teardown may report EOF health after the bounded fixture.
-        # It is not evidence about request-time health or whole-run availability.
-        if set(event['payload']) == {'CollectorHealth'} and event['observed_monotonic_ns'] > probe['ended_monotonic_ns']:
-            continue
         source = event['source_instance_id']
         sequence = event['source_seq']
         if event['schema_version'] != 1 or event['session_id'] != session \
@@ -79,12 +75,17 @@ def validate_records(records, probe, nonce, session):
                 or event['clock_domain'] != 'linux-monotonic:' + probe['guest_boot_id'] \
                 or event['event_id'] != f'{session}:{source}:{sequence}' \
                 or re.fullmatch('http-[0-9a-f]{32}', source) is None \
-                or type(sequence) is not int or sequence <= 0 or (source, sequence) in sequences \
-                or event['quality']['issues']:
+                or type(sequence) is not int or sequence <= 0 or (source, sequence) in sequences:
             raise ValueError('sidecar event identity or quality mismatch')
         sequences.add((source, sequence))
         sources.add(source)
         payload = event['payload']
+        # A normally stopped sidecar may report EOF health after this interval.
+        # Validate its identity above, but do not call it request-time health.
+        if set(payload) == {'CollectorHealth'} and event['observed_monotonic_ns'] > probe['ended_monotonic_ns']:
+            continue
+        if event['quality']['issues']:
+            raise ValueError('sidecar request-time quality mismatch')
         if set(payload) == {'HttpRequest'}:
             item = payload['HttpRequest']
             client = item['tuple']['client']

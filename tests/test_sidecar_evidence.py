@@ -211,3 +211,37 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual({p.name for p in public.iterdir()}, {'proc_evidence.py', 'sidecar-probe.py'})
             self.assertTrue(all(stat.S_IMODE(p.stat().st_mode) == 0o444 for p in public.iterdir()))
             self.assertEqual(len(mapped), 2)
+
+
+class CollectionTests(unittest.TestCase):
+    def test_bounded_private_audit_copy_and_privacy_rejection(self):
+        probe, records = sample()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'source'
+            session = source / SESSION
+            session.mkdir(parents=True)
+            path = session / 'audit-0000000000000001.jsonl'
+            path.write_text(''.join(json.dumps(row) + '\n' for row in records))
+            result = E.collect(source, root / 'saved', probe)
+            self.assertTrue(result['passed'])
+            self.assertEqual(stat.S_IMODE((root / 'saved' / path.name).stat().st_mode), 0o600)
+            path.write_text('TEMPEST-SIDECAR-PUBLIC-body')
+            with self.assertRaisesRegex(ValueError, 'HTTP body'):
+                E.collect(source, root / 'rejected', probe)
+
+    def test_unknown_session_and_symlink_segment_refused(self):
+        probe, records = sample()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'source'
+            session = source / SESSION
+            session.mkdir(parents=True)
+            target = root / 'target'
+            target.write_text(json.dumps(records[0]) + '\n')
+            (session / 'audit-0000000000000001.jsonl').symlink_to(target)
+            with self.assertRaisesRegex(ValueError, 'regular single-link'):
+                E.collect(source, root / 'saved', probe)
+            (source / 'other-session').mkdir()
+            with self.assertRaisesRegex(ValueError, 'one fresh'):
+                E.collect(source, root / 'saved2', probe)
