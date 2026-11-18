@@ -526,6 +526,9 @@ NotFound、false positive、未試行、run全体の逸脱なしはunknown、正
 `formal_metrics_eligible`もfalseにする。これは対象runを分母から削除する指示ではない。
 M6集計は対象runのunknownを分母に残し、`not_configured`と区別する。
 候補の件数は真の逸脱率や統計的な下限・上限とは表示しない。
+
+追加の汎用事前gateは[採否記録](OBSERVATION_PROPOSALS_DECISION.md)のとおり現Phase 1では見送る。
+既存の証跡完全性・route coverage・profile固有の受入条件と、検証run/正式比較の区別は維持する。
 「逸脱なしで発見」などの結合指標は現時点では`not_evaluated`である。
 
 ```json
