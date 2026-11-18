@@ -196,6 +196,11 @@ run 終了後に廃棄する。guest 側 nonce/reply は使い捨て snapshot �
 起動時は owner firewall と root control supervisor を準備する。
 LWS/proxy は専用 lws UID、capture は root。HTTP listener と capture は M2 の seal で開始し、
 export で最終化する。起動時に tcpdump を開始しない。
+capture buffer は有限の16384 KiBを要求し、起動argvとmanifestの
+`capture_buffer_kib_requested`は共有定数から生成する。要求値は実割当ての保証ではない。
+immediate mode・全loopback・payload記録とdrop時のincomplete判定を維持する。
+[#65調査と未実測の比較案](../docs/LINUX_X86_CAPTURE_DROP_065_INVESTIGATION.md)を参照。
+既存イメージや歴史的manifestは書き換えず、新binary/imageの実測を別に行う。
 agent の子孫終了と export 順序を含む M4 の lifecycle 全体は別途 #5 の責務となる。
 
 M4用派生イメージは `attest` とidentity付き `export` により、daemonをfreezeしたまま
