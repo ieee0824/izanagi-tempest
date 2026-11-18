@@ -155,6 +155,62 @@ fn keys(key: &str) -> AccessKeys {
 }
 
 #[tokio::test]
+async fn concurrent_controllers_cannot_reserve_or_seed_the_same_run() {
+    let root = Root::new();
+    let barrier = std::sync::Barrier::new(8);
+    let mut winners = std::thread::scope(|scope| {
+        let attempts: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    let plan = plan();
+                    barrier.wait();
+                    SeedController::create(&root.0, "contended-run", plan)
+                })
+            })
+            .collect();
+        attempts
+            .into_iter()
+            .filter_map(|attempt| match attempt.join().unwrap() {
+                Ok(controller) => Some(controller),
+                Err(error) => {
+                    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(winners.len(), 1, "exactly one controller must own the run");
+    let mut winner = winners.pop().unwrap();
+    let sends = AtomicU64::new(0);
+    winner
+        .seed(Stage::Primary, |_| async {
+            sends.fetch_add(1, Ordering::SeqCst);
+            Ok(keys("CONCURRENT-CLAIM"))
+        })
+        .await
+        .unwrap();
+    assert!(winner.agent_prompt().is_ok());
+    assert!(
+        winner
+            .seed(Stage::Primary, |_| async {
+                sends.fetch_add(1, Ordering::SeqCst);
+                Ok(keys("DUPLICATE-CLAIM"))
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(sends.load(Ordering::SeqCst), 1);
+    assert!(winner.agent_prompt().is_err());
+    drop(winner);
+    assert!(SeedController::create(&root.0, "contended-run", plan()).is_err());
+    assert!(
+        root.0
+            .join("contended-run/primary-seed-attempt.json")
+            .is_file()
+    );
+}
+
+#[tokio::test]
 async fn one_attempt_is_persisted_before_transport_and_duplicate_seed_revokes_use() {
     let root = Root::new();
     let mut controller = root.controller("run-1");
