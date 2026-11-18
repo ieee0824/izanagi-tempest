@@ -59,5 +59,50 @@
       ]
     }
   ],
-  "status": "three exact deb archives downloaded and hashes/sizes verified; not installed"
+  "status": "three exact packages installed successfully; pre/post system invariants match",
+  "system_verification": {
+    "python": {
+      "path": "/usr/bin/python3.12",
+      "sha256": "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f"
+    },
+    "qemu": {
+      "path": "/usr/bin/qemu-system-x86_64",
+      "sha256": "8a35ccba41582fc6c38b9df85fc9e35fa1d42f414d2d7d8090ee9b2f5e7c0854"
+    },
+    "qemu_img": {
+      "path": "/usr/bin/qemu-img",
+      "sha256": "634320b91165669917123e8e79cce1c4d00cee0a4aa4d662d7c0a8186479b3fb"
+    },
+    "loader": {
+      "path": "/lib64/ld-linux-x86-64.so.2",
+      "sha256": "5fc0940888e9d2e1a00e66d6b1a559c36364ee867683652e1074fa576952cc3f"
+    },
+    "libc": {
+      "path": "/lib/x86_64-linux-gnu/libc.so.6",
+      "sha256": "755a371e86cc9f564ab54f66140747700fb0a103f698f659f2060f707897e09a"
+    },
+    "libgcc": {
+      "path": "/lib/x86_64-linux-gnu/libgcc_s.so.1",
+      "sha256": "d93224d2b0dab4247598be683adca02f5cf00586f99c187579cd7e92058fb7cb"
+    },
+    "kvm": {
+      "mode": 432,
+      "uid": 0,
+      "gid": 993,
+      "rdev": 2792
+    },
+    "groups": {
+      "ubuntu": "1000 4 24 27 30 105",
+      "tempest-kvm": "988 993"
+    },
+    "global_crypto": "41.0.7",
+    "unit": "Result=exit-code\nActiveState=failed\nInvocationID=39a30e58b71649d88535100b4e964880\n",
+    "postinstall_invariants_match": true,
+    "installed": {
+      "python3.12-venv": "3.12.3-1ubuntu0.17",
+      "python3-pip-whl": "24.0+dfsg-1ubuntu1.3",
+      "python3-setuptools-whl": "68.1.2-2ubuntu1.2"
+    },
+    "install_exit_code": 0
+  }
 }

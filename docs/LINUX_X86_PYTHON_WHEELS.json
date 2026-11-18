@@ -1,0 +1,68 @@
+{
+  "python": "3.12.3",
+  "venv": "/tmp/tempest-x86-full-python-002/venv",
+  "download_exit_code": 0,
+  "offline_install_exit_code": 0,
+  "source_policy": "official PyPI binary wheels only; offline install with explicit SHA256 requirements",
+  "wheels": [
+    {
+      "name": "cffi",
+      "version": "2.1.1",
+      "filename": "cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "sha256": "c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf",
+      "bytes": 221822,
+      "pypi_digest_verified": true
+    },
+    {
+      "name": "cryptography",
+      "version": "50.0.2",
+      "filename": "cryptography-50.0.2-cp311-abi3-manylinux_2_34_x86_64.whl",
+      "sha256": "9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079",
+      "bytes": 4752576,
+      "pypi_digest_verified": true
+    },
+    {
+      "name": "pycparser",
+      "version": "3.12",
+      "filename": "pycparser-3.12-py3-none-any.whl",
+      "sha256": "a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e",
+      "bytes": 62600,
+      "pypi_digest_verified": true
+    }
+  ],
+  "requirements_lock_sha256": "4b5a2f5b041f636cb9d23749f350732f7d3561e7c785ac17a4f8b49e0d48f0ba",
+  "import_aesgcm_roundtrip": "passed",
+  "global_cryptography_version": "41.0.7 unchanged",
+  "tests": {
+    "initial": {
+      "exit_code": 1,
+      "discovered": 47,
+      "errors": 2,
+      "cause": "-I excludes repository root from sys.path; integration imports failed"
+    },
+    "explicit_repository_root": {
+      "exit_code": 0,
+      "tests": 51,
+      "seconds": 9.003
+    },
+    "logs": {
+      "tests.log": {
+        "bytes": 8542,
+        "sha256": "778ce1f5a482a048dbfd30fec04ea35f864f2f027cb70c345303bcbacfe46c55"
+      },
+      "tests-explicit-root.log": {
+        "bytes": 7635,
+        "sha256": "80f7896ec46533fef7f88dbf70a7fd91ea6a62787636cb4269909c51d3e033fd"
+      },
+      "download.log": {
+        "bytes": 1659,
+        "sha256": "3a135622a45236672ff2c53ea7d108633b2b7da51ebc23fa4602b95e9aaaacae"
+      },
+      "install.log": {
+        "bytes": 726,
+        "sha256": "09511cc254eb55213da149e4e25872cb06cd99e32b3a360007c79b65ff0a58c5"
+      }
+    }
+  },
+  "fullbuild001_input_hashes_unchanged": 26
+}

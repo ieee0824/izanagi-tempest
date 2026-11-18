@@ -190,3 +190,17 @@ env -i PATH=/usr/bin:/bin HOME=/tmp/tempest-x86-full-python-001/home /usr/bin/py
 room #16477 の依頼で installed/candidate と simulation を確認。既存 python3.12 は `3.12.3-1ubuntu0.17`、候補も同じ。`/usr/bin/python3 -I -m pip --version` は No module named pip。venv/pip-whl/setuptools-whl は未導入。
 
 `apt-get --simulate --no-install-recommends install python3.12-venv` は新規3、更新0、削除0。候補の version/依存/filename/size/SHA は [APT index 候補記録](LINUX_X86_PYTHON_PACKAGES.json)。これは既存 index の記載であり、deb bytes の取得・実 SHA 照合・install は未実施。既存 Python binary/lib 変更を要求する simulation ではなかった。実 install と partial venv の再生成はまだ実行していない。
+
+### isolated Python002 完了
+
+room #16480/16488 の exact3package 方針で APT install session98792 は exit0。新規3件のみ導入し、前後の Python/QEMU/qemu-img/loader/libc/libgcc SHA、global cryptography41.0.7、KVM device mode/owner/group と memberships、失敗済み fullbuild001 の同 Invocation 状態が不変。[package 記録](LINUX_X86_PYTHON_PACKAGES.json)に結果を保存した。
+
+旧 partial001 を保全し、新 0700 `/tmp/tempest-x86-full-python-002` の HOME/venv/wheelhouse を使用。venv作成84806・公式PyPI binary download84615・offline installは全てexit0。wheel は cryptography50.0.2/cffi2.1.1/pycparser3.12、実 SHA を公式 PyPI version JSON と全件照合。取得後は[hash固定 requirements](locks/python-x86-full-002.txt)で --no-index/--only-binary=:all:/--require-hashes の offline install を行った。[wheel/検証記録](LINUX_X86_PYTHON_WHEELS.json)を参照。
+
+freeze/import と dummy AES-GCM roundtrip が成功。最初の `python -I -m unittest discover -s tests -v` は repo root が sys.path にないため integration import 2件で失敗（47件実行、log保全）。隔離を維持し、固定 repo absolute path だけ明示する次の runner は session29239/exit0、51 tests/9.003s で成功した。
+
+```sh
+env -i PATH=/usr/bin:/bin HOME=/tmp/tempest-x86-full-python-002/home /tmp/tempest-x86-full-python-002/venv/bin/python -I -c 'import sys,unittest; sys.path.insert(0,"/home/ubuntu/izanagi-tempest"); suite=unittest.defaultTestLoader.discover("/home/ubuntu/izanagi-tempest/tests"); result=unittest.TextTestRunner(verbosity=2).run(suite); sys.exit(not result.wasSuccessful())'
+```
+
+fullbuild001 の26入力 SHA も導入後に不変を再確認した。global Python deps、資格情報、旧 partial001 は変更していない。VM/CLI認証/livecall の試験は未実施。
