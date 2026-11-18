@@ -1,0 +1,64 @@
+{
+  "source": "full003 saved observer sample; not a new VM observation",
+  "parent_observation_path": "/tmp/tempest-x86-full-build-observation-003.jsonl",
+  "parent_observation_sha256": "b3e8880f88a8880e2bd8d47b6f65f9a1526511bc2be96f2b40b038762f04c284",
+  "line_number": 20,
+  "sample_time": "2026-11-18T12:22:37.337782+00:00",
+  "parent_qemu_pid": 281476,
+  "parent_starttime_in_this_sample": null,
+  "parent_cwd_in_this_sample": null,
+  "network_args": [
+    [
+      "-netdev",
+      "user,id=user.0,hostfwd=tcp:127.0.0.1:22222-:22"
+    ],
+    [
+      "-vnc",
+      "127.0.0.1:2"
+    ]
+  ],
+  "storage_args": [
+    [
+      "-drive",
+      "file=output-debian/debian-x86_64.qcow2,if=virtio,cache=writeback,discard=ignore,format=qcow2"
+    ],
+    [
+      "-drive",
+      "file=/var/lib/tempest-izanagi-full-build-003/inputs/base.iso,media=cdrom"
+    ]
+  ],
+  "normalized_storage_args": [
+    [
+      "-drive",
+      "file=output-debian/debian-x86_64.qcow2,if=virtio,cache=writeback,discard=ignore,format=qcow2"
+    ],
+    [
+      "-drive",
+      "file=$BUILD_ROOT/inputs/base.iso,media=cdrom"
+    ]
+  ],
+  "listeners": [
+    {
+      "local": "127.0.0.1:22222",
+      "loopback": true,
+      "pids": [
+        281476
+      ]
+    },
+    {
+      "local": "127.0.0.1:18082",
+      "loopback": true,
+      "pids": [
+        281320
+      ]
+    },
+    {
+      "local": "127.0.0.1:5902",
+      "loopback": true,
+      "pids": [
+        281476
+      ]
+    }
+  ],
+  "scope": "only selected network/storage arguments and unit-owned listener subset; not full argv or complete lifetime"
+}

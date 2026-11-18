@@ -118,3 +118,7 @@ QEMU所有SSH/VNC listenerとunit内HTTPを分け、未知endpoint/外部listene
 固定env-iのHOME/TMPDIR/cache/plugin/PACKER_LOGは新work/inputs内だけ、build -color=false -on-error=abort -var-file=新定義vars 新定義hclを一度実行する。
 ExecStopPostの同Invocation終了記録も新work/evidenceへ固定する。標準prepare/定義fullvalidate済みと、まだ未作成のbuild snapshot/実buildを混同しない。
 [監査用source hash](LINUX_X86_DELIVERY_RACE_BUILD_SOURCE_001.json)をroot作成前に完全一致要求する。source/caller/service構文・verifyを確認した。まだ草案を実行せず、新/var/lib root・build・VMは未開始。
+
+[親003の正規化live profile](LINUX_X86_DELIVERY_RACE_PARENT_PROFILE_001.json)を添付した。保存observer fileの実SHA/行番号/時刻と、選別network/storage argv・unit内listener subsetだけを記録する。
+旧sample自体にはstarttime/cwd fieldがないためnullを保持し、後から測定した値で補わない。新observerのPID/starttime/cwd拘束は新buildでの別測定条件である。
+全argvや全期間の保証ではなく、既存親003結果を変更しない。
