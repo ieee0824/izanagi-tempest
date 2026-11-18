@@ -29,6 +29,11 @@ PROFILES = {
     'presence': (PRESENCE_ROOT, 'tempest-izanagi-runtime-presence-001.service', PRESENCE_STAGES),
     'seed-loss': (SEED_ROOT, 'tempest-izanagi-runtime-seed-loss-001.service',
                   (SEED_ROOT + '/work/runs/seed-reply-loss/sandbox',)),
+    'delivery-race-completed': (
+        '/var/lib/tempest-izanagi-delivery-race-completed-001',
+        'tempest-izanagi-delivery-race-completed-001.service',
+        tuple('/var/lib/tempest-izanagi-delivery-race-completed-001/work/runs/forced-delivery-race'
+              + suffix + '/sandbox' for suffix in ('', '/retest'))),
 }
 
 
