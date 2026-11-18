@@ -35,9 +35,12 @@ def validate_runtime(row):
     shares = [value for key, value in storage if key == '-fsdev']
     if len(drives) != 1 or not {'file=' + ROOT + '/inputs/image.qcow2', 'snapshot=on'} <= set(drives[0].split(',')):
         raise RuntimeError('fixed image snapshot protection not observed')
-    if len(shares) != 1 or not {'path=' + ROOT + '/work/output/workspace',
-                                'security_model=mapped-xattr', 'readonly=on'} <= set(shares[0].split(',')):
+    if len(shares) != 1 or not {'security_model=mapped-xattr', 'readonly=on'} <= set(shares[0].split(',')):
         raise RuntimeError('fixed read-only mapped share not observed')
+    share_paths = [part.removeprefix('path=') for part in shares[0].split(',') if part.startswith('path=')]
+    expected = ROOT + '/work/output/workspace'
+    if share_paths != [expected] and not (share_paths == ['.'] and qemu[0].get('cwd') == expected):
+        raise RuntimeError('fixed share path is not bound to the observed QEMU cwd')
     return True
 
 

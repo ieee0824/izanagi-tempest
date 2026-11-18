@@ -68,6 +68,7 @@ def sample(unit=UNIT):
             if executable != "/usr/bin/qemu-system-x86_64":
                 continue
             args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            cwd = os.readlink(f'/proc/{pid}/cwd')
             selected = []
             storage = []
             for index, value in enumerate(args[:-1]):
@@ -78,7 +79,7 @@ def sample(unit=UNIT):
             if process_starttime(stat.read_text()) != starttime:
                 raise RuntimeError('QEMU process identity changed during observation')
             network_args.append({"pid": pid, "starttime_ticks": starttime,
-                                 "network_args": selected, "storage_args": storage})
+                                 "cwd": cwd, "network_args": selected, "storage_args": storage})
         except (FileNotFoundError, ProcessLookupError):
             pass
     return {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(),

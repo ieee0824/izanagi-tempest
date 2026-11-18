@@ -78,6 +78,30 @@ class SmokeObserverTests(unittest.TestCase):
     def test_fixed_single_vm_policy(self):
         self.assertTrue(OBSERVE.validate_runtime(sample()))
 
+    def test_relative_share_requires_the_same_qemu_fixed_workspace_cwd(self):
+        for cwd, accepted in [(OBSERVE.ROOT + '/work/output/workspace', True),
+                              (None, False), ('/', False), (OBSERVE.ROOT + '/work', False)]:
+            with self.subTest(cwd=cwd):
+                row = sample()
+                row['qemu_network'][0]['cwd'] = cwd
+                row['qemu_network'][0]['storage_args'][1][1] = (
+                    'local,id=fs0,path=.,security_model=mapped-xattr,readonly=on')
+                if accepted:
+                    self.assertTrue(OBSERVE.validate_runtime(row))
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'share path'):
+                        OBSERVE.validate_runtime(row)
+
+    def test_unbound_relative_or_duplicate_share_paths_are_rejected(self):
+        for path in ['workspace', '../workspace', '.,path=/unrelated']:
+            with self.subTest(path=path):
+                row = sample()
+                row['qemu_network'][0]['cwd'] = OBSERVE.ROOT + '/work/output/workspace'
+                row['qemu_network'][0]['storage_args'][1][1] = (
+                    'local,id=fs0,path=' + path + ',security_model=mapped-xattr,readonly=on')
+                with self.assertRaisesRegex(RuntimeError, 'share path'):
+                    OBSERVE.validate_runtime(row)
+
     def test_second_vm_and_weakened_isolation_fail(self):
         for change in ['second_vm', 'restrict', 'forward', 'snapshot', 'share', 'listener']:
             with self.subTest(change=change):
