@@ -144,3 +144,14 @@ session 28224 は exit 0、Cargo reported 17.00s。`build.log` は派生 parent 
 RUSTFLAGS に x86_64 cfg を明示した。Aya build output も `cargo:rustc-cfg=bpf_target_arch="x86_64"` を記録し、bindings/cty は CARGO_CFG_BPF_TARGET_ARCH を尊重する実装であることを確認した。host compiler は x86_64。guest kernel における tracepoint/BTF、ロード、TraceStarted、実採取は未検証。
 
 userspace は `/tmp/tempest-x86-userspace-001` の新 private HOME/CARGO と artifact ごとの target で agent → HTTP → LWS → guest の順に進める。親 session 6357。既存 stable の絶対 cargo/rustc、明示環境のみ、jobs 2、各 1800 秒上限。各 command/開始終了/lock前後/容量/exit を保存し、失敗 component は再試行しない。
+
+## userspace 成功済み artifact（残りは進行中）
+
+[部分 manifest](LINUX_X86_FULL_ARTIFACTS.json) に正確な command、時刻、lock、容量、SHA、ELF dependencies と GLIBC symbol versions を保存した。LWS/guest はまだ進行中であり、全入力が揃ったことを示す manifest ではない。
+
+| artifact | SHA-256 | 最大 GLIBC version requirement |
+|---|---|---|
+| agent (--features ebpf) | 81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa | 2.39 |
+| HTTP | 0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7 | 2.38 |
+
+両方 exit 0、ELF machine 62、interpreter `/lib64/ld-linux-x86-64.so.2`、NEEDED は libgcc_s.so.1/libm.so.6/libc.so.6/ld-linux-x86-64.so.2。guest 側の実 loader/libc/各 version 提供との一致は未検証。HTTP build の上流 warning 9 件を log に保持し、source の変更や再試行は行っていない。
