@@ -20,6 +20,36 @@ def sample():
 
 
 class SmokeObserverTests(unittest.TestCase):
+    def test_attempt002_rejects_old_image_or_share(self):
+        root = OBSERVE.ATTEMPTS['002'][1]
+        row = sample()
+        with self.assertRaisesRegex(RuntimeError, 'snapshot protection'):
+            OBSERVE.validate_runtime(row, root)
+        row['qemu_network'][0]['storage_args'][0][1] = (
+            row['qemu_network'][0]['storage_args'][0][1].replace(OBSERVE.ROOT, root))
+        with self.assertRaisesRegex(RuntimeError, 'share path'):
+            OBSERVE.validate_runtime(row, root)
+        row['qemu_network'][0]['storage_args'][1][1] = (
+            row['qemu_network'][0]['storage_args'][1][1].replace(OBSERVE.ROOT, root))
+        self.assertTrue(OBSERVE.validate_runtime(row, root))
+
+    def test_attempt002_samples_only_its_fixed_unit(self):
+        unit, root = OBSERVE.ATTEMPTS['002']
+        active = sample()
+        for entry in active['qemu_network'][0]['storage_args']:
+            entry[1] = entry[1].replace(OBSERVE.ROOT, root)
+        active.update(unit={'InvocationID': 'two', 'ActiveState': 'active', 'LoadState': 'loaded'},
+                      cgroup_pids=[42])
+        terminal = {'unit': {'InvocationID': 'two', 'ActiveState': 'inactive', 'LoadState': 'loaded'},
+                    'cgroup_pids': [], 'external_listener_observed': False, 'qemu_network': []}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch('sys.argv', ['observe', '--attempt', '002', '--output', str(Path(directory) / 'evidence.jsonl')]), \
+                 patch.object(OBSERVE.os, 'geteuid', return_value=0), \
+                 patch.object(OBSERVE.BOOTSTRAP, 'sample', side_effect=[active, terminal]) as read, \
+                 patch.object(OBSERVE.time, 'sleep'):
+                OBSERVE.main()
+            self.assertEqual([call.args for call in read.call_args_list], [(unit,), (unit,)])
+
     def test_starttime_field_handles_process_name_parentheses(self):
         stat = '42 (qemu ) worker) ' + ' '.join(['S'] + ['0'] * 18 + ['1234', '0'])
         self.assertEqual(OBSERVE.BOOTSTRAP.process_starttime(stat), 1234)
