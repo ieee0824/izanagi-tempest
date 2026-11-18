@@ -31,6 +31,7 @@ def sample():
     return {'identity': identity, 'before_guest': snapshot(1, ['before'], 10),
             'after_guest': snapshot(1, ['before'], 50), 'after_control': snapshot(2, ['before', 'after'], 60),
             'call_started_host_ns': 20, 'call_ended_host_ns': 40, 'receiver_closed': True,
+            'closed_state': {**snapshot(2, ['before', 'after'], 70), 'thread_alive': False},
             'observer_ack': {**identity, 'host_pid_starttime_ticks': 1234, 'invocation_id': 'b' * 32},
             'guest': {'schema_version': 1, 'nonce': NONCE, 'actor_uid': 1000, 'guest_boot_id': 'guest-boot',
                       'local_control': {'passed': True, 'received': 1, 'bytes': 55, 'thread_joined': True},
@@ -49,7 +50,8 @@ class ValidationTests(unittest.TestCase):
     def test_failed_controls_or_extra_arrival_refused(self):
         for key, field, bad in [('before_guest', 'accepts', 0), ('after_guest', 'accepts', 2),
                                 ('after_control', 'accepts', 3), ('after_control', 'phases', ['after', 'before']),
-                                ('after_guest', 'thread_alive', False), ('after_guest', 'errors', ['unexpected'])]:
+                                ('after_guest', 'thread_alive', False), ('after_guest', 'errors', ['unexpected']),
+                                ('closed_state', 'accepts', 3), ('closed_state', 'thread_alive', True)]:
             value = sample()
             value[key][field] = bad
             with self.assertRaises(ValueError):
