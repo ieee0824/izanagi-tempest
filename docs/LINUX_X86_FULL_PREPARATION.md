@@ -113,7 +113,7 @@ linker 実行/build/fullimage/VM/livecall は未実施。次は固定 tracked so
 
 room #16452 のレビュー後、新 0700 `/tmp/tempest-x86-ebpf-lock-001` に固定 commit の `git archive` から tracked 230 files をコピーした。git tree は `92ddde3ef69fb508c3be92e711a7a7503c90e422`、archive SHA-256 は `d1b1ffcb4cd1eec94678270fda6d99e27cefddb79585a508c97616bb982448f2`。各 file の hash 一覧を同 parent の `source-files.json` に保存した。
 
-専用 HOME/CARGO_HOME/RUSTUP_HOME と固定 nightly の bin のみを指定した env -i で、絶対 cargo の `generate-lockfile --manifest-path /tmp/tempest-x86-ebpf-lock-001/source/izanagi-ebpf/Cargo.toml` を一度実行した。session 88173 は exit 0、34 packages を固定。続く `metadata --no-deps --locked --format-version 1` も exit 0。全 tracked file hash と元 checkout clean を再確認した。
+専用 HOME/CARGO_HOME/RUSTUP_HOME と固定 nightly の bin のみを指定した env -i で、絶対 cargo の `generate-lockfile --manifest-path /tmp/tempest-x86-ebpf-lock-001/source/izanagi-ebpf/Cargo.toml` を一度実行した。session 88173 は exit 0、Cargo は「Locking 34 packages」と表示した。生成 lock の実 entry は総数 35（registry 33、local 2）。続く `metadata --no-deps --locked --format-version 1` も exit 0。全 tracked file hash と元 checkout clean を再確認した。
 
 生成 lock は [保存した Cargo.lock](locks/izanagi-ebpf-16d-x86.Cargo.lock)、SHA-256 `3bd3820e528bb91a78e0e5f2f699fdb9b32edc7bb5cf18e40134dea564fc262c`。これは今回初回解決した新入力であり、upstream が提供した lock ではない。以後この入力から --locked で進め、再解決で置き換えない。
 
@@ -130,3 +130,17 @@ room #16452 のレビュー後、新 0700 `/tmp/tempest-x86-ebpf-lock-001` に�
 | aya-log-parser | 0.1.13 | 14b102eb5c88c9aa0b49102d3fbcee08ecb0dfa81014f39b373311de7a7032cb |
 
 上表の source は全て `registry+https://github.com/rust-lang/crates.io-index`。build script/compiler/linker はまだ実行しておらず、dependency crate 全取得も未実施。bpf_target_arch の実選択と guest tracepoint/BTF の互換確認は後続に残る。
+
+## eBPF x86 release build 結果
+
+room #16455 のまとまった artifact 準備指示に従い、fetch --locked は exit 0。registry 33 archives の実 SHA を lock checksum と全件照合した。検査済み linker bytes を新 private `bin/bpf-linker` へ 0500 で配置し、SHA 不変、実 `--version` は 0.11.1。
+
+```sh
+env -i HOME=/tmp/tempest-x86-full-rust/home CARGO_HOME=/tmp/tempest-x86-full-rust/cargo RUSTUP_HOME=/tmp/tempest-x86-full-rust/rustup PATH=/tmp/tempest-x86-full-rust/rustup/toolchains/nightly-2026-02-12-x86_64-unknown-linux-gnu/bin:/usr/bin:/bin RUSTC=/tmp/tempest-x86-full-rust/rustup/toolchains/nightly-2026-02-12-x86_64-unknown-linux-gnu/bin/rustc RUSTFLAGS='--cfg bpf_target_arch="x86_64" -C linker=/tmp/tempest-x86-ebpf-lock-001/bin/bpf-linker' timeout --signal=TERM --kill-after=10s 1800s /tmp/tempest-x86-full-rust/rustup/toolchains/nightly-2026-02-12-x86_64-unknown-linux-gnu/bin/cargo build --manifest-path /tmp/tempest-x86-ebpf-lock-001/source/izanagi-ebpf/Cargo.toml --release --locked --target bpfel-unknown-none -Z build-std=core --jobs 2 --target-dir /tmp/tempest-x86-ebpf-lock-001/target
+```
+
+session 28224 は exit 0、Cargo reported 17.00s。`build.log` は派生 parent に保存。成果物 `target/bpfel-unknown-none/release/izanagi-ebpf` の SHA-256 は `80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41`。ELF64 little-endian REL、machine Linux BPF (247)。`.izanagi_abi` は `495a414e4142492103000000d8010000`（magic IZANABI!、version 3、event size 472）。生成 lock の SHA は前後不変。
+
+RUSTFLAGS に x86_64 cfg を明示した。Aya build output も `cargo:rustc-cfg=bpf_target_arch="x86_64"` を記録し、bindings/cty は CARGO_CFG_BPF_TARGET_ARCH を尊重する実装であることを確認した。host compiler は x86_64。guest kernel における tracepoint/BTF、ロード、TraceStarted、実採取は未検証。
+
+userspace は `/tmp/tempest-x86-userspace-001` の新 private HOME/CARGO と artifact ごとの target で agent → HTTP → LWS → guest の順に進める。親 session 6357。既存 stable の絶対 cargo/rustc、明示環境のみ、jobs 2、各 1800 秒上限。各 command/開始終了/lock前後/容量/exit を保存し、失敗 component は再試行しない。
