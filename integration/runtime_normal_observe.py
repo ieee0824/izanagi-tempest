@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only samples of four VM sessions; JSONL sample/binding records are separate."""
+"""Read-only samples of fixed runtime trial VM sessions; JSONL sample/binding records are separate."""
 import argparse
 import importlib.util
 import json
@@ -17,6 +17,13 @@ ROOT = '/var/lib/tempest-izanagi-runtime-normal-001'
 UNIT = 'tempest-izanagi-runtime-normal-001.service'
 STAGES = [ROOT + '/work/runs/normal-' + str(run) + suffix + '/sandbox'
           for run in (1, 2) for suffix in ('', '/retest')]
+
+SEED_ROOT = '/var/lib/tempest-izanagi-runtime-seed-loss-001'
+PROFILES = {
+    'normal': (ROOT, UNIT, tuple(STAGES)),
+    'seed-loss': (SEED_ROOT, 'tempest-izanagi-runtime-seed-loss-001.service',
+                  (SEED_ROOT + '/work/runs/seed-reply-loss/sandbox',)),
+}
 
 
 def read_launch(workspace):
@@ -37,7 +44,8 @@ def read_launch(workspace):
 
 
 class Sessions:
-    def __init__(self):
+    def __init__(self, profile="normal"):
+        self.root, self.unit, self.stages = PROFILES[profile]
         self.identities = []
         self.nonces = {}
         self.bindings = {}
@@ -52,10 +60,10 @@ class Sessions:
             return None
         qemu = qemu[0]
         workspace = qemu.get('cwd')
-        if workspace not in STAGES:
+        if workspace not in self.stages:
             raise RuntimeError('unexpected runtime workspace')
-        index = STAGES.index(workspace)
-        BOOTSTRAP.validate_qemu_policy(qemu, ROOT + '/inputs/image.qcow2', workspace)
+        index = self.stages.index(workspace)
+        BOOTSTRAP.validate_qemu_policy(qemu, self.root + '/inputs/image.qcow2', workspace)
         identity = (qemu.get('pid'), qemu.get('starttime_ticks'))
         if any(type(value) is not int or value <= 0 for value in identity):
             raise RuntimeError('runtime VM identity missing or invalid')
@@ -99,27 +107,28 @@ class Sessions:
         self.bindings[index] = binding
 
     def snapshot(self):
-        return [{'workspace': STAGES[index], 'pid': identity[0], 'starttime_ticks': identity[1],
+        return [{'workspace': self.stages[index], 'pid': identity[0], 'starttime_ticks': identity[1],
                  'binding': self.bindings.get(index)} for index, identity in enumerate(self.identities)]
 
     def require_complete(self):
-        if len(self.identities) != 4 or len(self.bindings) != 4:
+        if len(self.identities) != len(self.stages) or len(self.bindings) != len(self.stages):
             raise RuntimeError('not all planned runtime sessions were observed and bound')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--trial', choices=tuple(PROFILES), default='normal')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('root required to observe socket owners')
     start = time.monotonic()
     invocation = None
-    sessions = Sessions()
+    sessions = Sessions(args.trial)
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as stream:
         while time.monotonic() - start < 1870:
-            row = BOOTSTRAP.sample(UNIT)
+            row = BOOTSTRAP.sample(sessions.unit)
             current = row['unit'].get('InvocationID')
             if current:
                 if invocation and current != invocation:
@@ -130,7 +139,7 @@ def main():
             stream.flush()
             index = sessions.observe(row)
             if index is not None:
-                sessions.bind(index, read_launch(STAGES[index]))
+                sessions.bind(index, read_launch(sessions.stages[index]))
             stream.write(json.dumps({'observed_sessions': sessions.snapshot()}) + '\n')
             stream.flush()
             if invocation and row['unit'].get('ActiveState') in ('inactive', 'failed'):

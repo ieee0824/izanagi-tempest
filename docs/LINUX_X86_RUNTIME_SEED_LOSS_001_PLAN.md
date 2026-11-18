@@ -45,3 +45,12 @@ service構文/ExecStart一致とhelper構文を確認済み。未実行で、mar
 main27d19bf（PR46/47）を共有branchへmergeした。固定host CLIの元archive全fileのSHAは引き続き照合する。
 現treeとの差分はreport.rsのcfg(test) module内追加とseed_controller integration testsだけで、production Rust/Cargo/templateは同一。
 seed snapshot helperは旧archive全体と現production sourceを照合し、report.rsはcfg(test)境界前の完全一致を要求する。host CLIは再buildしない。
+
+## observer固定profile
+
+`integration/runtime_normal_observe.py --trial seed-loss --output PRIVATE_NEW_JSONL` を使用する。
+`--trial normal`（既定値）は従来の正常系4stage、`seed-loss` は上記専用unit/rootのprimary 1stageだけを許可する。
+任意unit/rootの指定は受け付けない。seed-lossでもPID/starttimeとlaunch nonce/sessionのbindingが必要で、
+未binding・正常系root/imageの混入・予定外retest・同stageのVM置換は拒否する。
+JSONLはsampleとobserved_sessionsを別行で保存し、GC後の終端unknownを成功へ読み替えない。
+Mac上のobserver回帰12件（seed-loss 3件を含む）を確認済み。実VMはまだ未実施。

@@ -147,3 +147,49 @@ class RuntimeObserverTests(unittest.TestCase):
             self.assertTrue(all(call.args == (OBS.UNIT,) for call in read.call_args_list))
             records = [json.loads(line) for line in output.read_text().splitlines()]
             self.assertEqual(len(records[-1]['observed_sessions']), 4)
+
+
+class SeedLossObserverTests(unittest.TestCase):
+    def row(self):
+        row = sample(0)
+        qemu = row['qemu_network'][0]
+        qemu['cwd'] = OBS.PROFILES['seed-loss'][2][0]
+        qemu['storage_args'][0][1] = 'file=' + OBS.SEED_ROOT + '/inputs/image.qcow2,snapshot=on'
+        return row
+
+    def test_single_seed_session_is_complete_only_after_binding(self):
+        sessions = OBS.Sessions('seed-loss')
+        self.assertEqual(sessions.observe(self.row()), 0)
+        with self.assertRaisesRegex(RuntimeError, 'not all planned'):
+            sessions.require_complete()
+        sessions.bind(0, launch(0))
+        sessions.require_complete()
+        self.assertEqual(sessions.snapshot()[0]['workspace'], self.row()['qemu_network'][0]['cwd'])
+
+    def test_normal_workspace_image_and_replacement_are_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'unexpected runtime workspace'):
+            OBS.Sessions('seed-loss').observe(sample(0))
+        for change in ('image', 'replacement', 'retest'):
+            sessions = OBS.Sessions('seed-loss')
+            sessions.observe(self.row())
+            row = self.row()
+            if change == 'image':
+                row['qemu_network'][0]['storage_args'][0][1] = sample(0)['qemu_network'][0]['storage_args'][0][1]
+            elif change == 'replacement':
+                row['qemu_network'][0]['pid'] += 1
+            else:
+                row['qemu_network'][0]['cwd'] = OBS.SEED_ROOT + '/work/runs/seed-reply-loss/retest/sandbox'
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                sessions.observe(row)
+
+    def test_main_selects_seed_unit_and_launch_path(self):
+        rows = [self.row(), {'unit': {'InvocationID': 'one', 'LoadState': 'loaded', 'ActiveState': 'inactive'},
+                            'cgroup_pids': [], 'qemu_network': [], 'external_listener_observed': False}]
+        with tempfile.TemporaryDirectory() as directory:
+            with patch('sys.argv', ['observe', '--trial', 'seed-loss', '--output', str(Path(directory) / 'evidence.jsonl')]), \
+                 patch.object(OBS.os, 'geteuid', return_value=0), \
+                 patch.object(OBS.BOOTSTRAP, 'sample', side_effect=rows) as read, \
+                 patch.object(OBS, 'read_launch', return_value=launch(0)) as binding, patch.object(OBS.time, 'sleep'):
+                OBS.main()
+            self.assertTrue(all(call.args == (OBS.PROFILES['seed-loss'][1],) for call in read.call_args_list))
+            binding.assert_called_once_with(OBS.PROFILES['seed-loss'][2][0])
