@@ -1,9 +1,9 @@
-# Linux x86 network001 対照付き接続拒否試験案
+# Linux x86 host-endpoint001 対照付き接続拒否試験案
 
 ## 状態と対象
 
-room16754/16756/16757の議論に基づく草案。room16759の担当指定に合わせ試験名・root/unit/profileをnetwork-001とする。
-root /var/lib/tempest-izanagi-network-001、unit tempest-izanagi-network-001.service。
+room16754/16756/16757の議論に基づく草案。room16763の最終interface指定に合わせ試験名・root/unit/profileをhost-endpoint-001とする。
+root /var/lib/tempest-izanagi-host-endpoint-001、unit tempest-izanagi-host-endpoint-001.service。
 まだrunner/helper/interface/具体上限は未確定であり、新root/snapshot/VMを作成しない。
 sidecar001の限定loopback受入と混ぜず、通常M3や実model/credential/AWS/Internet receiverは使用しない。
 
@@ -62,3 +62,17 @@ observerは通常単link/999:988/0600・有限bytes/厳密schemaをO_NOFOLLOWで
 pending0600でwrite/fsync→fchown/fchmod→link EXCL→pending削除/parent fsyncとし、既存ackを上書きしない。
 runnerは有限10秒だけ正確nonce/pid/port/inode/Invocation/starttimeのroot-owned ackを待ち、未観測のままguest試行へ進めない。
 ack後もreceiverの生存・identityを追跡し、終了後回収と区別する。ready公開時点・厳密field/最大bytes/starttime単位は実装interface共有後に確定する。
+
+## room16763の固定interface
+
+readyは共通bootstrap/readonly検査後、receiver bind/start直後・host-before対照より前に公開する。
+最大4096B、厳密6fieldはschema_version=1、nonce=32hex、host_pid、address=127.0.0.1、port、socket_inode。
+ackは同6fieldにhost_pid_starttime_ticks（/proc stat22のclock ticks）とinvocation_id=32hexだけを加えた8field、最大4096B/root:988/0440/通常単link。
+runnerのack待機10秒、receiver全期限60秒/frame256B/accept5件目検出で停止、guest exec10秒/JSON16384B。
+accept上限5は成功条件ではなく、前後対照2件以外の到着は依然失敗として保持する。
+receiverはhost-after対照後にclose/joinし、共通trace等へ進む前にoutput/network-receiver.closed.jsonをatomic0600で公開する。
+closedの厳密fieldはschema_version、identity=ready6field、receiver_closed=true、host_monotonic_ns。
+observerはready→ack/live→closed/実listener不在を別phaseとして記録し、unit終了までreceiver生存を要求しない。
+closed前のlistener消失、同port別owner、PID/starttime/socket identity変化は拒否する。
+guest中の同bind/生存はrunner前後snapshotと独立ackに結び付け、samplingを全期間観測へ一般化しない。
+ready/ack/closedの公開はlink EXCL/fsyncで上書きなしとし、trusted unit終了・cgroup回収とは別証拠にする。
