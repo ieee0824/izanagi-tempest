@@ -19,8 +19,8 @@ binary/image/config/依存のhashと配置、専用systemd unitの回収手順�
 固定imageを認証付きで起動し、`/usr/bin/id -u`のexit0/stdout `1000\n`/stderr空を要求します。
 up失敗時もdownを呼びます。`down_returned_ok`は上流APIの結果であり、
 QEMU/cgroup/port/auth一時fileの残留なしは外側から独立に確認します。
-エラー本文、secret、guest出力はstdoutへ転載せず、結果boolのみ出力します。
-次版の診断は固定`exec_status`と数値exit code/stdout一致bool/stderr有無boolを分離します。
+エラー本文、secret、guest出力はstdoutへ転載せず、固定ラベル・数値・boolだけを出力します。
+診断は固定`exec_status`と数値exit code/stdout一致bool/stderr有無boolを分離します。
 Exec呼出しのErrはtransportとagent拒否を型付きで区別できないため`exec_call_error`の未分類とし、
 exit/stdout/stderr欄はnullです。生error文字列で原因分類しません。
 実環境は`IZANAGI_SECRET_FILE`を固定dummy secret pathへ設定し、空環境から開始します。
@@ -50,7 +50,8 @@ Packer/pluginは1.15.0/1.1.8へ固定し、buildはまだ実行しません。
 private run領域と空のread-only share、dummy secretを別に作成してhash/owner/modeを照合します。
 これらの配置と起動commandの監査はまだ必要です。
 
-最小boot unit名は`tempest-izanagi-bootstrap-boot-001.service`を予定しています。
+現在の固定bindingはboot002で、unit名は`tempest-izanagi-bootstrap-boot-002.service`です。
+artifactは`/var/lib/tempest-izanagi-bootstrap-002`、runは`/run/tempest-izanagi-bootstrap-002`です。
 `record_exit.py`をroot所有の固定pathへ配置し、ExecStopPostでmain終了属性と
 INVOCATION_IDの一致を確認してprivate run領域へ保存する案です。
 選択した終了metadataだけを記録し、secretや全環境は出力しません。

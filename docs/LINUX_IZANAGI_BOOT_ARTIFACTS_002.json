@@ -1,0 +1,20 @@
+[
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-002/probe",
+    "sha256": "ddb79a8211afcb8fe66ce422db64ae9480579127e0a00fa7fa8ad9ad94399824",
+    "owner": "root:tempest-kvm",
+    "mode": "0550"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-002/base.qcow2",
+    "sha256": "7ad583f9f1514899e4f8c88b7f71609a5c0f6b76e0e213a01ef82d51f74978e5",
+    "owner": "root:tempest-kvm",
+    "mode": "0440"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-002/record_exit.py",
+    "sha256": "3fb15eaec175996316857a01676d2972f9b38af6888d1bbbf16e015a915ee43b",
+    "owner": "root:tempest-kvm",
+    "mode": "0440"
+  }
+]

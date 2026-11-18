@@ -4,8 +4,8 @@ import json
 import os
 import subprocess
 
-UNIT = "tempest-izanagi-bootstrap-boot-001.service"
-OUTPUT = "/run/tempest-izanagi-bootstrap/evidence/exit-status.json"
+UNIT = "tempest-izanagi-bootstrap-boot-002.service"
+OUTPUT = "/run/tempest-izanagi-bootstrap-002/evidence/exit-status.json"
 PROPERTIES = ("InvocationID", "ExecMainCode", "ExecMainStatus", "Result",
               "ActiveState", "SubState", "ControlGroup")
 

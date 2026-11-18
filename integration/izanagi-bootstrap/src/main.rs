@@ -1,9 +1,9 @@
 use izanagi::sandbox::{ExecOutput, Sandbox, SandboxConfig, ShareConfig};
 use std::collections::HashMap;
 
-const IMAGE: &str = "/var/lib/tempest-izanagi-bootstrap/base.qcow2";
-const SHARE: &str = "/run/tempest-izanagi-bootstrap/share";
-const SECRET: &str = "/run/tempest-izanagi-bootstrap/dummy.secret";
+const IMAGE: &str = "/var/lib/tempest-izanagi-bootstrap-002/base.qcow2";
+const SHARE: &str = "/run/tempest-izanagi-bootstrap-002/share";
+const SECRET: &str = "/run/tempest-izanagi-bootstrap-002/dummy.secret";
 const EXPECTED_GUEST_UID: &[u8] = b"1000\n";
 
 #[derive(Default)]

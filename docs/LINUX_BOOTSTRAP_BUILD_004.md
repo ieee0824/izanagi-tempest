@@ -26,6 +26,11 @@ systemctlの同Invocation terminal属性は未保存のままで、不在を成�
 別途journalの同UNIT/Invocation、trusted PID1/UID0/current boot IDを照合し、
 正常deactivationのMESSAGE_ID `7ad2d189f7e94e70a38c781354912448`を保存しました。
 client単発実行/開始unit/継続観測とtrusted journalは別証拠の組合せとして提出します。
+開始/終了のcurrent boot ID実値は`30389abc903c40ae89a5c6268ec1c432`、
+同Invocation `d51b49c657b946c59c01ea0b2be68ee8`です。
+trusted source時刻は11:11:54.429822〜11:13:43.920985 UTC、差109.491163秒で、
+client表示109.491秒と丸め誤差内で一致しました。
+qemu-img infoもread-onlyでqcow2/virtual2GiB/backing fileなし/corrupt=false/dirty=falseを確認しました。
 
 終了後にcgroup不在、UID999残留なし、固定3port閉鎖を独立確認しました。
 001〜004の全snapshot入力と既存boot001 root artifactのhashは不変です。

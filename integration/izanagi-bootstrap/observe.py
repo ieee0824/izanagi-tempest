@@ -79,8 +79,8 @@ def main():
     parser.add_argument("--attempt", choices=("001", "002", "003", "004"), required=True)
     parser.add_argument("--phase", choices=("build", "boot"), default="build")
     args = parser.parse_args()
-    if args.phase == "boot" and args.attempt != "001":
-        parser.error("only boot attempt001 is defined")
+    if args.phase == "boot" and args.attempt not in ("001", "002"):
+        parser.error("only boot attempt001/002 are defined")
     unit = f"tempest-izanagi-bootstrap-{args.phase}-{args.attempt}.service"
     if os.geteuid() != 0:
         raise SystemExit("root required to observe all unit socket owners")

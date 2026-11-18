@@ -1,6 +1,13 @@
 use super::*;
 use izanagi::sandbox::{ExecOutput, SandboxStatus};
 
+#[test]
+fn fixed_paths_are_bound_to_second_boot() {
+    assert_eq!(IMAGE, "/var/lib/tempest-izanagi-bootstrap-002/base.qcow2");
+    assert_eq!(SHARE, "/run/tempest-izanagi-bootstrap-002/share");
+    assert_eq!(SECRET, "/run/tempest-izanagi-bootstrap-002/dummy.secret");
+}
+
 struct Fake {
     fail_up: bool,
     fail_exec: Option<&'static str>,

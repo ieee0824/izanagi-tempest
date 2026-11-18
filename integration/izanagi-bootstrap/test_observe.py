@@ -33,13 +33,14 @@ class AttemptBindingTests(unittest.TestCase):
     def test_boot_cli_is_bound_to_boot_unit(self):
         row = {"unit": {"InvocationID": "boot-invocation", "ActiveState": "inactive", "LoadState": "loaded"},
                "cgroup_pids": [], "external_listener_observed": False}
-        with TemporaryDirectory() as directory:
-            output = Path(directory) / "boot.jsonl"
-            with patch("sys.argv", ["observe", "--phase", "boot", "--attempt", "001", "--output", str(output)]), \
-                 patch("observe.os.geteuid", return_value=0), \
-                 patch("observe.sample", return_value=row) as read_sample:
-                main()
-            read_sample.assert_called_once_with("tempest-izanagi-bootstrap-boot-001.service")
+        for attempt in ("001", "002"):
+            with self.subTest(attempt=attempt), TemporaryDirectory() as directory:
+                output = Path(directory) / "boot.jsonl"
+                with patch("sys.argv", ["observe", "--phase", "boot", "--attempt", attempt, "--output", str(output)]), \
+                     patch("observe.os.geteuid", return_value=0), \
+                     patch("observe.sample", return_value=row) as read_sample:
+                    main()
+                read_sample.assert_called_once_with(f"tempest-izanagi-bootstrap-boot-{attempt}.service")
 
     def test_explicit_attempt_cli_observes_only_selected_unit(self):
         row = {
