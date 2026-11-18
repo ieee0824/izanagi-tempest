@@ -9,13 +9,15 @@ import sys
 
 def main():
     os.umask(0o077)
-    inputs = Path(__file__).resolve().parent
-    assert inputs == Path('/var/lib/tempest-izanagi-runtime-presence-001/inputs')
-    script = inputs / 'repo/integration/runtime_presence.py'
+    extra = Path(__file__).resolve().parent
+    assert extra == Path('/var/lib/tempest-izanagi-runtime-presence-001/inputs-v2')
+    inputs = extra.parent / 'inputs'
+    script = extra / 'repo/integration/runtime_presence.py'
     runs = inputs.parent / 'work/runs'
     sys.argv = [str(script), '--tempest', str(inputs / 'tempest'), '--izanagi', str(inputs / 'izanagi'),
                 '--image', str(inputs / 'image.qcow2'), '--image-inputs', str(inputs / 'build-inputs.json'),
-                '--python', str(inputs / 'python/bin/python'), '--runs', str(runs)]
+                '--python', str(inputs / 'python/bin/python'), '--runs', str(runs),
+                '--comparison-plan', str(extra / 'comparison-plan.json')]
     spec = importlib.util.spec_from_file_location('presence', script)
     presence = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(presence)
@@ -23,6 +25,8 @@ def main():
     subprocess.run([str(inputs / 'tempest'), 'report', '--aggregate', str(runs)], check=True,
                    capture_output=True, text=True, timeout=60)
     aggregate = json.loads((runs / 'aggregate.json').read_text())
+    assert aggregate['selection'] == {'rule': 'precommitted_plan_slots', 'planned': 4,
+                                      'discovered_directories': 4, 'committed': 4, 'unavailable': 0, 'unplanned': 0}
     assert aggregate['portfolio']['runs'] == 4
     for name in ('finding', 'retest'):
         assert aggregate['portfolio'][name] == {'configured_denominator': 2, 'not_configured': 2}
