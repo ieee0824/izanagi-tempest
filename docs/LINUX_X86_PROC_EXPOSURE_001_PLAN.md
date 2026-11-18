@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-草案、snapshot/VM未実施。旧exec-exposure001は変更せず、#13のactor可視/procを既存固定image上の新1VMで限定観測する。
+固定snapshotと専用UID検査は完了、最終監査待ち。VM未実施。旧exec-exposure001は変更せず、#13のactor可視/procを既存固定image上の新1VMで限定観測する。
 root /var/lib/tempest-izanagi-proc-exposure-001、unit tempest-izanagi-proc-exposure-001.service。
 Izanagi CLI SHA088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8、full003 image SHA5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7eを維持。
 image/core/guest/Rust/global設定やpackageを変更せず、dummyのみで実model/credential/AWSは使わない。
@@ -50,3 +50,24 @@ host上ではproc helperのmainや実/proc snapshotを呼ばず、synthetic fixt
 現在のprepare/caller/observerは未実行。guard sourceとclosureの監査後にsnapshot作成へ進む。
 
 PR56/c51ee52のguest guardを12cfcadで取り込み、helper実bytesを元PRへ照合した。prepareはroot作成前にhelper SHA256 e42426fabb4b7b590d385262b6b584c372f5afe02ad2c38645a74a8217d968b5 の完全一致を要求する。Linux全110Python＋bootstrap13成功。host実/proc採取はしていない。
+
+## 固定準備結果とcommand
+
+[1308入力snapshot](LINUX_X86_PROC_EXPOSURE_SNAPSHOT_001.json)、[UID検査](LINUX_X86_PROC_EXPOSURE_PREPARATION_001.json) を保存。
+source3b4dc25、tree SHA0555f5d384115decca670e3f22a847aea6eb6b6a8500c797b4919abf5048aa66。
+prepare46610とUID検査99504は同handle終端exit0、Linux全110Python＋bootstrap13成功。
+全input/root owner/mode/read可write不可・外部runtime SHA、新venv prefix/version/AES/help/xattr/0700work、新output/exit/log未作成を確認。
+UID検査のhelpはsmokeのargparse終了だけで、proc helperのmainやhost実/procは実行していない。
+unit not-found/inactive/Invocation空、UID999 processなし、KVM root:kvm0660、free32221745152 bytes。
+旧exec001 input/RESULT/key削除追補、presence/plan/normal/seed-loss全tree/reservation/full/smoke証拠を準備時照合し、実行直前に再確認する。
+
+先行observer:
+
+```sh
+sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-proc-exposure-001/inputs/repo/integration/image_smoke_observe.py --attempt proc-exposure-001 --output /tmp/tempest-proc-exposure-observation-001.jsonl
+```
+
+続く固定callerは `python3 -I -B docs/evidence/proc-exposure-001/run_once.py`。
+serviceとExecStart一致/verify成功、両flag --exec-evidence --proc-evidenceとoffline artifact reportを指定する。
+固定guest内での3snapshotを待ち、host上の同UID1000をguest証拠と誤認しない。
+最終監査後に一度だけ実行する。現時点でobserver/caller/VMは未実施。
