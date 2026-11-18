@@ -176,8 +176,12 @@ class PublicHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             public = Path(directory)
             mapped = []
+            def set_metadata(path, mode):
+                # Linux user.* xattrs fail for an unprivileged owner after chmod 0444.
+                self.assertTrue(path.stat().st_mode & stat.S_IWUSR)
+                mapped.append((path.name, mode))
             namespace = {'args': type('Args', (), {'proc_evidence': True})(), 'public': public,
-                         'ROOT': repo, 'stat': stat, 'mapped_metadata': lambda path, mode: mapped.append((path.name, mode))}
+                         'ROOT': repo, 'stat': stat, 'mapped_metadata': set_metadata}
             exec(compile(ast.Module(body=[setup], type_ignores=[]), str(source), 'exec'), namespace)
             self.assertEqual({path.name for path in public.iterdir()}, {'proc_evidence.py', 'proc-probe.py'})
             self.assertEqual((public / 'proc-probe.py').read_bytes(), (repo / 'image/proc_paging.py').read_bytes())

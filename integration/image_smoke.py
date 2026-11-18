@@ -80,8 +80,10 @@ def main():
             path = public / name
             with path.open('xb') as stream:
                 stream.write((ROOT / 'image' / source).read_bytes())
-            path.chmod(0o444)
+            # Linux user xattrs require owner write permission. Publish the
+            # guest mode while the new host file is still writable, then seal it.
             mapped_metadata(path, stat.S_IFREG | 0o444)
+            path.chmod(0o444)
     config = output / 'izanagi.toml'
     template = (ROOT / 'tools/m0/izanagi.example.toml').read_text()
     config.write_text(template.replace('image = "default"', 'image = ' + json.dumps(str(args.image.resolve()))))
