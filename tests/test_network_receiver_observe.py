@@ -54,7 +54,7 @@ class ReceiverTests(unittest.TestCase):
     def test_private_reader_rejects_links_oversize_and_modes(self):
         with tempfile.TemporaryDirectory() as directory:
             p=Path(directory)/'state';p.write_text(json.dumps(ready()));p.chmod(0o600)
-            owner=(os.getuid(),os.getgid(),0o600)
+            owner=(os.getuid(),p.stat().st_gid,0o600)
             self.assertEqual(N.private_json(p,owner),ready())
             link=p.with_name('link');link.symlink_to(p)
             with self.assertRaises(OSError):N.private_json(link,owner)
@@ -78,9 +78,9 @@ class ReceiverTests(unittest.TestCase):
                 timer=threading.Timer(.03,finish);timer.start()
                 try:
                     if replace:
-                        with self.assertRaises(ValueError):N.private_json(path,(os.getuid(),os.getgid(),0o600))
+                        with self.assertRaises(ValueError):N.private_json(path,(os.getuid(),path.stat().st_gid,0o600))
                     else:
-                        self.assertEqual(N.private_json(path,(os.getuid(),os.getgid(),0o600)),ready())
+                        self.assertEqual(N.private_json(path,(os.getuid(),path.stat().st_gid,0o600)),ready())
                 finally:timer.join()
 
     def test_phase_ack_once_then_closed_ignores_stale_bootstrap_listener(self):
