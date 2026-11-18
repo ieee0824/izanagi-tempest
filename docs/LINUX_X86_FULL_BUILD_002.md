@@ -23,3 +23,7 @@ serialは0bytesで実kernel cmdlineは未取得。private debugにpreseed GETの
 [結果JSON](LINUX_X86_FULL_BUILD_002_RESULT.json)に127observations、同Invocationのloaded/failed終端、trusted PID1/UID0 journal、全private証拠/partialのhashを保存。独立確認でcgroup消失/uid999なし/3ports閉、追加kill不要。全26入力SHAと旧001snapshot/証拠SHAは不変。
 
 partial imageと全ログ/前後PNGは保全。lockdown/provision/実guest ABI/load/境界は未到達。新image boot/認証/livecallは未実行。次はboot_waitとISOの自動起動期限の整合を修正して別入力・別attemptで監査する。
+
+## 時系列の選別照合
+
+[時刻記録](LINUX_X86_FULL_BUILD_002_TIMING.json)へprivate debugの選別eventとobserver/PNG保存mtimeを保存した。debugはQEMU実行12:09:29、boot wait12:09:31、Typing boot commands12:10:31。observerのQEMU初観測は12:09:30.158479 UTC、入力前PNG保存は12:09:54.576453 UTC（画面はspeech開始まで7秒）、入力後PNG保存は12:10:48.579309 UTC。PNG時刻は保存mtimeでありフレーム取得瞬間の厳密な時刻ではないが、入力前画面のcountdown期限よりPacker入力開始が遅いことと整合する。serialの実kernel cmdline欠測は変更しない。
