@@ -5,7 +5,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import re
 import time
 
 SPEC = importlib.util.spec_from_file_location(
@@ -28,23 +27,7 @@ def validate_runtime(row, root=ROOT):
         raise RuntimeError('multiple QEMU processes in smoke unit')
     if not qemu:
         return False
-    network = [value for key, value in qemu[0]['network_args'] if key == '-netdev']
-    if len(network) != 1 or network[0].split(',')[0] != 'user' or 'restrict=on' not in network[0].split(','):
-        raise RuntimeError('restricted user networking not observed')
-    forwards = [part for part in network[0].split(',') if part.startswith('hostfwd=')]
-    if len(forwards) != 1 or not re.fullmatch(r'hostfwd=tcp:127\.0\.0\.1:\d+-:9001', forwards[0]):
-        raise RuntimeError('unexpected agent forwarding')
-    storage = qemu[0]['storage_args']
-    drives = [value for key, value in storage if key == '-drive']
-    shares = [value for key, value in storage if key == '-fsdev']
-    if len(drives) != 1 or not {'file=' + root + '/inputs/image.qcow2', 'snapshot=on'} <= set(drives[0].split(',')):
-        raise RuntimeError('fixed image snapshot protection not observed')
-    if len(shares) != 1 or not {'security_model=mapped-xattr', 'readonly=on'} <= set(shares[0].split(',')):
-        raise RuntimeError('fixed read-only mapped share not observed')
-    share_paths = [part.removeprefix('path=') for part in shares[0].split(',') if part.startswith('path=')]
-    expected = root + '/work/output/workspace'
-    if share_paths != [expected] and not (share_paths == ['.'] and qemu[0].get('cwd') == expected):
-        raise RuntimeError('fixed share path is not bound to the observed QEMU cwd')
+    BOOTSTRAP.validate_qemu_policy(qemu[0], root + '/inputs/image.qcow2', root + '/work/output/workspace')
     return True
 
 

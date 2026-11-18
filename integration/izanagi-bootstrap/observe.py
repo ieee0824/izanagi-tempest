@@ -36,6 +36,24 @@ def process_starttime(stat):
     return value
 
 
+def validate_qemu_policy(qemu, image, workspace):
+    network = [value for key, value in qemu['network_args'] if key == '-netdev']
+    if len(network) != 1 or network[0].split(',')[0] != 'user' or 'restrict=on' not in network[0].split(','):
+        raise RuntimeError('restricted user networking not observed')
+    forwards = [part for part in network[0].split(',') if part.startswith('hostfwd=')]
+    if len(forwards) != 1 or not re.fullmatch(r'hostfwd=tcp:127\.0\.0\.1:\d+-:9001', forwards[0]):
+        raise RuntimeError('unexpected agent forwarding')
+    drives = [value for key, value in qemu['storage_args'] if key == '-drive']
+    shares = [value for key, value in qemu['storage_args'] if key == '-fsdev']
+    if len(drives) != 1 or not {'file=' + image, 'snapshot=on'} <= set(drives[0].split(',')):
+        raise RuntimeError('fixed image snapshot protection not observed')
+    if len(shares) != 1 or not {'security_model=mapped-xattr', 'readonly=on'} <= set(shares[0].split(',')):
+        raise RuntimeError('fixed read-only mapped share not observed')
+    paths = [part.removeprefix('path=') for part in shares[0].split(',') if part.startswith('path=')]
+    if paths != [workspace] and not (paths == ['.'] and qemu.get('cwd') == workspace):
+        raise RuntimeError('fixed share path is not bound to the observed QEMU cwd')
+
+
 def sample(unit=UNIT):
     data = command(["/usr/bin/systemctl", "show", unit,
                     *["--property=" + key for key in PROPERTIES]])
