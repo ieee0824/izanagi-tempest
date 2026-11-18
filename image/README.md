@@ -79,7 +79,7 @@ python3 -m unittest discover -s tests -p test_image_x86.py -v
 ```
 
 固定入力のx86 full image生成とlock-down検査は
-[試行003の記録](https://github.com/ieee0824/izanagi-tempest/blob/bd6c7a0adcadd325d58302b01871dc3ee24de893/docs/LINUX_X86_FULL_BUILD_003.md)
+[試行003の記録](https://github.com/ieee0824/izanagi-tempest/blob/ac88482/docs/LINUX_X86_FULL_BUILD_003.md)
 で確認した。実kernel引数と無人インストール完走を観測している。
 実guestのeBPF採取・owner/firewall/doas/mailbox/外部到達拒否は未検証であり、
 image生成成功を本番相当VMの受入に置き換えない。
