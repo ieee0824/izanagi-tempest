@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-固定snapshotと専用UID検査は完了。room16601の監査後、実行直前検査へ進む。
+固定snapshotと専用UID検査、room16601の監査、単発実行は完了。[結果](LINUX_X86_RUNTIME_NORMAL_001.md)を参照。
 #13/#14/#15 に関連する正式runtimeの mock正常2回/reset を先に検査する。
 seed適用後応答喪失、finding/retest4presence はこのtrialに混ぜず後続の具体計画とする。
 
@@ -71,4 +71,4 @@ sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-runtime-normal-001/input
 続く固定callerは `python3 -I -B docs/evidence/runtime-normal-001/run_once.py`。command listは同fileに固定されている。
 observer JSONL の sample と observed_sessions は [projection](evidence/runtime-normal-001/observer_projection.py) で区別する。
 GC/terminal未知はそのまま残し、caller/exit recorder/trusted journalと独立回収結果を別保存する。
-この準備時点ではcaller/observerとも未実行で、4VM trialは未起動。
+上記は実行前の準備記録。以後、予定した単発trialを1回実行・回収済み。

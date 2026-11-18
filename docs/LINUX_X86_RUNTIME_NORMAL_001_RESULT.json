@@ -1,0 +1,273 @@
+{
+  "status": "normal_runs_passed_observer_terminal_unknown",
+  "caller_exit": 0,
+  "observer_exit": 1,
+  "observer_failure": "same-invocation runtime terminal attributes not captured after GC",
+  "unit": "tempest-izanagi-runtime-normal-001.service",
+  "invocation_id": "d0bf251254d64f7890690c562193c493",
+  "host_boot_id": "30389abc903c40ae89a5c6268ec1c432",
+  "runs": [
+    {
+      "run_id": "normal-1",
+      "status": "completed",
+      "evaluation": "performed",
+      "self_check_established": true,
+      "retest_checks_passed": true,
+      "finding": "found",
+      "control_integrity": "matched",
+      "control_request_integrity": "matched",
+      "contaminated": false,
+      "failed_control_operations": {},
+      "formal_metrics_eligible": false,
+      "agent_calls_attempted": 3,
+      "api_rows": 2,
+      "artifact_inventory_complete": true,
+      "cleanup": {
+        "primary": {
+          "companion_stopped": true,
+          "down_succeeded": true,
+          "forced_group_stop": false,
+          "management_stopped": true,
+          "missing_logs": [],
+          "partial_files_removed": [],
+          "up_exited_successfully": true
+        },
+        "retest": {
+          "companion_stopped": true,
+          "down_succeeded": true,
+          "forced_group_stop": false,
+          "management_stopped": true,
+          "missing_logs": [],
+          "partial_files_removed": [],
+          "up_exited_successfully": true
+        }
+      }
+    },
+    {
+      "run_id": "normal-2",
+      "status": "completed",
+      "evaluation": "performed",
+      "self_check_established": true,
+      "retest_checks_passed": true,
+      "finding": "found",
+      "control_integrity": "matched",
+      "control_request_integrity": "matched",
+      "contaminated": false,
+      "failed_control_operations": {},
+      "formal_metrics_eligible": false,
+      "agent_calls_attempted": 3,
+      "api_rows": 2,
+      "artifact_inventory_complete": true,
+      "cleanup": {
+        "primary": {
+          "companion_stopped": true,
+          "down_succeeded": true,
+          "forced_group_stop": false,
+          "management_stopped": true,
+          "missing_logs": [],
+          "partial_files_removed": [],
+          "up_exited_successfully": true
+        },
+        "retest": {
+          "companion_stopped": true,
+          "down_succeeded": true,
+          "forced_group_stop": false,
+          "management_stopped": true,
+          "missing_logs": [],
+          "partial_files_removed": [],
+          "up_exited_successfully": true
+        }
+      }
+    }
+  ],
+  "distinct_vm_bindings": 4,
+  "distinct_dummy_credentials": 4,
+  "observer": {
+    "sample_count": 114,
+    "external_listener_observed": false,
+    "last_observed_unit": {
+      "MainPID": "0",
+      "Result": "success",
+      "ExecMainCode": "0",
+      "ExecMainStatus": "0",
+      "ControlGroup": "",
+      "LoadState": "not-found",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "InvocationID": ""
+    },
+    "observed_sessions": [
+      {
+        "workspace": "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-1/sandbox",
+        "pid": 290054,
+        "starttime_ticks": 35502711,
+        "binding": {
+          "boot_nonce": "39ccf602e0ed0c91e8ed8b8a90061773",
+          "supervisor_pid": 290049,
+          "session_fingerprint": "37f31414904fdc92a081cec26b4623b81f2594145a330d650fcf56a0e3a402b5"
+        }
+      },
+      {
+        "workspace": "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-1/retest/sandbox",
+        "pid": 290375,
+        "starttime_ticks": 35505455,
+        "binding": {
+          "boot_nonce": "13382361eff56742f0a4713179f4ec75",
+          "supervisor_pid": 290370,
+          "session_fingerprint": "d68045aad68866d594f61cc40b42829be993d957280b8280855c3c592a3ec49c"
+        }
+      },
+      {
+        "workspace": "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-2/sandbox",
+        "pid": 290824,
+        "starttime_ticks": 35508407,
+        "binding": {
+          "boot_nonce": "89966a37c5c58e97c0af554de2c345f2",
+          "supervisor_pid": 290819,
+          "session_fingerprint": "ada91a7c6577b1528371f00edf0b966d1de2ea325313577812b3343ed5527809"
+        }
+      },
+      {
+        "workspace": "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-2/retest/sandbox",
+        "pid": 291184,
+        "starttime_ticks": 35510987,
+        "binding": {
+          "boot_nonce": "7ccdf27c3b968ddf820d573054951db3",
+          "supervisor_pid": 291179,
+          "session_fingerprint": "3fddebda67f7140cf139b5c7585d138e7fed813bcdd907e864210bf131592002"
+        }
+      }
+    ],
+    "scope": "sampled sessions; observer caller exit and trusted terminal evidence recorded separately"
+  },
+  "exit_recorder": {
+    "unit_name": "tempest-izanagi-runtime-normal-001.service",
+    "invocation_id": "d0bf251254d64f7890690c562193c493",
+    "unit": {
+      "Result": "success",
+      "ExecMainCode": "1",
+      "ExecMainStatus": "0",
+      "ControlGroup": "/system.slice/tempest-izanagi-runtime-normal-001.service",
+      "ActiveState": "deactivating",
+      "SubState": "stop-post",
+      "InvocationID": "d0bf251254d64f7890690c562193c493"
+    },
+    "service_result": "success",
+    "exit_code": "exited",
+    "exit_status": "0",
+    "scope": "ExecStopPost snapshot; final cgroup and journal checks are separate"
+  },
+  "trusted_lifecycle": [
+    {
+      "UNIT": "tempest-izanagi-runtime-normal-001.service",
+      "MESSAGE_ID": "7d4958e842da4a758f6c1cdc7b36dcc5",
+      "__REALTIME_TIMESTAMP": "1795012468827735",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "d0bf251254d64f7890690c562193c493"
+    },
+    {
+      "UNIT": "tempest-izanagi-runtime-normal-001.service",
+      "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
+      "__REALTIME_TIMESTAMP": "1795012468830791",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "d0bf251254d64f7890690c562193c493"
+    },
+    {
+      "UNIT": "tempest-izanagi-runtime-normal-001.service",
+      "MESSAGE_ID": "7ad2d189f7e94e70a38c781354912448",
+      "__REALTIME_TIMESTAMP": "1795012579530142",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "d0bf251254d64f7890690c562193c493"
+    },
+    {
+      "UNIT": "tempest-izanagi-runtime-normal-001.service",
+      "MESSAGE_ID": "ae8f7b866b0347b9af31fe1c80b127c0",
+      "__REALTIME_TIMESTAMP": "1795012579532450",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "d0bf251254d64f7890690c562193c493"
+    }
+  ],
+  "input_files_unchanged": 1307,
+  "old_inputs_evidence_unchanged": true,
+  "external_runtime_unchanged": true,
+  "cgroup_absent": true,
+  "uid999_absent": true,
+  "observed_ports_closed": [
+    36391,
+    37659,
+    40789,
+    46671
+  ],
+  "transient_keys_absent": true,
+  "free_bytes": 41501483008,
+  "files": {
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-1/run.json": {
+      "sha256": "9639bbaa054657c8e780777050921c3afa7049ab3b413a4fe1c7367a8979a0c5",
+      "bytes": 16041
+    },
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-1/result.json": {
+      "sha256": "9176292317fd5ce8184184c7824104248f29463ff0043feeb0b94df42294cc71",
+      "bytes": 12895
+    },
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-1/artifact-inventory.json": {
+      "sha256": "33fa50b095be1afd95eefa734bb23c6d7f3a58748bf808c3ab4dcc979f0b4d72",
+      "bytes": 1490
+    },
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-1/evidence/manifest.json": {
+      "sha256": "a151a12b3eb52b158190299e65fd6c1eb9897bf16cb1637fb9eca61b2bb33269",
+      "bytes": 1695
+    },
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-1/evidence/api.jsonl": {
+      "sha256": "84916dac32209ea14810ba7a71f952485c068da7ee5e551e71a70ca181b3088c",
+      "bytes": 1150
+    },
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-1/evidence/capture.pcap": {
+      "sha256": "746695c5efaebe042c6fd47ec2c1b21fa74ea011fe0350b0da7e0c71a082da17",
+      "bytes": 5362
+    },
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-2/run.json": {
+      "sha256": "edba0c78df571f81e352a9587ec44b2c14edf01281bb6dacc45e57501ba5cb60",
+      "bytes": 16041
+    },
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-2/result.json": {
+      "sha256": "e27efc4401fa8ddd89b7035901555cd43dd302ac48c2a1c7b12ace59615eb1b2",
+      "bytes": 12896
+    },
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-2/artifact-inventory.json": {
+      "sha256": "33fa50b095be1afd95eefa734bb23c6d7f3a58748bf808c3ab4dcc979f0b4d72",
+      "bytes": 1490
+    },
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-2/evidence/manifest.json": {
+      "sha256": "ec9bfeaca73561593ee7f82beb9eb70a5145e0adb3da5ecd6e3572399acf5c3c",
+      "bytes": 1695
+    },
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-2/evidence/api.jsonl": {
+      "sha256": "6009269d7ce2c31bb3dbb5093443170836e3d23daffa048c551d11717ba4cbcb",
+      "bytes": 1150
+    },
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/runs/normal-2/evidence/capture.pcap": {
+      "sha256": "d2e15803d2b74c3c4dcd0d5373b96db528df55743007b934d20084eda2cf38c0",
+      "bytes": 5362
+    },
+    "/tmp/tempest-runtime-normal-observation-001.jsonl": {
+      "sha256": "50ba86807ca3abd7b3d0946e487301058452f106ea47cbef6d1cf197b452ce93",
+      "bytes": 179878
+    },
+    "/tmp/tempest-runtime-normal-001.log": {
+      "sha256": "4115f0c65ecae477af5388f4bb48de5fc77ee0ffc92184dd42a2e0915ea10103",
+      "bytes": 432
+    },
+    "/var/lib/tempest-izanagi-runtime-normal-001/work/evidence/exit-status.json": {
+      "sha256": "f2ce0ab545ae1f661f67f173ee6a2d0a2361d8fd160bffe380a6178dfbbb5631",
+      "bytes": 524
+    }
+  }
+}
