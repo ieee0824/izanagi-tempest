@@ -79,6 +79,17 @@ ISOは固定URLから取得しましたが、実体SHA256は
 ISOを使用せず、固定入力変更の監査までimage buildを停止します。
 上流sourceのchecksumを暗黙に置換しません。
 
+続いてISOの`.asc`を取得し、mode0700のisolated GPG keyringで検証しました。
+公開鍵は`https://alpinelinux.org/keys/ncopa.asc`、primary fingerprintは
+`0482D84022F52DF1C4E7CD43293ACD0907D9495A`で、
+`https://alpinelinux.org/downloads/`の公表値と一致しました。
+`gpg --verify`はexit0、GOODSIGと同primaryのVALIDSIGを返しました。
+署名日時は2026-01-27、RSA/SHA512です。Web-of-trustはundefinedであり、
+公式HTTPS公開fingerprintとの照合と署名検証を根拠にしています。
+これにより取得物の署名は確認できましたが、元templateの誤りの原因は断定しません。
+bootstrap専用varsで`iso_checksum=sha256:d91fb5c7a73528c89e0a1aa9a7d959f9deb9ca3dc5211e39bd73fd7df0d9070e`
+を明示する案をroom #16349へ提出しました。image buildはまだ行いません。
+
 APT exact追加一覧と影響は[package simulation](LINUX_BOOTSTRAP_PACKAGES.md)へ記録しました。
 
 ## 起動前に具体化する手順
