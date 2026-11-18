@@ -15,7 +15,7 @@ assert sha(repo/'image/proc_evidence.py')=='6044bfb59240318dbc63888c6460adfe22ff
 assert sha(repo/'image/proc_paging.py')=='bd1ece774f2099eaad2d765aecca53e7ab5c869292b5b4bdf8423894e9035713', 'requires reviewed PR57 source before root creation'
 assert sha(repo/'integration/image_smoke.py')=='37f3f058f7ffc849775b9b67dfc3b39e0cb635c275f86bf65541912212c89dce', 'requires reviewed PR57 source before root creation'
 assert sha(repo/'image/sidecar_probe.py')=='83fd831b373d75f799ea5d7a3ec89db1fc967559f3cc28a69bf572158a8a3c39', 'requires reviewed sidecar source before root creation'
-assert sha(repo/'image/sidecar_evidence.py')=='a01054d16da927e50bbd06d09adde1214077a047188367d21d0efa64967ac252', 'requires reviewed sidecar source before root creation'
+assert sha(repo/'image/sidecar_evidence.py')=='d95b794f2ea4e7e891f6c1e238ab226ed2d121a6f5c9c2150f02f42b1c3319f5', 'requires reviewed sidecar source before root creation'
 for n in ['001','002','003']:
  for r in json.loads((repo/('docs/LINUX_X86_FULL_SNAPSHOT_'+n+'.json')).read_text()):assert sha(r['path'])==r['sha256']
  for p,r in json.loads((repo/('docs/LINUX_X86_FULL_BUILD_'+n+'_RESULT.json')).read_text())['files'].items():assert sha(p)==r['sha256']

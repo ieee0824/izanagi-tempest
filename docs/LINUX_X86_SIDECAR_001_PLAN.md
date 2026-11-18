@@ -70,3 +70,7 @@ PR60/11fde20をff6f884へ取り込み、Linux全136tests/skip0成功。旧通常
 sidecar identityの現在の実装はargv先頭の固定binary path、root UID、PID/starttime前後一致とppid値を保存する。全argvや親実体の直接同定を実測済みとは呼ばない。
 telemetryは1fresh session/最大10MiB/32segment/50000record、fixture JSON最大16384B/exec timeout45秒に限定する。
 caller/service/observerは準備済みだが、final source監査前にroot/snapshot/VMを作成しない。
+
+PR60追補1f43e0bの終了health identity/audit保存検査を取り込んだ。Linux sidecar11testsのうち実socket fixture末尾の再bind検査がEADDRINUSEとなり、10成功/1error。
+fixture転送・receiver件数・thread終了の検査後に発生し、TIME_WAITと残留listenerを区別する必要があるためcoderへroom16745で報告した。
+先の136tests成功は追補前のsourceに対する結果として保持する。修正後の検査とfinal source監査前にroot/snapshot/VMを作成しない。
