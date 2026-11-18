@@ -26,6 +26,9 @@ def derive(template):
             'qemu_binary  = "/usr/bin/qemu-system-x86_64"')
     replace('machine_type = "virt"', 'machine_type = "q35"')
     replace('accelerator  = "hvf"', 'accelerator  = "kvm"')
+    # The pinned amd64 ISO includes spkgtk.cfg, whose timeout 300 starts the
+    # speech installer after 30s. Inherited 60s input arrives at the wrong UI.
+    replace('boot_wait         = "60s"', 'boot_wait         = "10s"')
     replace('  # aarch64 では -boot once=d が使えないため無効化',
             '  # BIOS installer uses the default CD boot order; no injected CD files.')
     start = template.index('  qemuargs = [\n')

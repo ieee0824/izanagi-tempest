@@ -70,6 +70,7 @@ class X86ImageTests(unittest.TestCase):
             self.assertEqual('x86_template.py' in manifest['derivation_sha256'], architecture == 'x86_64')
             template = (root / 'out/packer/debian.pkr.hcl').read_text()
             self.assertIn('vm_name          = "debian-' + architecture + '.qcow2"', template)
+            self.assertIn('boot_wait         = "' + ('10s' if architecture == 'x86_64' else '60s') + '"', template)
             self.assertIn('tempest-m3/provision.sh', template)
             self.assertNotIn('Homebrew (Linuxbrew)', template)
             self.assertIn(str(iso), template)
@@ -87,6 +88,7 @@ class X86ImageTests(unittest.TestCase):
                          'ssh_host = "127.0.0.1"', 'http://10.0.2.2:{{ .HTTPPort }}',
                          '["-serial", "file:installer-serial.log"]',
                          'console=tty0 console=ttyS0,115200n8 auto=true priority=critical',
+                         'boot_wait         = "10s"',
                          'version = "= 1.1.8"']:
             self.assertIn(required, derived)
         self.assertEqual(source, (ROOT / 'tests/fixtures/izanagi-16d-debian.pkr.hcl').read_text())

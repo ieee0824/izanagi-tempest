@@ -35,7 +35,7 @@ class AttemptBindingTests(unittest.TestCase):
     def test_image_cli_observes_only_the_defined_image_unit(self):
         row = {"unit": {"InvocationID": "image-invocation", "ActiveState": "inactive", "LoadState": "loaded"},
                "cgroup_pids": [], "external_listener_observed": False}
-        for attempt in ("001", "002"):
+        for attempt in ("001", "002", "003"):
             with self.subTest(attempt=attempt), TemporaryDirectory() as directory:
                 output = Path(directory) / "image.jsonl"
                 with patch("sys.argv", ["observe", "--phase", "image", "--attempt", attempt, "--output", str(output)]), \
@@ -43,7 +43,7 @@ class AttemptBindingTests(unittest.TestCase):
                      patch("observe.sample", return_value=row) as read_sample:
                     main()
                 read_sample.assert_called_once_with(f"tempest-izanagi-bootstrap-image-{attempt}.service")
-        for attempt in ("003", "004"):
+        for attempt in ("004",):
             with self.subTest(attempt=attempt), TemporaryDirectory() as directory:
                 output = Path(directory) / "rejected.jsonl"
                 with patch("sys.argv", ["observe", "--phase", "image", "--attempt", attempt, "--output", str(output)]), \

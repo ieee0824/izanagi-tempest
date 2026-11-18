@@ -90,6 +90,11 @@ full build001は言語選択で停止し、入力到達とpreseed取得の原因
 Packer debugも新private logへ保存し、全文をroomやGitへ公開しない。
 追加した観測は無人導入の修正成功を意味しない。旧snapshotと失敗証拠は変更しない。
 
+試行002で、ISOのinclude先`spkgtk.cfg`が30秒後にspeech installerを起動し、
+従来の60秒待機では入力先がboot promptを過ぎることを観測した（#41）。
+x86派生の`boot_wait`を10秒へ変更し、serial診断は維持する。
+元upstreamとarm64の60秒設定は変更しない。新試行で入力到達とpreseedを実検証する。
+
 ## 実VM試験
 
 リポジトリに戻り、ホスト用の固定 Izanagi CLI を指定する。
