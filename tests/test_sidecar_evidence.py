@@ -174,11 +174,12 @@ class LoopbackFixtureTests(unittest.TestCase):
             server.server_close()
             thread.join(4)
         self.assertFalse(thread.is_alive())
-        # The fixture must release both bound receiver ports after completion.
+        # A closed accepted TCP socket may retain TIME_WAIT. Check absence of
+        # listeners rather than treating immediate rebind as a cleanup witness.
         for port in (allowed, other):
             with socket.socket() as sock:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind(('127.0.0.1', port))
+                sock.settimeout(.5)
+                self.assertNotEqual(sock.connect_ex(('127.0.0.1', port)), 0)
 
 
     def test_receiver_socket_closed_if_thread_start_fails(self):
