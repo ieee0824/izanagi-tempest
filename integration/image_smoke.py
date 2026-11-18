@@ -22,6 +22,7 @@ from transport import Mailbox
 from trace_evidence import trace_probe_evidence
 from artifact_evidence import PATHS as ARTIFACT_PATHS, validate_offline, validate_actor
 from exec_evidence import ExecEvidence, MarkerLeak
+from proc_evidence import CONTROL_KEY, CONTROL_VALUE, summarize as summarize_proc
 
 
 def sha(path):
@@ -36,11 +37,15 @@ def main():
     parser.add_argument('--build-inputs', type=Path, help='prepare.py inputs.json; defaults to the standard build layout')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--offline-artifacts', type=Path, help='read-only image inspection report bound to this exact image')
+    parser.add_argument('--proc-evidence', action='store_true',
+                        help='bounded actor cmdline/environ/FD snapshots; requires --exec-evidence')
     parser.add_argument('--exec-evidence', action='store_true',
                         help='retain private exec stdout/stderr and scan dummy management markers')
     parser.add_argument('--tempest', type=Path, help='exercise the independent Rust MCP supervisor/bridge for measured GETs')
     parser.add_argument('--delivery-race-fixture', action='store_true', help='Require forced root deliver PID in quiesce kill evidence')
     args = parser.parse_args()
+    if args.proc_evidence and not args.exec_evidence:
+        parser.error('--proc-evidence requires --exec-evidence private capture')
     os.umask(0o077)
     output = args.output.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -97,6 +102,19 @@ def main():
             report['checks']['exec_private_markers'] = exec_evidence.summary(secret_markers)
             save()
             raise
+    def proc_probe(stage):
+        if not args.proc_evidence:
+            return
+        probe = (ROOT / 'image/proc_evidence.py').read_text()
+        result = execute('/usr/bin/env', CONTROL_KEY + '=' + CONTROL_VALUE,
+                         '/usr/bin/python3', '-c', probe)
+        if result.returncode != 0:
+            raise RuntimeError('actor proc observation failed; private exec evidence retained')
+        observed = summarize_proc(json.loads(result.stdout))
+        report['checks']['proc_' + stage] = observed
+        save()
+        if not observed['passed']:
+            raise RuntimeError('actor proc observation incomplete; private exec evidence retained')
     def check(name, command, expected=0):
         result = execute('/bin/sh', '-c', command)
         report['checks'][name] = {'passed': result.returncode == expected,
@@ -207,6 +225,7 @@ def main():
             time.sleep(0.5)
         else:
             raise RuntimeError('VM boot failed')
+        proc_probe('before_claim')
         check('inventory', 'id; cat /etc/tempest/image.json; stat -c "%u %g %a %n" /workspace /workspace/.tempest-control; cat /proc/mounts')
         image_manifest = json.loads(check('image_manifest', 'cat /etc/tempest/image.json'))
         for field in ['izanagi_commit', 'lws_commit', 'tempest_guest_version', 'tempest_guest_source_commit',
@@ -300,6 +319,7 @@ def main():
                         {'name': 'private-data', 'objects': [{'key': 'secret.txt', 'body': 'PRIVATE-DUMMY'}]}]}
         report['checks']['wrong_token_seed'] = call('seed', '0' * 64, expected_error=True, setup=bundle)
         seeded = call('seed', credential, setup=bundle)
+        proc_probe('after_seed')
         worker = seeded['access_keys']['worker']
         assert seeded['admin_key_rotated'] and seeded['new_key_verified'] and seeded['old_key_rejected']
         report['checks']['seed'] = {'passed': True}
@@ -453,6 +473,7 @@ def main():
         assert escaped.returncode == 0
         escaped_pid = int(escaped.stdout.strip())
         check('escaped_live_before_export', 'kill -0 ' + str(escaped_pid))
+        proc_probe('before_export')
         exported = call('export', credential, daemon_identity=daemon_identity)
         assert exported['complete'], 'recorder finalization incomplete'
         if args.delivery_race_fixture:
