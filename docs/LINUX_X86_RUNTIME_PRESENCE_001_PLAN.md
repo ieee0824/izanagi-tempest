@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-未実行v1を保持し、事前4slot計画を接続したv2 snapshotと専用UID検査は完了。最終監査待ち、VM未実施。#14のfinding/retest有無4通りを正式runtimeのmockで確認する。
+未実行v1を保持し、事前4slot計画を接続したv2を単発実行・回収済み。[結果](LINUX_X86_RUNTIME_PRESENCE_001.md)を参照。#14のfinding/retest有無4通りを正式runtimeのmockで確認する。
 root /var/lib/tempest-izanagi-runtime-presence-001、unit tempest-izanagi-runtime-presence-001.service。
 host CLI4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f、Izanagi CLI/image/manifestは正常001/seed-loss001と同じ固定実体をコピーする。
 production Rust/guest/image/global設定は変更せず、実model/credential/AWSは使用しない。
@@ -79,3 +79,5 @@ v2 callerは `python3 -I -B docs/evidence/runtime-presence-001/run_once_v2.py`�
 [service v2](../integration/tempest-izanagi-runtime-presence-001-v2.service) とCOMMAND/ExecStart一致、verify成功。
 asset CLI/image/pythonとexit recorderは旧inputsを参照し、実行コードだけinputs-v2/run_presence.pyへ切り替える。v1 runner/callerは実行しない。
 最終v2監査後の単発開始まで、observer/caller/VMを起動しない。
+
+実行後: v2 caller66146はexit0、observer60231は全6binding後GC terminal unknown/exit1。計画変更・追加VMなし。以降は結果監査を行う。
