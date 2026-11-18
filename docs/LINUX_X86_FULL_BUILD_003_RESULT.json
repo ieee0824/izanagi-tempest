@@ -301,5 +301,37 @@
   },
   "runtime_log_seconds": 321.787,
   "runtime_interval_note": "PID1 Starting-to-deactivated 321.787189s agrees with runtime log 321.787s at millisecond rounding; Started-to-deactivated 321.767670s uses a later lifecycle boundary.",
-  "trusted_starting_to_deactivated_seconds": 321.787189
+  "trusted_starting_to_deactivated_seconds": 321.787189,
+  "trusted_lifecycle_message_bindings": [
+    {
+      "UNIT": "tempest-izanagi-bootstrap-image-003.service",
+      "_SYSTEMD_UNIT": "init.scope",
+      "MESSAGE_ID": "7d4958e842da4a758f6c1cdc7b36dcc5",
+      "INVOCATION_ID": "c6f14dd35ebb4525ab301aae427d76e1",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795004554584029"
+    },
+    {
+      "UNIT": "tempest-izanagi-bootstrap-image-003.service",
+      "_SYSTEMD_UNIT": "init.scope",
+      "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
+      "INVOCATION_ID": "c6f14dd35ebb4525ab301aae427d76e1",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795004554603548"
+    },
+    {
+      "UNIT": "tempest-izanagi-bootstrap-image-003.service",
+      "_SYSTEMD_UNIT": "init.scope",
+      "MESSAGE_ID": "7ad2d189f7e94e70a38c781354912448",
+      "INVOCATION_ID": "c6f14dd35ebb4525ab301aae427d76e1",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795004876371218"
+    }
+  ]
 }
