@@ -47,3 +47,9 @@ HTTP sidecar・外部positive control・forced delivery race・全route/全期�
 
 個別helperのguest statは実測していない。host側の通常単link/999:988/0444・source hash一致とmapped uid0/gid0/mode0100444を別に照合し、成功したguest readや共有EROFSから個別guest owner/mode実測へ一般化しない。
 追補collector85104も同handle終端exit0。host helper2fileのmetadata/xattrとsource hash、既存再計算/不変検査を照合した。
+
+## 監査後の鍵回収追補
+
+room16731のsource監査後、同Invocation exit0、unit終了/cgroup消失/UID999残留なし/port35509閉鎖を再確認した。
+全親pathの実体directoryと当該HMACの通常単link/999:988/0600を照合して当該fileだけunlinkし、値/単体hash非読取で非存在を確認した。
+[別追補metadata](LINUX_X86_PROC_EXPOSURE_003_KEY_CLEANUP.json)を保存し、元RESULT・固定入力・raw原本を保持する。
