@@ -97,3 +97,11 @@ free20GiB以上・新output不在・旧full001002003 inputs/結果参照file不�
 新definitionだけroot:988/dir0750/file0440へ固定した。固定親Packer/plugin、UID999/env-i/HOME=/nonexistentでfull validate exit0、configuration valid。plugin init/downloadなし。
 実prepare argvのGit trustは固定3pathを当該process環境へ限定した。旧source/worktreeや既存imageは変更していない。
 ここまで新/tmp定義作成だけで、新/var/lib実験root・Packer build・VMは未開始。次は定義結果監査とbuild-only snapshot/caller/observerの具体計画へ進む。
+
+## build専用observer草案
+
+room16789に従い[build専用observer](../integration/delivery_race_build_observe.py)を用意した。runtime validate_qemu_policyとは分離する。
+専用unit tempest-izanagi-delivery-race-build-001.service、新root/work cwd、入力base.isoと新output-debian/debian-x86_64.qcow2、単一QEMU PID/starttimeの全sample一致を要求し、逐次入替も拒否する。
+親実観測のinstaller用usernet/SSH127.0.0.1:22222/VNC127.0.0.1:2とHTTP127.0.0.1:18082だけを許可する。runtime restrict/snapshot/9pの代用ではない。
+QEMU所有SSH/VNC listenerとunit内HTTPを分け、未知endpoint/外部listener/別cwd/別ISO/diskを拒否する。異常sampleも固定error metadata付きで保存し、GC終端unknownは独立終了証拠と区別する。
+3testsで正規build契約、逐次PID/starttime置換と誤入力/ネットワーク/所有者を検査して成功。実observer・build・VMは未実行。
