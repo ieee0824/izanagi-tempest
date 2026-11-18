@@ -1,0 +1,14 @@
+{
+  "binary_sha256": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+  "symtab_present": true,
+  "dwarf_debug_sections": [],
+  "selected_symbols": [
+    "0000000000391360 t <rusqlite::statement::Statement>::query_row::<alloc::string::String, [&str; 1], <lws::iam::Iam>::principal::{closure#0}>",
+    "0000000000346c20 t core::ptr::drop_glue::<rusqlite::row::MappedRows<<lws::iam::Iam>::allowed::{closure#1}>>",
+    "00000000003927d0 t core::iter::traits::iterator::Iterator::any::check::<&&str, <lws::iam::Policy>::parse::{closure#3}>::{closure#0}",
+    "0000000000349e90 t <lws::iam::Iam>::allowed",
+    "000000000034e430 t <lws::iam::Iam>::principal",
+    "000000000034e730 t <lws::iam::Policy>::parse"
+  ],
+  "limit": "symbol presence does not establish stable optimized argument ABI, runtime policy decisions or debugger feasibility"
+}
