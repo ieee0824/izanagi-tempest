@@ -27,6 +27,12 @@ def fixture_module():
 
 class X86ImageTests(unittest.TestCase):
     def test_prepare_wires_x86_elf_template_and_manifest(self):
+        self.prepare_architecture('x86_64')
+
+    def test_prepare_default_remains_arm64(self):
+        self.prepare_architecture('aarch64')
+
+    def prepare_architecture(self, architecture):
         prepare = module('prepare')
         x86 = fixture_module()
         with tempfile.TemporaryDirectory() as directory:
@@ -39,27 +45,31 @@ class X86ImageTests(unittest.TestCase):
                 (ROOT / 'tests/fixtures/izanagi-16d-debian.pkr.hcl').read_bytes())
             iso = root / 'fixture.iso'
             iso.write_bytes(b'fixture ISO; no VM is started')
-            args = ['prepare', '--architecture', 'x86_64', '--izanagi-source', str(source),
+            args = ['prepare', '--izanagi-source', str(source),
                     '--lws-source', str(source), '--iso', str(iso), '--output', str(root / 'out')]
+            if architecture == 'x86_64':
+                args += ['--architecture', architecture]
+            iso_hash = x86.ISO_SHA256 if architecture == 'x86_64' else '6e93fa1759bd9d4b0fc11e938987de6967ee7de5297dac1be27c3a75cc17024b'
+            machine = 62 if architecture == 'x86_64' else 183
             for name in ['agent', 'ebpf', 'http', 'lws', 'guest']:
                 path = root / name
                 header = bytearray(20)
                 header[:6] = b'\x7fELF\x02\x01'
-                header[18:20] = (247 if name == 'ebpf' else 62).to_bytes(2, 'little')
+                header[18:20] = (247 if name == 'ebpf' else machine).to_bytes(2, 'little')
                 path.write_bytes(header)
                 args += ['--' + name, str(path)]
             real_sha = prepare.sha
             with patch('sys.argv', args), patch.dict('sys.modules', {'x86_template': x86}), \
                  patch.object(prepare, 'source_commit'), \
                  patch.object(prepare, 'helper_source', return_value={}), \
-                 patch.object(prepare, 'sha', side_effect=lambda p: x86.ISO_SHA256 if p == iso else real_sha(p)):
+                 patch.object(prepare, 'sha', side_effect=lambda p: iso_hash if p == iso else real_sha(p)):
                 prepare.main()
             manifest = json.loads((root / 'out/inputs.json').read_text())
-            self.assertEqual(manifest['architecture'], 'x86_64')
-            self.assertEqual(manifest['iso_sha256'], x86.ISO_SHA256)
-            self.assertIn('x86_template.py', manifest['derivation_sha256'])
+            self.assertEqual(manifest['architecture'], architecture)
+            self.assertEqual(manifest['iso_sha256'], iso_hash)
+            self.assertEqual('x86_template.py' in manifest['derivation_sha256'], architecture == 'x86_64')
             template = (root / 'out/packer/debian.pkr.hcl').read_text()
-            self.assertIn('vm_name          = "debian-x86_64.qcow2"', template)
+            self.assertIn('vm_name          = "debian-' + architecture + '.qcow2"', template)
             self.assertIn('tempest-m3/provision.sh', template)
             self.assertNotIn('Homebrew (Linuxbrew)', template)
             self.assertIn(str(iso), template)
