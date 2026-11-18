@@ -30,6 +30,23 @@ def assert_partial_evaluation(run):
         raise AssertionError('partial evaluation artifacts were not finalized')
 
 
+
+def reservation_refusal(result):
+    """Validate the CLI's structured infrastructure refusal, without retaining diagnostics."""
+    try:
+        output = json.loads(result.stdout)
+    except (ValueError, TypeError) as error:
+        raise AssertionError('retry did not return structured reservation refusal') from error
+    stopped = output.get('stopped') if isinstance(output, dict) else None
+    if result.returncode != 1 or not isinstance(output, dict) \
+            or output.get('scope') != 'm5_evaluation' or output.get('runs') != [] \
+            or not isinstance(stopped, str) or not stopped.startswith('infrastructure:') \
+            or not stopped.endswith(f'(os error {errno.EEXIST})'):
+        raise AssertionError('retry did not reach the existing run-ID reservation')
+    return {'run_id_reserved': True, 'returncode': 1, 'reported_runs': 0,
+            'diagnostic_source': 'stdout.stopped', 'error_kind': 'EEXIST'}
+
+
 def seed_reply_loss(args):
     run_id = 'seed-reply-loss'
     run = args.runs / run_id
@@ -104,8 +121,13 @@ def seed_reply_loss(args):
     retry = subprocess.run(retry_command, text=True, capture_output=True, timeout=30)
     if retry.returncode == 0 or digest(run / 'run.json') != before:
         raise AssertionError('reserved run ID was reused or mutated')
-    if f'(os error {errno.EEXIST})' not in retry.stderr:
-        raise AssertionError('retry did not reach the existing run-ID reservation')
+    refusal = reservation_refusal(retry)
+    fd = os.open(args.runs / (run_id + '-reservation.json'),
+                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        stream.write(json.dumps(refusal) + '\n')
+        stream.flush()
+        os.fsync(stream.fileno())
     print(json.dumps({'seed_reply_loss': 'passed', 'run': str(run)}))
 
 
