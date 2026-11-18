@@ -1,6 +1,6 @@
 # Export証拠の有限転送予算
 
-#64のLinux large001では、32KiBの逐次fetchが約300秒で1698件完了した一方、59,299,901 bytesのPCAPを全回収できなかった。
+#64のLinux large001では、32KiBの逐次fetchが約300秒でAPI 1件とPCAP 1697件が完了した一方、59,299,901 bytesのPCAPを全回収できなかった。
 これは固定環境の観測であり、律速原因や任意環境の最低速度を証明しない。元runの失敗と録画dropは変更しない。
 
 hostはwire v1の32KiB chunk、64KiB固定暗号化返信、既存のfileサイズ上限とoffset/length/hash検査を維持する。
@@ -13,6 +13,7 @@ export全体 = collection開始から600秒
 
 64MiBでは542秒、large001の59,299,901 bytesでは482.5秒となる。4 chunks/秒に相当する余裕を置くが、完了を保証するものではない。
 複数fileがそれぞれ新たに600秒を得ることはない。期限切れ・不確定RPC・不正chunkでは成功receiptを出さず、既存の破棄/partial cleanup契約を使う。
+期限検査とtimeoutは次のfetch開始と管理RPC待ちに適用する。同期write/sync_all/renameは非同期timeoutで強制中断されず、600秒はディスク停止までを含むhard wall上限ではない。実プロセス寿命の上限は別のunit回収で検査する。
 この期限は証拠転送だけを対象とし、起動・agent・export finalization・VM回収を含む試験driver/unitの全期限とは別である。
 新実機試験ではdriver720秒/unit1800秒の範囲と実elapsedを別に確認する。
 

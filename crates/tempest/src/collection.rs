@@ -131,7 +131,8 @@ mod tests {
         let start = Instant::now();
         let budget = TransferBudget::new(start);
         let first = budget.file_deadline(start, 59_299_901);
-        // Replay the measured 1698 completed chunks, then the remaining 112,
+        // PCAP completed 1697 chunks (plus one separate API chunk); replay
+        // all 1810 PCAP chunks, including the remaining 113,
         // with a slower 250ms per chunk. The old fixed 300s budget fails this.
         let completion = start + Duration::from_millis(1810 * 250);
         assert!(completion > start + Duration::from_secs(300));
