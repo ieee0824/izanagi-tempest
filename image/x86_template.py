@@ -31,7 +31,8 @@ def derive(template):
     start = template.index('  qemuargs = [\n')
     end = template.index('\n  ]', start) + len('\n  ]')
     template = template[:start] + '''  qemuargs = [
-    ["-netdev", "user,id=user.0,hostfwd=tcp:127.0.0.1:{{ .SSHHostPort }}-:22"]
+    ["-netdev", "user,id=user.0,hostfwd=tcp:127.0.0.1:{{ .SSHHostPort }}-:22"],
+    ["-serial", "file:installer-serial.log"]
   ]''' + template[end:]
     replace('  http_directory = "http"', '''  http_directory = "${path.root}/http"
   http_bind_address = "127.0.0.1"
@@ -47,8 +48,11 @@ def derive(template):
     end = template.index('\n  ]', start) + len('\n  ]')
     # BIOS/ISOLINUX: enter a kernel command at the boot prompt. This derived
     # installer path still requires validation on the actual fixed amd64 ISO.
+    # Capture the actual kernel command line and installer stage in the private
+    # build working directory. Plugin 1.1.8 preserves the caller's cwd. This
+    # adds diagnostics; it does not prove the failed attempt's root cause.
     template = template[:start] + '''  boot_command = [
     "<esc><wait3>",
-    "/install.amd/vmlinuz auto=true priority=critical preseed/url=http://10.0.2.2:{{ .HTTPPort }}/preseed.cfg initrd=/install.amd/initrd.gz --- quiet<enter>",
+    "/install.amd/vmlinuz console=tty0 console=ttyS0,115200n8 auto=true priority=critical preseed/url=http://10.0.2.2:{{ .HTTPPort }}/preseed.cfg initrd=/install.amd/initrd.gz ---<enter>",
   ]''' + template[end:]
     return template.replace('aarch64-unknown-linux-gnu', 'x86_64-unknown-linux-gnu')

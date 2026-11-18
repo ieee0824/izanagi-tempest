@@ -83,6 +83,13 @@ owner/firewall/doas/mailbox/外部到達拒否の実測は未完了である。
 導出成功や最小Alpine/id bootを本番相当VMの受入に置き換えない。
 実build前に専用userのroot所有・非write入力snapshotと回収可能な単発commandを監査する。
 
+full build001は言語選択で停止し、入力到達とpreseed取得の原因は未確定である。
+次の導出はserial出力とkernel consoleを有効にし、`quiet`を外して観測を補う。
+固定plugin1.1.8はQEMUのcwdを変更しないため、`installer-serial.log`は
+専用unitのprivate work directoryへ書かれる。実行前に同file不在を確認する。
+Packer debugも新private logへ保存し、全文をroomやGitへ公開しない。
+追加した観測は無人導入の修正成功を意味しない。旧snapshotと失敗証拠は変更しない。
+
 ## 実VM試験
 
 リポジトリに戻り、ホスト用の固定 Izanagi CLI を指定する。

@@ -85,6 +85,8 @@ class X86ImageTests(unittest.TestCase):
                          'initrd=/install.amd/initrd.gz', 'hostfwd=tcp:127.0.0.1:',
                          'http_bind_address = "127.0.0.1"', 'vnc_bind_address = "127.0.0.1"',
                          'ssh_host = "127.0.0.1"', 'http://10.0.2.2:{{ .HTTPPort }}',
+                         '["-serial", "file:installer-serial.log"]',
+                         'console=tty0 console=ttyS0,115200n8 auto=true priority=critical',
                          'version = "= 1.1.8"']:
             self.assertIn(required, derived)
         self.assertEqual(source, (ROOT / 'tests/fixtures/izanagi-16d-debian.pkr.hcl').read_text())

@@ -71,9 +71,9 @@ python3 -m unittest discover -s integration/izanagi-bootstrap -p test_observe.py
 sudo -n /usr/bin/python3 integration/izanagi-bootstrap/observe.py --attempt 001 --output /tmp/tempest-bootstrap-build-observation-001.jsonl
 ```
 
-full Debian image用は`--phase image --attempt 001`で
-`tempest-izanagi-bootstrap-image-001.service`だけを観測します。
-imageのattempt002以降は未定義として観測開始前に拒否します。
+full Debian image用は`--phase image --attempt 001`または`002`で
+対応する`tempest-izanagi-bootstrap-image-001.service`または`002.service`だけを観測します。
+imageのattempt003以降は未定義として観測開始前に拒否します。
 これは観測対象の追加であり、full image buildの成功記録ではありません。
 
 ```sh
