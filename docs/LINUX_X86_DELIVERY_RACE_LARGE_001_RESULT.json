@@ -1,0 +1,267 @@
+{
+  "status": "failed_predeclared_completed_expectation",
+  "caller_session": 30779,
+  "caller_exit": 1,
+  "observer_session": 13443,
+  "observer_exit": 0,
+  "observer_terminal": "same Invocation failed terminal observed",
+  "unit": "tempest-izanagi-delivery-race-large-001.service",
+  "invocation_id": "00226f94d15640be99b426f7c38ae5f2",
+  "host_boot_id": "30389abc903c40ae89a5c6268ec1c432",
+  "observed_sessions": [
+    {
+      "workspace": "/var/lib/tempest-izanagi-delivery-race-large-001/work/runs/forced-delivery-race/sandbox",
+      "pid": 318657,
+      "starttime_ticks": 38603263,
+      "binding": {
+        "boot_nonce": "78a843f3967c1ac891cb56bcaaa4d542",
+        "supervisor_pid": 318652,
+        "session_fingerprint": "97b8ca7f70712c634c88c3e260bc69bed39ebdf6db602da10c815bed65216ed0"
+      }
+    }
+  ],
+  "observer_sample_count": 333,
+  "fixed_observer_replay_passed": true,
+  "input_items_unchanged": 1311,
+  "source_files_verified": 20,
+  "retained_build_files_verified": 42,
+  "old_snapshots_and_results_verified": true,
+  "runtime_status": "aborted",
+  "failure": "recorder evidence incomplete",
+  "evaluation": "partial",
+  "formal_metrics_eligible": false,
+  "control_integrity": "unavailable",
+  "control_request_integrity": "unavailable",
+  "contaminated": null,
+  "failed_control_operations": null,
+  "agent_calls_attempted": 1,
+  "scenario": {
+    "id": "delivery-large-001",
+    "dummy_object_bytes": 1048576,
+    "budget": {
+      "max_calls": 1,
+      "timeout": "120s"
+    },
+    "retest_configured": false
+  },
+  "api_rows": 29,
+  "native_manifest_metadata": {
+    "complete": false,
+    "finalized": true,
+    "failures": [
+      "capture reports packets dropped by kernel"
+    ],
+    "api_rows": 29,
+    "incomplete_rows": 0,
+    "capture_buffer_kib_requested": 4096,
+    "capture_immediate_mode": true,
+    "capture_statistics": {
+      "captured": 1930,
+      "dropped": 155,
+      "read_failed": false
+    },
+    "recorder_statistics": {
+      "accepted_connections": 29,
+      "admission_rejected": 0,
+      "connection_errors": 0,
+      "http_parse_errors": 0,
+      "task_errors": 0
+    },
+    "capture_started": "2026-11-18T23:11:39.454200006+00:00",
+    "capture_stopped": "2026-11-18T23:11:40.557161761+00:00",
+    "recorder_started": "2026-11-18T23:11:39.457717611+00:00",
+    "recorder_stopped": "2026-11-18T23:11:40.525102009+00:00"
+  },
+  "collection": {
+    "complete": false,
+    "export_id": "cee48986e948bfbaffa91a4787f0f863",
+    "files": {
+      "api.jsonl": {
+        "expected_bytes": 16492,
+        "expected_sha256": "fb0904dda12b59ecac7eaa51808fc2e3a98454cd74196ec86611c5ee1b1becc5",
+        "observed_sha256": "fb0904dda12b59ecac7eaa51808fc2e3a98454cd74196ec86611c5ee1b1becc5",
+        "received_bytes": 16492,
+        "verified": true
+      },
+      "capture.pcap": {
+        "expected_bytes": 59299901,
+        "expected_sha256": "07c53707a973554da133e3573897495ad723779edc6cc9596c69776901a8cbc7",
+        "reason": "transfer_deadline",
+        "received_bytes": 55607296,
+        "verified": false
+      },
+      "manifest.json": {
+        "expected_bytes": 1633,
+        "expected_sha256": "5426f9cdc484654482795f31cc0fae0c1f99a6d8402145480a1766c44c0598ed",
+        "reason": "upstream_aborted",
+        "received_bytes": 0,
+        "verified": false
+      }
+    }
+  },
+  "indexed_file_receipts": {
+    "api.jsonl": {
+      "bytes": 16492,
+      "sha256": "fb0904dda12b59ecac7eaa51808fc2e3a98454cd74196ec86611c5ee1b1becc5"
+    },
+    "capture.pcap": {
+      "bytes": 59299901,
+      "sha256": "07c53707a973554da133e3573897495ad723779edc6cc9596c69776901a8cbc7"
+    },
+    "manifest.json": {
+      "bytes": 1633,
+      "sha256": "5426f9cdc484654482795f31cc0fae0c1f99a6d8402145480a1766c44c0598ed"
+    }
+  },
+  "collected_verified_files": [
+    "api.jsonl"
+  ],
+  "pcap_whole_and_partial_absent": true,
+  "manifest_file_absent": true,
+  "host_control_operation_id": "c93fa2cf802bcb475bf66bdc65855090",
+  "native_export_id": "cee48986e948bfbaffa91a4787f0f863",
+  "export_submissions": 1,
+  "export_read_categories": [
+    "execution_error",
+    "ciphertext_received"
+  ],
+  "embedded_manifest_intents_reconciled": true,
+  "integrity_scope": "Embedded metadata reconciled independently; runtime integrity remains unavailable because manifest file was not collected. No key recovery or reply decoding.",
+  "fetch_state_counts": {
+    "started": 1699,
+    "delivery_read_started": 2557,
+    "delivery_read_observed": 2556,
+    "completed": 1698
+  },
+  "fetch_recorded_span_ns": 300313308111,
+  "fetch_terminal_missing_count": 1,
+  "quiesce": {
+    "forced_reader_pid": 1056,
+    "moved_pids": [
+      1052,
+      1053,
+      1056
+    ],
+    "frozen_duration_ns": 275538150,
+    "service_frozen": true,
+    "descendants_empty": true
+  },
+  "cleanup_receipt": {
+    "companion_stopped": true,
+    "down_succeeded": true,
+    "forced_group_stop": false,
+    "management_stopped": false,
+    "missing_logs": [],
+    "partial_files_removed": [],
+    "up_exited_successfully": true
+  },
+  "actual_resources": {
+    "uid999_absent": true,
+    "cgroup_absent": true,
+    "observed_ports_closed": [
+      32987
+    ]
+  },
+  "transient_keys_absent": true,
+  "artifact_inventory_complete": true,
+  "trusted_lifecycle": [
+    {
+      "MESSAGE_ID": "7d4958e842da4a758f6c1cdc7b36dcc5",
+      "UNIT": "tempest-izanagi-delivery-race-large-001.service",
+      "INVOCATION_ID": "00226f94d15640be99b426f7c38ae5f2",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795043474363830"
+    },
+    {
+      "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
+      "UNIT": "tempest-izanagi-delivery-race-large-001.service",
+      "INVOCATION_ID": "00226f94d15640be99b426f7c38ae5f2",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795043474367848"
+    },
+    {
+      "MESSAGE_ID": "98e322203f7a4ed290d09fe03c09fe15",
+      "UNIT": "tempest-izanagi-delivery-race-large-001.service",
+      "INVOCATION_ID": "00226f94d15640be99b426f7c38ae5f2",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "EXIT_CODE": "exited",
+      "EXIT_STATUS": "1",
+      "__REALTIME_TIMESTAMP": "1795043806916258"
+    },
+    {
+      "MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c",
+      "UNIT": "tempest-izanagi-delivery-race-large-001.service",
+      "INVOCATION_ID": "00226f94d15640be99b426f7c38ae5f2",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "UNIT_RESULT": "exit-code",
+      "__REALTIME_TIMESTAMP": "1795043806957379"
+    },
+    {
+      "MESSAGE_ID": "ae8f7b866b0347b9af31fe1c80b127c0",
+      "UNIT": "tempest-izanagi-delivery-race-large-001.service",
+      "INVOCATION_ID": "00226f94d15640be99b426f7c38ae5f2",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795043806958316"
+    }
+  ],
+  "files": {
+    "/var/lib/tempest-izanagi-delivery-race-large-001/work/runs/forced-delivery-race/scenario.yaml": {
+      "sha256": "bf3ba99f1766e141c73b9451b407045b2a6dabcd51a728eeee69adccc46523c5",
+      "bytes": 1049138
+    },
+    "/var/lib/tempest-izanagi-delivery-race-large-001/work/runs/forced-delivery-race/mock-script.json": {
+      "sha256": "8380ecce53694b93a7a2ea0a53350aedf3b12113a701a0b6042852e42ed79ff7",
+      "bytes": 436
+    },
+    "/var/lib/tempest-izanagi-delivery-race-large-001/work/runs/forced-delivery-race/run.json": {
+      "sha256": "0bba51ab90f1222a1f8e92b54bff60c3cc56253c5b4de82de8b05fefb347c422",
+      "bytes": 11229
+    },
+    "/var/lib/tempest-izanagi-delivery-race-large-001/work/runs/forced-delivery-race/result.json": {
+      "sha256": "52a958aefde83ae231a106bb888f68e142ccebacd2d81863503ace73b5c3c2b3",
+      "bytes": 10465
+    },
+    "/var/lib/tempest-izanagi-delivery-race-large-001/work/runs/forced-delivery-race/artifact-inventory.json": {
+      "sha256": "7595d938dd40f7a02b233e3c6036509417c7ac71e3b476aaac92df0e8958f2a4",
+      "bytes": 1031
+    },
+    "/var/lib/tempest-izanagi-delivery-race-large-001/work/runs/forced-delivery-race/evidence/control.jsonl": {
+      "sha256": "243aa1c3a3b539dc6b82008e6e20c774692a349c4615e5a732a3dcca2141b6e5",
+      "bytes": 1227427
+    },
+    "/var/lib/tempest-izanagi-delivery-race-large-001/work/runs/forced-delivery-race/evidence/export-index.json": {
+      "sha256": "644b5302cbc29c0417e1b7a89e22ce5c392b693f4ba1ed37b3af4bad3cdc1700",
+      "bytes": 2876
+    },
+    "/var/lib/tempest-izanagi-delivery-race-large-001/work/runs/forced-delivery-race/evidence/collection.json": {
+      "sha256": "67845edf7d3230028845f2131edf164617123c1fdb592e8240522c9a04848e3a",
+      "bytes": 879
+    },
+    "/var/lib/tempest-izanagi-delivery-race-large-001/work/runs/forced-delivery-race/evidence/api.jsonl": {
+      "sha256": "fb0904dda12b59ecac7eaa51808fc2e3a98454cd74196ec86611c5ee1b1becc5",
+      "bytes": 16492
+    },
+    "/tmp/tempest-delivery-race-large-observation-001.jsonl": {
+      "sha256": "80f2c55bcbb9311ded463efb8c631991c97b40c931c3edb98c4c1b04421b1e25",
+      "bytes": 438950
+    },
+    "/tmp/tempest-delivery-race-large-001.log": {
+      "sha256": "3722c8bab33fec2c93f27686088edc575fab03be67e888453aaac3f937a03e2f",
+      "bytes": 712
+    },
+    "/var/lib/tempest-izanagi-delivery-race-large-001/work/evidence/exit-status.json": {
+      "sha256": "a11d4dc2457cbbb942adf170e211875a6f8a254c0f11577972090e521dd37216",
+      "bytes": 538
+    }
+  }
+}
