@@ -34,11 +34,13 @@ synthetic HOME非到達と連続2 runのstate独立性は`d598243`までのdummy
 実Claude設定・credential・sessionへの成立は未検証のままです。
 
 KVM固定プローブの専用user・配置監査・実device正常経路は確認済みです。
-次は固定Izanagi最小起動の計画を監査します。
+最小bootstrap image生成・最終化と回収は[build003](LINUX_BOOTSTRAP_BUILD_003.md)で確認済みです。
+systemctl終了属性の取り逃しと、trusted journal/clientによる別証拠の関連付けは区別しています。
+次は[root所有artifact配置と固定Izanagi最小起動](LINUX_IZANAGI_BOOT_RUN_PLAN.md)を監査します。
 
-1. 上流固定sourceと既存x86_64 artifact、最小boot手順とbase image候補をread-onlyで棚卸しする。
-2. 固定command・hash・cleanup・network制約を含む計画を提示し、起動前に監査する。
-3. 固定Izanagi成功後に限り、guest/image再構築とVM境界再実測へ進む。
+1. 配置済みimage/harness/終了recorderの固定hash・owner/mode、private run/dummy secretの条件を監査する。
+2. 固定transient commandで認証Ready・guest UID・downを単発実測し、終了記録と独立回収を確認する。
+3. 固定Izanagi成功後に限り、full Tempest guest/派生Debian再構築とVM境界再実測へ進む。
 
 dummy HOMEの受入範囲は[Linux HOME・run state隔離gate](LINUX_STATE_ISOLATION.md)に固定します。
 本番B/VMへの結線、fresh login、subscription live-call、正式比較は未達です。

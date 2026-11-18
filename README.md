@@ -138,7 +138,10 @@ binaryのdevice実行と専用user作成はartifact監査後の管理者checkpoi
 
 固定Izanagiの最小boot harnessは独立workspaceで準備中です。
 [setup・build・test手順](integration/izanagi-bootstrap/README.md)と
-[起動前計画](docs/LINUX_IZANAGI_BOOT_PLAN.md)を参照してください。VM起動はまだ行っていません。
+[起動前計画](docs/LINUX_IZANAGI_BOOT_PLAN.md)を参照してください。
+専用userのPackerによる[bootstrap image生成と回収](docs/LINUX_BOOTSTRAP_BUILD_003.md)は確認済みです。
+harnessでの認証Ready・guest UID・downの実測はまだ行っていません。
+[root所有artifact配置と単発起動計画](docs/LINUX_IZANAGI_BOOT_RUN_PLAN.md)を監査中です。
 
 旧 WIP（0f5d190）では固定90秒 watchdog と増加した suite の衝突に整合する失敗を
 91,092 ms・`frame_oversize` Ready の child SIGKILL/watchdog exit1/RUN残留として再現しました。
