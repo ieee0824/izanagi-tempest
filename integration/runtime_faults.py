@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Destructive-local M4 fault checks against the pinned disposable VM image."""
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -36,7 +37,20 @@ def seed_reply_loss(args):
         companion = Path(temporary)
         source = (ROOT / 'image/host_bridge.py').read_text()
         needle = "                result = pending.decode(message['frame'])\n"
-        replacement = needle + "                if pending.operation == 'seed':\n                    raise RuntimeError('injected reply loss')\n"
+        witness = companion / 'seed-applied.json'
+        applied = {'seed_reply_verified': True, 'admin_key_rotated': True,
+                   'new_key_verified': True, 'old_key_rejected': True, 'users': ['worker']}
+        replacement = needle + (
+            "                if pending.operation == 'seed':\n"
+            "                    fields = result.get('result', {})\n"
+            "                    keys = fields.get('access_keys', {})\n"
+            "                    if result.get('ok') is not True or set(keys) != {'worker'} or not all(isinstance(k, str) and k for k in keys.values()) or not all(fields.get(k) is True for k in ('admin_key_rotated', 'new_key_verified', 'old_key_rejected')):\n"
+            "                        raise RuntimeError('seed reply not verified')\n"
+            "                    fd = os.open(" + repr(str(witness)) + ", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)\n"
+            "                    with os.fdopen(fd, 'w') as stream:\n"
+            "                        stream.write(" + repr(json.dumps(applied) + '\n') + ")\n"
+            "                        stream.flush(); os.fsync(stream.fileno())\n"
+            "                    raise RuntimeError('injected reply loss')\n")
         if source.count(needle) != 1:
             raise AssertionError('host bridge injection point changed')
         (companion / 'host_bridge.py').write_text(source.replace(needle, replacement))
@@ -50,6 +64,15 @@ def seed_reply_loss(args):
             '--runs', str(args.runs), '--run-id', run_id,
         ]
         first = subprocess.run(command, text=True, capture_output=True, timeout=360)
+        if not witness.is_file() or json.loads(witness.read_text()) != applied:
+            raise AssertionError('reply loss was not injected after a verified successful seed reply')
+        # Safe post-decryption witness: no token, credential value, or key hash.
+        fd = os.open(args.runs / (run_id + '-applied.json'),
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(witness.read_text())
+            stream.flush()
+            os.fsync(stream.fileno())
     if first.returncode == 0:
         raise AssertionError('lost seed response was accepted')
     report = json.loads((run / 'run.json').read_text())
@@ -71,9 +94,18 @@ def seed_reply_loss(args):
         raise AssertionError('unexpected artifact after seed loss')
     assert_partial_evaluation(run)
     before = digest(run / 'run.json')
-    retry = subprocess.run(command, text=True, capture_output=True, timeout=30)
+    # The injected bridge's TemporaryDirectory is already gone. Use the pinned
+    # base bridge so a missing input cannot masquerade as run-ID refusal.
+    retry_command = list(command)
+    bridge_index = retry_command.index('--mailbox-bridge') + 1
+    retry_command[bridge_index] = str(ROOT / 'image/host_bridge.py')
+    if not Path(retry_command[bridge_index]).is_file():
+        raise AssertionError('retry bridge is missing before run-ID refusal check')
+    retry = subprocess.run(retry_command, text=True, capture_output=True, timeout=30)
     if retry.returncode == 0 or digest(run / 'run.json') != before:
         raise AssertionError('reserved run ID was reused or mutated')
+    if f'(os error {errno.EEXIST})' not in retry.stderr:
+        raise AssertionError('retry did not reach the existing run-ID reservation')
     print(json.dumps({'seed_reply_loss': 'passed', 'run': str(run)}))
 
 
