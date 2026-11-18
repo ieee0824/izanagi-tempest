@@ -36,3 +36,9 @@ cgroup消失、UID999残留なし、観測port36913閉鎖を確認した。
 追加VM/暗黙retryは行っていない。外部positive control・forced delivery race・全route/全期間・実認証/正式モデル比較は残gateのまま。
 
 collector61318は同handle終端exit0。全1311入力/外部runtime・旧proc001/002/003/exec/presence/normal/seed-loss全1537tree/reservation/full/smoke原本の不変、旧鍵不在を照合した。audit保存copyは元fresh sessionのfile集合/byte hashへ照合し、owner/mode/単linkと有限byte/record/segment上限を確認した。
+
+## 監査後の鍵回収追補
+
+room16756のsource監査後、同Invocation exit0/unit終了/cgroup消失/UID999なし/port36913閉鎖を再確認した。
+全親path実体と当該HMACの通常単link/999:988/0600を照合し当該fileだけunlink、値/単体hash非読取で非存在を確認した。
+[別追補metadata](LINUX_X86_SIDECAR_001_KEY_CLEANUP.json)を保存し、元RESULT・固定入力・raw原本は保持する。
