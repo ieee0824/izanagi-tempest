@@ -1,5 +1,14 @@
 # Linux x86固定host CLI配送競合completed001案
 
+## 後続の準備結果
+
+room16824のsource/argv/容量監査後、prepare9846とUID check48780は各同handleで終了コード0。
+[実snapshot](LINUX_X86_DELIVERY_RACE_COMPLETED_SNAPSHOT_001.json)は1310項目、canonical tree `142c805897a670b3b4a2fa262becbb964aa9e46c011070f0816e831464b084f9`。
+[準備検査結果](LINUX_X86_DELIVERY_RACE_COMPLETED_PREPARATION_001.json)へhash/owner-mode/nonwrite、固定Python/AES/import-help、固定host CLI help/scenario validate、artifact binding/xattrと出力不在を保存した。
+181 directoryはroot:988/0750、work/home/tmp/evidenceは999:988/0700。copy後free10461425664 bytesで8GiB条件を満たし、UID検査後も専用UIDプロセスとruns/exit recordは不在。
+19固定source/data・外部runtime・旧入力/結果は不変で、raw/partitionも保持した。新root/snapshotだけを作成し、run_once・VMは未実行。
+以下は草案時点の記録であり、各「未作成」はその時点を表す。
+
 ## 状態と対象
 
 room16819/16821に従う具体案。新root・snapshot・VMは未作成で、この試験は未実施。
