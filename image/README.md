@@ -252,3 +252,27 @@ receiverへの直接対照、許可fixtureへのproxy転送、許可Hostの別po
 bodyをmetadataへ保存した場合は失敗する。exec/log/behaviorの管理目印scanは保持する。
 全期間のsidecar可用性、稼働exe hashの直接読取、writer attribution、分類精度、外部egress、実model/credentialをこの検査で保証しない。
 この実装の追加だけでは実VM成功を意味せず、固定単発VMの結果を別に監査する。
+
+固定Linux sidecar001の単発結果は[検証範囲](../docs/SIDECAR-EVIDENCE.md)を参照する。正常転送/2種類の拒否とmetadataを確認済みだが、外部egressや#36全体の受入とは別である。
+
+### VM外host endpointへの接続拒否対照
+
+`integration/image_smoke.py --network-evidence --exec-evidence` は固定Linux host/独立observerが必要な専用モード。
+通常必須のimage/CLI/output引数と、監査済み専用root/unit/observer/snapshotを使い、他fixture modeとの同時指定を拒否する。
+VM起動前にrestrict_network=true/read-only共有・空のallowed_hosts・behavior/DNS/HTTP proxy未設定を確認し、制限を解除しない。
+通常M3/sidecar操作は実行せず、共通bootstrap/権限検査後、同unitのhost controllerに固定dummy専用TCP receiverを起動する。
+
+receiverは127.0.0.1のOS割当portだけで待受け、同public nonceのbefore/after対照をechoする。最大256B/frame、全期限60秒、5accept目で停止する。
+accept自体をpayload前に数え、guest試行中の追加accept0・前後正常2件以外は失敗。前後で同じsocket inode/bindとthread生存を確認する。
+`output/network-receiver.ready.json`（schema1/nonce/host_pid/address/port/socket_inode、0600）を排他的・原子的に公開する。
+独立observerはunit main PID/starttime/cgroup・実socket/listenerを測定し、固定`work/evidence/network-receiver-observed.json`へroot:988/0440/単linkのackを公開する。
+ackはready6fieldにhost_pid_starttime_ticks（proc stat22のticks）とinvocation_idを加えた8field、最大4096B。待機10秒内に一致しなければ試行を拒否する。
+
+guest helperはguard確認後に自身のraw TCP loopback正例を実行し、proxy環境に依存せず固定10.0.2.2の当該host portへ接続を試みる。
+成功接続はpayload未送信でも不合格。拒否errnoとtimeoutを保存し、未知errorや別targetを拒否成功にしない。
+guest execは10秒/JSON16384B以内。host call前後のmonotonic区間とguest自身の区間は分け、異なる時計を直接比較しない。
+receiver close/join後に`network-receiver.closed.json`で終了phaseを公開し、observerはQEMU forwardとdummy host listenerを別roleで監査する。
+`network-host.private.json`へ安全な対照・bind・ack・件数と部分失敗を保存し、private exec/log scanと同unit回収を維持する。
+
+これは当該VM外host-alias endpointだけの検査であり、Internet全般・本番MCP egress・正式modelの保証ではない。
+実VMは固定計画/observer/source/UID検査後に単発実行し、実装追加やhost上のsynthetic socket試験だけで完了扱いにしない。
