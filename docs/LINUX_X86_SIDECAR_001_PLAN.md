@@ -78,3 +78,21 @@ fixture転送・receiver件数・thread終了の検査後に発生し、TIME_WAI
 追補10563c4/bc14167を取り込み、TCP TIME_WAITと残留listenerを区別するconnect_ex拒否＋thread終了検査へ修正した。production Receiver設定は変更していない。
 修正後はLinux全140tests/skip0成功（sidecar13件を含む）。先の再bind検査失敗は試行記録として残す。
 sidecar probe/evidenceのproduction bytesは最終PR60と一致し、prepareの固定hashも整合する。まだroot/snapshot/VMは未作成。
+
+## 固定準備結果
+
+[1311入力snapshot](LINUX_X86_SIDECAR_SNAPSHOT_001.json)と[専用UID検査](LINUX_X86_SIDECAR_PREPARATION_001.json)を保存した。
+source c1238a9、canonical tree2691eee579e28a4e71685534fa257ca287da20f8c0cfe93e6c4b0da326d06e22。
+prepare90009/UID60602は同handle終端exit0。全hash/owner/mode/read可write不可・外部runtime・venv/AES/help/xattr/private work/newoutput/exit/log不在を確認した。
+Linux全140tests/skip0とbootstrap13tests成功。help/importだけでhost helper main/実procは実行していない。
+準備直前unit未使用/UID999なし/root未作成/free27783577600 bytesを確認し、準備時に旧proc001/002/003原本・鍵不在追補と旧exec/presence/normal/seed-loss全tree/reservation/full/smoke証拠不変を照合した。
+実行直前も不変/未使用/容量/残留を再確認する。
+
+先行observer予定:
+
+```sh
+sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-sidecar-001/inputs/repo/integration/image_smoke_observe.py --attempt sidecar-001 --output /tmp/tempest-sidecar-observation-001.jsonl
+```
+
+続くfixedcallerは `python3 -I -B docs/evidence/sidecar-001/run_once.py`。
+service/ExecStart一致・--exec-evidence --sidecar-evidence・offline artifact report指定を維持。現時点ではobserver/caller/VMは未実施。

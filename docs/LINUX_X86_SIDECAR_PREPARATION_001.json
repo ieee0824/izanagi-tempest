@@ -1,0 +1,23 @@
+{
+  "input_files_checked": 1311,
+  "input_rows_sha256": "2691eee579e28a4e71685534fa257ca287da20f8c0cfe93e6c4b0da326d06e22",
+  "versions": {
+    "prefix": "/var/lib/tempest-izanagi-sidecar-001/inputs/python",
+    "cryptography": "50.0.2",
+    "cffi": "2.1.1",
+    "pycparser": "3.12"
+  },
+  "all_inputs_readable_nonwritable": true,
+  "runtime_hashes_match": true,
+  "work_private": true,
+  "xattr_roundtrip": true,
+  "output_absent": true,
+  "vm_boot_executed": false,
+  "provenance": {
+    "prepare_session": 90009,
+    "prepare_exit": 0,
+    "uid_session": 60602,
+    "uid_exit": 0,
+    "uid_source_delivery": "stdin; repository permissions unchanged"
+  }
+}
