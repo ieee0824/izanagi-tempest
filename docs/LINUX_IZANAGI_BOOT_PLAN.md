@@ -105,13 +105,26 @@ default features、exit0、47.88秒。agentはstatic-pie ELF64 x86_64、SHA256�
 上流source cleanを維持しています。
 QEMU plugin 1.1.8 zipは公式releases.hashicorp.comのSHA256SUMSと一致し、
 `dbdec022f362c9c0c351c860deb1a52a135fdfa71e126048ba45030e12714904`でした。
-pluginの展開・登録とfull validationはまだ残っています。
+plugin binary SHA256は`7093fbbcfe8b2ace01ecb722a49c49a02187929f431c9a48188dc3c8132203d0`。
+照合済みzipから展開し、一時`PACKER_PLUGIN_PATH`へ`plugins install --path`で登録しました。
+通常userのPacker設定には登録していません。
 
 [生成手順](../integration/izanagi-bootstrap/README.md)に従い、上流不変更の派生定義を生成しました。
 Packer1.15.0のsyntax-only check、guest scriptの`sh -n`、生成器のPython compileが成功しました。
 既存出力へ再実行すると拒否され、元manifestが不変であることも確認しました。
 guest UID/GID1000の非login・locked userと、fw_cfg moduleのbuild時確認/永続loadを追加します。
 これらは定義・構文検査であり、guest内での実行成功や完成imageの証拠ではありません。
+
+登録後に生成directory内で以下を実行し、`The configuration is valid.`、exit0でした。
+
+```sh
+PACKER_PLUGIN_PATH=/tmp/tempest-bootstrap-inputs/packer-plugins /tmp/tempest-bootstrap-inputs/packer-1.15.0/packer validate -var-file=bootstrap.pkrvars.json bootstrap.pkr.hcl
+```
+
+[監査用service設定](../integration/izanagi-bootstrap/bootstrap.service)を作成し、
+`systemd-analyze verify integration/izanagi-bootstrap/bootstrap.service`もexit0でした。
+service install/enableや起動は行っていません。NoNewPrivilegesとDelegate=noを固定し、
+専用userの権限を保持したままcgroupは管理者側で監視・回収します。
 
 ## 起動前に具体化する手順
 

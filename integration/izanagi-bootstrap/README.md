@@ -40,3 +40,9 @@ python3 integration/izanagi-bootstrap/prepare.py \
 
 `inputs.json`には元ISO pin/override、source/provision/agent/生成器hashを保存します。
 Packer/pluginは1.15.0/1.1.8へ固定し、buildはまだ実行しません。
+
+`bootstrap.service`は監査用の固定property一覧です。常駐serviceとしてinstall/enableしません。
+最終起動時に同じpropertyをtransient unitへ渡し、独立したcgroup回収確認を行います。
+`/var/lib/tempest-izanagi-bootstrap`配下のprobe/imageはroot所有・専用user非書換えにし、
+private run領域と空のread-only share、dummy secretを別に作成してhash/owner/modeを照合します。
+これらの配置と起動commandの監査はまだ必要です。

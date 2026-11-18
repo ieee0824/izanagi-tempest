@@ -1,0 +1,20 @@
+# Review input only. Do not enable or install as a persistent service.
+# Submit these fixed service properties as a transient unit after artifact audit.
+[Unit]
+Description=Fixed dummy Izanagi bootstrap validation
+
+[Service]
+Type=exec
+User=tempest-kvm
+Group=tempest-kvm
+SupplementaryGroups=kvm
+WorkingDirectory=/run/tempest-izanagi-bootstrap
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/nonexistent TMPDIR=/run/tempest-izanagi-bootstrap IZANAGI_SECRET_FILE=/run/tempest-izanagi-bootstrap/dummy.secret /var/lib/tempest-izanagi-bootstrap/probe
+KillMode=control-group
+RuntimeMaxSec=240s
+TimeoutStopSec=5s
+SendSIGKILL=yes
+Restart=no
+UMask=0077
+NoNewPrivileges=yes
+Delegate=no
