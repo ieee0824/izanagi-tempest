@@ -1,0 +1,43 @@
+# Linux x86 delivery-race fixture build001 recipe案
+
+## 状態と範囲
+
+room16780の指示に基づくbuild-only草案。新root /var/lib/tempest-izanagi-delivery-race-build-001と専用unitを提案する。
+まだrecipe/source監査前で、新root・定義directory・Packer build・VM起動は未実施。
+既存full003 image/全入力/旧証拠は不変更。完成してもfixture runtimeやforced race実測の成功とは区別する。
+
+## 親子provenance
+
+親はfull003の固定definition/inputs.json・packer全定義、ISO・agent/ebpf/http/lws/guest各binary・Packer/pluginを使用する。
+親image SHA5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7eは参照証拠であり、既存qcow2を直接書換えない。
+別imageを同ISO/assetsから再buildする案。親definitionのfile集合/hash/owner/modeと元manifest SHAを束縛し、全path置換を許可差分として記録する。
+
+親guest binaryのsource metadataはcommit7ab5d4ee98b009086d83a98320dc752c3372bf4f、tree680b42138d4a8d2b1ae2cd7db8f83721366d58ddc754ee590f3471ac0f4452c8、dirty=false。
+現在のprepare.helper_sourceはtree0ba049bd57412fc0a13e319b432b9f718242150950397bdfff6bd137c349d2b1で異なる。
+現在のprepareを再実行して旧guest binaryへ現在treeを付けるとsource/binary整合の意味が変わるため、そのまま実行しない。
+親binaryのinput_sha/source metadataを維持し、別fixture recipe revision/instrumenter hash/親manifest hash/変更前後file hashを追加provenanceにする案を監査する。
+image/prepare.py --delivery-race-fixtureと同じinstrument()を親の固定dispatcher/quiesceへ実適用し、flagだけを後付けしない。
+custom recipeであることを明記し、実際にprepare CLIを実行したとは記録しない。標準prepareを使う場合は同binaryと一致するソースsnapshotを先に確保し、metadataの解決後にだけ進む。
+
+## instrumentationのメモリ内確認
+
+新fileを作らず、親固定sourceへ現instrumenterを適用しPython構文を確認した。source差分の実受入やbuild成功ではない。
+
+|対象|親SHA256|fixture SHA256|
+|---|---|---|
+|dispatcher.py|2c785fa2d24841ed00e5807604343e31e9409c5b7ae9855d0e0adf5449622b09|faf0c5aef7e5ae7600e77c88df61d84edad6b3cdd39e5b765e65d7a96972e1b9|
+|quiesce.py|34cbc78cfec3caedac52bcaa747df62342383612ee5f3f9aab9ab02bac5cb8b0|72fabf3ce527257ab2bb5fb8cb3b8a8ef7e706ff2715b29e5b7c0857bf5390a8|
+
+instrumenter SHA562a44539935b975f3c9b1eba8e141579d12c5791d62206163578f4ddf170dc6。
+実root deliver PIDをservice cgroup内で保持し、quiesceが同requestのreaderを待ってfreeze/kill証拠へ記録するfixtureである。通常imageへこの待機を入れない。
+派生image.json/inputs.jsonはdelivery_race_fixture=trueと実dispatcher/quiesce/instrumenter derivation SHAを持ち、親非fixture metadataも別に保持する。
+
+## build-only準備条件
+
+親fileの不変照合→新definition導出と許可差分/manifest照合→既存Packer1.15.0/plugin1.1.8 full validate→新root snapshot/専用UID検査→正確argv/容量/未使用unit監査の順。
+root/inputs0750・入力0440/実行0550、UID999:GID988/kvm993のwork0700/env-i、有限runtime/同unit回収を維持する。
+installerのbuild時network/loopback HTTP・SSH・VNC条件は親full003と同じbuild-only契約として別監査し、runtimeのrestrict=on受入と混同しない。
+旧bootstrap/full001002003と後続全runtime証拠・鍵不在を保持する。2026-11-18の調査時free23387729920 bytesであり、snapshotコピー/ISO/一時disk/完成image/失敗ログを含む必要容量を具体的に見積もってから開始条件を固定する。
+新unit/port/serial/debug/output未使用、owner/nonwrite/hash、ELF/loader/GLIBC親同一、実QEMUcwd/単一VM/build listenerを観測する。
+失敗時は当該unitだけ回収しpartialを保持、暗黙retryや既存root再利用をしない。
+生成物hash/format/backingなし/明示fixture manifest/provenanceと同Invocation trusted終了・cgroup/UID/port回収を保存し、結果監査後に別runtime計画へ進む。
