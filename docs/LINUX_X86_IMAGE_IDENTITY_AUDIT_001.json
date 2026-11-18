@@ -1,0 +1,74 @@
+{
+  "roots": [
+    "/var/lib/tempest-izanagi-image-smoke-002",
+    "/var/lib/tempest-izanagi-image-smoke-001",
+    "/var/lib/tempest-izanagi-image-smoke-001-v2",
+    "/var/lib/tempest-izanagi-exec-exposure-001",
+    "/var/lib/tempest-izanagi-proc-exposure-001",
+    "/var/lib/tempest-izanagi-proc-exposure-002",
+    "/var/lib/tempest-izanagi-proc-exposure-003",
+    "/var/lib/tempest-izanagi-sidecar-001"
+  ],
+  "read_only": true,
+  "selection": "*.json with inventory/baseline/snapshot/manifest in filename, excluding copied repo/python source; <=8MiB; no symlinks",
+  "scanned": [
+    {
+      "file": "/var/lib/tempest-izanagi-image-smoke-002/snapshot.json",
+      "bytes": 443318,
+      "sha256": "c86a4a8c1d0789c4d121967c807906c101f42611bd4d0fa266712d8b0cfb4872"
+    },
+    {
+      "file": "/var/lib/tempest-izanagi-image-smoke-002/work/output/guest-evidence/manifest.json",
+      "bytes": 1971,
+      "sha256": "d4e6e3c75a098461642cb32086ffec3e6e600789c6a5732d5e2bb88269673db7"
+    },
+    {
+      "file": "/var/lib/tempest-izanagi-image-smoke-001/snapshot.json",
+      "bytes": 442783,
+      "sha256": "2f41cf29ba00092b9b5682c65e49ece0966f62a523b5f2172749bf34cb58713c"
+    },
+    {
+      "file": "/var/lib/tempest-izanagi-image-smoke-001-v2/snapshot.json",
+      "bytes": 447232,
+      "sha256": "a0b9921073de80d0bd2c3f064edc95f40a8258c491b211497c0dbc784bc6f4ae"
+    },
+    {
+      "file": "/var/lib/tempest-izanagi-exec-exposure-001/snapshot.json",
+      "bytes": 446560,
+      "sha256": "d28e5524483ea30a208a5eae9e1e71a380488dbdfd05fbec338d2d2c22f1ba8a"
+    },
+    {
+      "file": "/var/lib/tempest-izanagi-exec-exposure-001/work/output/guest-evidence/manifest.json",
+      "bytes": 1971,
+      "sha256": "fb5ac9470f3a08b9c06d3892683014cdd9c67ae48eb487f97be441773b4464f7"
+    },
+    {
+      "file": "/var/lib/tempest-izanagi-proc-exposure-001/snapshot.json",
+      "bytes": 446830,
+      "sha256": "a2b613527e750bd6cb8ba7cb5cd99c24130da1c533ddcb45faf884af66482307"
+    },
+    {
+      "file": "/var/lib/tempest-izanagi-proc-exposure-002/snapshot.json",
+      "bytes": 447098,
+      "sha256": "cbeb4a017931fe402469a1c525bf8fa0fb34cedc6874ee7a404cde6d936e941e"
+    },
+    {
+      "file": "/var/lib/tempest-izanagi-proc-exposure-003/snapshot.json",
+      "bytes": 447098,
+      "sha256": "0d63c98878f1c97458ea99ef5ed1cf6c44683bed204f34c592a25ee969407a5b"
+    },
+    {
+      "file": "/var/lib/tempest-izanagi-proc-exposure-003/work/output/guest-evidence/manifest.json",
+      "bytes": 1971,
+      "sha256": "c9c4972e9884f456b054116acc8f4326e24f851a725655a8dffdedb80367b937"
+    },
+    {
+      "file": "/var/lib/tempest-izanagi-sidecar-001/snapshot.json",
+      "bytes": 438695,
+      "sha256": "72539c463971fea1536c159f181979ea071f70dd4d186cb4b73ad5666c996068"
+    }
+  ],
+  "skipped": [],
+  "identity_bindings": [],
+  "unscanned_scope": "Other filenames, JSONL/raw streams, copied code/runtime packages, and roots outside exact eight are not searched. Known reservation private baseline is bound only to excluded seed-loss tree by verifier source."
+}

@@ -78,6 +78,7 @@ def verify_preserved():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--apply', action='store_true', help='Authorized mutation; never implicit')
+    parser.add_argument('--authorization-message', required=True, help='Previously verified room authorization reference; not proof by itself')
     args = parser.parse_args()
     assert args.apply and os.getuid() == 0
     os.umask(0o077)
@@ -88,7 +89,12 @@ def main():
             journal.write(json.dumps(value, sort_keys=True) + '\n')
             journal.flush()
             os.fsync(journal.fileno())
-        record({'phase': 'preservation_check_started', 'paths': [str(p) for p in PATHS]})
+        record({'phase': 'preservation_check_started', 'paths': [str(p) for p in PATHS],
+                'authorization_message': args.authorization_message,
+                'script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                'physical_identity_exception': ['canonical nlink/ctime', 'seven target inode/nlink/ctime',
+                                                'seven parent directory mtime/ctime'],
+                'authorization_scope': 'Reference must be verified before invocation; recording a reference alone grants no authority.'})
         preserved = verify_preserved()
         dirs, files, rows = [], [], []
         try:

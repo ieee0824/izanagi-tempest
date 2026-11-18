@@ -17,3 +17,11 @@ public docs JSONのcandidate pathに付随するinode/ctime/nlink依存は先行
 物理identityの例外はcanonicalのnlink/ctime、7targetのinode/nlink/ctime等と、変更した7parent directoryのmtime/ctimeを含む。元RESULTやsnapshotを後付けで書き換えない。path/bytes/SHA/owner/mode維持、全snapshot内容検査、public result参照hash、seed-loss全tree完全一致を前後で確認し、追加provenanceで例外を記録する。回収容量は旧FDを閉じた後に実測する。
 
 草案はPython構文確認のみ実施。実mutationやblock-dedupe ioctl、新image buildは行っていない。実行前にはprivate identity依存の残監査、preservation verifierのread-only単独実行、正確なscript/source hashのレビューが必要。容量20/18GiB条件は下げない。
+
+## 草案の追加検証
+
+[review結果](LINUX_X86_IMAGE_HARDLINK_REVIEW_001.json)に7751のread-only保存検証終端0と、root専用dummy4テスト成功を保存した。script開始journalには事前に確認したroom authorization参照・実script SHA・物理例外範囲を記録する。参照値の記入自体は権限を与えない。
+
+[限定identity監査](LINUX_X86_IMAGE_IDENTITY_AUDIT_001.json)は指定8root内の名前にinventory/baseline/snapshot/manifestを含むJSON、8MiB以下、symlinkなし、コピーしたrepo/pythonを除く11fileを読んだ。oversize等のskipは0、対象absolute/relative pathとidentity fieldの同record bindingは0。JSONL/raw、別名file、他rootは未走査。元private内容は公開していない。
+
+scriptの実image適用は未実行。次は固定最終SHAと追加検証結果のレビューを待つ。
