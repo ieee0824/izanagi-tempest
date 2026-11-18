@@ -1,0 +1,44 @@
+{
+  "input_files_checked": 1314,
+  "input_rows_sha256": "e4e4e7ada5cd326a2967e6e653a64bf1acdd8c4c87b2eb3272a249ed31d7ea03",
+  "versions": {
+    "prefix": "/var/lib/tempest-izanagi-delivery-race-smoke-001/inputs/python",
+    "cryptography": "50.0.2",
+    "cffi": "2.1.1",
+    "pycparser": "3.12"
+  },
+  "all_inputs_readable_nonwritable": true,
+  "runtime_hashes_match": true,
+  "work_private": true,
+  "xattr_roundtrip": true,
+  "output_absent": true,
+  "vm_boot_executed": false,
+  "provenance": {
+    "prepare_session": 99074,
+    "prepare_exit": 0,
+    "uid_check_session": 47940,
+    "uid_check_exit": 0,
+    "source_commit": "f426f679d4f740007730361ee921c438a1e66dba",
+    "free_bytes_after_copy": 12606590976,
+    "free_bytes_after_final_directory_check": 12605620224,
+    "directories_checked": 180,
+    "directories_uid_gid_mode": [
+      0,
+      988,
+      "0750"
+    ],
+    "work_uid_gid_mode": [
+      999,
+      988,
+      "0700"
+    ],
+    "canonical_tree_match": true,
+    "uid999_empty": true,
+    "artifact_binding_passed": true,
+    "aesgcm_roundtrip_passed": true,
+    "import_help_passed": true,
+    "uid_check_source_delivery": "stdin; repository permissions unchanged",
+    "run_once_executed": false,
+    "room_preparation_instruction": 16811
+  }
+}

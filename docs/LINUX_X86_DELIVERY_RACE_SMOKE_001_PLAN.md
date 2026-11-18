@@ -1,5 +1,14 @@
 # Linux x86配送競合M3 smoke001の準備案
 
+## 後続の準備結果
+
+room16811でbuild結果・23固定source/準備案の監査を受理され、snapshot作成とUID検査まで実施した。
+prepare99074とUID check47940は各同handleで終了コード0。[実snapshot](LINUX_X86_DELIVERY_RACE_SMOKE_SNAPSHOT_001.json)は1314項目、canonical tree `e4e4e7ada5cd326a2967e6e653a64bf1acdd8c4c87b2eb3272a249ed31d7ea03`。
+[準備検査結果](LINUX_X86_DELIVERY_RACE_SMOKE_PREPARATION_001.json)へ固定Python版・全入力read可/write不可・外部runtime hash・AESGCM/import/help/xattr/artifact binding・出力不在を保存した。
+180 directoryはroot:988/0750、work/home/tmp/evidenceは999:988/0700。copy後free12606590976 bytesで10GiB条件を満たす。
+検査後もUID999プロセスとoutput/exit recordは不在。raw/partitionは保持し、旧root/入力/結果は不変更。
+新root/snapshotだけを作成し、run_once・VMは未実行。以下の「未作成」は草案時点の記録である。
+
 ## 状態と目的
 
 [build001とoffline照合](LINUX_X86_DELIVERY_RACE_BUILD_001.md)の結果監査後に進める草案。
