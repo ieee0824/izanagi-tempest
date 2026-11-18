@@ -38,3 +38,9 @@ cgroup消失、UID999残留なし、観測port43569/59583閉鎖を確認した�
 当該dummy transport keyは結果監査までprivate保持し、値/単体hash非読取。固定入力・旧証拠・raw原本を保持する。
 
 collector87552は同handle終端exit0。全1314入力/外部runtime、旧sidecar/proc001/002/003/exec/presence/normal/seed-loss全1537tree/reservation/full/smoke証拠の不変と旧鍵不在を照合した。host helper2fileは通常単link/999:988/0444・source hash一致・実mapped uid0/gid0/mode0100444を確認した。
+
+## 監査後の鍵回収追補
+
+room16780のsource監査後、同Invocation exit0/unit終了/cgroup消失/UID999なし/port43569・59583閉鎖を再確認した。
+全親path実体と当該HMACの通常単link/999:988/0600を照合して当該fileだけunlink、値/単体hash非読取で非存在を確認した。
+[別追補metadata](LINUX_X86_HOST_ENDPOINT_001_KEY_CLEANUP.json)を保存し、元RESULT・固定入力・raw原本を保持する。
