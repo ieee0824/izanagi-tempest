@@ -84,6 +84,7 @@ Izanagi の使い捨て VM 内に LWS を同居させる。
 
 - 実装量が最小。VM 内 loopback(`127.0.0.1:4566`)で LWS に到達できるため、通信ブリッジが不要
 - Izanagi の QEMU は既定で外部通信を遮断(`restrict_network=true`)。**Phase 1 ではネットワーク制限を解除しない** — VM 内 loopback 完結で済む
+- ハーネスのtoken/setup/probe/exportはroot専用mailboxで配送し、固定execのargvへ秘密を載せない。方向別上限・不確定時の廃棄と実VM観測の範囲は[配送証拠表](ISSUE-13-DELIVERY-EVIDENCE.md)に記録する。
 - 弱点: 攻撃側(VM 内プロセス)が LWS のプロセスや SQLite(`s3.sqlite` 等)を直接操作できてしまう。シナリオの成否が汚染される可能性がある。VM 内のユーザー分離等による緩和策は [IMPLEMENTATION.md](IMPLEMENTATION.md#33-ハーネス専用操作をエージェントから守る) を参照
 - 検証できること: シナリオ定義→実行→評価の一連のフロー、証跡の関連付け、レポート形式
 
