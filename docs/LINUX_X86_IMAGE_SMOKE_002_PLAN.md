@@ -2,7 +2,7 @@
 
 ## 状態と固定対象
 
-計画レビュー用。snapshot は未作成、VM は未起動。
+計画レビュー用。snapshot 作成・UID999 の準備検査は完了、VM は未起動。
 unit は tempest-izanagi-image-smoke-002.service、root は /var/lib/tempest-izanagi-image-smoke-002。
 旧001/v1/v2、full-build001/002/003、offline001 の入力と証拠は保持し、再利用して起動しない。
 image は full003 SHA5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e、CLI は SHA088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8 を維持する。
@@ -48,3 +48,13 @@ sidecar実起動、独立Rust MCP route、forced delivery race、二run reset、
 observer異常/失敗/期限超過は当該unitだけ停止回収し、部分証拠を保持する。別retryや権限緩和、tracer無効化で合格にしない。
 caller終端、unit最終状態、exit recorder、trusted journal、cgroup/UID999/agent port回収を別々に確認する。
 正常時も image/inputs/旧証拠不変を確認し、公開は選別結果/hashのみ。dummy keyは結果照合後に削除し値/hashを公開しない。
+
+## 固定準備の実測
+
+[全1306入力](LINUX_X86_IMAGE_SMOKE_SNAPSHOT_002.json) と [UID999準備検査](LINUX_X86_IMAGE_SMOKE_PREPARATION_002.json) を保存した。
+input rows SHA256 は 45f58b03a569e99d8aecb095f4daf30c26b0ead1b157e1bd5711b01c371314ee。
+[作成 helper](evidence/image-smoke-002/prepare_snapshot.py) と [検査 helper](evidence/image-smoke-002/check_preparation.py) も保存した。
+作成 caller70116 と検査 caller24273 は、それぞれ同handleで終端exit0を確認した。
+専用userによる全input read可能/write不可、global runtime SHA一致、prefix/version/AES、--help、private work、xattr roundtripを確認した。
+unitはnot-found/inactive/Invocation空、準備検査終了後UID999 processなし、free44276301824 bytesだった。
+この値は実行直前に再確認する。snapshotのimage/core/CLIは従前と同一で、offline reportと新moduleを追加した。

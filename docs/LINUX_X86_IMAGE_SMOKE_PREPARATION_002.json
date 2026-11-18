@@ -1,0 +1,16 @@
+{
+  "input_files_checked": 1306,
+  "input_rows_sha256": "45f58b03a569e99d8aecb095f4daf30c26b0ead1b157e1bd5711b01c371314ee",
+  "versions": {
+    "prefix": "/var/lib/tempest-izanagi-image-smoke-002/inputs/python",
+    "cryptography": "50.0.2",
+    "cffi": "2.1.1",
+    "pycparser": "3.12"
+  },
+  "all_inputs_readable_nonwritable": true,
+  "runtime_hashes_match": true,
+  "work_private": true,
+  "xattr_roundtrip": true,
+  "output_absent": true,
+  "vm_boot_executed": false
+}
