@@ -2,6 +2,8 @@
 
 ## 状態と範囲
 
+現在は標準prepareと定義full validateまで完了し、room16796で固定source64f0429から新root snapshot作成・UID999事前検査だけを依頼済み。実snapshot結果は未受領であり、Packer build・VM開始は未実施。以下の草案時点の未実施記述は、その段階の記録として残す。
+
 room16784の提案をLinux側で再計算確認したため、採用案は固定旧source＋標準prepare明示flagとする。custom pure recipeは比較検討・検査記録として保持し、実導出には使わない。
 
 room16780の指示に基づくbuild-only草案。新root /var/lib/tempest-izanagi-delivery-race-build-001と専用unitを提案する。
