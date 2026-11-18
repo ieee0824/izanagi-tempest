@@ -19,6 +19,7 @@ ATTEMPTS = {
     'exec-exposure-001': ('tempest-izanagi-exec-exposure-001.service', '/var/lib/tempest-izanagi-exec-exposure-001'),
     'proc-exposure-001': ('tempest-izanagi-proc-exposure-001.service', '/var/lib/tempest-izanagi-proc-exposure-001'),
     'proc-exposure-002': ('tempest-izanagi-proc-exposure-002.service', '/var/lib/tempest-izanagi-proc-exposure-002'),
+    'proc-exposure-003': ('tempest-izanagi-proc-exposure-003.service', '/var/lib/tempest-izanagi-proc-exposure-003'),
 }
 
 
