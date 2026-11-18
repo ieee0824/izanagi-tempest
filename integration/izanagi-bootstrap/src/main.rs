@@ -62,7 +62,8 @@ async fn main() {
         },
         dns_proxy: None,
     };
-    let mut sandbox = izanagi::qemu_sandbox::QemuSandbox::new();
+    let mut sandbox =
+        izanagi::qemu_sandbox::QemuSandbox::new().with_qemu_binary("/usr/bin/qemu-system-x86_64");
     let report = probe(&mut sandbox, &config).await;
     println!(
         "{}",
