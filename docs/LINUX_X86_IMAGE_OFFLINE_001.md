@@ -31,3 +31,7 @@ claim 後は root helper の既存 attest.exe_sha256 と build 入力 agent hash
 検証: Python 全72件成功（専用 venv）、固定 guest snippet compile 成功。VM 再実行は未実施。
 
 room16570 の指摘に従い provenance に残存記録由来の argv/UID/env と欠測を補足した。元 caller transcript 全体と sfdisk wrapper source は回収できておらず、独立した実行証跡とは扱わない。再変換・再抽出はしていない。
+
+room16572 に対応し、offline profile は今回の root:root agent0551 / HTTP0755 / eBPF0440 に限定する。
+actor は agent/eBPF が EACCES、HTTP が読取成功かつ hash 一致することを要求し、読取可能への拡大も拒否する。
+別の権限 profile を自動推定して受け入れない。owner/mode/read結果が逆の負例を含む全73testsが成功した。
