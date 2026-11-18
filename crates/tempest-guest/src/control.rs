@@ -20,6 +20,20 @@ use tokio::{
     signal::unix::{SignalKind, signal},
 };
 
+const CAPTURE_BUFFER_KIB: u32 = 16 * 1024;
+
+fn capture_settings() -> Value {
+    json!({"capture_buffer_kib_requested": CAPTURE_BUFFER_KIB, "capture_immediate_mode": true, "capture_filter": null, "capture_contains_payloads": true})
+}
+
+fn configure_capture(command: &mut tokio::process::Command, interface: &str, pcap: &Path) {
+    command
+        .args(["-n", "-U", "--immediate-mode", "-B"])
+        .arg(CAPTURE_BUFFER_KIB.to_string())
+        .args(["-i", interface, "-w"])
+        .arg(pcap);
+}
+
 const CONTROL_LIMIT: u64 = 16 * 1024;
 const FILE_LIMIT: u64 = 8 * 1024 * 1024;
 #[derive(Debug, Deserialize, Serialize)]
@@ -390,18 +404,9 @@ impl Controller {
         seed::child_guard(&mut command);
         command
             .env_clear()
-            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-            .args([
-                "-n",
-                "-U",
-                "--immediate-mode",
-                "-B",
-                "4096",
-                "-i",
-                &self.config.capture_interface,
-                "-w",
-            ])
-            .arg(&pcap)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+        configure_capture(&mut command, &self.config.capture_interface, &pcap);
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -602,8 +607,14 @@ impl Controller {
             }
         };
         self.manifest = Some(
-            json!({"complete":failures.is_empty(),"failures":failures,"api_rows":rows,"incomplete_rows":incomplete,"capture_started":self.capture_started,"recorder_started":self.recorder_started,"recorder_stopped":recorder_stopped,"capture_stopped":capture_stopped,"capture_interface":self.config.capture_interface,"capture_buffer_kib_requested":4096,"capture_immediate_mode":true,"capture_filter":null,"capture_contains_payloads":true,"capture_statistics":stats,"recorder_statistics":recorder_stats,"complete_scope":"recorder_internal","agent_route_enforcement":"not_verified","finalized":true}),
+            json!({"complete":failures.is_empty(),"failures":failures,"api_rows":rows,"incomplete_rows":incomplete,"capture_started":self.capture_started,"recorder_started":self.recorder_started,"recorder_stopped":recorder_stopped,"capture_stopped":capture_stopped,"capture_interface":self.config.capture_interface,"capture_statistics":stats,"recorder_statistics":recorder_stats,"complete_scope":"recorder_internal","agent_route_enforcement":"not_verified","finalized":true}),
         );
+        self.manifest
+            .as_mut()
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .extend(capture_settings().as_object().unwrap().clone());
         self.manifest.as_mut().unwrap()["control_transitions"] =
             serde_json::to_value(&self.state.transitions)?;
         self.manifest.as_mut().unwrap()["failed_control_operations"] =
@@ -766,4 +777,39 @@ pub async fn call(config: &Config, request: Request) -> Result<Value> {
             .unwrap_or("guest operation failed")
     );
     Ok(response["result"].clone())
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+
+    #[test]
+    fn capture_command_and_manifest_keep_bounded_buffer_and_full_capture() {
+        let mut command = tokio::process::Command::new("tcpdump");
+        configure_capture(&mut command, "lo", Path::new("/private/capture.pcap"));
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|s| s.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "-n",
+                "-U",
+                "--immediate-mode",
+                "-B",
+                "16384",
+                "-i",
+                "lo",
+                "-w",
+                "/private/capture.pcap"
+            ]
+        );
+        let settings = capture_settings();
+        assert_eq!(settings["capture_buffer_kib_requested"], 16384);
+        assert_eq!(settings["capture_immediate_mode"], true);
+        assert_eq!(settings["capture_contains_payloads"], true);
+        assert!(settings["capture_filter"].is_null());
+    }
 }
