@@ -33,6 +33,27 @@ agentはfw_cfg token不在を拒否するため、kernel config/module/autoload�
 既存`qemu_protocol_smoke`はExecに加えてtrace Eventを要求します。
 non-ebpf agentでの最小boot成立とは別条件なので、そのまま最小boot判定に使いません。
 
+さらにAlpine setupはuser作成に`no`を渡し、x86 templateも`izanagi` userを作成しません。
+agentのExecは`EXEC_USER=izanagi`を要求し、不在ならroot実行を拒否します。
+従ってReadyだけでなく固定Execも確認する最小派生では、guestの専用非特権user作成を
+明示的な差分として定義・検証する必要があります。
+
+## ツール固定候補（未導入）
+
+現在のローカルAPT indexにある候補は以下です。package本体・依存closureは未取得です。
+
+| package | version | index記載SHA256 |
+| --- | --- | --- |
+| qemu-system-x86 | 1:8.2.2+ds-0ubuntu1.18 | 14602e262627adac030329d2cecfee5f6c0938b34566ff2ea2d4c9a9eb02430d |
+| qemu-utils | 1:8.2.2+ds-0ubuntu1.18 | 10695e57937d8a1d0ec6d017a6770d02353ec0c9500e4a36928230b2d39026c5 |
+
+PackerはAPT候補なし。公式`https://releases.hashicorp.com/packer/1.15.0/packer_1.15.0_SHA256SUMS`
+を取得し、`packer_1.15.0_linux_amd64.zip`の記載hash
+`2fd1149c5c6c7604ced64d7b56638af05f6b7ed3f6835182bc913ddaba1f16b8`を確認しました。
+本体は未取得で、plugin versionとchecksumもまだ未確定です。
+agent固有Cargo.lock SHA256は`9db17aed3c43477d9bc16dfe65b453b6dc0bb36d4f8e8fc8e7b9814edf200bc6`。
+hostのinstalled Rust targetはx86_64-unknown-linux-gnuのみで、musl toolchain準備も必要です。
+
 ## 起動前に具体化する手順
 
 1. QEMU/Packer/pluginの固定versionと入手元、host/agent build commandとlockを提示する。
