@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Destructive-local M4 fault checks against the pinned disposable VM image."""
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -71,9 +72,18 @@ def seed_reply_loss(args):
         raise AssertionError('unexpected artifact after seed loss')
     assert_partial_evaluation(run)
     before = digest(run / 'run.json')
-    retry = subprocess.run(command, text=True, capture_output=True, timeout=30)
+    # The injected bridge's TemporaryDirectory is already gone. Use the pinned
+    # base bridge so a missing input cannot masquerade as run-ID refusal.
+    retry_command = list(command)
+    bridge_index = retry_command.index('--mailbox-bridge') + 1
+    retry_command[bridge_index] = str(ROOT / 'image/host_bridge.py')
+    if not Path(retry_command[bridge_index]).is_file():
+        raise AssertionError('retry bridge is missing before run-ID refusal check')
+    retry = subprocess.run(retry_command, text=True, capture_output=True, timeout=30)
     if retry.returncode == 0 or digest(run / 'run.json') != before:
         raise AssertionError('reserved run ID was reused or mutated')
+    if f'(os error {errno.EEXIST})' not in retry.stderr:
+        raise AssertionError('retry did not reach the existing run-ID reservation')
     print(json.dumps({'seed_reply_loss': 'passed', 'run': str(run)}))
 
 
