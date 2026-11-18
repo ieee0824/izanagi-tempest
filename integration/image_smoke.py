@@ -23,6 +23,7 @@ from exec_evidence import ExecEvidence, MarkerLeak
 from proc_evidence import CONTROL_KEY, CONTROL_VALUE
 import proc_paging
 import sidecar_evidence
+import network_evidence
 
 
 def sha(path):
@@ -36,6 +37,8 @@ def main():
     parser.add_argument('--image', type=Path, required=True)
     parser.add_argument('--build-inputs', type=Path, help='prepare.py inputs.json; defaults to the standard build layout')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--network-evidence', action='store_true',
+                        help='dedicated host-endpoint TCP controls; requires fixed Linux observer and --exec-evidence')
     parser.add_argument('--sidecar-evidence', action='store_true',
                         help='dedicated restricted loopback sidecar fixture; requires --exec-evidence')
     parser.add_argument('--proc-evidence', action='store_true',
@@ -49,6 +52,8 @@ def main():
         parser.error('--proc-evidence requires --exec-evidence private capture')
     if args.sidecar_evidence and (not args.exec_evidence or args.proc_evidence or args.tempest is not None or args.delivery_race_fixture):
         parser.error('--sidecar-evidence requires --exec-evidence and excludes proc/tempest/delivery-race modes')
+    if args.network_evidence and (sys.platform != 'linux' or not args.exec_evidence or args.sidecar_evidence or args.proc_evidence or args.tempest is not None or args.delivery_race_fixture):
+        parser.error('--network-evidence requires Linux/exec-evidence and excludes other fixture modes')
     os.umask(0o077)
     output = args.output.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -95,11 +100,22 @@ def main():
             # guest mode while the new host file is still writable, then seal it.
             mapped_metadata(path, stat.S_IFREG | 0o444)
             path.chmod(0o444)
+    if args.network_evidence:
+        for source, name in [('proc_evidence.py', 'proc_evidence.py'), ('network_probe.py', 'network-probe.py')]:
+            path = public / name
+            with path.open('xb') as stream:
+                stream.write((ROOT / 'image' / source).read_bytes())
+            # Linux user xattrs require owner write permission. Publish the
+            # guest mode while the new host file is still writable, then seal it.
+            mapped_metadata(path, stat.S_IFREG | 0o444)
+            path.chmod(0o444)
     config = output / 'izanagi.toml'
     template = (ROOT / 'tools/m0/izanagi.example.toml').read_text()
     if args.sidecar_evidence:
         template = sidecar_evidence.configure(template)
     config.write_text(template.replace('image = "default"', 'image = ' + json.dumps(str(args.image.resolve()))))
+    if args.network_evidence:
+        network_evidence.require_config(config.read_text())
     base = [str(args.izanagi.resolve()), '--config', str(config)]
     report = {'schema_version': 1, 'status': 'incomplete', 'checks': {},
               'image_sha256': sha(args.image), 'izanagi_sha256': sha(args.izanagi),
@@ -325,6 +341,9 @@ def main():
             if result.returncode != 0 or len(result.stdout.encode('utf-8', 'surrogateescape')) > 16384:
                 raise RuntimeError('sidecar fixture failed; private exec output retained')
             report['sidecar_fixture'] = sidecar_evidence.validate_probe(json.loads(result.stdout), nonce)
+            save()
+        elif args.network_evidence:
+            report['checks']['network_endpoint'] = network_evidence.run(execute, output)
             save()
         else:
             call('ping')
@@ -589,6 +608,8 @@ def main():
     observations = list(logs.glob('*')) + [output / 'up.stdout', output / 'up.stderr']
     if args.sidecar_evidence:
         observations += sorted((output / 'sidecar-audit').glob('*.jsonl'))
+    if args.network_evidence:
+        observations += [output / 'network-host.private.json']
     leaked = [path.name for path in observations if any(marker.encode() in path.read_bytes() for marker in secret_markers)]
     report['checks']['host_logs_private_markers'] = {'passed': not leaked, 'files_examined': [p.name for p in observations], 'leaked_files': leaked}
     save()
