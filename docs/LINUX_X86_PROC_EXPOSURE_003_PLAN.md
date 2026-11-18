@@ -37,3 +37,13 @@ caller/observer同handle終端、同Invocation exit recorder/trusted journal、c
 raw/目印はprivate、公開は安全なcounts/controls/coverageとmetadata・scopeだけ。collectorがmarker再取得再scanしない場合は明記する。
 当該dummy keyは結果監査後に正確path/lstatを照合して別追補で回収し、値/単体hashを公開しない。
 HTTP sidecar/外部positive control/forced delivery race/全route/正式モデル比較は別gateのまま。
+
+## 固定準備結果
+
+[1309入力snapshot](LINUX_X86_PROC_EXPOSURE_SNAPSHOT_003.json)と[専用UID検査](LINUX_X86_PROC_EXPOSURE_PREPARATION_003.json)を保存した。
+source f9d245f、canonical tree 7834c3ce8191f9d967c0f8146123f48a8af4ad6eb562ab481624dbde2121e4a5。
+prepare65229/UID67928は同handle終端exit0。UID sourceはstdinで渡し、repo権限を変更していない。
+全入力hash/owner/mode/read可write不可・外部runtime・venv/AES/help/xattr/private work・新output/exit/log不在を確認した。
+host helper実proc採取なし。Linux全125tests成功/skip0。準備直前unit未使用/UID999なし/root未作成/free30018195456 bytesを確認した。
+準備時に旧001/002証拠・鍵不在追補と旧exec/presence/normal/seed-loss全tree/reservation/full/smokeを照合した。
+VM起動前には不変/容量/UID/未使用unit等を再照合する。現時点ではobserver/caller/VMは未実施。
