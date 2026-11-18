@@ -124,3 +124,14 @@ ExecStopPostの同Invocation終了記録も新work/evidenceへ固定する。標
 [親003の正規化live profile](LINUX_X86_DELIVERY_RACE_PARENT_PROFILE_001.json)を添付した。保存observer fileの実SHA/行番号/時刻と、選別network/storage argv・unit内listener subsetだけを記録する。
 旧sample自体にはstarttime/cwd fieldがないためnullを保持し、後から測定した値で補わない。新observerのPID/starttime/cwd拘束は新buildでの別測定条件である。
 全argvや全期間の保証ではなく、既存親003結果を変更しない。
+
+## build-only snapshotとUID検査結果
+
+room16796監査後、serial名をinstaller-serial.logへ修正した64f0429を含むsource57266aaからsnapshotだけを作成した。
+[29入力snapshot](LINUX_X86_DELIVERY_RACE_BUILD_SNAPSHOT_001.json)と[専用UID/full validate結果](LINUX_X86_DELIVERY_RACE_BUILD_PREPARATION_001.json)を保存した。
+prepare30932/UID6545は同handle終端exit0。canonical tree34e665e1af93a02a1f3a9e2e049cb29d0d947f49a7e4006e6c2968d04c38dc87。
+root/inputs0:988/0750、通常入力0440・Packer/plugin0550、専用work700、全hash/owner/mode/read可write不可と外部binary SHA一致を確認した。
+入力pathの許可置換/新template SHA/元manifest SHAをsnapshot provenanceへ保存し、guest image.jsonは標準生成bytesと同一。9compile fieldも親と同一。
+snapshot内固定Packer/plugin・UID999/env-iでfull validate exit0。新output-debian/debug/installer-serial/exit/log不在、build/VMは未開始。
+copy後空き22467149824 bytesで18GiB条件を満たす。旧full/runtime入力・RESULT参照証拠・鍵不在/seed-loss全treeをprepare時照合した。
+実build前に正確argv/observer/入力treeの最終監査と、容量/未使用unit/UID/3port・出力不在/旧証拠不変を再確認する。現時点でrun_onceは未実行。

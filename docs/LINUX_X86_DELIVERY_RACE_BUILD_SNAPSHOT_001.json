@@ -1,0 +1,301 @@
+{
+  "external_runtime_sha256": {
+    "/usr/bin/python3.12": "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f",
+    "/usr/bin/qemu-system-x86_64": "8a35ccba41582fc6c38b9df85fc9e35fa1d42f414d2d7d8090ee9b2f5e7c0854",
+    "/usr/bin/qemu-img": "634320b91165669917123e8e79cce1c4d00cee0a4aa4d662d7c0a8186479b3fb",
+    "/usr/bin/systemctl": "37ec607113f55f1b385b4fa75588a43402aec0de57927500763b267713f10f63",
+    "/usr/bin/ss": "31124eb6385718f551751a580c7e17203bc307efa207ab5315b66b4ad5793e8c",
+    "/lib64/ld-linux-x86-64.so.2": "5fc0940888e9d2e1a00e66d6b1a559c36364ee867683652e1074fa576952cc3f",
+    "/lib/x86_64-linux-gnu/libc.so.6": "755a371e86cc9f564ab54f66140747700fb0a103f698f659f2060f707897e09a"
+  },
+  "schema_version": 1,
+  "root": "/var/lib/tempest-izanagi-delivery-race-build-001",
+  "unit": "tempest-izanagi-delivery-race-build-001.service",
+  "source_commit": "57266aa48535700922a0d6c21aed241fdbef2951",
+  "files": [
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/agent",
+      "sha256": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+      "bytes": 4125448,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/base.iso",
+      "sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
+      "bytes": 792723456,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/inputs.json",
+      "sha256": "f04b37499292258c81023ad51623bc1b85b200c982661715854270116fca4cd7",
+      "bytes": 2182,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/.gitignore",
+      "sha256": "bdfc03d62c82ab1e7d8c18c98e948ac0260b326a8aece0591888d7b5ea4ab058",
+      "bytes": 48,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/README.md",
+      "sha256": "b0787d292ddc6468ade0c0bfe077f763114e9343d418ba57cf6a670359c16246",
+      "bytes": 4547,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/alpine-x86_64.pkr.hcl",
+      "sha256": "77c17773d03badbcce8b95e94222b2d750b730ffc8a1aa5746307e17c5d6f531",
+      "bytes": 2992,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/alpine.pkr.hcl",
+      "sha256": "0444431d2dd788e8fee9aa4d42180b9d8c35d425543230a32f4de9dc57700938",
+      "bytes": 4172,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/debian.pkr.hcl",
+      "sha256": "51afbf6a9db5a544f616d42c4a52fe71b80f8368b3581430d45e1e5ee1e8c032",
+      "bytes": 7373,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/dispatcher.py",
+      "sha256": "faf0c5aef7e5ae7600e77c88df61d84edad6b3cdd39e5b765e65d7a96972e1b9",
+      "bytes": 13331,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/http/answers",
+      "sha256": "f29985b574a8a9e4a0456cc0f6b2a33ac0eb9ba4486330fca66ff12fbc2bbe1b",
+      "bytes": 300,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/http/preseed.cfg",
+      "sha256": "cde7b305928055162599b1876f35277244b676a49047e0d83fb994a922e95515",
+      "bytes": 3080,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/http/setup.sh",
+      "sha256": "72ef1e181bb65df51cf2bdd3d8f6cd7e502a0f9e265b1fdf9109e1fbc6edeaa0",
+      "bytes": 1118,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/image.json",
+      "sha256": "d4df9b16d541427789cc7de44bc251ffb0c906b0e326d4bd2b024d9e23a395a6",
+      "bytes": 1597,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/lock-down.sh",
+      "sha256": "9860c17fd0c64eaa2cef8f906d8869e8c49df701361fbddff388521de1b48659",
+      "bytes": 745,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/provision.sh",
+      "sha256": "2cbd4e8c128f289216aebd21ff364a65b5552ee623df56f345cd17e818ba800e",
+      "bytes": 6338,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/quiesce.py",
+      "sha256": "72fabf3ce527257ab2bb5fb8cb3b8a8ef7e706ff2715b29e5b7c0857bf5390a8",
+      "bytes": 5139,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/tempest.pkrvars.json",
+      "sha256": "161c5180e4b903cdad84ee16bd7f85d969cbfc337431a380c80655808dbe1a80",
+      "bytes": 248,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/verify-image.sh",
+      "sha256": "c56dd80ec9855754d6621a1c8139dd2b211274c4df3b3d70a82ef5c8e816bf9d",
+      "bytes": 1248,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/ebpf",
+      "sha256": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+      "bytes": 29464,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/guest",
+      "sha256": "e551b35f3cc230ad1928d6d86c551ff4e4241e4714a4b1452578e63fcb36fd52",
+      "bytes": 4015080,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/http",
+      "sha256": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+      "bytes": 7716640,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/lws",
+      "sha256": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+      "bytes": 14774032,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/packer",
+      "sha256": "ec8feb5888368fae6838caac5b919b4c2ced6e0a0b4da5450861b1111c233fe8",
+      "bytes": 43008184,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0550"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/plugins/github.com/hashicorp/qemu/packer-plugin-qemu_v1.1.8_x5.0_linux_amd64",
+      "sha256": "7093fbbcfe8b2ace01ecb722a49c49a02187929f431c9a48188dc3c8132203d0",
+      "bytes": 49135778,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0550"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/plugins/github.com/hashicorp/qemu/packer-plugin-qemu_v1.1.8_x5.0_linux_amd64_SHA256SUM",
+      "sha256": "e846100c30e6873465fbf9770281cefbeab67cf8cd2e1b7114c6da17d5b77c6c",
+      "bytes": 64,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/provenance.json",
+      "sha256": "0db7174e53e503219a4b52705681e51fc7736de89c4faeef7b471e4cd29d6d38",
+      "bytes": 2554,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/record_exit.py",
+      "sha256": "277fedee6b92e51e8ff65a71b90bde954cd4ce0d48ef2f363d9c8d13fd93dfb0",
+      "bytes": 1703,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/repo/integration/delivery_race_build_observe.py",
+      "sha256": "2c42a9b9bc1c242ae88ec69a2911bf0d1d478bb888189df450882cca6a28dc9a",
+      "bytes": 4506,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/repo/integration/izanagi-bootstrap/observe.py",
+      "sha256": "d9261442b8120fc7d7221c4ad8f4a4678a9990953603da11e72fcc90a16bbd28",
+      "bytes": 7217,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    }
+  ],
+  "directories": [
+    "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition",
+    "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer",
+    "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/http",
+    "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/plugins",
+    "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/plugins/github.com",
+    "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/plugins/github.com/hashicorp",
+    "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/plugins/github.com/hashicorp/qemu",
+    "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/repo",
+    "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/repo/integration",
+    "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/repo/integration/izanagi-bootstrap"
+  ],
+  "input_rows_sha256": "34e665e1af93a02a1f3a9e2e049cb29d0d947f49a7e4006e6c2968d04c38dc87",
+  "provenance": {
+    "parent_inputs_sha256": "49c561c109a4604a62dc0a7be57ceddfed7fdfea4f18954afec2db5b562d0b1f",
+    "parent_image_metadata_sha256": "4cdf6a0faef67d12a6d5ab67f5966b1382e569b8b4f1096560039a49fce3aa29",
+    "standard_prepare_inputs_sha256": "d499d9ee1bb77337c3f81abe8af00f75970ce7d286f483e83eb9d95c2803db44",
+    "standard_prepare_image_metadata_sha256": "d4df9b16d541427789cc7de44bc251ffb0c906b0e326d4bd2b024d9e23a395a6",
+    "snapshot_guest_metadata_unchanged": true,
+    "parent_compile_source_preserved": {
+      "tempest_guest_source_commit": "7ab5d4ee98b009086d83a98320dc752c3372bf4f",
+      "tempest_guest_source_tree_sha256": "680b42138d4a8d2b1ae2cd7db8f83721366d58ddc754ee590f3471ac0f4452c8",
+      "tempest_guest_source_dirty": false,
+      "tempest_guest_version": "0.1.0",
+      "input_sha256": {
+        "agent": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+        "ebpf": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+        "http": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+        "lws": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+        "guest": "e551b35f3cc230ad1928d6d86c551ff4e4241e4714a4b1452578e63fcb36fd52"
+      },
+      "iso_sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
+      "izanagi_commit": "16d0b55947006a166cfa29dcb8bfe71f65f8c36a",
+      "lws_commit": "2c0ea463f334f10a562e54f1cdc7ba8a474029e2",
+      "architecture": "x86_64"
+    },
+    "source_hashes": {
+      "integration/delivery_race_build_observe.py": "2c42a9b9bc1c242ae88ec69a2911bf0d1d478bb888189df450882cca6a28dc9a",
+      "integration/izanagi-bootstrap/observe.py": "d9261442b8120fc7d7221c4ad8f4a4678a9990953603da11e72fcc90a16bbd28",
+      "integration/izanagi-bootstrap/record_exit.py": "3fb15eaec175996316857a01676d2972f9b38af6888d1bbbf16e015a915ee43b",
+      "integration/tempest-izanagi-delivery-race-build-001.service": "7849feef5f2fb8befa75c373035e4343ca988c420fc89e43c3b840d48c94b29f",
+      "docs/evidence/delivery-race-build-001/prepare_snapshot.py": "bdae397f595c06041c8cbdb467d7a117332e7d1252c4261c5a75e9e36fc426fd",
+      "docs/evidence/delivery-race-build-001/check_preparation.py": "6173a347132ff93a9475e8af377ad70d71b8884c6c99a6a1407bc5b18e96b18f",
+      "docs/evidence/delivery-race-build-001/run_once.py": "dbb38e7f584dc11317b9c6602e977aa06fbe9c12e5547ac71d3548ac2a020ba0"
+    },
+    "allowed_path_replacement": {
+      "from": "/var/lib/tempest-izanagi-full-build-003/inputs/",
+      "to": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/"
+    },
+    "build_executed": false
+  },
+  "build_executed": false
+}
