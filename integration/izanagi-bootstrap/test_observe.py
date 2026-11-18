@@ -62,5 +62,21 @@ class AttemptBindingTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "terminal attributes not captured"):
                     main()
 
+    def test_terminal_record_from_other_invocation_is_rejected(self):
+        rows = [
+            {"unit": {"InvocationID": "current", "ActiveState": "active", "LoadState": "loaded"},
+             "cgroup_pids": [123], "external_listener_observed": False},
+            {"unit": {"InvocationID": "old", "ActiveState": "inactive", "LoadState": "loaded"},
+             "cgroup_pids": [], "external_listener_observed": False},
+        ]
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "observation.jsonl"
+            with patch("sys.argv", ["observe", "--attempt", "003", "--output", str(output)]), \
+                 patch("observe.os.geteuid", return_value=0), \
+                 patch("observe.sample", side_effect=rows), \
+                 patch("observe.time.sleep"):
+                with self.assertRaisesRegex(RuntimeError, "unit invocation changed"):
+                    main()
+
 if __name__ == "__main__":
     unittest.main()
