@@ -144,6 +144,16 @@ harnessの[boot002単発実測](docs/LINUX_IZANAGI_BOOT_002.md)で認証Ready・
 終了属性の観測不足と別証拠による照合、外部通信拒否の実測や本番VM境界の未達は同報告で区別しています。
 Linux x86の[派生Debian full image build003](docs/LINUX_X86_FULL_BUILD_003.md)も成功し、無人導入・lock-down検査・独立回収を確認しました。
 新imageの実guest load/owner/firewall/doas/mailbox/外部通信拒否とcredential/live-callは未検証です。
+[初回image smokeの固定入力・単発計画](docs/LINUX_X86_IMAGE_SMOKE_001_PLAN.md)は準備済みで、実boot前のレビュー対象です。
+単一QEMU/restrict/snapshot/read-only share observerと、run固有PID/pathの実eBPF採取検査を含みます。
+追加helperの非VM検証は以下で実行できます。
+
+```sh
+python3 -m unittest discover -s tests -p test_trace_evidence.py -v
+python3 -m unittest discover -s tests -p test_image_smoke_observe.py -v
+systemd-analyze verify --man=no integration/tempest-izanagi-image-smoke-001.service
+```
+
 
 旧 WIP（0f5d190）では固定90秒 watchdog と増加した suite の衝突に整合する失敗を
 91,092 ms・`frame_oversize` Ready の child SIGKILL/watchdog exit1/RUN残留として再現しました。
