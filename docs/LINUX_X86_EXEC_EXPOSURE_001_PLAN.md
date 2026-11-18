@@ -39,3 +39,10 @@ GCはobserver terminal unknownとして保持する。
 旧presence v1/v2/results/事前plan、normal/seed-loss/reservation/full/smokeの入力・証拠を保持する。
 結果監査後に当該dummy transport keyだけを値/hash非公開で削除する。
 /proc cmdline全期間、native PIPE、HTTP sidecar、外部positive control、全route/正式比較は別gateとして残す。
+
+## 可逆準備の草案
+
+[service](../integration/tempest-izanagi-exec-exposure-001.service)、[caller](evidence/exec-exposure-001/run_once.py)、[入力作成](evidence/exec-exposure-001/prepare_snapshot.py)、[UID検査](evidence/exec-exposure-001/check_preparation.py) を用意した。
+現callerはboolean --exec-evidence/保存先output内固定を想定する。実装担当のinterface/helper filenameを確認後に確定し、closureへ必要moduleを追加する。
+prepareは--exec-evidence未実装時にroot作成前に停止する。まだ実行していない。
+source/helper構文・service verify・ExecStart一致は成功。旧presence v1/v2/result/plan・normal・seed-loss全tree・予約拒否・full/smoke証拠hashを準備時照合する。
