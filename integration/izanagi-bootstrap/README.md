@@ -22,3 +22,21 @@ QEMU/cgroup/port/auth一時fileの残留なしは外側から独立に確認し�
 エラー本文、secret、guest出力はstdoutへ転載せず、結果boolのみ出力します。
 実環境は`IZANAGI_SECRET_FILE`を固定dummy secret pathへ設定し、空環境から開始します。
 KVM/認証/VM通信の成立はunit testでは検証しません。
+
+## bootstrap定義の生成
+
+署名照合済みISO、新規出力directory、同commitのx86_64 musl agentを指定します。
+生成器は上流commit/clean状態、template/ISO hash、agent ELF architectureを確認し、
+元sourceを変更せずguest user UID1000・qemu_fw_cfg設定を追加します。
+完成agentのhashと署名照合の根拠は起動前のmanifest監査で別に照合します。
+
+```sh
+python3 integration/izanagi-bootstrap/prepare.py \
+  --source /tmp/tempest-izanagi-upstream-review \
+  --iso /tmp/tempest-bootstrap-inputs/alpine-virt-3.23.3-x86_64.iso \
+  --agent /tmp/tempest-izanagi-bootstrap-agent-target/x86_64-unknown-linux-musl/release/izanagi-agent \
+  --output /tmp/tempest-izanagi-bootstrap-definition-001
+```
+
+`inputs.json`には元ISO pin/override、source/provision/agent/生成器hashを保存します。
+Packer/pluginは1.15.0/1.1.8へ固定し、buildはまだ実行しません。

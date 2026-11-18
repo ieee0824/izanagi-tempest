@@ -92,6 +92,27 @@ bootstrap専用varsで`iso_checksum=sha256:d91fb5c7a73528c89e0a1aa9a7d959f9deb9c
 
 APT exact追加一覧と影響は[package simulation](LINUX_BOOTSTRAP_PACKAGES.md)へ記録しました。
 
+## bootstrap派生準備の結果
+
+x86_64 musl targetを追加し、固定sourceのagent固有lockで次を実行しました。
+
+```sh
+cargo build --manifest-path /tmp/tempest-izanagi-upstream-review/izanagi-agent/Cargo.toml --release --locked --target x86_64-unknown-linux-musl --target-dir /tmp/tempest-izanagi-bootstrap-agent-target
+```
+
+default features、exit0、47.88秒。agentはstatic-pie ELF64 x86_64、SHA256は
+`bef79dc096be3b699affefd525b3ea54489035403e16afc78dfa8e8a860ca9ee`です。
+上流source cleanを維持しています。
+QEMU plugin 1.1.8 zipは公式releases.hashicorp.comのSHA256SUMSと一致し、
+`dbdec022f362c9c0c351c860deb1a52a135fdfa71e126048ba45030e12714904`でした。
+pluginの展開・登録とfull validationはまだ残っています。
+
+[生成手順](../integration/izanagi-bootstrap/README.md)に従い、上流不変更の派生定義を生成しました。
+Packer1.15.0のsyntax-only check、guest scriptの`sh -n`、生成器のPython compileが成功しました。
+既存出力へ再実行すると拒否され、元manifestが不変であることも確認しました。
+guest UID/GID1000の非login・locked userと、fw_cfg moduleのbuild時確認/永続loadを追加します。
+これらは定義・構文検査であり、guest内での実行成功や完成imageの証拠ではありません。
+
 ## 起動前に具体化する手順
 
 1. QEMU/Packer/pluginの固定versionと入手元、host/agent build commandとlockを提示する。
