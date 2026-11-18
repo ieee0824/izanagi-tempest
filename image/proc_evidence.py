@@ -4,6 +4,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import stat
 import time
 
 CONTROL_KEY = 'TEMPEST_PROC_PUBLIC_CONTROL'
@@ -11,6 +12,19 @@ CONTROL_VALUE = 'TEMPEST-PUBLIC-PROC-CONTROL'
 MAX_PIDS = 128
 MAX_BLOB = 8192
 MAX_OUTPUT = 131072
+
+
+
+def require_guest(manifest=Path('/etc/tempest/image.json')):
+    if os.getuid() != 1000 or os.environ.get(CONTROL_KEY) != CONTROL_VALUE:
+        raise RuntimeError('requires guest actor and public environment control')
+    metadata = manifest.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        raise RuntimeError('requires root-owned nonwritable guest image manifest')
+    image = json.loads(manifest.read_text())
+    if image.get('izanagi_commit') != '16d0b55947006a166cfa29dcb8bfe71f65f8c36a' \
+            or image.get('lws_commit') != '2c0ea463f334f10a562e54f1cdc7ba8a474029e2':
+        raise RuntimeError('requires the pinned dummy guest image')
 
 
 def failure(error):
@@ -89,6 +103,5 @@ def summarize(result):
 
 
 if __name__ == '__main__':
-    if os.getuid() != 1000 or os.environ.get(CONTROL_KEY) != CONTROL_VALUE:
-        raise RuntimeError('requires guest actor and public environment control')
+    require_guest()
     print(json.dumps(snapshot(), separators=(',', ':')))
