@@ -46,3 +46,19 @@ Packer/pluginは1.15.0/1.1.8へ固定し、buildはまだ実行しません。
 `/var/lib/tempest-izanagi-bootstrap`配下のprobe/imageはroot所有・専用user非書換えにし、
 private run領域と空のread-only share、dummy secretを別に作成してhash/owner/modeを照合します。
 これらの配置と起動commandの監査はまだ必要です。
+
+## buildの外側観測
+
+`observe.py`は固定build unitの状態・InvocationID・cgroup配下PID・TCP listenと
+QEMUのnetwork引数だけをprivate JSONLへ保存します。rootでの読取専用観測です。
+実行前に開始し、unit起動は別processから行います。
+
+```sh
+python3 -m unittest discover -s integration/izanagi-bootstrap -p test_observe.py -v
+sudo -n /usr/bin/python3 integration/izanagi-bootstrap/observe.py --output /tmp/tempest-bootstrap-build-observation-001.jsonl
+```
+
+全argvや環境を保存しません。非loopback listen、別InvocationID、観測失敗や期限時は
+成功として進めず、管理側で固定unitを停止して回収状態を確認します。
+observer自身はunitを変更しません。1秒間隔の観測間に短時間だけ存在するsocketを網羅する証拠ではなく、
+固定bind設定と合わせて扱います。terminal時のcgroup空と別確認するUID残留・port閉鎖も必要です。
