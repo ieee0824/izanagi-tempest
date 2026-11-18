@@ -313,6 +313,12 @@ python3 integration/runtime_noop.py --help
 python3 integration/runtime_delivery_race.py --help
 ```
 
+4presenceの結果を事前計画に束縛して集計する場合、`runtime_presence.py`へ
+`--comparison-plan /absolute/path/to/precommitted-plan.json`を指定します。
+slot ID/run IDは`finding-1-retest-1`、`finding-1-retest-0`、`finding-0-retest-1`、`finding-0-retest-0`とします。
+scriptはVM起動前に計画の同一bytesを新runsの`aggregate-plan.json`へ保存し、各runへplan/slotを渡します。
+集計は全4slotがcommittedであり、unavailable/unplannedが0であることも確認します。
+
 前者は同一scenarioの2回実行でsnapshot reset、4つのVM namespace、資格情報の非再利用を確認します。
 後者はseed応答喪失、fetch chunk改ざん、active MCP中SIGTERMで、再送禁止、欠損分類、VM廃棄、
 controller SIGKILL後の明示回収、run ID再利用拒否、transient成果物不在を確認します。
