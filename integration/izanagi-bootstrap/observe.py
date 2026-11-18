@@ -27,6 +27,15 @@ def loopback(endpoint):
         return False
 
 
+def process_starttime(stat):
+    # comm may contain spaces and closing parentheses; fields follow its last ')'.
+    fields = stat.rsplit(')', 1)[1].split()
+    value = int(fields[19])  # /proc/PID/stat field 22, in clock ticks since boot.
+    if value <= 0:
+        raise ValueError('invalid process start time')
+    return value
+
+
 def sample(unit=UNIT):
     data = command(["/usr/bin/systemctl", "show", unit,
                     *["--property=" + key for key in PROPERTIES]])
@@ -53,6 +62,8 @@ def sample(unit=UNIT):
     network_args = []
     for pid in sorted(pids):
         try:
+            stat = Path(f'/proc/{pid}/stat')
+            starttime = process_starttime(stat.read_text())
             executable = os.readlink(f"/proc/{pid}/exe")
             if executable != "/usr/bin/qemu-system-x86_64":
                 continue
@@ -64,7 +75,10 @@ def sample(unit=UNIT):
                     selected.append([value.decode(), args[index + 1].decode("utf-8", "replace")])
                 if value in (b"-drive", b"-fsdev"):
                     storage.append([value.decode(), args[index + 1].decode("utf-8", "replace")])
-            network_args.append({"pid": pid, "network_args": selected, "storage_args": storage})
+            if process_starttime(stat.read_text()) != starttime:
+                raise RuntimeError('QEMU process identity changed during observation')
+            network_args.append({"pid": pid, "starttime_ticks": starttime,
+                                 "network_args": selected, "storage_args": storage})
         except (FileNotFoundError, ProcessLookupError):
             pass
     return {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(),

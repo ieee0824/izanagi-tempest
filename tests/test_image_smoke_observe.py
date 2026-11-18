@@ -13,12 +13,68 @@ SPEC.loader.exec_module(OBSERVE)
 
 def sample():
     return {'external_listener_observed': False, 'qemu_network': [{
+        'pid': 42, 'starttime_ticks': 1234,
         'network_args': [['-netdev', 'user,id=net0,restrict=on,hostfwd=tcp:127.0.0.1:40001-:9001']],
         'storage_args': [['-drive', 'file=' + OBSERVE.ROOT + '/inputs/image.qcow2,format=qcow2,snapshot=on'],
                          ['-fsdev', 'local,id=fs0,path=' + OBSERVE.ROOT + '/work/output/workspace,security_model=mapped-xattr,readonly=on']]}]}
 
 
 class SmokeObserverTests(unittest.TestCase):
+    def test_starttime_field_handles_process_name_parentheses(self):
+        stat = '42 (qemu ) worker) ' + ' '.join(['S'] + ['0'] * 18 + ['1234', '0'])
+        self.assertEqual(OBSERVE.BOOTSTRAP.process_starttime(stat), 1234)
+
+    def test_lifetime_allows_same_vm_and_absence_but_not_replacement(self):
+        for field in ['pid', 'starttime_ticks']:
+            with self.subTest(field=field):
+                lifetime = OBSERVE.VmLifetime()
+                lifetime.observe(sample())
+                lifetime.observe(sample())
+                lifetime.observe({'external_listener_observed': False, 'qemu_network': []})
+                lifetime.require_observed()
+                replacement = sample()
+                replacement['qemu_network'][0][field] += 1
+                with self.assertRaisesRegex(RuntimeError, 'identity changed'):
+                    lifetime.observe(replacement)
+
+    def test_lifetime_rejects_missing_or_invalid_identity(self):
+        for field in ['pid', 'starttime_ticks']:
+            for value in [None, True, 0, -1, '1234']:
+                with self.subTest(field=field, value=value):
+                    row = sample()
+                    row['qemu_network'][0][field] = value
+                    with self.assertRaisesRegex(RuntimeError, 'identity missing or invalid'):
+                        OBSERVE.VmLifetime().observe(row)
+
+    def test_terminal_without_vm_observation_is_not_accepted(self):
+        rows = [{'unit': {'InvocationID': 'one', 'ActiveState': 'inactive', 'LoadState': 'loaded'},
+                 'cgroup_pids': [], 'external_listener_observed': False, 'qemu_network': []}]
+        with tempfile.TemporaryDirectory() as directory:
+            with patch('sys.argv', ['observe', '--output', str(Path(directory) / 'evidence.jsonl')]), \
+                 patch.object(OBSERVE.os, 'geteuid', return_value=0), \
+                 patch.object(OBSERVE.BOOTSTRAP, 'sample', side_effect=rows):
+                with self.assertRaisesRegex(RuntimeError, 'without observing'):
+                    OBSERVE.main()
+
+    def test_main_rejects_sequential_vm_replacement_in_same_invocation(self):
+        for field in ['pid', 'starttime_ticks']:
+            with self.subTest(field=field):
+                first = sample()
+                first.update(unit={'InvocationID': 'one', 'ActiveState': 'active', 'LoadState': 'loaded'},
+                             cgroup_pids=[42])
+                second = copy.deepcopy(first)
+                second['qemu_network'][0][field] += 1
+                terminal = {'unit': {'InvocationID': 'one', 'ActiveState': 'inactive', 'LoadState': 'loaded'},
+                            'cgroup_pids': [], 'external_listener_observed': False, 'qemu_network': []}
+                with tempfile.TemporaryDirectory() as directory:
+                    with patch('sys.argv', ['observe', '--output', str(Path(directory) / 'evidence.jsonl')]), \
+                         patch.object(OBSERVE.os, 'geteuid', return_value=0), \
+                         patch.object(OBSERVE.BOOTSTRAP, 'sample', side_effect=[first, second, terminal]) as read, \
+                         patch.object(OBSERVE.time, 'sleep'):
+                        with self.assertRaisesRegex(RuntimeError, 'identity changed'):
+                            OBSERVE.main()
+                    self.assertEqual(read.call_count, 2)
+
     def test_fixed_single_vm_policy(self):
         self.assertTrue(OBSERVE.validate_runtime(sample()))
 

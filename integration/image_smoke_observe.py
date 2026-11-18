@@ -41,6 +41,27 @@ def validate_runtime(row):
     return True
 
 
+class VmLifetime:
+    """Bind observed QEMU samples to one PID/starttime within the fixed unit."""
+    def __init__(self):
+        self.identity = None
+
+    def observe(self, row):
+        if not validate_runtime(row):
+            return
+        qemu = row['qemu_network'][0]
+        identity = (qemu.get('pid'), qemu.get('starttime_ticks'))
+        if any(type(value) is not int or value <= 0 for value in identity):
+            raise RuntimeError('QEMU process identity missing or invalid')
+        if self.identity is not None and identity != self.identity:
+            raise RuntimeError('QEMU process identity changed during smoke')
+        self.identity = identity
+
+    def require_observed(self):
+        if self.identity is None:
+            raise RuntimeError('smoke terminated without observing a QEMU identity')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -48,6 +69,7 @@ def main():
     if os.geteuid() != 0:
         parser.error('root required to observe socket ownership')
     invocation = None
+    lifetime = VmLifetime()
     start = time.monotonic()
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as stream:
@@ -60,12 +82,13 @@ def main():
                 invocation = current
             stream.write(json.dumps(row) + '\n')
             stream.flush()
-            validate_runtime(row)
+            lifetime.observe(row)
             if invocation and row['unit'].get('ActiveState') in ('inactive', 'failed'):
                 if row['unit'].get('LoadState') != 'loaded' or current != invocation:
                     raise RuntimeError('same-invocation terminal attributes not captured')
                 if row['cgroup_pids']:
                     raise RuntimeError('terminal smoke unit retains processes')
+                lifetime.require_observed()
                 return
             if not invocation and time.monotonic() - start > 60:
                 raise RuntimeError('smoke unit not observed within startup window')
