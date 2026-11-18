@@ -13,7 +13,7 @@ SPEC = importlib.util.spec_from_file_location(
 BOOTSTRAP = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BOOTSTRAP)
 UNIT = 'tempest-izanagi-image-smoke-001.service'
-ROOT = '/var/lib/tempest-izanagi-image-smoke-001'
+ROOT = '/var/lib/tempest-izanagi-image-smoke-001-v2'
 
 
 def validate_runtime(row):
