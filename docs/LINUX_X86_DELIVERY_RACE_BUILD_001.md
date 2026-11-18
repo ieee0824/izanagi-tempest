@@ -29,6 +29,7 @@ debugfsを読取専用で使用し、mount・新VM起動・抽出ファイル実
 dispatcher/mailboxは`faf0c5ae…`、quiesceは`72fabf3c…`で固定instrument後bytesと一致する。
 guest native/LWSも固定binary SHAへ一致。各script/binaryはguest root:root/0755、manifestはroot:root/0644。
 offline後もsnapshot directoryのroot:988/0750、UID999プロセス不在・cgroup不在を再確認した。派生raw/partitionを保持した状態の空き容量は14718812160 bytes。
+後続room16834の容量確保許可で、[限定RAW cleanup追補](LINUX_X86_DELIVERY_RACE_RAW_CLEANUP_001.json)の通りdisk.rawだけを削除した。partition・qcow2・全抽出artifact・元の結果JSONは保持し、上記offline計測は削除前の歴史的記録として残す。
 後続のUID999 native artifact抽出77480も終了コード0。[agent/HTTP/eBPFの別証拠](LINUX_X86_DELIVERY_RACE_NATIVE_ARTIFACTS_001.json)は同一qcow2の前後SHAと既存partition SHAを拘束し、実mode 0551/0755/0440・root:root・ELF machine 62/62/247と固定binary SHAの一致を確認する。
 通常runtimeの`artifact_evidence.validate_offline`にもこの新reportを渡して成功した。親imageのreportを新SHAへ書き換えて再利用していない。
 compile commit/tree/dirty等は親の固定binary provenanceを保持し、現HEADで再ビルドしたとは記録しない。
