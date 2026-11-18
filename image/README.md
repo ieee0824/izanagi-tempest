@@ -276,3 +276,5 @@ receiver close/join後に`network-receiver.closed.json`で終了phaseを公開�
 
 これは当該VM外host-alias endpointだけの検査であり、Internet全般・本番MCP egress・正式modelの保証ではない。
 実VMは固定計画/observer/source/UID検査後に単発実行し、実装追加やhost上のsynthetic socket試験だけで完了扱いにしない。
+
+固定Linux host-endpoint001の単発結果は[検証範囲](../docs/HOST-ENDPOINT-EVIDENCE.md)を参照する。対象host endpointの拒否と正常対照を確認した範囲に限定し、Internet全般・本番MCP・#36全体の受入とは分ける。
