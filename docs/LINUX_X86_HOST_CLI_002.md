@@ -9,3 +9,5 @@ binaryは10248336 bytes、SHA256 `4f66f0bd2fca5e98490440c9069da26630c331d9dd56a2
 準備時、初期root002は旧Cargo.lockとの一致を誤って要求してコンパイル前に停止した。旧版との差はprobe workspace crate削除であり、固定revision自身のlockfileを基準とする条件へ修正した。v2も旧private証拠の読取権限でコンパイル前に停止し、既知fileのsudo SHA照合へ修正した。started/targetがないことを確認して準備を再開し、実コンパイルは一度だけ実施した。初期rootと準備途中の証拠を削除していない。
 
 3GiB target予算は事前計画値で、強制quotaではない。build成功は大容量配送・VM受入の証明ではなく、PR66/#64の実VM gateは未実施。
+
+[lockfileの独立TOML比較](LINUX_X86_HOST_CLI_002_LOCK_COMPARISON.json)ではsource付き外部依存183件の全recordが一致した。local差分はprobe2package削除とtempestからのprobe依存削除である。
