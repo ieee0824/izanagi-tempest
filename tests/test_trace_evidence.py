@@ -36,6 +36,13 @@ class TraceEvidenceTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             TRACE.trace_probe_evidence([], 42, PROBE)
 
+    def test_empty_log_file_is_not_positive_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'events.log'
+            log.write_bytes(b'')
+            with self.assertRaises(RuntimeError):
+                TRACE.trace_probe_evidence([log], 42, PROBE)
+
 
 if __name__ == '__main__':
     unittest.main()
