@@ -32,3 +32,7 @@ collector93945は同handle終端exit0。追加VM/暗黙retryは行っていな�
 
 native root PIPE内部、全/proc cmdline、全route/全lifetime、HTTP sidecar、外部positive control、forced delivery race、正式モデル比較を証明しない。
 実model/実credential/AWSは使用していない。次/proc測定を今回の固定入力や結果へ後追い追加しない。
+
+## 結果監査後の鍵回収追補
+
+room16678の監査後、当該output/izanagi-hmacだけをlstatでUID999:GID988/0600/通常単linkと確認して削除し、非存在を確認した。値/単体hashは読んでいない。[別追補metadata](LINUX_X86_EXEC_EXPOSURE_001_KEY_CLEANUP.json)を保存し、元RESULTの採取時点の状態とraw証拠/inputsは保持した。

@@ -1,0 +1,16 @@
+{
+  "review_room_message": 16678,
+  "path": "/var/lib/tempest-izanagi-exec-exposure-001/work/output/izanagi-hmac",
+  "deleted_at_utc": "2026-11-18T16:18:41.812452+00:00",
+  "before": {
+    "type": "regular",
+    "uid": 999,
+    "gid": 988,
+    "mode": "0600",
+    "links": 1
+  },
+  "absence_verified": true,
+  "value_read_for_cleanup": false,
+  "standalone_hash_computed": false,
+  "raw_evidence_and_inputs_preserved": true
+}
