@@ -138,6 +138,8 @@ cmdline/env/FD・全期間の露出を検査したことにはしない。原本
 
 `--exec-evidence --proc-evidence`を併用すると、claim前・seed後・export前の3時点で、
 guest actor UID1000から`/proc`のcmdline/environとFD一覧件数を読み取る。FDの内容は読まない。
+/proc採取前にroot所有・非writeの`/etc/tempest/image.json`と固定Izanagi/LWS commitを確認する。
+helperの直接実行は固定guestだけに限定し、hostではsynthetic fixtureのみを使う。
 公開canaryをargvと初期envへ渡し、観測process自身で両方が読めたことと、自身のFD一覧取得をpositive controlとする。
 private管理tokenやreply keyをprobeへ渡すことはしない。
 
