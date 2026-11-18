@@ -43,3 +43,11 @@ source/caller/service監査→snapshot/専用UID検査→実件数/tree/source/a
 
 専用observerへ別image/share/cwd拒否とfixed unitの負例を追加する。caller/service/closureの具体argvはrunner interface共有後に確定する。
 まだroot/snapshot/UID検査/caller/observer/VMは未実施。
+
+## receiver/client interfaceの具体化待ち
+
+room16737の固定source契約では、guestの単一exec内で有限期限のreceiver19090/19091をthread起動する。
+19091への直接dummy転送成功を対照に、proxy経由19090成功、proxy経由19091失敗＋receiver件数増分0、非許可Host失敗を順に照合し、finallyでserver/threadを回収する案。
+結果はprivate exec stdoutのbounded JSONとし、共有書込やbackground残留を使わない。
+別loopback portの失敗はclient502/HttpRequest.policy=allowed/HttpOutcome=failed/status=null/upstream_bytes_written0であり、denied/403と記録しない。
+非許可Hostはclient502/policy=denied/outcome=rejectedとして区別する。具体schema/遅延上限/固定argvは実装source共有後に確定する。
