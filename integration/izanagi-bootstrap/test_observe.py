@@ -1,7 +1,9 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from observe import loopback, sample
+from observe import loopback, main, sample
 
 
 class ListenerBoundaryTests(unittest.TestCase):
@@ -26,6 +28,22 @@ class ListenerBoundaryTests(unittest.TestCase):
             with self.subTest(endpoint=endpoint):
                 self.assertFalse(loopback(endpoint))
 
+
+class AttemptBindingTests(unittest.TestCase):
+    def test_second_attempt_cli_observes_only_second_unit(self):
+        row = {
+            "unit": {"InvocationID": "second-invocation", "ActiveState": "inactive"},
+            "cgroup_pids": [],
+            "external_listener_observed": False,
+        }
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "observation.jsonl"
+            with patch("sys.argv", ["observe", "--attempt", "002", "--output", str(output)]), \
+                 patch("observe.os.geteuid", return_value=0), \
+                 patch("observe.sample", return_value=row) as read_sample:
+                main()
+            read_sample.assert_called_once_with("tempest-izanagi-bootstrap-build-002.service")
+            self.assertTrue(output.is_file())
 
 if __name__ == "__main__":
     unittest.main()
