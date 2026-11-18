@@ -174,3 +174,13 @@ env -i PATH=/usr/bin:/bin HOME=/tmp/tempest-x86-full-rust/home PACKER_PLUGIN_PAT
 ```
 
 実 image build/VM/load/採取は未実施。次は [fullbuild001 計画](LINUX_X86_FULL_BUILD_001_PLAN.md) に従う immutable root snapshot の準備と検査。observer は collaborator の `--phase image --attempt 001` を採用し、unit は `tempest-izanagi-bootstrap-image-001.service` に統一した。
+
+## isolated Python 準備の失敗
+
+room #16472 の準備指示に従い、新 0700 `/tmp/tempest-x86-full-python-001` と private home/wheelhouse を作成した。
+
+```sh
+env -i PATH=/usr/bin:/bin HOME=/tmp/tempest-x86-full-python-001/home /usr/bin/python3 -I -m venv /tmp/tempest-x86-full-python-001/venv
+```
+
+既存 Python 3.12.3 は ensurepip を提供しておらず exit 1。partial venv を保持し、再試行・追加 APT・代替 bootstrap・source compile は行っていない。wheel 取得と install は未実施。OS が案内した候補は python3.12-venv だが、依存・version/hash・変更範囲を別途監査するまでは導入しない。global Python と既存資格情報は変更していない。
