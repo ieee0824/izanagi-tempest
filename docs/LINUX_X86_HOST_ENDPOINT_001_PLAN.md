@@ -76,3 +76,11 @@ observerはready→ack/live→closed/実listener不在を別phaseとして記録
 closed前のlistener消失、同port別owner、PID/starttime/socket identity変化は拒否する。
 guest中の同bind/生存はrunner前後snapshotと独立ackに結び付け、samplingを全期間観測へ一般化しない。
 ready/ack/closedの公開はlink EXCL/fsyncで上書きなしとし、trusted unit終了・cgroup回収とは別証拠にする。
+
+## observer監査修正
+
+room16768の指摘を受け、ready/closed読取後のfresh ss -H -ltnpeをport指定で取得し、unit外を含む全ownerとsocket inodeをFD inodeへ照合する。
+bootstrapのunit内listener一覧だけをreceiver証明に流用しない。state再読一致と正規close→closed公開の最大1秒待機を行い、別owner/別inode/identity変化は即拒否する。
+異常sampleは固定error metadataと共にflushしてから停止する。nlink2公開途中も同inodeの単link化だけ最大1秒待機する。
+専用receiver10tests/既存observer24tests、Linux全163tests/skip0成功。実Linuxのpublic loopback socketでもfresh ssのPID/inode一致とclose後不在を確認した。
+PR62の後続source追補（frame絶対期限・停止後counter）を取り込む前の結果として記録し、新root/snapshot/VMは未作成を維持する。

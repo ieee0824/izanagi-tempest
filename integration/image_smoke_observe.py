@@ -80,14 +80,21 @@ def main():
     with os.fdopen(fd, 'w') as stream:
         while time.monotonic() - start < 1870:
             row = BOOTSTRAP.sample(unit)
-            current = row['unit'].get('InvocationID')
-            if current:
-                if invocation and current != invocation:
-                    raise RuntimeError('smoke unit invocation changed')
-                invocation = current
-            lifetime.observe(row)
-            if receiver is not None:
-                row['host_receiver'] = receiver.observe(row)
+            try:
+                current = row['unit'].get('InvocationID')
+                if current:
+                    if invocation and current != invocation:
+                        raise RuntimeError('smoke unit invocation changed')
+                    invocation = current
+                lifetime.observe(row)
+                if receiver is not None:
+                    row['host_receiver'] = receiver.observe(row)
+            except Exception as error:
+                # Preserve the rejected sample without echoing arbitrary state data.
+                row['observer_error'] = {'type': type(error).__name__, 'scope': 'runtime or receiver validation failed'}
+                stream.write(json.dumps(row) + '\n')
+                stream.flush()
+                raise
             stream.write(json.dumps(row) + '\n')
             stream.flush()
             if invocation and row['unit'].get('ActiveState') in ('inactive', 'failed'):

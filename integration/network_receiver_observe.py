@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import secrets
 import stat
+import subprocess
 import time
 
 ROOT = Path('/var/lib/tempest-izanagi-host-endpoint-001')
@@ -70,6 +71,10 @@ def starttime(text):
     return result
 
 
+class ReceiverSocketGone(ValueError):
+    pass
+
+
 def inspect_process(ready, proc=Path('/proc')):
     process = proc / str(ready['host_pid'])
     before = starttime((process / 'stat').read_text())
@@ -86,16 +91,33 @@ def inspect_process(ready, proc=Path('/proc')):
             found |= os.readlink(path) == 'socket:[' + str(ready['socket_inode']) + ']'
         except FileNotFoundError:
             continue
-    if not found or starttime((process / 'stat').read_text()) != before:
-        raise ValueError('receiver socket or process identity changed')
+    if starttime((process / 'stat').read_text()) != before:
+        raise ValueError('receiver process identity changed')
+    if not found:
+        raise ReceiverSocketGone('receiver socket disappeared before closed publication')
     return before
 
 
-def listener_matches(ready, row):
+def fresh_listeners(port):
+    result = subprocess.run(['/usr/bin/ss', '-H', '-ltnpe', '( sport = :' + str(port) + ' )'],
+                            capture_output=True, text=True, check=True, timeout=2)
+    if len(result.stdout.encode()) > 65536:
+        raise ValueError('receiver socket observation budget')
+    listeners = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        inodes = re.findall(r'\bino:(\d+)', line)
+        if len(fields) < 5 or len(inodes) != 1:
+            raise ValueError('receiver socket observation schema')
+        listeners.append({'local': fields[3], 'all_pids': sorted({int(pid) for pid in re.findall(r'pid=(\d+)', line)}),
+                          'socket_inode': int(inodes[0])})
+    return listeners
+
+
+def listener_matches(ready, row, listeners):
     endpoint = '127.0.0.1:' + str(ready['port'])
-    matches = [item for item in row['listeners'] if item['local'].rsplit(':', 1)[-1] == str(ready['port'])]
-    if len(matches) != 1 or matches[0]['local'] != endpoint or matches[0]['pids'] != [ready['host_pid']]:
-        raise ValueError('receiver listener ownership or endpoint changed')
+    if len(listeners) != 1 or listeners[0] != {'local': endpoint, 'all_pids': [ready['host_pid']], 'socket_inode': ready['socket_inode']}:
+        raise ValueError('receiver listener ownership, inode or endpoint changed')
     if str(ready['host_pid']) != row['unit'].get('MainPID') or ready['host_pid'] not in row['cgroup_pids']:
         raise ValueError('receiver not fixed unit MainPID')
     for vm in row['qemu_network']:
@@ -152,33 +174,56 @@ class ReceiverLifetime:
         if self.ready is not None and ready != self.ready:
             raise ValueError('receiver ready identity changed')
         self.ready = ready
-        closed = private_json(self.root / 'work/output/network-receiver.closed.json')
-        if closed is not None:
-            if set(closed) != {'schema_version', 'identity', 'receiver_closed', 'host_monotonic_ns'} \
-                    or type(closed['schema_version']) is not int or closed['schema_version'] != 1 \
-                    or closed['identity'] != ready or closed['receiver_closed'] is not True \
-                    or type(closed['host_monotonic_ns']) is not int or closed['host_monotonic_ns'] <= 0:
-                raise ValueError('receiver closed binding')
-            if self.ack is None or (self.closed is not None and self.closed != closed):
-                raise ValueError('receiver closed without ack or changed')
-            if any(item['local'].rsplit(':', 1)[-1] == str(ready['port']) for item in row['listeners']):
-                raise ValueError('receiver listener remains after closed')
-            self.closed = closed
-            return {'phase': 'closed', 'identity': ready, 'ack': self.ack, 'closed': closed}
-        if self.closed is not None:
-            raise ValueError('receiver closed record disappeared')
-        invocation = row['unit'].get('InvocationID', '')
-        if re.fullmatch('[0-9a-f]{32}', invocation) is None:
-            raise ValueError('receiver invocation missing')
-        listener_matches(ready, row)
-        ticks = inspect_process(ready)
-        ack = {**ready, 'host_pid_starttime_ticks': ticks, 'invocation_id': invocation}
-        if self.ack is None:
-            publish_ack(self.root / 'work/evidence/network-receiver-observed.json', ack)
-            self.ack = ack
-        elif self.ack != ack:
-            raise ValueError('receiver live identity changed')
-        return {'phase': 'live', 'identity': ready, 'ack': self.ack}
+        closed_path = self.root / 'work/output/network-receiver.closed.json'
+        phase_deadline = time.monotonic() + 1
+        while True:
+            closed = private_json(closed_path)
+            listeners = fresh_listeners(ready['port'])
+            if private_json(ready_path) != ready:
+                raise ValueError('receiver ready changed during fresh observation')
+            after_closed = private_json(closed_path)
+            if after_closed != closed:
+                if closed is not None:
+                    raise ValueError('receiver closed changed during fresh observation')
+                # Publication raced this sample; fresh socket state must follow it.
+                if time.monotonic() >= phase_deadline:
+                    raise ValueError('receiver phase publication did not stabilize')
+                continue
+            if closed is not None:
+                if set(closed) != {'schema_version', 'identity', 'receiver_closed', 'host_monotonic_ns'} \
+                        or type(closed['schema_version']) is not int or closed['schema_version'] != 1 \
+                        or closed['identity'] != ready or closed['receiver_closed'] is not True \
+                        or type(closed['host_monotonic_ns']) is not int or closed['host_monotonic_ns'] <= 0:
+                    raise ValueError('receiver closed binding')
+                if self.ack is None or (self.closed is not None and self.closed != closed):
+                    raise ValueError('receiver closed without ack or changed')
+                if listeners:
+                    raise ValueError('receiver listener remains after closed')
+                self.closed = closed
+                return {'phase': 'closed', 'identity': ready, 'ack': self.ack, 'closed': closed,
+                        'fresh_listeners': listeners}
+            if self.closed is not None:
+                raise ValueError('receiver closed record disappeared')
+            if listeners:
+                invocation = row['unit'].get('InvocationID', '')
+                if re.fullmatch('[0-9a-f]{32}', invocation) is None:
+                    raise ValueError('receiver invocation missing')
+                listener_matches(ready, row, listeners)
+                try:
+                    ticks = inspect_process(ready)
+                except ReceiverSocketGone:
+                    pass  # Only closure-publication gap is eligible for bounded wait.
+                else:
+                    ack = {**ready, 'host_pid_starttime_ticks': ticks, 'invocation_id': invocation}
+                    if self.ack is None:
+                        publish_ack(self.root / 'work/evidence/network-receiver-observed.json', ack)
+                        self.ack = ack
+                    elif self.ack != ack:
+                        raise ValueError('receiver live identity changed')
+                    return {'phase': 'live', 'identity': ready, 'ack': self.ack, 'fresh_listeners': listeners}
+            if time.monotonic() >= phase_deadline:
+                raise ValueError('receiver listener disappeared without closed publication')
+            time.sleep(.01)
 
     def require_complete(self):
         if self.ack is None or self.closed is None:

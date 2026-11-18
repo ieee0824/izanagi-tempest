@@ -205,6 +205,19 @@ class SmokeObserverTests(unittest.TestCase):
                 OBSERVE.main()
             self.assertEqual([call.args for call in read.call_args_list], [(unit,), (unit,)])
 
+    def test_rejected_runtime_sample_is_flushed_before_observer_stops(self):
+        row=sample();row['external_listener_observed']=True
+        row.update(unit={'InvocationID':'bad','ActiveState':'active'},cgroup_pids=[42])
+        with tempfile.TemporaryDirectory() as directory:
+            output=Path(directory)/'observation.jsonl'
+            with patch('sys.argv',['observe','--output',str(output)]),patch.object(OBSERVE.os,'geteuid',return_value=0), \
+                 patch.object(OBSERVE.BOOTSTRAP,'sample',return_value=row),self.assertRaises(RuntimeError):
+                OBSERVE.main()
+            import json
+            saved=json.loads(output.read_text())
+            self.assertTrue(saved['external_listener_observed'])
+            self.assertEqual(saved['observer_error']['type'],'RuntimeError')
+
     def test_starttime_field_handles_process_name_parentheses(self):
         stat = '42 (qemu ) worker) ' + ' '.join(['S'] + ['0'] * 18 + ['1234', '0'])
         self.assertEqual(OBSERVE.BOOTSTRAP.process_starttime(stat), 1234)
