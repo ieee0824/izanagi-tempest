@@ -144,9 +144,18 @@ class HostFixtureTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             with self.assertRaises(ValueError):
                 E.wait_observer(path, value['identity'], Receiver())
-            metadata = SimpleNamespace(st_mode=stat.S_IFREG | 0o440, st_uid=0, st_gid=988, st_nlink=1)
+            metadata = SimpleNamespace(st_mode=stat.S_IFREG | 0o440, st_uid=0, st_gid=988, st_nlink=1, st_dev=1, st_ino=123)
             with patch.object(E.os, 'fstat', return_value=metadata):
                 self.assertEqual(E.wait_observer(path, value['identity'], Receiver()), value['observer_ack'])
+            pending = copy.copy(metadata)
+            pending.st_nlink = 2
+            with patch.object(E.os, 'fstat', side_effect=[pending, metadata]):
+                self.assertEqual(E.wait_observer(path, value['identity'], Receiver()), value['observer_ack'])
+            changed = copy.copy(metadata)
+            changed.st_ino += 1
+            with patch.object(E.os, 'fstat', side_effect=[pending, changed]):
+                with self.assertRaisesRegex(ValueError, 'inode changed'):
+                    E.wait_observer(path, value['identity'], Receiver())
             with self.assertRaises(FileExistsError):
                 E.publish(path, {})
             with self.assertRaises(TimeoutError):
