@@ -22,6 +22,26 @@ def qemu_pids():
     return sorted(found)
 
 
+
+def publish_ready(root):
+    # The final name must never expose an incomplete or unreadable marker.
+    pending = root / 'observer-ready.pending'
+    marker = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(marker, 'w') as ready:
+        ready.write('ready\n')
+        ready.flush()
+        os.fchown(ready.fileno(), 0, 988)
+        os.fchmod(ready.fileno(), 0o440)  # Explicitly restore group read after umask077.
+        os.fsync(ready.fileno())
+    os.link(pending, root / 'observer-ready', follow_symlinks=False)
+    pending.unlink()
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
 def main():
     assert os.geteuid() == 0
     spec = importlib.util.spec_from_file_location('bootstrap', ROOT / 'inputs/bootstrap_observe.py')
@@ -41,12 +61,7 @@ def main():
                 subprocess.run(['/usr/bin/systemctl', 'stop', UNIT], check=False, timeout=15)
                 raise RuntimeError('unexpected QEMU; stopped only reservation unit')
             if not (ROOT / 'observer-ready').exists():
-                marker = os.open(ROOT / 'observer-ready', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o440)
-                os.fchown(marker, 0, 988)
-                with os.fdopen(marker, 'w') as ready:
-                    ready.write('ready\n')
-                    ready.flush()
-                    os.fsync(ready.fileno())
+                publish_ready(ROOT)
             current = row['unit'].get('InvocationID')
             if current:
                 assert invocation is None or current == invocation
