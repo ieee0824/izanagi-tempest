@@ -51,3 +51,24 @@ run_cli.rs の primary は Vm::boot(&root)、retest は root/retest、vm.rs は 
 固定shareは work/runs/normal-1/sandbox、normal-1/retest/sandbox、normal-2/sandbox、normal-2/retest/sandbox の順である。
 [review用service](../integration/tempest-izanagi-runtime-normal-001.service) と [固定caller](evidence/runtime-normal-001/run_once.py) を用意した。
 unitのinstall/enable/startは行っていない。runtime_envは空環境からPATH/TZ/LANG/LC_ALL/HOME/TMPDIRだけを渡す。
+
+## 準備結果
+
+[全1307入力](LINUX_X86_RUNTIME_NORMAL_SNAPSHOT_001.json) と [専用UID検査](LINUX_X86_RUNTIME_NORMAL_PREPARATION_001.json) を保存した。
+observer/bootstrapは5445a29を取り込み、Python全82件とbootstrap13件がLinuxで成功した。
+作成caller63300とUID検査55144はそれぞれ同handle終端exit0。
+最初にUID999からprivate repository内helperを直接実行した試行はEACCESで起動できず、repoの権限を緩めず同一helperを/tmpへコピーして実施した。
+全入力 read可/write不可、外部runtime SHA、root所有/mode、venv prefix/version/AES、--help、xattr、private workを検査した。
+unitはnot-found/inactive/Invocation空、検査終了後UID999残留なし、KVM root:kvm0660、boot30389abc-903c-40ae-89a5-c6268ec1c432、free41702170624 bytes。
+新target binaryも記録SHAへ照合済み。snapshot treeは07260c16884c1c48d6396a6bea1616686078876c64bad0c18a2746afbe491af5。
+
+先行observerの具体command:
+
+```sh
+sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-runtime-normal-001/inputs/repo/integration/runtime_normal_observe.py --output /tmp/tempest-runtime-normal-observation-001.jsonl
+```
+
+続く固定callerは `python3 -I -B docs/evidence/runtime-normal-001/run_once.py`。command listは同fileに固定されている。
+observer JSONL の sample と observed_sessions は [projection](evidence/runtime-normal-001/observer_projection.py) で区別する。
+GC/terminal未知はそのまま残し、caller/exit recorder/trusted journalと独立回収結果を別保存する。
+この準備時点ではcaller/observerとも未実行で、4VM trialは未起動。
