@@ -13,7 +13,8 @@ CALIBRATION_SHA256 = '9176292317fd5ce8184184c7824104248f29463ff0043feeb0b94df422
 
 
 def sha(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    with Path(path).open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
 def build_plan(conditions, source, scenario, evaluator_sha256):
