@@ -24,7 +24,7 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 | 秘密の成果物・log・process metadata非露出 | 部分実装 | dummy診断はraw argv/env/stderr/任意pathを公開しない。実credentialを使う正負試験は未実施 |
 | 本番B固定VM経路 | 未実装 | Linux direct probeをIzanagi/guest/HTTP MCPへ結線していない |
 | KVM段階gate | 固定最小VM・Izanagi dummy最小経路実測済 | #15865/#15872承認に従い専用user/API12/固定最小VMを確認。[KVM実測](LINUX_KVM_ARTIFACT.md)と[boot002](LINUX_IZANAGI_BOOT_002.md)の認証Ready・固定guest UID1000・down・独立回収を別証拠で記録。外部通信拒否の実通信と本番VM境界、full guestは未達 |
-| x86_64 guest/image再構築 | 計画のみ | KVM全gate成功後にagent/sidecar/LWS/tempest-guest/imageをx86_64で再構築し、manifest、owner/firewall/doas、mailbox、control、clock/timeoutを再測定する（Issue comment 6891290403） |
+| x86_64 guest/image再構築 | 固定build・image生成済、実VM境界は未達 | agent/HTTP/LWS/tempest-guestのGNU buildと派生lockによるeBPF build、Debian公式ISO署名/hashを照合。[full build003](LINUX_X86_FULL_BUILD_003.md)は成功し、終了・独立回収・入力不変を記録。新imageのsmokeは未起動であり、guest実ABI load、eBPFイベント、owner/firewall/doas/mailbox/control/clock/timeoutの再測定は未完 |
 | owner手動login後の初回1 run | 未承認・未実施 | usage credits無効のowner確認を外部前提とし、fresh loginと1 runは別承認が必要。反復・複数modelも別承認 |
 | Issue #7での最終受入 | 未完 | direct接続で失うrequest単位監査と正式比較条件を再合意する必要がある |
 
@@ -37,11 +37,16 @@ KVM固定プローブの専用user・配置監査・実device正常経路は確�
 最小bootstrap image生成・最終化と回収は[build003](LINUX_BOOTSTRAP_BUILD_003.md)で確認済みです。
 systemctl終了属性の取り逃しと、trusted journal/clientによる別証拠の関連付けは区別しています。
 固定Izanagiの[boot002](LINUX_IZANAGI_BOOT_002.md)で認証Ready・固定guest UID・downが成功しました。
-次は結果を監査し、full Tempest guest/派生Debianの準備へ接続します。
+続いて固定full artifactsと派生Debianのimage生成まで完了しました。
+[build003結果](LINUX_X86_FULL_BUILD_003_RESULT.json)のservice成功・exit0はtrusted journalと
+同InvocationIDへ束縛し、caller exit143およびobserverの最終属性unknownとは区別します。
+image生成の成功を、そのimageの実VM隔離・実トレース採取成功へ拡張しません。
 
-1. boot002のclient/ExecStopPost/trusted journalと独立回収・image不変の結果を監査する。
-2. 監査後にx86_64 full guest/派生Debianの固定入力・署名・architecture差分を準備する。
-3. buildとVM境界のowner/firewall/doas/mailbox/control/clock/timeout、eBPF/HTTPを再実測する。
+1. 初回full image smokeの固定snapshot、具体command、単一VM lifetimeの観測を監査する。
+   各sampleのQEMU数だけでは逐次VM入替を拒否できない反例を確認済み（Sakura16531/16532）。
+2. 新imageでguest artifact/ABIとM3 owner/firewall/doas/mailbox、run固有PID/pathの実eBPFイベントを検証する。
+3. HTTP sidecar実起動、外部拒否のpositive control、control/clock/timeout、2run resetを別gateとして再実測する。
+   既存smokeのHTTP/PCAP確認やTraceStarted応答だけでこれらを確認済みにしない。
 
 dummy HOMEの受入範囲は[Linux HOME・run state隔離gate](LINUX_STATE_ISOLATION.md)に固定します。
 本番B/VMへの結線、fresh login、subscription live-call、正式比較は未達です。
