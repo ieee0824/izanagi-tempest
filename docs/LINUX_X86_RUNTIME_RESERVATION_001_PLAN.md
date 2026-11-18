@@ -34,3 +34,11 @@ atimeだけは読取で変わるため比較から除外する。private manifes
 [observer](evidence/runtime-reservation-001/observe.py) は100msごとに専用unit sampleとhost QEMU PID一覧をprivate JSONLへ保存し、QEMU観測時は当該unitだけstopして失敗する。
 readiness markerはUID999が置換できないroot直下にroot:988/0440で作成する。
 構文検査、treeの読取反復一致と内容変更検知fixtureは成功した。まだsnapshot作成・CLI実行はしていない。
+
+## 未実行v1の準備記録とmarker修正
+
+[準備v1](LINUX_X86_RUNTIME_RESERVATION_PREPARATION_001_V1.json) を保存した。作成caller88326は同handle終端exit0。
+全7inputをroot:988/0440へ固定し、旧seed-loss001全tree1537項目のprivate baselineを新rootへ保存した。
+ただしroom16630で、observerのumask077によりready mode0440が0400になる点と、公開後writeによる空marker読取raceが指摘された。
+v1 observer/CLIは未実行。旧inputs/observe.pyとsnapshot.jsonは保持し、修正版はinputs/observe_v2.pyへ別固定してsnapshot-v2.jsonを保存する予定。
+実行はv2とUID999 marker読取/排他公開の検査、最終監査後とする。

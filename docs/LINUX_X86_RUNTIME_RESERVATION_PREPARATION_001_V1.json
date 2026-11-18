@@ -1,0 +1,75 @@
+{
+  "source_commit": "6e3914b60a88c605084b041de580a3681ca1d9e1",
+  "root": "/var/lib/tempest-izanagi-runtime-reservation-001",
+  "unit": "tempest-izanagi-runtime-reservation-001.service",
+  "files": [
+    {
+      "path": "/var/lib/tempest-izanagi-runtime-reservation-001/inputs/bootstrap_observe.py",
+      "sha256": "d9261442b8120fc7d7221c4ad8f4a4678a9990953603da11e72fcc90a16bbd28",
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-runtime-reservation-001/inputs/check_once.py",
+      "sha256": "792a0db397dc41da5ee42618a32bd564901fffa0e073b2e099c75a67e23ef17e",
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-runtime-reservation-001/inputs/observe.py",
+      "sha256": "2563aaac9b0debad4ca990140d7be3d5d9fc37f3aea7db8b3f70812818cc1a0b",
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-runtime-reservation-001/inputs/record_exit.py",
+      "sha256": "f27f6b42de339e3a5f8529a56830a6fc30a535e2e867d183ececa5dd2f75bab0",
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-runtime-reservation-001/inputs/run_once.py",
+      "sha256": "f80447abe2ab72a35ffe7b41381fbea4e3b3ffdaa8376baf79fcdb6c7990abe6",
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-runtime-reservation-001/inputs/runtime_faults.py",
+      "sha256": "42a189a665c67c93b63108440b641f6c18501cedcefeb7105e638bc783bd09e1",
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/var/lib/tempest-izanagi-runtime-reservation-001/inputs/tree_manifest.py",
+      "sha256": "77f491aa8bc9b4b7a4bddecbdb746e15d9898dc58a03eaa8de3db5e83887dcc9",
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    }
+  ],
+  "external_runtime_sha256": {
+    "/usr/bin/python3.12": "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f",
+    "/usr/bin/qemu-system-x86_64": "8a35ccba41582fc6c38b9df85fc9e35fa1d42f414d2d7d8090ee9b2f5e7c0854",
+    "/usr/bin/qemu-img": "634320b91165669917123e8e79cce1c4d00cee0a4aa4d662d7c0a8186479b3fb",
+    "/usr/bin/tcpdump": "0d28d014ffd7839852a426cfde6448bda549aef90a4937f787673a6ca3152cf0",
+    "/usr/bin/ss": "31124eb6385718f551751a580c7e17203bc307efa207ab5315b66b4ad5793e8c",
+    "/usr/bin/systemctl": "37ec607113f55f1b385b4fa75588a43402aec0de57927500763b267713f10f63",
+    "/lib64/ld-linux-x86-64.so.2": "5fc0940888e9d2e1a00e66d6b1a559c36364ee867683652e1074fa576952cc3f",
+    "/lib/x86_64-linux-gnu/libc.so.6": "755a371e86cc9f564ab54f66140747700fb0a103f698f659f2060f707897e09a",
+    "/lib/x86_64-linux-gnu/libgcc_s.so.1": "d93224d2b0dab4247598be683adca02f5cf00586f99c187579cd7e92058fb7cb"
+  },
+  "old_tree_sha256": "4f96c6013ae88321ab3376a636092b962c924d39e52ae1b7dd700a620b70f878",
+  "old_tree_entries": 1537,
+  "baseline_file_sha256": "bbf1ca2bf5fd83e6c685627803b86286111c2b2eaaeb59436aae47f4bc3e7613",
+  "existing_runs_and_run_owned_0700": true,
+  "old_inputs_verified": true,
+  "vm_executed": false,
+  "reservation_cli_executed": false,
+  "free_bytes": 39220588544
+}
