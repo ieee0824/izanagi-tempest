@@ -1,6 +1,6 @@
 # Linux x86 full image build001 準備案
 
-room #16463 に沿った準備。実 build は未実行であり、以下は全 artifact/ABI/manifest と root snapshot の確定後に監査する command 案。旧 Alpine build/boot 入力と証拠は変更しない。
+room #16463 に沿った準備。実 build を一度実行し、言語選択待ちで中止した。[結果と回収証拠](LINUX_X86_FULL_BUILD_001.md)を参照。以下は実行時の計画。旧 Alpine build/boot 入力と証拠は変更しない。
 
 ## 入力と snapshot
 
@@ -18,7 +18,7 @@ observer は `--phase image --attempt 001` だけを新 unit に対応付ける�
 sudo -n /usr/bin/python3 /var/lib/tempest-izanagi-full-build-001/inputs/observe.py --phase image --attempt 001 --output /tmp/tempest-x86-full-build-observation-001.jsonl
 ```
 
-実行時の caller stdout/stderr は新 private log に保存する。以下はまだ実行していない。
+実行時の caller stdout/stderr は新 private log に保存する。以下を一度実行した。
 
 ```sh
 sudo -n /usr/bin/systemd-run --unit=tempest-izanagi-bootstrap-image-001 --wait --pipe \
@@ -49,4 +49,4 @@ sudo -n /usr/bin/systemd-run --unit=tempest-izanagi-bootstrap-image-001 --wait -
 
 署名済み ISO の `/pool/main/g/glibc/libc6_2.41-12+deb13u4_amd64.deb` を ISO9660 records から通常 private file へ読み出し、既存 dpkg-deb -x/readelf で非実行検査した。[package/loader/libc/libm の SHA と照合結果](LINUX_X86_ISO_LIBC.json) を参照。4 artifacts の undefined GLIBC symbol/version pairs は agent145/HTTP122/LWS198/guest147 件で、全て同 package の libc/libm/loader が提供した。package の `/usr/lib64/ld-linux-x86-64.so.2` は `../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2` を指す。これは ISO 内 package の予定 ABI 検査であり、guest の実 installed package/loader と実 load の受入証拠ではない。libgcc を含む共有依存全体の実 load も後続 gate に残る。
 
-直近確認で unit は not-found/inactive、uid999 process なし、固定3 ports listener なし、free60683980800 bytes。実行直前に再確認する。snapshot 作成/full validate/ABI前段照合まで完了、実 build は未実行で、具体入力監査待ち。
+直近確認で unit は not-found/inactive、uid999 process なし、固定3 ports listener なし、free60683980800 bytes。実行直前に再確認する。snapshot 作成/full validate/ABI前段照合まで完了、この snapshot を監査後に一度実行し、中止・回収済み。

@@ -1,0 +1,79 @@
+{
+  "unit": "tempest-izanagi-bootstrap-image-001.service",
+  "invocation_id": "39a30e58b71649d88535100b4e964880",
+  "caller_exit": 1,
+  "observer_exit": 0,
+  "observer_last": {
+    "time": "2026-11-18T11:57:19.887551+00:00",
+    "unit": {
+      "MainPID": "0",
+      "Result": "exit-code",
+      "ExecMainCode": "1",
+      "ExecMainStatus": "1",
+      "ControlGroup": "",
+      "LoadState": "loaded",
+      "ActiveState": "failed",
+      "SubState": "failed",
+      "InvocationID": "39a30e58b71649d88535100b4e964880"
+    },
+    "cgroup_pids": [],
+    "listeners": [],
+    "qemu_network": [],
+    "external_listener_observed": false
+  },
+  "observations": 198,
+  "external_listener_observed": false,
+  "inputs_unchanged": 26,
+  "cgroup_absent": true,
+  "uid999_processes_absent": true,
+  "ports_closed": true,
+  "free_bytes": 60682592256,
+  "files": {
+    "/tmp/tempest-x86-full-build-001.log": {
+      "bytes": 3238,
+      "sha256": "522904a9a745e277fc1d4f7f681a72dcea150d74fb7af5768ee30236d1f0b447"
+    },
+    "/tmp/tempest-x86-full-build-observation-001.jsonl": {
+      "bytes": 208713,
+      "sha256": "0a9fb655fcedcb10989ffa68cd3cd54d3846baf983dfc09b1133a76b4b5e17c4"
+    },
+    "/tmp/tempest-x86-full-build-001-screen/screen.png": {
+      "bytes": 17407,
+      "sha256": "4ad9f54834caafbb5f79e605c0f4f2583b5e92005f2c2fca99f0bab648537c40"
+    },
+    "/var/lib/tempest-izanagi-full-build-001/work/output-debian/debian-x86_64.qcow2": {
+      "bytes": 196672,
+      "sha256": "8cf73f8d367b56e81afc7e25dba3226168f8f05790ccf7e846de51e931478133"
+    }
+  },
+  "trusted_journal_terminal": [
+    {
+      "__REALTIME_TIMESTAMP": "1795003038961793",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "MESSAGE": "tempest-izanagi-bootstrap-image-001.service: Main process exited, code=exited, status=1/FAILURE"
+    },
+    {
+      "__REALTIME_TIMESTAMP": "1795003038962370",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "MESSAGE": "tempest-izanagi-bootstrap-image-001.service: Failed with result 'exit-code'."
+    },
+    {
+      "__REALTIME_TIMESTAMP": "1795003038962674",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "MESSAGE": "Stopped tempest-izanagi-bootstrap-image-001.service - /usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/tempest-izanagi-full-build-001/work/home TMPDIR=/var/lib/tempest-izanagi-full-build-001/work/tmp PACKER_CACHE_DIR=/var/lib/tempest-izanagi-full-build-001/work/cache PACKER_PLUGIN_PATH=/var/lib/tempest-izanagi-full-build-001/inputs/plugins CHECKPOINT_DISABLE=1 /var/lib/tempest-izanagi-full-build-001/inputs/packer build -color=false -on-error=abort -var-file=/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/tempest.pkrvars.json /var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/debian.pkr.hcl."
+    },
+    {
+      "__REALTIME_TIMESTAMP": "1795003038963100",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "MESSAGE": "tempest-izanagi-bootstrap-image-001.service: Consumed 13.024s CPU time, 632.1M memory peak, 0B memory swap peak."
+    }
+  ]
+}
