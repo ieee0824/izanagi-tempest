@@ -1,3 +1,5 @@
+import contextlib
+import io
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -30,6 +32,27 @@ class ListenerBoundaryTests(unittest.TestCase):
 
 
 class AttemptBindingTests(unittest.TestCase):
+    def test_image_cli_observes_only_the_defined_image_unit(self):
+        row = {"unit": {"InvocationID": "image-invocation", "ActiveState": "inactive", "LoadState": "loaded"},
+               "cgroup_pids": [], "external_listener_observed": False}
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "image.jsonl"
+            with patch("sys.argv", ["observe", "--phase", "image", "--attempt", "001", "--output", str(output)]), \
+                 patch("observe.os.geteuid", return_value=0), \
+                 patch("observe.sample", return_value=row) as read_sample:
+                main()
+            read_sample.assert_called_once_with("tempest-izanagi-bootstrap-image-001.service")
+        for attempt in ("002", "003", "004"):
+            with self.subTest(attempt=attempt), TemporaryDirectory() as directory:
+                output = Path(directory) / "rejected.jsonl"
+                with patch("sys.argv", ["observe", "--phase", "image", "--attempt", attempt, "--output", str(output)]), \
+                     patch("observe.sample") as read_sample, contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as error:
+                        main()
+                    self.assertEqual(error.exception.code, 2)
+                    read_sample.assert_not_called()
+                    self.assertFalse(output.exists())
+
     def test_boot_cli_is_bound_to_boot_unit(self):
         row = {"unit": {"InvocationID": "boot-invocation", "ActiveState": "inactive", "LoadState": "loaded"},
                "cgroup_pids": [], "external_listener_observed": False}

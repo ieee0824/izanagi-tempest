@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only observer for the fixed transient bootstrap build unit."""
+"""Read-only observer for fixed transient bootstrap and full image units."""
 import argparse
 import datetime
 import ipaddress
@@ -77,10 +77,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--attempt", choices=("001", "002", "003", "004"), required=True)
-    parser.add_argument("--phase", choices=("build", "boot"), default="build")
+    parser.add_argument("--phase", choices=("build", "boot", "image"), default="build")
     args = parser.parse_args()
     if args.phase == "boot" and args.attempt not in ("001", "002"):
         parser.error("only boot attempt001/002 are defined")
+    if args.phase == "image" and args.attempt != "001":
+        parser.error("only image attempt001 is defined")
     unit = f"tempest-izanagi-bootstrap-{args.phase}-{args.attempt}.service"
     if os.geteuid() != 0:
         raise SystemExit("root required to observe all unit socket owners")
