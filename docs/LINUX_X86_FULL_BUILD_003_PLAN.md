@@ -1,6 +1,6 @@
 # Linux x86 full image build003 準備案
 
-room #16503 に沿う試行003準備。実行していない。[前試行002の結果](LINUX_X86_FULL_BUILD_002.md)を保持し、待機時間変更の実受入は次の実行で確認する。
+room #16503 に沿う試行003準備。一度実行しbuild成功・回収済み。[003結果](LINUX_X86_FULL_BUILD_003.md)を参照。[前試行002の結果](LINUX_X86_FULL_BUILD_002.md)を保持し、待機時間変更の実受入は次の実行で確認する。
 
 ## 入力と snapshot
 
@@ -18,7 +18,7 @@ observer は `--phase image --attempt 003` だけを新 unit に対応付ける�
 sudo -n /usr/bin/python3 /var/lib/tempest-izanagi-full-build-003/inputs/observe.py --phase image --attempt 003 --output /tmp/tempest-x86-full-build-observation-003.jsonl
 ```
 
-実行時の caller stdout/stderr は新 private log に保存する。以下は未実行の単発案。
+実行時の caller stdout/stderr は新 private log に保存する。以下を一度実行した。
 
 ```sh
 sudo -n /usr/bin/systemd-run --unit=tempest-izanagi-bootstrap-image-003 --wait --pipe \
@@ -64,6 +64,6 @@ unit開始後、同Invocation/実QEMUcwdとWorkingDirectoryを照合、3loopback
 
 speech誤入力が解消したかと、installerが無人進行するかを区別する。順調なら同runのfullbuild完了まで監視し、診断成功だけで中断しない。入力待ちや異常で無人進行不能なら003unitだけstop/必要時限定killし、同Invocation終了・独立回収・全入力不変と全ログ/partial hashを保存する。手動入力/別retry/旧image再起動なし。生成image boot/認証/livecallは結果監査後。
 
-直前に26hash/mode/owner、serial/debug/output/log/helper出力不在非symlink、新unit未使用/uid999none/3ports空/容量を再確認する。実003は具体計画の監査後。
+直前に26hash/mode/owner、serial/debug/output/log/helper出力不在非symlink、新unit未使用/uid999none/3ports空/容量を再確認する。この具体計画を監査後に一度実行し、成功・回収済み。
 
 準備時の実測はunit003 not-found/inactive、uid999 processなし、3port listenerなし、free58802688000 bytes。

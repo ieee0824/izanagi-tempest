@@ -1,0 +1,186 @@
+{
+  "unit": "tempest-izanagi-bootstrap-image-003.service",
+  "invocation_id": "c6f14dd35ebb4525ab301aae427d76e1",
+  "caller_exec_exit": 143,
+  "observer_exit": 1,
+  "observer_result": "unknown: same-invocation terminal attributes not captured after unit GC",
+  "observer_last": {
+    "time": "2026-11-18T12:27:57.104686+00:00",
+    "unit": {
+      "MainPID": "0",
+      "Result": "success",
+      "ExecMainCode": "0",
+      "ExecMainStatus": "0",
+      "ControlGroup": "",
+      "LoadState": "not-found",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "InvocationID": ""
+    },
+    "cgroup_pids": [],
+    "listeners": [],
+    "qemu_network": [],
+    "external_listener_observed": false
+  },
+  "observations": 334,
+  "external_listener_observed": false,
+  "inputs_unchanged": 26,
+  "old001002_inputs_evidence_unchanged": true,
+  "cgroup_absent": true,
+  "uid999_processes_absent": true,
+  "ports_closed": true,
+  "free_bytes": 56653438976,
+  "files": {
+    "/tmp/tempest-x86-full-build-003.log": {
+      "bytes": 31743,
+      "sha256": "02de84758190ec88d250be0238cb287674a35e726902f496d59684563bef5f33",
+      "mode": "0600",
+      "uid": 1000,
+      "gid": 1000
+    },
+    "/tmp/tempest-x86-full-build-observation-003.jsonl": {
+      "bytes": 353700,
+      "sha256": "b3e8880f88a8880e2bd8d47b6f65f9a1526511bc2be96f2b40b038762f04c284",
+      "mode": "0600",
+      "uid": 0,
+      "gid": 0
+    },
+    "/tmp/tempest-x86-full-build-003-screen-pre/screen.png": {
+      "bytes": 50040,
+      "sha256": "4808651e57c2004518191c0b2c969e4dbc81183244da5dc3ded27d31637c9cd7",
+      "mode": "0664",
+      "uid": 1000,
+      "gid": 1000
+    },
+    "/tmp/tempest-x86-full-build-003-screen-post/screen.png": {
+      "bytes": 42707,
+      "sha256": "c914f18cab69a68dcaf1a066873203577f72cd062079bc5755ad1ab6ebea624f",
+      "mode": "0664",
+      "uid": 1000,
+      "gid": 1000
+    },
+    "/var/lib/tempest-izanagi-full-build-003/work/installer-serial.log": {
+      "bytes": 222343,
+      "sha256": "b2b8a7236cc870b82ee1610e903bc3ff6e2b487c3ace2b491a0f7376a5b012d4",
+      "mode": "0600",
+      "uid": 999,
+      "gid": 988
+    },
+    "/var/lib/tempest-izanagi-full-build-003/work/packer-debug.log": {
+      "bytes": 159592,
+      "sha256": "454d4680b6b1b596e0e8697e8770f3e63310014734b80552ccf3a3c07c9367bf",
+      "mode": "0600",
+      "uid": 999,
+      "gid": 988
+    },
+    "/var/lib/tempest-izanagi-full-build-003/work/output-debian/debian-x86_64.qcow2": {
+      "bytes": 2145124352,
+      "sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e",
+      "mode": "0600",
+      "uid": 999,
+      "gid": 988
+    }
+  },
+  "image_info": {
+    "children": [
+      {
+        "name": "file",
+        "info": {
+          "children": [],
+          "virtual-size": 2145124352,
+          "filename": "/var/lib/tempest-izanagi-full-build-003/work/output-debian/debian-x86_64.qcow2",
+          "format": "file",
+          "actual-size": 2145153024,
+          "format-specific": {
+            "type": "file",
+            "data": {}
+          },
+          "dirty-flag": false
+        }
+      }
+    ],
+    "virtual-size": 4294967296,
+    "filename": "/var/lib/tempest-izanagi-full-build-003/work/output-debian/debian-x86_64.qcow2",
+    "cluster-size": 65536,
+    "format": "qcow2",
+    "actual-size": 2145153024,
+    "format-specific": {
+      "type": "qcow2",
+      "data": {
+        "compat": "1.1",
+        "compression-type": "zlib",
+        "lazy-refcounts": false,
+        "refcount-bits": 16,
+        "corrupt": false,
+        "extended-l2": false
+      }
+    },
+    "dirty-flag": false
+  },
+  "trusted_journal_terminal": [
+    {
+      "__REALTIME_TIMESTAMP": "1795004876371218",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "c6f14dd35ebb4525ab301aae427d76e1",
+      "_SYSTEMD_INVOCATION_ID": null,
+      "MESSAGE": "tempest-izanagi-bootstrap-image-003.service: Deactivated successfully."
+    },
+    {
+      "__REALTIME_TIMESTAMP": "1795004877223695",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "c6f14dd35ebb4525ab301aae427d76e1",
+      "_SYSTEMD_INVOCATION_ID": null,
+      "MESSAGE": "tempest-izanagi-bootstrap-image-003.service: Consumed 5min 6.878s CPU time, 4.1G memory peak, 0B memory swap peak."
+    }
+  ],
+  "log_security_markers": [
+    "IZANAGI_IMAGE_SECURITY_OK"
+  ],
+  "log_success": true,
+  "kernel_cmdline_selected": [
+    "[    0.000000] Command line: BOOT_IMAGE=/install.amd/vmlinuz console=tty0 console=ttyS0,115200n8 auto=true priority=critical preseed/url=http://10.0.2.2:18082/preseed.cfg initrd=/install.amd/initrd.gz ---",
+    "[    0.056599] Kernel command line: BOOT_IMAGE=/install.amd/vmlinuz console=tty0 console=ttyS0,115200n8 auto=true priority=critical preseed/url=http://10.0.2.2:18082/preseed.cfg initrd=/install.amd/initrd.gz ---"
+  ],
+  "debug_selected_events": [
+    {
+      "event": "qemu_exec",
+      "timestamp": "2026/11/18 12:22:36"
+    },
+    {
+      "event": "boot_wait",
+      "timestamp": "2026/11/18 12:22:38"
+    },
+    {
+      "event": "typing_boot_commands",
+      "timestamp": "2026/11/18 12:22:48"
+    }
+  ],
+  "pre_screenshot_saved_utc": "2026-11-18T12:22:40.028884+00:00",
+  "http_preseed_get": "not independently captured",
+  "serial_stage_phrase_matches": [
+    {
+      "phrase": "Configuring the network with DHCP",
+      "occurrences": 2,
+      "last_text_offset": 68572
+    },
+    {
+      "phrase": "Installing the base system",
+      "occurrences": 1,
+      "last_text_offset": 97895
+    },
+    {
+      "phrase": "Select and install software",
+      "occurrences": 1,
+      "last_text_offset": 121929
+    },
+    {
+      "phrase": "Finishing the installation",
+      "occurrences": 1,
+      "last_text_offset": 158892
+    }
+  ]
+}

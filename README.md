@@ -142,7 +142,8 @@ binaryのdevice実行と専用user作成はartifact監査後の管理者checkpoi
 専用userのPackerによる[bootstrap image生成と回収](docs/LINUX_BOOTSTRAP_BUILD_003.md)は確認済みです。
 harnessの[boot002単発実測](docs/LINUX_IZANAGI_BOOT_002.md)で認証Ready・固定guest UID1000・downと独立回収を確認しました。
 終了属性の観測不足と別証拠による照合、外部通信拒否の実測や本番VM境界の未達は同報告で区別しています。
-full Tempest guest/派生Debianとcredential/live-callは未着手です。
+Linux x86の[派生Debian full image build003](docs/LINUX_X86_FULL_BUILD_003.md)も成功し、無人導入・lock-down検査・独立回収を確認しました。
+新imageの実guest load/owner/firewall/doas/mailbox/外部通信拒否とcredential/live-callは未検証です。
 
 旧 WIP（0f5d190）では固定90秒 watchdog と増加した suite の衝突に整合する失敗を
 91,092 ms・`frame_oversize` Ready の child SIGKILL/watchdog exit1/RUN残留として再現しました。
