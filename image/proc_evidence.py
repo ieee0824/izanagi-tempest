@@ -72,7 +72,8 @@ def summarize(result):
     environment = own['environ']
     controls = {'cmdline': command.get('status') == 'read' and CONTROL_VALUE in command['text'],
                 'environ': environment.get('status') == 'read' and
-                CONTROL_KEY + '=' + CONTROL_VALUE in environment['text'].split('\0')}
+                CONTROL_KEY + '=' + CONTROL_VALUE in environment['text'].split('\0'),
+                'fd_list': own['fd']['status'] == 'listed'}
     streams = [row[name] for row in result['records'] for name in ('cmdline', 'environ')]
     errors = sum(item['status'] == 'error' for item in streams) + sum(row['fd']['status'] == 'error' for row in result['records'])
     truncated = sum(bool(item.get('truncated')) for item in streams)

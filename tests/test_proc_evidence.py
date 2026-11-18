@@ -36,7 +36,7 @@ class ProcEvidenceTests(unittest.TestCase):
             value = self.fixture(Path(directory))
             summary = P.summarize(value)
             self.assertTrue(summary['passed'])
-            self.assertEqual(summary['positive_controls'], {'cmdline': True, 'environ': True})
+            self.assertEqual(summary['positive_controls'], {'cmdline': True, 'environ': True, 'fd_list': True})
             self.assertNotIn('secret-looking-value', json.dumps(summary))
             self.assertEqual(summary['stable_identities'], 2)
 
@@ -61,7 +61,7 @@ class ProcEvidenceTests(unittest.TestCase):
     def test_truncation_missing_control_and_privileged_actor_do_not_pass(self):
         with tempfile.TemporaryDirectory() as directory:
             value = self.fixture(Path(directory))
-            for change in ('uid', 'control', 'pid_limit', 'stream_limit', 'identity'):
+            for change in ('uid', 'control', 'pid_limit', 'stream_limit', 'identity', 'fd_control'):
                 invalid = copy.deepcopy(value)
                 if change == 'uid':
                     invalid['actor_uid'] = 0
@@ -71,8 +71,10 @@ class ProcEvidenceTests(unittest.TestCase):
                     invalid['pid_set_truncated'] = True
                 elif change == 'stream_limit':
                     invalid['records'][1]['cmdline']['truncated'] = True
-                else:
+                elif change == 'identity':
                     invalid['records'][0]['identity_stable'] = False
+                else:
+                    invalid['records'][0]['fd'] = {'status': 'denied', 'errno': errno.EACCES}
                 with self.subTest(change=change):
                     self.assertFalse(P.summarize(invalid)['passed'])
 

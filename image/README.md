@@ -138,7 +138,7 @@ cmdline/env/FD・全期間の露出を検査したことにはしない。原本
 
 `--exec-evidence --proc-evidence`を併用すると、claim前・seed後・export前の3時点で、
 guest actor UID1000から`/proc`のcmdline/environとFD一覧件数を読み取る。FDの内容は読まない。
-公開canaryをargvと初期envへ渡し、観測process自身で両方が読めたことをpositive controlとする。
+公開canaryをargvと初期envへ渡し、観測process自身で両方が読めたことと、自身のFD一覧取得をpositive controlとする。
 private管理tokenやreply keyをprobeへ渡すことはしない。
 
 最大128PID・各stream8192B・JSON出力128KiBに制限し、切詰め・想定外error・control不成立は
