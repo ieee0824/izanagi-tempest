@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-準備レビュー用。VM未実行、snapshot未作成。
+固定snapshotと専用UID検査は完了。room16601の監査後、実行直前検査へ進む。
 #13/#14/#15 に関連する正式runtimeの mock正常2回/reset を先に検査する。
 seed適用後応答喪失、finding/retest4presence はこのtrialに混ぜず後続の具体計画とする。
 
