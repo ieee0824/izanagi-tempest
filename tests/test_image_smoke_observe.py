@@ -112,6 +112,37 @@ class SmokeObserverTests(unittest.TestCase):
                 OBSERVE.main()
             self.assertEqual([call.args for call in read.call_args_list], [(unit,), (unit,)])
 
+    def test_proc_exposure002_rejects_other_image_and_binds_relative_share(self):
+        root = OBSERVE.ATTEMPTS['proc-exposure-002'][1]
+        row = sample()
+        with self.assertRaisesRegex(RuntimeError, 'snapshot protection'):
+            OBSERVE.validate_runtime(row, root)
+        qemu = row['qemu_network'][0]
+        qemu['storage_args'][0][1] = qemu['storage_args'][0][1].replace(OBSERVE.ROOT, root)
+        qemu['storage_args'][1][1] = 'local,id=fs0,path=.,security_model=mapped-xattr,readonly=on'
+        qemu['cwd'] = OBSERVE.ROOT + '/work/output/workspace'
+        with self.assertRaisesRegex(RuntimeError, 'share path'):
+            OBSERVE.validate_runtime(row, root)
+        qemu['cwd'] = root + '/work/output/workspace'
+        self.assertTrue(OBSERVE.validate_runtime(row, root))
+
+    def test_proc_exposure002_samples_only_its_fixed_unit(self):
+        unit, root = OBSERVE.ATTEMPTS['proc-exposure-002']
+        active = sample()
+        for entry in active['qemu_network'][0]['storage_args']:
+            entry[1] = entry[1].replace(OBSERVE.ROOT, root)
+        active.update(unit={'InvocationID': 'exposure', 'ActiveState': 'active', 'LoadState': 'loaded'},
+                      cgroup_pids=[42])
+        terminal = {'unit': {'InvocationID': 'exposure', 'ActiveState': 'inactive', 'LoadState': 'loaded'},
+                    'cgroup_pids': [], 'external_listener_observed': False, 'qemu_network': []}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch('sys.argv', ['observe', '--attempt', 'proc-exposure-002', '--output', str(Path(directory) / 'evidence.jsonl')]), \
+                 patch.object(OBSERVE.os, 'geteuid', return_value=0), \
+                 patch.object(OBSERVE.BOOTSTRAP, 'sample', side_effect=[active, terminal]) as read, \
+                 patch.object(OBSERVE.time, 'sleep'):
+                OBSERVE.main()
+            self.assertEqual([call.args for call in read.call_args_list], [(unit,), (unit,)])
+
     def test_starttime_field_handles_process_name_parentheses(self):
         stat = '42 (qemu ) worker) ' + ' '.join(['S'] + ['0'] * 18 + ['1234', '0'])
         self.assertEqual(OBSERVE.BOOTSTRAP.process_starttime(stat), 1234)
