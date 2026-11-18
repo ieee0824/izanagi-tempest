@@ -22,6 +22,7 @@ from transport import Mailbox
 from exec_evidence import ExecEvidence, MarkerLeak
 from proc_evidence import CONTROL_KEY, CONTROL_VALUE
 import proc_paging
+import sidecar_evidence
 
 
 def sha(path):
@@ -35,6 +36,8 @@ def main():
     parser.add_argument('--image', type=Path, required=True)
     parser.add_argument('--build-inputs', type=Path, help='prepare.py inputs.json; defaults to the standard build layout')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--sidecar-evidence', action='store_true',
+                        help='dedicated restricted loopback sidecar fixture; requires --exec-evidence')
     parser.add_argument('--proc-evidence', action='store_true',
                         help='bounded actor cmdline/environ/FD snapshots; requires --exec-evidence')
     parser.add_argument('--exec-evidence', action='store_true',
@@ -44,6 +47,8 @@ def main():
     args = parser.parse_args()
     if args.proc_evidence and not args.exec_evidence:
         parser.error('--proc-evidence requires --exec-evidence private capture')
+    if args.sidecar_evidence and (not args.exec_evidence or args.proc_evidence or args.tempest is not None or args.delivery_race_fixture):
+        parser.error('--sidecar-evidence requires --exec-evidence and excludes proc/tempest/delivery-race modes')
     os.umask(0o077)
     output = args.output.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -81,8 +86,19 @@ def main():
             # guest mode while the new host file is still writable, then seal it.
             mapped_metadata(path, stat.S_IFREG | 0o444)
             path.chmod(0o444)
+    if args.sidecar_evidence:
+        for source, name in [('proc_evidence.py', 'proc_evidence.py'), ('sidecar_probe.py', 'sidecar-probe.py')]:
+            path = public / name
+            with path.open('xb') as stream:
+                stream.write((ROOT / 'image' / source).read_bytes())
+            # Linux user xattrs require owner write permission. Publish the
+            # guest mode while the new host file is still writable, then seal it.
+            mapped_metadata(path, stat.S_IFREG | 0o444)
+            path.chmod(0o444)
     config = output / 'izanagi.toml'
     template = (ROOT / 'tools/m0/izanagi.example.toml').read_text()
+    if args.sidecar_evidence:
+        template = sidecar_evidence.configure(template)
     config.write_text(template.replace('image = "default"', 'image = ' + json.dumps(str(args.image.resolve()))))
     base = [str(args.izanagi.resolve()), '--config', str(config)]
     report = {'schema_version': 1, 'status': 'incomplete', 'checks': {},
@@ -301,216 +317,226 @@ def main():
         readonly_code = ("import os,errno\ntry:\n os.open('/workspace/readonly-check/x',os.O_WRONLY|os.O_CREAT,0o600)"
                          "\nexcept OSError as e:\n assert e.errno==errno.EROFS\nelse:\n raise AssertionError('write succeeded')")
         check('readonly', 'python3 -c ' + shlex.quote(readonly_code))
-        call('ping')
-        credential = call('claim')['token']
-        secret_markers.append(credential)
-        daemon_identity = call('attest', credential)
-        report['checks']['daemon_identity'] = daemon_identity
-        report['checks']['claim_nonreissue'] = call('claim', expected_error=True)
-        bundle = {'users': [{'name': 'worker', 'policy': {'Version': '2012-10-17', 'Statement': [
-            {'Effect': 'Allow', 'Action': ['s3:GetObject'], 'Resource': 'arn:aws:s3:::public-data/*'}]}}],
-            'buckets': [{'name': 'public-data', 'objects': [{'key': 'readme.txt', 'body': 'PUBLIC-DUMMY'}, {'key': 'end.txt', 'body': 'PUBLIC-END-DUMMY'}]},
-                        {'name': 'private-data', 'objects': [{'key': 'secret.txt', 'body': 'PRIVATE-DUMMY'}]}]}
-        report['checks']['wrong_token_seed'] = call('seed', '0' * 64, expected_error=True, setup=bundle)
-        seeded = call('seed', credential, setup=bundle)
-        proc_probe('after_seed')
-        worker = seeded['access_keys']['worker']
-        assert seeded['admin_key_rotated'] and seeded['new_key_verified'] and seeded['old_key_rejected']
-        report['checks']['seed'] = {'passed': True}
-        check('preseal_closed', "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); assert s.connect_ex(('127.0.0.1',4566))!=0\"")
-        for name, api, resource in [('allow', 's3:GetObject', 'arn:aws:s3:::public-data/readme.txt'),
-                                    ('deny', 's3:GetObject', 'arn:aws:s3:::private-data/secret.txt'),
-                                    ('unsupported', 's3:PutBucketNotification', 'arn:aws:s3:::public-data')]:
-            probe = call('probe', credential, probe={'access_key_id': worker, 'api': api, 'resource': resource})
-            assert (probe['outcome'], probe['status'], probe['complete']) == (name, {'allow': 200, 'deny': 403, 'unsupported': 501}[name], True)
-            report['checks']['probe_' + name] = probe
-        check('backend_denied', "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); assert s.connect_ex(('127.0.0.1',4567))!=0\"")
-        check('rpc_direct_denied', "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); assert s.connect_ex(('127.0.0.1',9001))!=0\"")
-        check('rpc_direct_ipv6_denied', "python3 -c \"import socket; s=socket.socket(socket.AF_INET6); s.settimeout(2); assert s.connect_ex(('::1',9001))!=0\"")
-        instance = hashlib.sha256(os.fsencode(box.workspace.resolve())).hexdigest()
-        session_path = Path.home() / '.izanagi/instances' / instance / 'session.json'
-        host_port = json.loads(session_path.read_bytes())['backend']['host_port']
-        # Prove that this is a live host listener, then try the guest gateway route.
-        with socket.create_connection(('127.0.0.1', host_port), timeout=2):
-            pass
-        gateway_code = ("import socket\nfor port in [9001," + str(host_port) + "]:\n"
-                        " s=socket.socket();s.settimeout(2)\n"
-                        " assert s.connect_ex(('10.0.2.2',port))!=0\n s.close()")
-        check('rpc_gateway_denied', 'python3 -c ' + shlex.quote(gateway_code))
-        secret_code = ("import os,errno,json\n"
-                       "assert json.load(open('/etc/tempest/image.json'))['schema_version']==1\n"
-                       "for name in ['token','secret']:\n"
-                       " try:\n  fd=os.open('/sys/firmware/qemu_fw_cfg/by_name/opt/izanagi.'+name+'/raw',os.O_RDONLY)\n"
-                       " except OSError as e:\n  assert e.errno in (errno.EACCES,errno.EPERM)\n"
-                       " else:\n  os.close(fd);raise AssertionError('fw_cfg secret readable')")
-        check('fw_cfg_secret_denied', 'python3 -c ' + shlex.quote(secret_code))
-        cgroup_code = ("import os,errno\nfrom pathlib import Path\n"
-                       "for p in map(Path,['/sys/fs/cgroup','/sys/fs/cgroup/system.slice','/sys/fs/cgroup/system.slice/izanagi-agent.service']):\n"
-                       " for name in ['cgroup.procs','cgroup.freeze','cgroup.kill']:\n"
-                       "  if not (p/name).exists():\n   assert p==Path('/sys/fs/cgroup');continue\n"
-                       "  try:\n   fd=os.open(p/name,os.O_WRONLY)\n"
-                       "  except OSError as e:\n   assert e.errno in (errno.EACCES,errno.EPERM,errno.EROFS)\n"
-                       "  else:\n   os.close(fd);raise AssertionError('actor can change cgroup')\n"
-                       " try:\n  (p/'tempest-escape-attempt').mkdir()\n"
-                       " except OSError as e:\n  assert e.errno in (errno.EACCES,errno.EPERM,errno.EROFS)\n"
-                       " else:\n  raise AssertionError('actor can create cgroup')")
-        check('cgroup_actor_write_denied', 'python3 -c ' + shlex.quote(cgroup_code))
-        check('lws_environ_denied', 'p=$(pgrep -x lws); test -n "$p" && ! cat /proc/$p/environ')
-        uid_code = ("import json,subprocess; from pathlib import Path; "
-                    "m=json.loads(Path('/etc/tempest/image.json').read_text()); "
-                    "pids=subprocess.check_output(['pgrep','-x','lws'],text=True).split(); assert pids; "
-                    "assert all(int(next(x for x in Path('/proc/'+p+'/status').read_text().splitlines() if x.startswith('Uid:')).split()[1])==m['service_uid'] for p in pids)")
-        check('lws_service_uid', 'python3 -c ' + shlex.quote(uid_code))
-        ipc_code = ("import socket,errno\ns=socket.socket(socket.AF_UNIX)\ntry:\n s.connect('/run/tempest-control/control.sock')"
-                    "\nexcept OSError as e:\n assert e.errno==errno.EACCES\nelse:\n raise AssertionError('private socket accessible')")
-        check('private_socket_denied', 'python3 -c ' + shlex.quote(ipc_code))
-        fd_code = ("import os,subprocess,errno\npid=subprocess.check_output(['systemctl','show','tempest-mailbox.service','-p','MainPID','--value'],text=True).strip()\n"
-                   "assert int(pid)>0\nfor suffix in ['fd','environ','mem']:\n"
-                   " try:\n  p='/proc/'+pid+'/'+suffix\n  value=os.listdir(p) if suffix=='fd' else open(p,'rb').read(1)\n"
-                   " except OSError as e:\n  assert e.errno in (errno.EACCES,errno.EPERM)\n"
-                   " else:\n  raise AssertionError('root process private state accessible')")
-        check('root_proc_private_denied', 'python3 -c ' + shlex.quote(fd_code))
-        check('doas_other_denied', '! doas -n /bin/true')
-        check('doas_native_denied', '! doas -n /usr/local/libexec/tempest-guest-native claim')
-        check('doas_watch_denied', '! doas -n /usr/local/bin/tempest-guest --watch')
-        check('tokenless_seed_denied', '! doas -n /usr/local/bin/tempest-guest seed')
-        # Exercise surviving descendants across three parent termination modes.
-        # This measures these concrete cases; the M4 general lifecycle stays separate.
-        for mode in ['normal', 'timeout', 'abnormal']:
-            result_path = '/tmp/tempest-actor-' + secrets.token_hex(16) + '.json'
-            child_code = ("import os,time,json,errno\nfrom pathlib import Path\n"
-                          "denied=0; unexpected=[]\n"
-                          "for iteration in range(30):\n"
-                          " for p in ['/run/tempest-control/state.json','/var/lib/lws','/var/lib/tempest']:\n"
-                          "  try:\n   fd=os.open(p,os.O_RDONLY);os.close(fd);unexpected.append(p)\n"
-                          "  except OSError as e:\n   denied+=int(e.errno==errno.EACCES)\n"
-                          " time.sleep(0.1)\n"
-                          "Path(" + repr(result_path) + ").write_text(json.dumps({'denied':denied,'unexpected':unexpected}))")
-            parent_code = ("import subprocess,sys,os,time,signal; "
-                           "p=subprocess.Popen([sys.executable,'-c'," + repr(child_code) + "],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True); "
-                           "print(p.pid,flush=True); ")
-            if mode == 'timeout':
-                parent_code += 'time.sleep(10)'
-                argv = ['/usr/bin/timeout', '1', '/usr/bin/python3', '-c', parent_code]
-            else:
-                if mode == 'abnormal':
-                    parent_code += 'os.kill(os.getpid(),signal.SIGKILL)'
-                argv = ['/usr/bin/python3', '-c', parent_code]
-            parent = execute(*argv)
-            child_pid = int(parent.stdout.strip())
-            alive = execute('/bin/kill', '-0', str(child_pid)).returncode == 0
-            assert alive, 'descendant did not survive parent termination'
-            call('ping')
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                outcome = execute('/bin/cat', result_path)
-                if outcome.returncode == 0:
-                    observed = json.loads(outcome.stdout)
-                    assert observed['denied'] == 90 and not observed['unexpected']
-                    report['checks']['descendant_' + mode] = {'parent_returncode': parent.returncode,
-                        'survived_parent': alive, 'private_opens_denied': observed['denied']}
-                    break
-                time.sleep(0.1)
-            else:
-                raise RuntimeError('descendant observation failed: ' + mode)
-            # Reap is owned by guest init after parent exit; ensure no live descendant
-            # remains before evidence finalization (a zombie cannot generate traffic).
-            stopped = execute('/usr/bin/python3', '-c',
-                              "from pathlib import Path; p=Path('/proc/" + str(child_pid) + "/stat'); assert not p.exists() or p.read_text().split()[2]=='Z'")
-            assert stopped.returncode == 0, 'live descendant remains before export'
+        if args.sidecar_evidence:
+            nonce = secrets.token_hex(16)
+            result = execute('/usr/bin/env', CONTROL_KEY + '=' + CONTROL_VALUE,
+                             '/usr/bin/python3', '-I', '-B',
+                             '/workspace/readonly-check/sidecar-probe.py', nonce, timeout=45)
+            if result.returncode != 0 or len(result.stdout.encode('utf-8', 'surrogateescape')) > 16384:
+                raise RuntimeError('sidecar fixture failed; private exec output retained')
+            report['sidecar_fixture'] = sidecar_evidence.validate_probe(json.loads(result.stdout), nonce)
             save()
-        call('seal', credential)
-        if args.tempest is not None:
-            mcp_directory.mkdir(mode=0o700)
-            socket_path = mcp_directory / 's'
-            with (mcp_directory / 'owner.stderr').open('wb') as stderr:
-                mcp_owner = subprocess.Popen([str(args.tempest.resolve()), 'mcp-session', str(socket_path),
-                    '--log', str(mcp_directory / 'mcp.jsonl'), '--summary', str(mcp_directory / 'summary.json'),
-                    '--stderr', str(mcp_directory / 'upstream.stderr'), '--cwd', str(box.workspace),
-                    '--secret-file', str(hmac_path),
-                    '--max-calls', '2', '--timeout-ms', '30000', '--', str(args.izanagi.resolve()), 'mcp'],
-                    stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True, env=environment)
-            deadline = time.monotonic() + 10
-            while not socket_path.exists():
-                assert mcp_owner.poll() is None and time.monotonic() < deadline
-                time.sleep(0.02)
-            mcp_bridge = subprocess.Popen([str(args.tempest.resolve()), 'mcp-connect', str(socket_path)],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
-                env={key: environment[key] for key in ['HOME', 'PATH', 'TZ'] if key in environment})
-            assert 'result' in rpc('initialize', {})
-            tools = rpc('tools/list', {})['result']['tools']
-            assert [tool['name'] for tool in tools] == ['sandbox_status', 'sandbox_exec', 'sandbox_shell']
-        header = 'AWS4-HMAC-SHA256 Credential=' + worker + '/local/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=LOCAL-DUMMY'
-        agent_check('agent_proxy', 'curl -fsS -H ' + shlex.quote('Authorization: ' + header) + ' http://127.0.0.1:4566/public-data/readme.txt')
-        report['checks']['sealed_seed_rejected'] = call('seed', credential, expected_error=True, setup=bundle)
-        agent_check('agent_proxy_final', 'curl -fsS -H ' + shlex.quote('Authorization: ' + header) + ' http://127.0.0.1:4566/public-data/end.txt')
-        if args.tempest is not None:
-            denied = rpc('tools/call', {'name': 'sandbox_exec', 'arguments': {'command': '/usr/bin/touch', 'args': ['/tmp/tempest-budget-should-not-exist']}})
-            assert denied['error']['code'] == -32001
-            # Leave bridge stdin open: supervisor EOF must still terminate it.
-            assert mcp_bridge.wait(timeout=10) == 0
-            assert mcp_owner.wait(timeout=10) == 0
-            receipt = json.loads((mcp_directory / 'summary.json').read_bytes())['supervisor']
-            assert receipt['relay']['admitted_calls'] == receipt['relay']['completed_calls'] == 2
-            assert receipt['relay']['drain'] and not receipt['relay']['uncertain']
-            assert receipt['upstream_exited_successfully']
-            check('budget_request_not_executed', 'test ! -e /tmp/tempest-budget-should-not-exist')
-            report['checks']['mcp_supervisor'] = {'passed': True, 'summary': receipt,
-                'tempest_sha256': sha(args.tempest), 'scope': 'rpc_transport_only'}
-        wrong_identity = {**daemon_identity, 'start_ticks': '0'}
-        report['checks']['wrong_daemon_export_rejected'] = call('export', credential, expected_error=True, daemon_identity=wrong_identity)
-        # A detached UID1000 process outlives its parent and continues writing.
-        escaped = execute('/usr/bin/python3', '-c',
-                          "import subprocess,sys; p=subprocess.Popen([sys.executable,'-c',"
-                          + repr("import time\nwhile True:\n open('/tmp/tempest-live-heartbeat','w').write(str(time.monotonic_ns()))\n time.sleep(0.02)")
-                          + "],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True);print(p.pid)")
-        assert escaped.returncode == 0
-        escaped_pid = int(escaped.stdout.strip())
-        check('escaped_live_before_export', 'kill -0 ' + str(escaped_pid))
-        proc_probe('before_export')
-        exported = call('export', credential, daemon_identity=daemon_identity)
-        assert exported['complete'], 'recorder finalization incomplete'
-        if args.delivery_race_fixture:
-            forced_pid = exported['quiesce']['forced_reader_pid']
-            assert forced_pid in exported['quiesce']['moved_pids'], 'held root deliver was not killed by barrier'
-            reads = report['export_delivery_reads'][exported['export_id']]
-            assert any(row['category'] == 'execution_error' for row in reads), 'forced kill did not produce a failed retrieval'
-            report['checks']['forced_delivery_race'] = {'passed': True, 'forced_reader_pid': forced_pid,
-                                                       'operation_submissions': 1}
+        else:
+            call('ping')
+            credential = call('claim')['token']
+            secret_markers.append(credential)
+            daemon_identity = call('attest', credential)
+            report['checks']['daemon_identity'] = daemon_identity
+            report['checks']['claim_nonreissue'] = call('claim', expected_error=True)
+            bundle = {'users': [{'name': 'worker', 'policy': {'Version': '2012-10-17', 'Statement': [
+                {'Effect': 'Allow', 'Action': ['s3:GetObject'], 'Resource': 'arn:aws:s3:::public-data/*'}]}}],
+                'buckets': [{'name': 'public-data', 'objects': [{'key': 'readme.txt', 'body': 'PUBLIC-DUMMY'}, {'key': 'end.txt', 'body': 'PUBLIC-END-DUMMY'}]},
+                            {'name': 'private-data', 'objects': [{'key': 'secret.txt', 'body': 'PRIVATE-DUMMY'}]}]}
+            report['checks']['wrong_token_seed'] = call('seed', '0' * 64, expected_error=True, setup=bundle)
+            seeded = call('seed', credential, setup=bundle)
+            proc_probe('after_seed')
+            worker = seeded['access_keys']['worker']
+            assert seeded['admin_key_rotated'] and seeded['new_key_verified'] and seeded['old_key_rejected']
+            report['checks']['seed'] = {'passed': True}
+            check('preseal_closed', "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); assert s.connect_ex(('127.0.0.1',4566))!=0\"")
+            for name, api, resource in [('allow', 's3:GetObject', 'arn:aws:s3:::public-data/readme.txt'),
+                                        ('deny', 's3:GetObject', 'arn:aws:s3:::private-data/secret.txt'),
+                                        ('unsupported', 's3:PutBucketNotification', 'arn:aws:s3:::public-data')]:
+                probe = call('probe', credential, probe={'access_key_id': worker, 'api': api, 'resource': resource})
+                assert (probe['outcome'], probe['status'], probe['complete']) == (name, {'allow': 200, 'deny': 403, 'unsupported': 501}[name], True)
+                report['checks']['probe_' + name] = probe
+            check('backend_denied', "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); assert s.connect_ex(('127.0.0.1',4567))!=0\"")
+            check('rpc_direct_denied', "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); assert s.connect_ex(('127.0.0.1',9001))!=0\"")
+            check('rpc_direct_ipv6_denied', "python3 -c \"import socket; s=socket.socket(socket.AF_INET6); s.settimeout(2); assert s.connect_ex(('::1',9001))!=0\"")
+            instance = hashlib.sha256(os.fsencode(box.workspace.resolve())).hexdigest()
+            session_path = Path.home() / '.izanagi/instances' / instance / 'session.json'
+            host_port = json.loads(session_path.read_bytes())['backend']['host_port']
+            # Prove that this is a live host listener, then try the guest gateway route.
+            with socket.create_connection(('127.0.0.1', host_port), timeout=2):
+                pass
+            gateway_code = ("import socket\nfor port in [9001," + str(host_port) + "]:\n"
+                            " s=socket.socket();s.settimeout(2)\n"
+                            " assert s.connect_ex(('10.0.2.2',port))!=0\n s.close()")
+            check('rpc_gateway_denied', 'python3 -c ' + shlex.quote(gateway_code))
+            secret_code = ("import os,errno,json\n"
+                           "assert json.load(open('/etc/tempest/image.json'))['schema_version']==1\n"
+                           "for name in ['token','secret']:\n"
+                           " try:\n  fd=os.open('/sys/firmware/qemu_fw_cfg/by_name/opt/izanagi.'+name+'/raw',os.O_RDONLY)\n"
+                           " except OSError as e:\n  assert e.errno in (errno.EACCES,errno.EPERM)\n"
+                           " else:\n  os.close(fd);raise AssertionError('fw_cfg secret readable')")
+            check('fw_cfg_secret_denied', 'python3 -c ' + shlex.quote(secret_code))
+            cgroup_code = ("import os,errno\nfrom pathlib import Path\n"
+                           "for p in map(Path,['/sys/fs/cgroup','/sys/fs/cgroup/system.slice','/sys/fs/cgroup/system.slice/izanagi-agent.service']):\n"
+                           " for name in ['cgroup.procs','cgroup.freeze','cgroup.kill']:\n"
+                           "  if not (p/name).exists():\n   assert p==Path('/sys/fs/cgroup');continue\n"
+                           "  try:\n   fd=os.open(p/name,os.O_WRONLY)\n"
+                           "  except OSError as e:\n   assert e.errno in (errno.EACCES,errno.EPERM,errno.EROFS)\n"
+                           "  else:\n   os.close(fd);raise AssertionError('actor can change cgroup')\n"
+                           " try:\n  (p/'tempest-escape-attempt').mkdir()\n"
+                           " except OSError as e:\n  assert e.errno in (errno.EACCES,errno.EPERM,errno.EROFS)\n"
+                           " else:\n  raise AssertionError('actor can create cgroup')")
+            check('cgroup_actor_write_denied', 'python3 -c ' + shlex.quote(cgroup_code))
+            check('lws_environ_denied', 'p=$(pgrep -x lws); test -n "$p" && ! cat /proc/$p/environ')
+            uid_code = ("import json,subprocess; from pathlib import Path; "
+                        "m=json.loads(Path('/etc/tempest/image.json').read_text()); "
+                        "pids=subprocess.check_output(['pgrep','-x','lws'],text=True).split(); assert pids; "
+                        "assert all(int(next(x for x in Path('/proc/'+p+'/status').read_text().splitlines() if x.startswith('Uid:')).split()[1])==m['service_uid'] for p in pids)")
+            check('lws_service_uid', 'python3 -c ' + shlex.quote(uid_code))
+            ipc_code = ("import socket,errno\ns=socket.socket(socket.AF_UNIX)\ntry:\n s.connect('/run/tempest-control/control.sock')"
+                        "\nexcept OSError as e:\n assert e.errno==errno.EACCES\nelse:\n raise AssertionError('private socket accessible')")
+            check('private_socket_denied', 'python3 -c ' + shlex.quote(ipc_code))
+            fd_code = ("import os,subprocess,errno\npid=subprocess.check_output(['systemctl','show','tempest-mailbox.service','-p','MainPID','--value'],text=True).strip()\n"
+                       "assert int(pid)>0\nfor suffix in ['fd','environ','mem']:\n"
+                       " try:\n  p='/proc/'+pid+'/'+suffix\n  value=os.listdir(p) if suffix=='fd' else open(p,'rb').read(1)\n"
+                       " except OSError as e:\n  assert e.errno in (errno.EACCES,errno.EPERM)\n"
+                       " else:\n  raise AssertionError('root process private state accessible')")
+            check('root_proc_private_denied', 'python3 -c ' + shlex.quote(fd_code))
+            check('doas_other_denied', '! doas -n /bin/true')
+            check('doas_native_denied', '! doas -n /usr/local/libexec/tempest-guest-native claim')
+            check('doas_watch_denied', '! doas -n /usr/local/bin/tempest-guest --watch')
+            check('tokenless_seed_denied', '! doas -n /usr/local/bin/tempest-guest seed')
+            # Exercise surviving descendants across three parent termination modes.
+            # This measures these concrete cases; the M4 general lifecycle stays separate.
+            for mode in ['normal', 'timeout', 'abnormal']:
+                result_path = '/tmp/tempest-actor-' + secrets.token_hex(16) + '.json'
+                child_code = ("import os,time,json,errno\nfrom pathlib import Path\n"
+                              "denied=0; unexpected=[]\n"
+                              "for iteration in range(30):\n"
+                              " for p in ['/run/tempest-control/state.json','/var/lib/lws','/var/lib/tempest']:\n"
+                              "  try:\n   fd=os.open(p,os.O_RDONLY);os.close(fd);unexpected.append(p)\n"
+                              "  except OSError as e:\n   denied+=int(e.errno==errno.EACCES)\n"
+                              " time.sleep(0.1)\n"
+                              "Path(" + repr(result_path) + ").write_text(json.dumps({'denied':denied,'unexpected':unexpected}))")
+                parent_code = ("import subprocess,sys,os,time,signal; "
+                               "p=subprocess.Popen([sys.executable,'-c'," + repr(child_code) + "],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True); "
+                               "print(p.pid,flush=True); ")
+                if mode == 'timeout':
+                    parent_code += 'time.sleep(10)'
+                    argv = ['/usr/bin/timeout', '1', '/usr/bin/python3', '-c', parent_code]
+                else:
+                    if mode == 'abnormal':
+                        parent_code += 'os.kill(os.getpid(),signal.SIGKILL)'
+                    argv = ['/usr/bin/python3', '-c', parent_code]
+                parent = execute(*argv)
+                child_pid = int(parent.stdout.strip())
+                alive = execute('/bin/kill', '-0', str(child_pid)).returncode == 0
+                assert alive, 'descendant did not survive parent termination'
+                call('ping')
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    outcome = execute('/bin/cat', result_path)
+                    if outcome.returncode == 0:
+                        observed = json.loads(outcome.stdout)
+                        assert observed['denied'] == 90 and not observed['unexpected']
+                        report['checks']['descendant_' + mode] = {'parent_returncode': parent.returncode,
+                            'survived_parent': alive, 'private_opens_denied': observed['denied']}
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise RuntimeError('descendant observation failed: ' + mode)
+                # Reap is owned by guest init after parent exit; ensure no live descendant
+                # remains before evidence finalization (a zombie cannot generate traffic).
+                stopped = execute('/usr/bin/python3', '-c',
+                                  "from pathlib import Path; p=Path('/proc/" + str(child_pid) + "/stat'); assert not p.exists() or p.read_text().split()[2]=='Z'")
+                assert stopped.returncode == 0, 'live descendant remains before export'
+                save()
+            call('seal', credential)
+            if args.tempest is not None:
+                mcp_directory.mkdir(mode=0o700)
+                socket_path = mcp_directory / 's'
+                with (mcp_directory / 'owner.stderr').open('wb') as stderr:
+                    mcp_owner = subprocess.Popen([str(args.tempest.resolve()), 'mcp-session', str(socket_path),
+                        '--log', str(mcp_directory / 'mcp.jsonl'), '--summary', str(mcp_directory / 'summary.json'),
+                        '--stderr', str(mcp_directory / 'upstream.stderr'), '--cwd', str(box.workspace),
+                        '--secret-file', str(hmac_path),
+                        '--max-calls', '2', '--timeout-ms', '30000', '--', str(args.izanagi.resolve()), 'mcp'],
+                        stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True, env=environment)
+                deadline = time.monotonic() + 10
+                while not socket_path.exists():
+                    assert mcp_owner.poll() is None and time.monotonic() < deadline
+                    time.sleep(0.02)
+                mcp_bridge = subprocess.Popen([str(args.tempest.resolve()), 'mcp-connect', str(socket_path)],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
+                    env={key: environment[key] for key in ['HOME', 'PATH', 'TZ'] if key in environment})
+                assert 'result' in rpc('initialize', {})
+                tools = rpc('tools/list', {})['result']['tools']
+                assert [tool['name'] for tool in tools] == ['sandbox_status', 'sandbox_exec', 'sandbox_shell']
+            header = 'AWS4-HMAC-SHA256 Credential=' + worker + '/local/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=LOCAL-DUMMY'
+            agent_check('agent_proxy', 'curl -fsS -H ' + shlex.quote('Authorization: ' + header) + ' http://127.0.0.1:4566/public-data/readme.txt')
+            report['checks']['sealed_seed_rejected'] = call('seed', credential, expected_error=True, setup=bundle)
+            agent_check('agent_proxy_final', 'curl -fsS -H ' + shlex.quote('Authorization: ' + header) + ' http://127.0.0.1:4566/public-data/end.txt')
+            if args.tempest is not None:
+                denied = rpc('tools/call', {'name': 'sandbox_exec', 'arguments': {'command': '/usr/bin/touch', 'args': ['/tmp/tempest-budget-should-not-exist']}})
+                assert denied['error']['code'] == -32001
+                # Leave bridge stdin open: supervisor EOF must still terminate it.
+                assert mcp_bridge.wait(timeout=10) == 0
+                assert mcp_owner.wait(timeout=10) == 0
+                receipt = json.loads((mcp_directory / 'summary.json').read_bytes())['supervisor']
+                assert receipt['relay']['admitted_calls'] == receipt['relay']['completed_calls'] == 2
+                assert receipt['relay']['drain'] and not receipt['relay']['uncertain']
+                assert receipt['upstream_exited_successfully']
+                check('budget_request_not_executed', 'test ! -e /tmp/tempest-budget-should-not-exist')
+                report['checks']['mcp_supervisor'] = {'passed': True, 'summary': receipt,
+                    'tempest_sha256': sha(args.tempest), 'scope': 'rpc_transport_only'}
+            wrong_identity = {**daemon_identity, 'start_ticks': '0'}
+            report['checks']['wrong_daemon_export_rejected'] = call('export', credential, expected_error=True, daemon_identity=wrong_identity)
+            # A detached UID1000 process outlives its parent and continues writing.
+            escaped = execute('/usr/bin/python3', '-c',
+                              "import subprocess,sys; p=subprocess.Popen([sys.executable,'-c',"
+                              + repr("import time\nwhile True:\n open('/tmp/tempest-live-heartbeat','w').write(str(time.monotonic_ns()))\n time.sleep(0.02)")
+                              + "],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True);print(p.pid)")
+            assert escaped.returncode == 0
+            escaped_pid = int(escaped.stdout.strip())
+            check('escaped_live_before_export', 'kill -0 ' + str(escaped_pid))
+            proc_probe('before_export')
+            exported = call('export', credential, daemon_identity=daemon_identity)
+            assert exported['complete'], 'recorder finalization incomplete'
+            if args.delivery_race_fixture:
+                forced_pid = exported['quiesce']['forced_reader_pid']
+                assert forced_pid in exported['quiesce']['moved_pids'], 'held root deliver was not killed by barrier'
+                reads = report['export_delivery_reads'][exported['export_id']]
+                assert any(row['category'] == 'execution_error' for row in reads), 'forced kill did not produce a failed retrieval'
+                report['checks']['forced_delivery_race'] = {'passed': True, 'forced_reader_pid': forced_pid,
+                                                           'operation_submissions': 1}
 
-        assert exported['quiesce']['descendants_empty'] and exported['quiesce']['service_frozen']
-        stopped = execute('/usr/bin/python3', '-c',
-                          "from pathlib import Path; p=Path('/proc/" + str(escaped_pid) + "/stat'); assert not p.exists() or p.read_text().rsplit(')',1)[1].split()[0]=='Z'")
-        assert stopped.returncode == 0, 'detached descendant survived cgroup barrier'
-        report['checks']['cgroup_detached_descendant_killed'] = {'passed': True, 'pid': escaped_pid}
-        report['checks']['export'] = exported
-        evidence = output / 'guest-evidence'
-        evidence.mkdir(mode=0o700)
-        for name, metadata in exported['files'].items():
-            offset = 0
-            with (evidence / name).open('xb') as stream:
-                while offset < metadata['bytes']:
-                    chunk = call('fetch', credential, export_id=exported['export_id'], file=name, offset=offset)
-                    data = base64.b64decode(chunk['data_base64'], validate=True)
-                    assert data and hashlib.sha256(data).hexdigest() == chunk['chunk_sha256']
-                    stream.write(data)
-                    offset += len(data)
-            assert offset == metadata['bytes'] and sha(evidence / name) == metadata['sha256']
-        rows = [json.loads(line) for line in (evidence / 'api.jsonl').read_text().splitlines()]
-        assert len(rows) == 2 and all(row['status'] == 200 for row in rows)
-        assert [row['path'] for row in rows] == ['/public-data/readme.txt', '/public-data/end.txt']
-        assert credential not in (evidence / 'api.jsonl').read_text()
-        assert (evidence / 'capture.pcap').stat().st_size > 24
-        parsed = subprocess.run([shutil.which('tcpdump') or '/usr/sbin/tcpdump', '-nn', '-r', str(evidence / 'capture.pcap')],
-                                capture_output=True, text=True, timeout=20)
-        assert parsed.returncode == 0 and '127.0.0.1.4566' in parsed.stdout and '127.0.0.1.4567' in parsed.stdout
-        payload_capture = (evidence / 'capture.pcap').read_bytes()
-        for path in [b'/public-data/readme.txt', b'/public-data/end.txt']:
-            assert b'GET ' + path + b' HTTP/1.1' in payload_capture, 'expected HTTP request absent from capture'
-        for body in [b'PUBLIC-DUMMY', b'PUBLIC-END-DUMMY']:
-            assert body in payload_capture, 'expected HTTP response absent from capture'
-        report['checks']['capture_proxy_and_backend'] = {'passed': True, 'decoded_packet_lines': len(parsed.stdout.splitlines())}
-        report['checks']['recording_boundary'] = {'passed': True, 'agent_api_rows': len(rows)}
+            assert exported['quiesce']['descendants_empty'] and exported['quiesce']['service_frozen']
+            stopped = execute('/usr/bin/python3', '-c',
+                              "from pathlib import Path; p=Path('/proc/" + str(escaped_pid) + "/stat'); assert not p.exists() or p.read_text().rsplit(')',1)[1].split()[0]=='Z'")
+            assert stopped.returncode == 0, 'detached descendant survived cgroup barrier'
+            report['checks']['cgroup_detached_descendant_killed'] = {'passed': True, 'pid': escaped_pid}
+            report['checks']['export'] = exported
+            evidence = output / 'guest-evidence'
+            evidence.mkdir(mode=0o700)
+            for name, metadata in exported['files'].items():
+                offset = 0
+                with (evidence / name).open('xb') as stream:
+                    while offset < metadata['bytes']:
+                        chunk = call('fetch', credential, export_id=exported['export_id'], file=name, offset=offset)
+                        data = base64.b64decode(chunk['data_base64'], validate=True)
+                        assert data and hashlib.sha256(data).hexdigest() == chunk['chunk_sha256']
+                        stream.write(data)
+                        offset += len(data)
+                assert offset == metadata['bytes'] and sha(evidence / name) == metadata['sha256']
+            rows = [json.loads(line) for line in (evidence / 'api.jsonl').read_text().splitlines()]
+            assert len(rows) == 2 and all(row['status'] == 200 for row in rows)
+            assert [row['path'] for row in rows] == ['/public-data/readme.txt', '/public-data/end.txt']
+            assert credential not in (evidence / 'api.jsonl').read_text()
+            assert (evidence / 'capture.pcap').stat().st_size > 24
+            parsed = subprocess.run([shutil.which('tcpdump') or '/usr/sbin/tcpdump', '-nn', '-r', str(evidence / 'capture.pcap')],
+                                    capture_output=True, text=True, timeout=20)
+            assert parsed.returncode == 0 and '127.0.0.1.4566' in parsed.stdout and '127.0.0.1.4567' in parsed.stdout
+            payload_capture = (evidence / 'capture.pcap').read_bytes()
+            for path in [b'/public-data/readme.txt', b'/public-data/end.txt']:
+                assert b'GET ' + path + b' HTTP/1.1' in payload_capture, 'expected HTTP request absent from capture'
+            for body in [b'PUBLIC-DUMMY', b'PUBLIC-END-DUMMY']:
+                assert body in payload_capture, 'expected HTTP response absent from capture'
+            report['checks']['capture_proxy_and_backend'] = {'passed': True, 'decoded_packet_lines': len(parsed.stdout.splitlines())}
+            report['checks']['recording_boundary'] = {'passed': True, 'agent_api_rows': len(rows)}
         report['status'] = 'collected_requires_review'
         save()
     except Exception as error:
@@ -545,12 +571,24 @@ def main():
         source = instance / 'logs' / name
         if source.is_file():
             shutil.copyfile(source, logs / name)
+    if args.sidecar_evidence and 'sidecar_fixture' in report:
+        try:
+            report['checks']['sidecar_metadata'] = sidecar_evidence.collect(
+                instance / 'logs/behavior', output / 'sidecar-audit', report['sidecar_fixture'])
+        except (ValueError, OSError, KeyError) as error:
+            report['status'] = 'sidecar_metadata_failed'
+            report['failure'] = str(error)
+            save()
+            raise
+        save()
     if exec_evidence is not None:
         report['checks']['exec_private_markers'] = exec_evidence.summary(secret_markers)
         save()
         if not report['checks']['exec_private_markers']['passed']:
             raise MarkerLeak('private marker found in captured exec streams')
     observations = list(logs.glob('*')) + [output / 'up.stdout', output / 'up.stderr']
+    if args.sidecar_evidence:
+        observations += sorted((output / 'sidecar-audit').glob('*.jsonl'))
     leaked = [path.name for path in observations if any(marker.encode() in path.read_bytes() for marker in secret_markers)]
     report['checks']['host_logs_private_markers'] = {'passed': not leaked, 'files_examined': [p.name for p in observations], 'leaked_files': leaked}
     save()
