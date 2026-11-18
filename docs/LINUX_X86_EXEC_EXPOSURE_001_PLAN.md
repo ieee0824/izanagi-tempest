@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-固定snapshotと専用UID検査は完了、最終監査待ち。VM未実施。#13のexec応答・失敗診断の目印検査を既存固定image上の1VMで測定する。
+固定snapshotと専用UID検査・監査後、1VM単発実行・回収済み。[結果](LINUX_X86_EXEC_EXPOSURE_001.md)を参照。#13のexec応答・失敗診断の目印検査を既存固定image上の1VMで測定する。
 root /var/lib/tempest-izanagi-exec-exposure-001、unit tempest-izanagi-exec-exposure-001.service。
 Izanagi CLI SHA088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8、full003 image SHA5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7eを維持。
 image/core/guest/global設定の変更や新image buildは行わない。dummyのみ、実model/credential/AWSは使わない。
@@ -68,3 +68,5 @@ serviceとExecStart一致/verify成功、CLIは--offline-artifactsと--exec-evid
 実測のtimeout counterが0なら、host timeout部分出力はunit fixtureでの確認だけとして残し、実VMで測定済みとは扱わない。
 既存exec分類とoperation/expected_errorタグはsummaryの実件数を保存し、全routeの保証へ一般化しない。
 最終snapshot/command監査後に一度だけ実行する。現時点でobserver/caller/VMは未実施。
+
+実行後: caller27333はexit0、observer50132はGC terminal unknown/exit1。exec173/stream346、expected-error7、timeout0、保存scan passed。追加VM/再試行なし。
