@@ -39,3 +39,12 @@ GCはunknownのまま。dummy HMACは結果監査後に当該fileだけ値/hash�
 旧exec001の173exec/346stream保存scanは別試験として保持する。
 今回の3snapshotを全/proc監査や短命native/FD内容/実modelの証明へ拡張しない。
 HTTP sidecar、外部positive control、forced delivery race、全route/正式比較は別gateのまま。
+
+## 可逆準備の草案とguest guard待ち
+
+[service](../integration/tempest-izanagi-proc-exposure-001.service)、[caller](evidence/proc-exposure-001/run_once.py)、[snapshot helper](evidence/proc-exposure-001/prepare_snapshot.py)、[UID検査](evidence/proc-exposure-001/check_preparation.py) を用意した。
+--exec-evidence --proc-evidenceのExecStart一致/verifyとhelper構文を確認した。新proc helperはclosureへ明示追加した。
+旧exec001の固定入力/選別結果と当該key削除追補の非存在確認も保全対象にした。
+room16681に従い、actor UID1000だけでhost/guestを区別せず、root所有/etc/tempest/image.jsonの固定Izanagi/LWS manifestを確認するguest guardを待つ。
+host上ではproc helperのmainや実/proc snapshotを呼ばず、synthetic fixtureだけで検査する。
+現在のprepare/caller/observerは未実行。guard sourceとclosureの監査後にsnapshot作成へ進む。
