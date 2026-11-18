@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'image'))
 from transport import Mailbox
 from trace_evidence import trace_probe_evidence
+from artifact_evidence import PATHS as ARTIFACT_PATHS, validate_offline, validate_actor
 
 
 def sha(path):
@@ -33,6 +34,7 @@ def main():
     parser.add_argument('--image', type=Path, required=True)
     parser.add_argument('--build-inputs', type=Path, help='prepare.py inputs.json; defaults to the standard build layout')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--offline-artifacts', type=Path, help='read-only image inspection report bound to this exact image')
     parser.add_argument('--tempest', type=Path, help='exercise the independent Rust MCP supervisor/bridge for measured GETs')
     parser.add_argument('--delivery-race-fixture', action='store_true', help='Require forced root deliver PID in quiesce kill evidence')
     args = parser.parse_args()
@@ -71,6 +73,11 @@ def main():
     report = {'schema_version': 1, 'status': 'incomplete', 'checks': {},
               'image_sha256': sha(args.image), 'izanagi_sha256': sha(args.izanagi),
               'build_inputs_sha256': sha(inputs_path), 'restrict_network': True}
+    offline_artifacts = None
+    if args.offline_artifacts is not None:
+        offline_artifacts = validate_offline(json.loads(args.offline_artifacts.read_bytes()), report['image_sha256'], build_inputs)
+        report['checks']['offline_artifacts'] = {'passed': True, 'report_sha256': sha(args.offline_artifacts),
+                                                   'scope': 'offline image bytes; runtime identity checked separately'}
     def save():
         (output / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
     def execute(*command, timeout=30):
@@ -200,24 +207,24 @@ def main():
         if args.delivery_race_fixture:
             assert image_manifest.get('delivery_race_fixture') is True, 'guest is not the instrumented fixture'
         report['checks']['build_guest_binding'] = {'passed': True}
-        artifact_paths = {'agent': '/usr/local/bin/izanagi-agent',
-                          'http': '/usr/local/bin/izanagi-http-capture',
-                          'ebpf': '/opt/izanagi/izanagi-ebpf.o'}
-        artifact_code = ("import json,hashlib; from pathlib import Path; p=" + repr(artifact_paths)
+        artifact_code = ("import json,hashlib; from pathlib import Path; p=" + repr(ARTIFACT_PATHS)
                          + "; out={}\nfor name,path in p.items():\n"
-                         " b=Path(path).read_bytes(); assert b[:6]==b'\\x7fELF\\x02\\x01'; "
+                         " try:\n  b=Path(path).read_bytes()\n"
+                         " except PermissionError as e:\n  out[name]={'read_errno':e.errno}\n"
+                         " else:\n  assert b[:6]==b'\\x7fELF\\x02\\x01'; "
                          "out[name]={'sha256':hashlib.sha256(b).hexdigest(),'elf_machine':int.from_bytes(b[18:20],'little')}\n"
                          "print(json.dumps(out))")
         installed = json.loads(check('izanagi_installed_artifacts', 'python3 -c ' + shlex.quote(artifact_code)))
-        expected_machine = {'x86_64': 62, 'aarch64': 183}.get(build_inputs.get('architecture'))
-        for name, observed in installed.items():
-            assert observed['sha256'] == build_inputs['input_sha256'][name], 'installed artifact mismatch: ' + name
-            if name == 'ebpf' or expected_machine is not None:
-                assert observed['elf_machine'] == (247 if name == 'ebpf' else expected_machine)
+        validate_actor(installed, build_inputs, offline_artifacts)
+        report['checks']['installed_artifact_binding'] = {'passed': True, 'actor_observations': installed}
+        # ldd requires readable bytes; preserve root-only agent permissions and
+        # report this limitation rather than interpreting a denial as an ABI failure.
+        ldd_paths = [ARTIFACT_PATHS[name] for name in ('agent', 'http') if 'read_errno' not in installed[name]]
+        ldd_paths += ['/usr/local/bin/lws', '/usr/local/libexec/tempest-guest-native']
+        report['checks']['runtime_abi_unreadable_paths'] = [path for name, path in ARTIFACT_PATHS.items()
+                                                          if name != 'ebpf' and 'read_errno' in installed[name]]
         abi_inventory = check('runtime_abi_inventory', 'set -eu; uname -r; getconf GNU_LIBC_VERSION; '
-              'dpkg-query -W libc6 libgcc-s1; '
-              'ldd /usr/local/bin/izanagi-agent /usr/local/bin/izanagi-http-capture '
-              '/usr/local/bin/lws /usr/local/libexec/tempest-guest-native')
+              'dpkg-query -W libc6 libgcc-s1; ldd ' + ' '.join(shlex.quote(path) for path in ldd_paths))
         assert 'not found' not in abi_inventory, 'guest runtime library missing'
         metadata_code = ("import json,os,hashlib,stat; from pathlib import Path; "
                          "m=json.loads(Path('/etc/tempest/image.json').read_bytes()); "
@@ -268,6 +275,9 @@ def main():
         secret_markers.append(credential)
         daemon_identity = call('attest', credential)
         report['checks']['daemon_identity'] = daemon_identity
+        assert daemon_identity['exe_sha256'] == build_inputs['input_sha256']['agent'], 'running agent artifact mismatch'
+        report['checks']['running_agent_build_binding'] = {'passed': True, 'exe_sha256': daemon_identity['exe_sha256']}
+        save()
         report['checks']['claim_nonreissue'] = call('claim', expected_error=True)
         bundle = {'users': [{'name': 'worker', 'policy': {'Version': '2012-10-17', 'Statement': [
             {'Effect': 'Allow', 'Action': ['s3:GetObject'], 'Resource': 'arn:aws:s3:::public-data/*'}]}}],
