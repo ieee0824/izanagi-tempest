@@ -135,6 +135,7 @@ def publish(path, value):
 
 def wait_observer(path, identity, receiver, timeout=10):
     deadline = time.monotonic() + timeout
+    observed_inode = None
     while time.monotonic() < deadline:
         snapshot = receiver.snapshot()
         if not snapshot['thread_alive'] or snapshot['errors']:
@@ -142,13 +143,24 @@ def wait_observer(path, identity, receiver, timeout=10):
         try:
             descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         except FileNotFoundError:
+            if observed_inode is not None:
+                raise ValueError('network observer ack disappeared during publication')
             time.sleep(.05)
             continue
         with os.fdopen(descriptor, 'rb') as stream:
             metadata = os.fstat(stream.fileno())
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 \
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink not in (1, 2) \
                     or (metadata.st_uid, metadata.st_gid, stat.S_IMODE(metadata.st_mode)) != (0, 988, 0o440):
                 raise ValueError('network observer ack owner or mode mismatch')
+            inode = (metadata.st_dev, metadata.st_ino)
+            if observed_inode is not None and observed_inode != inode:
+                raise ValueError('network observer ack inode changed during publication')
+            observed_inode = inode
+            # Exclusive link publication briefly has pending+final names. Only
+            # consume after the same inode becomes single-link; never accept 2.
+            if metadata.st_nlink == 2:
+                time.sleep(.01)
+                continue
             data = stream.read(4097)
         if len(data) > 4096:
             raise ValueError('network observer ack budget')
