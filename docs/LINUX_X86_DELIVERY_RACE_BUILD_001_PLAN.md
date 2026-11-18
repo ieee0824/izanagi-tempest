@@ -105,3 +105,16 @@ room16789に従い[build専用observer](../integration/delivery_race_build_obser
 親実観測のinstaller用usernet/SSH127.0.0.1:22222/VNC127.0.0.1:2とHTTP127.0.0.1:18082だけを許可する。runtime restrict/snapshot/9pの代用ではない。
 QEMU所有SSH/VNC listenerとunit内HTTPを分け、未知endpoint/外部listener/別cwd/別ISO/diskを拒否する。異常sampleも固定error metadata付きで保存し、GC終端unknownは独立終了証拠と区別する。
 3testsで正規build契約、逐次PID/starttime置換と誤入力/ネットワーク/所有者を検査して成功。実observer・build・VMは未実行。
+
+## snapshot/caller/service草案とcompile実値追補
+
+[9compile field実値・親wrapper値・derivation/fixture値](LINUX_X86_DELIVERY_RACE_COMPILE_BINDING_001.json)を保存した。親source_manifest_sha256 fieldの値も参照可能な形で保持する。
+[snapshot作成草案](evidence/delivery-race-build-001/prepare_snapshot.py)は旧全入力/結果・鍵不在・source hash・20GiB容量・未使用unit/UID/KVMをroot作成前に照合する。
+新rootへの入力コピー後、templateの3固定input path、varsの3artifact path、host manifestの5asset path/template SHAだけを新inputsへ束縛する。guest image.jsonは標準生成bytesを不変更とし、親・標準生成manifest SHAとpath許可差分は別provenance.jsonに記録する。
+全入力root:988/dir0750/file0440（Packer/pluginのみ0550）、work/home/tmp/cache/evidenceはUID999:GID988/0700に固定し、copy後free18GiBを要求する。
+外部Python/QEMU/qemu-img/systemctl/ss/loader/libcの実hashもsnapshotへ保存する。
+[UID検査草案](evidence/delivery-race-build-001/check_preparation.py)は全hash/owner/mode/read可write不可・外部runtime・新output/log不在を照合し、snapshot内Packer/pluginのfull validateだけを行う。
+[caller草案](evidence/delivery-race-build-001/run_once.py)と[service草案](../integration/tempest-izanagi-delivery-race-build-001.service)は同一ExecStart、RuntimeMax3600/Stop10/KillModecontrol-group/Restartno/NNP/Delegate=no/UMask0077を指定する。
+固定env-iのHOME/TMPDIR/cache/plugin/PACKER_LOGは新work/inputs内だけ、build -color=false -on-error=abort -var-file=新定義vars 新定義hclを一度実行する。
+ExecStopPostの同Invocation終了記録も新work/evidenceへ固定する。標準prepare/定義fullvalidate済みと、まだ未作成のbuild snapshot/実buildを混同しない。
+[監査用source hash](LINUX_X86_DELIVERY_RACE_BUILD_SOURCE_001.json)をroot作成前に完全一致要求する。source/caller/service構文・verifyを確認した。まだ草案を実行せず、新/var/lib root・build・VMは未開始。

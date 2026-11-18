@@ -1,0 +1,18 @@
+[Unit]
+Description=Tempest isolated delivery race fixture build001 (review only)
+[Service]
+Type=exec
+User=tempest-kvm
+Group=tempest-kvm
+SupplementaryGroups=kvm
+KillMode=control-group
+RuntimeMaxSec=3600s
+TimeoutStopSec=10s
+SendSIGKILL=yes
+Restart=no
+UMask=0077
+NoNewPrivileges=yes
+Delegate=no
+WorkingDirectory=/var/lib/tempest-izanagi-delivery-race-build-001/work
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/tempest-izanagi-delivery-race-build-001/work/home TMPDIR=/var/lib/tempest-izanagi-delivery-race-build-001/work/tmp PACKER_CACHE_DIR=/var/lib/tempest-izanagi-delivery-race-build-001/work/cache PACKER_PLUGIN_PATH=/var/lib/tempest-izanagi-delivery-race-build-001/inputs/plugins CHECKPOINT_DISABLE=1 PACKER_LOG=1 PACKER_LOG_PATH=/var/lib/tempest-izanagi-delivery-race-build-001/work/packer-debug.log /var/lib/tempest-izanagi-delivery-race-build-001/inputs/packer build -color=false -on-error=abort -var-file=/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/tempest.pkrvars.json /var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/debian.pkr.hcl
+ExecStopPost=/usr/bin/python3 -I -B /var/lib/tempest-izanagi-delivery-race-build-001/inputs/record_exit.py
