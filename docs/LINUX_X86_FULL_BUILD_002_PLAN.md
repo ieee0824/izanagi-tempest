@@ -1,6 +1,6 @@
 # Linux x86 full image build002 準備案
 
-room #16493 に沿う診断目的の次試行案。実行していない。[前試行の失敗と回収](LINUX_X86_FULL_BUILD_001.md)を保持し、原因修正成功とは扱わない。旧 Alpine build/boot 入力と証拠は変更しない。
+room #16493 に沿う診断目的の次試行案。一度実行し自動speech起動で中止した。[002結果](LINUX_X86_FULL_BUILD_002.md)を参照。[前試行の失敗と回収](LINUX_X86_FULL_BUILD_001.md)を保持し、原因修正成功とは扱わない。旧 Alpine build/boot 入力と証拠は変更しない。
 
 ## 入力と snapshot
 
@@ -18,7 +18,7 @@ observer は `--phase image --attempt 002` だけを新 unit に対応付ける�
 sudo -n /usr/bin/python3 /var/lib/tempest-izanagi-full-build-002/inputs/observe.py --phase image --attempt 002 --output /tmp/tempest-x86-full-build-observation-002.jsonl
 ```
 
-実行時の caller stdout/stderr は新 private log に保存する。以下は未実行の単発案。
+実行時の caller stdout/stderr は新 private log に保存する。以下を一度実行した。
 
 ```sh
 sudo -n /usr/bin/systemd-run --unit=tempest-izanagi-bootstrap-image-002 --wait --pipe \
@@ -54,6 +54,6 @@ ISO を mount/実行せず既存 ISO9660 reader で [isolinux.cfg/menu.cfg の�
 
 起動後は同unitのWorkingDirectoryと実QEMU /proc/PID/cwdを照合し、serial/debugが新private work内の通常fileとして出ることを確認する。serialから実kernel command lineのauto/priority/preseed/console到達を選別記録し、debugからpreseed GET等を取得できれば記録する。未記録はGET未発生や引数不在の証明にはしない。debug原本はprivateのまま保持し、全argv/認証値/鍵や無関係な行をroom/modelへ流さない。
 
-caller logは `/tmp/tempest-x86-full-build-002.log`、observerは上記新JSONL。新unit未使用/uid999none/3port空/26hash不変/残容量を直前再検査する。言語prompt等の無人進行不能を再確認した場合は手動入力せず新unitだけ停止、同Invocation terminal/独立回収/全入力不変/partialとログhashを保存する。実試行はこの具体計画の監査後。
+caller logは `/tmp/tempest-x86-full-build-002.log`、observerは上記新JSONL。新unit未使用/uid999none/3port空/26hash不変/残容量を直前再検査する。言語prompt等の無人進行不能を再確認した場合は手動入力せず新unitだけ停止、同Invocation terminal/独立回収/全入力不変/partialとログhashを保存する。この計画を監査後に一度実行し、中止・回収済み。
 
 準備時の確認: x86導出5tests、observer8testsが成功。新unit002はnot-found/inactive、uid999processなし、3port listenerなし、free59718619136 bytes。

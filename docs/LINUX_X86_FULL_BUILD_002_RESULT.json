@@ -1,0 +1,94 @@
+{
+  "unit": "tempest-izanagi-bootstrap-image-002.service",
+  "invocation_id": "1f448e03bef84112a502ac4f7997c7a6",
+  "caller_exit": 143,
+  "observer_exit": 0,
+  "observer_last": {
+    "time": "2026-11-18T12:11:26.215483+00:00",
+    "unit": {
+      "MainPID": "0",
+      "Result": "exit-code",
+      "ExecMainCode": "1",
+      "ExecMainStatus": "1",
+      "ControlGroup": "",
+      "LoadState": "loaded",
+      "ActiveState": "failed",
+      "SubState": "failed",
+      "InvocationID": "1f448e03bef84112a502ac4f7997c7a6"
+    },
+    "cgroup_pids": [],
+    "listeners": [],
+    "qemu_network": [],
+    "external_listener_observed": false
+  },
+  "observations": 127,
+  "external_listener_observed": false,
+  "inputs_unchanged": 26,
+  "old001_inputs_and_evidence_unchanged": true,
+  "cgroup_absent": true,
+  "uid999_processes_absent": true,
+  "ports_closed": true,
+  "free_bytes": 59717427200,
+  "files": {
+    "/tmp/tempest-x86-full-build-002.log": {
+      "bytes": 3189,
+      "sha256": "f3b529d2d43e36f8b529602e5c6d8129e8433ce367ba36a1541167f6196df4e8"
+    },
+    "/tmp/tempest-x86-full-build-observation-002.jsonl": {
+      "bytes": 129538,
+      "sha256": "7bc3ee495e59b92a604484ec05f6de96558e31bbc6595f88c033de1f88f12e62"
+    },
+    "/tmp/tempest-x86-full-build-002-screen-pre/screen.png": {
+      "bytes": 49967,
+      "sha256": "343dfd0e87462438fa71c5e92c3d8436bc4fc814bb754d1122b6ad01ad1ffadd"
+    },
+    "/tmp/tempest-x86-full-build-002-screen-post/screen.png": {
+      "bytes": 14600,
+      "sha256": "81afd2d0df8a3ca50506bca91b8f3d293ddec00fa91004f0cf0739713e7da22a"
+    },
+    "/var/lib/tempest-izanagi-full-build-002/work/installer-serial.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/var/lib/tempest-izanagi-full-build-002/work/packer-debug.log": {
+      "bytes": 67578,
+      "sha256": "90e05c7030855fa6d333bd3dae2045a090cb649ec49c8102b6f7cbb170d13df5"
+    },
+    "/var/lib/tempest-izanagi-full-build-002/work/output-debian/debian-x86_64.qcow2": {
+      "bytes": 196672,
+      "sha256": "8cf73f8d367b56e81afc7e25dba3226168f8f05790ccf7e846de51e931478133"
+    }
+  },
+  "trusted_journal_terminal": [
+    {
+      "__REALTIME_TIMESTAMP": "1795003885181993",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "MESSAGE": "tempest-izanagi-bootstrap-image-002.service: Main process exited, code=exited, status=1/FAILURE"
+    },
+    {
+      "__REALTIME_TIMESTAMP": "1795003885182212",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "MESSAGE": "tempest-izanagi-bootstrap-image-002.service: Failed with result 'exit-code'."
+    },
+    {
+      "__REALTIME_TIMESTAMP": "1795003885182295",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "MESSAGE": "Stopped tempest-izanagi-bootstrap-image-002.service - /usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/tempest-izanagi-full-build-002/work/home TMPDIR=/var/lib/tempest-izanagi-full-build-002/work/tmp PACKER_CACHE_DIR=/var/lib/tempest-izanagi-full-build-002/work/cache PACKER_PLUGIN_PATH=/var/lib/tempest-izanagi-full-build-002/inputs/plugins CHECKPOINT_DISABLE=1 PACKER_LOG=1 PACKER_LOG_PATH=/var/lib/tempest-izanagi-full-build-002/work/packer-debug.log /var/lib/tempest-izanagi-full-build-002/inputs/packer build -color=false -on-error=abort -var-file=/var/lib/tempest-izanagi-full-build-002/inputs/definition/packer/tempest.pkrvars.json /var/lib/tempest-izanagi-full-build-002/inputs/definition/packer/debian.pkr.hcl."
+    },
+    {
+      "__REALTIME_TIMESTAMP": "1795003885182478",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "MESSAGE": "tempest-izanagi-bootstrap-image-002.service: Consumed 11.823s CPU time, 613.9M memory peak, 0B memory swap peak."
+    }
+  ],
+  "service_exit_code": 1,
+  "caller_service_exit_distinction": "exec session returned 143; systemd-run log and observer record service exited status 1 after cancellation"
+}

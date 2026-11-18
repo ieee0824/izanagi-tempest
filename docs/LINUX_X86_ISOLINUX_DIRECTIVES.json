@@ -1,0 +1,110 @@
+[
+  {
+    "path": "/isolinux/addrk.cfg",
+    "sha256": "e26346af1c62c9ca4c97b6d3605067eb3df9ce3a0f6fc97c6489330d3bbdce40",
+    "selected_directives": [
+      "include rqdrk.cfg"
+    ]
+  },
+  {
+    "path": "/isolinux/addrkgtk.cfg",
+    "sha256": "e6a82f76aab669789e00698c9450434efe7995ea98333bdebffd04e4792f9750",
+    "selected_directives": [
+      "include rqdrkgtk.cfg"
+    ]
+  },
+  {
+    "path": "/isolinux/adgtk.cfg",
+    "sha256": "5eb07af7d4981beea5f1f8d774d2b6ac6b05880d2b5c385a66383f92e065e05a",
+    "selected_directives": [
+      "include rqgtk.cfg"
+    ]
+  },
+  {
+    "path": "/isolinux/adspkgtk.cfg",
+    "sha256": "24258541fdf36c4aa66836b2b14c2f889ded96721b3c807f853cd7ce43f55f96",
+    "selected_directives": [
+      "\tinclude rqspkgtk.cfg"
+    ]
+  },
+  {
+    "path": "/isolinux/adtxt.cfg",
+    "sha256": "282d2445f5e8347a8f32cf984b94991b012df8bb443b11ff491a4eebbf67a144",
+    "selected_directives": [
+      "include rqtxt.cfg"
+    ]
+  },
+  {
+    "path": "/isolinux/drk.cfg",
+    "sha256": "2936660b26e6fe928cd4c206fb235c108c5b399718c35fc6d0be8c641e2ac7d6",
+    "selected_directives": [
+      "default installdark"
+    ]
+  },
+  {
+    "path": "/isolinux/drkgtk.cfg",
+    "sha256": "47e6f5b1fb987ca30fca8ea09c29831fedbe5a7ca0496455027b05d97aaea443",
+    "selected_directives": [
+      "default installdarkgui"
+    ]
+  },
+  {
+    "path": "/isolinux/gtk.cfg",
+    "sha256": "0e9a7564593419326670e31ec7064f9d22223e4ebc0d8c84ced76149f3a3dd98",
+    "selected_directives": [
+      "default installgui"
+    ]
+  },
+  {
+    "path": "/isolinux/isolinux.cfg",
+    "sha256": "34befdd9cf0c47c265aaa347c2389ec9d99e7304fcabdd1e26b4ecc93e8b9583",
+    "selected_directives": [
+      "prompt 0",
+      "timeout 0",
+      "include menu.cfg",
+      "default vesamenu.c32"
+    ]
+  },
+  {
+    "path": "/isolinux/menu.cfg",
+    "sha256": "35027599b6399da82871d645a6e0a8034f102defe046766721adf579724e0833",
+    "selected_directives": [
+      "include stdmenu.cfg",
+      "include gtk.cfg",
+      "include txt.cfg",
+      "\tinclude stdmenu.cfg",
+      "\tinclude adgtk.cfg",
+      "\tinclude adtxt.cfg",
+      "\tinclude adspkgtk.cfg",
+      "\tinclude adspk.cfg",
+      "\tinclude drkmenu.cfg",
+      "\tinclude drkgtk.cfg",
+      "\tinclude drk.cfg",
+      "\t\tinclude drkmenu.cfg",
+      "\t\tinclude addrkgtk.cfg",
+      "\t\tinclude addrk.cfg",
+      "\tinclude x86drkme.cfg",
+      "include x86menu.cfg",
+      "include spkgtk.cfg",
+      "include spk.cfg"
+    ]
+  },
+  {
+    "path": "/isolinux/prompt.cfg",
+    "sha256": "cf6966c644e90239b294652d5ab65d8cf5fe8035ee52cfe877e1431188326649",
+    "selected_directives": [
+      "prompt 1",
+      "timeout 0",
+      "include menu.cfg",
+      "include exithelp.cfg"
+    ]
+  },
+  {
+    "path": "/isolinux/spkgtk.cfg",
+    "sha256": "189e399eaee5a30acda5995b2becbb01332798bea1da401bf5a46da29cfc556f",
+    "selected_directives": [
+      "timeout 300",
+      "ontimeout /install.amd/vmlinuz vga=788 initrd=/install.amd/gtk/initrd.gz speakup.synth=soft --- quiet "
+    ]
+  }
+]
