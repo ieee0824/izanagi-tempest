@@ -2,6 +2,8 @@
 
 ## 状態と担当
 
+単発VMとcollector回収は完了。[結果](LINUX_X86_SIDECAR_001.md)を参照。以下は固定計画・実施前準備記録として保持する。
+
 [sidecar設計案](LINUX_X86_SIDECAR_001_DESIGN.md)に基づく新試験。root /var/lib/tempest-izanagi-sidecar-001、unit tempest-izanagi-sidecar-001.service、observer profile sidecar-001。
 runner/public receiver-client helper/pure evidence検査はcoder、PLAN/固定observer/caller/closure/回収はpronniaが担当する。
 runner interface・結果受渡し・telemetry期待schemaのsource固定待ちで、root/snapshot/VMは未作成。
