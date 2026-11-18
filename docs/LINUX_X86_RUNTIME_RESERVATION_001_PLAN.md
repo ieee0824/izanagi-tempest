@@ -26,3 +26,11 @@ PID1/currentboot journal、同Invocation exit recorder、caller/observer各handl
 新work/home/tmp/evidenceはUID9990700、新inputs/rootはroot:988のread-only。
 新input closure/hash/mode/owner、旧tree baseline、具体observer/callerと最終preflight監査後に一度だけ実行する。
 未知/失敗は部分証拠保持し、暗黙retry/新VM/seed再送は行わない。
+
+## helper実装
+
+[tree inventory](evidence/runtime-reservation-001/tree_manifest.py) は通常fileのSHA・UID/GID/mode・inode/device/link・mtime/ctime、symlink target、xattr hashを記録する。
+atimeだけは読取で変わるため比較から除外する。private manifestのraw rowsは公開しない。
+[observer](evidence/runtime-reservation-001/observe.py) は100msごとに専用unit sampleとhost QEMU PID一覧をprivate JSONLへ保存し、QEMU観測時は当該unitだけstopして失敗する。
+readiness markerはUID999が置換できないroot直下にroot:988/0440で作成する。
+構文検査、treeの読取反復一致と内容変更検知fixtureは成功した。まだsnapshot作成・CLI実行はしていない。
