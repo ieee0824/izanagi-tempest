@@ -133,6 +133,16 @@ def main():
     assert summary['checks']['running_agent_build_binding']['passed'] is True
     assert summary['checks']['installed_artifact_binding']['passed'] is True
     assert summary['checks']['recording_boundary']['passed'] is True
+    helper_metadata = {}
+    for name, source in (('proc_evidence.py', 'proc_evidence.py'), ('proc-probe.py', 'proc_paging.py')):
+        path = output / 'workspace/readonly-check' / name
+        metadata = path.lstat()
+        assert stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1
+        assert (metadata.st_uid, metadata.st_gid, stat.S_IMODE(metadata.st_mode)) == (999, 988, 0o444)
+        assert base.sha(path) == base.sha(ROOT / 'inputs/repo/image' / source)
+        mapped = {field: int.from_bytes(os.getxattr(path, 'user.virtfs.' + field), 'little') for field in ('uid', 'gid', 'mode')}
+        assert mapped == {'uid': 0, 'gid': 0, 'mode': stat.S_IFREG | 0o444}
+        helper_metadata[name] = {'host_uid': 999, 'host_gid': 988, 'host_mode': '0444', 'mapped': mapped, 'source_hash_matches': True}
     exited = json.loads((ROOT / 'work/evidence/exit-status.json').read_text())
     assert exited['invocation_id'] == INVOCATION and exited['exit_status'] == '0' and exited['service_result'] == 'success'
     observer_path = Path('/tmp/tempest-proc-exposure-observation-003.jsonl')
@@ -161,6 +171,7 @@ def main():
     public = {'status': 'paged_proc_and_exec_scan_passed_observer_terminal_unknown', 'caller_exit': 0, 'observer_exit': 1,
               'observer_terminal': 'unknown after unit GC; not treated as success',
               'unit': 'tempest-izanagi-proc-exposure-003.service', 'invocation_id': INVOCATION, 'host_boot_id': BOOT,
+              'public_helper_host_metadata': helper_metadata, 'individual_guest_helper_stat': 'not measured; host xattr/mode and successful guest reads do not prove individual guest stat',
               'saved_proc_checks': recomputed, 'proc_summary_recomputed_from_private_frames': True, 'proc_scope': 'enumerated identities in three bounded paged intervals; not complete lifetime, FD contents or short-lived native coverage',
               'saved_exec_scan': scan, 'capture_metadata_reconciled': True, 'capture_files': len(entries),
               'capture_directory_mode0700_files0600_uid999_verified': True,

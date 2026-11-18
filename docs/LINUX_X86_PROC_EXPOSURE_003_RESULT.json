@@ -6,6 +6,31 @@
   "unit": "tempest-izanagi-proc-exposure-003.service",
   "invocation_id": "42b4754bbf1f48159eace8e9834f033a",
   "host_boot_id": "30389abc903c40ae89a5c6268ec1c432",
+  "public_helper_host_metadata": {
+    "proc_evidence.py": {
+      "host_uid": 999,
+      "host_gid": 988,
+      "host_mode": "0444",
+      "mapped": {
+        "uid": 0,
+        "gid": 0,
+        "mode": 33060
+      },
+      "source_hash_matches": true
+    },
+    "proc-probe.py": {
+      "host_uid": 999,
+      "host_gid": 988,
+      "host_mode": "0444",
+      "mapped": {
+        "uid": 0,
+        "gid": 0,
+        "mode": 33060
+      },
+      "source_hash_matches": true
+    }
+  },
+  "individual_guest_helper_stat": "not measured; host xattr/mode and successful guest reads do not prove individual guest stat",
   "saved_proc_checks": {
     "before_claim": {
       "passed": true,
@@ -218,7 +243,7 @@
     35509
   ],
   "dummy_transport_key": "retained private pending result review; not read by collector",
-  "free_bytes": 27786752000,
+  "free_bytes": 27786539008,
   "files": {
     "/var/lib/tempest-izanagi-proc-exposure-003/work/output/summary.json": {
       "sha256": "ebdabb8d4ea7782157e2308f2644d74bddc88b742550fba9d8144d0424aef928",

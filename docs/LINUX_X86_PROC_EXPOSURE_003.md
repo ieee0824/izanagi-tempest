@@ -44,3 +44,6 @@ observer/result出力pathを003へ修正し、回収処理だけを再実行し�
 HTTP sidecar・外部positive control・forced delivery race・全route/全期間・正式モデル比較は別gateのまま。実model/credential/AWSは使用していない。
 
 修正後collector67581は同handle終端exit0。全1309入力/外部runtime・旧proc001/002/exec/presence/normal/seed-loss全1537tree/reservation/full/smoke証拠の不変、旧鍵不在も照合した。
+
+個別helperのguest statは実測していない。host側の通常単link/999:988/0444・source hash一致とmapped uid0/gid0/mode0100444を別に照合し、成功したguest readや共有EROFSから個別guest owner/mode実測へ一般化しない。
+追補collector85104も同handle終端exit0。host helper2fileのmetadata/xattrとsource hash、既存再計算/不変検査を照合した。
