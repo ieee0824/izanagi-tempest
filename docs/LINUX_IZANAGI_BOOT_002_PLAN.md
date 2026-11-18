@@ -1,6 +1,7 @@
 # 固定boot002: 新image・段階診断の配置と実行前監査
 
-room #16423に従う準備です。bootは未実施です。
+room #16423に従う準備です。#16427後に単発起動し、固定最小経路が成功しました。
+[実測・終了証拠と残件](LINUX_IZANAGI_BOOT_002.md)を参照してください。以下は当時の計画です。
 旧boot001のroot artifact/run/evidenceは変更せず、新root/runを分離しました。
 
 ## bindingと配置結果
