@@ -29,3 +29,11 @@ observer10130はGC後に同Invocation終端属性を捕捉できずexit1でunkno
 `/var/lib/tempest-izanagi-full-build-003/work/output-debian/debian-x86_64.qcow2` は2145124352 bytes、SHA-256 `5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e`、uid999/gid988/mode0600。既存qemu-img infoを非起動で取得した。原本と証拠はprivate領域に保持している。
 
 この成功は固定artifactからの無人image buildとlock-down検査の範囲。新imageのIzanagi認証boot、実installed package/loaderとのABI照合、eBPF load/trace/HTTP capture、M3 owner/firewall/doas/mailbox、外部通信拒否、credential/livecallは未検証。次の実VM試験は生成物/定義/証拠の監査と具体計画の後に行う。
+
+## 入力 metadata と lifecycle の補完
+
+room #16520に従い、snapshot inputs.jsonとguestへ供給するimage.jsonの実SHA/内容を結果JSONへ束縛した。これは期待する入力metadataであり、実guest内のinstalled metadataとの照合は次段階に残す。
+
+qemu-img infoはqcow2/virtual4294967296 bytes、backing-filenameなし、dirty-flag false、format-specific corrupt false。修復や新bootは行っていない。
+
+trusted PID1/UID0/current boot ID `30389abc903c40ae89a5c6268ec1c432`、同InvocationのStarting/Started/deactivated時刻を選別保存した。Starting→deactivatedは321.787189sでruntime log321.787sとms丸めで整合する。Started→deactivatedは321.767670sで、後のlifecycle境界を起点とする差を区別する。元journalの全command文字列は公開していない。
