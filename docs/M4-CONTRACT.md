@@ -187,11 +187,13 @@ runtimeはこの状態でVMを破棄する必要があり、タイムアウト�
 prompt/probeとclaim照合はcontrollerが保持するbindingだけを使う。
 primary/retestのregistryは別々に結び、audit metadataには生キーを出さない。
 全userのキー指紋を段階間で比較し、過去段階のキーを再利用したregistryも拒否する。
-`seed_controller`の7試験で再送禁止、intent先行記録、応答喪失、不正registry、キャンセル、run ID再利用拒否、
+`seed_controller`の8試験で再送禁止、intent先行記録、応答喪失、不正registry、キャンセル、run ID再利用拒否、
 段階ごとのpolicy/key照合・旧キー再利用拒否を確認した。複数userの明示actorについて、
 self-check/expect probe、agent prompt、監査指紋によるfinding評価を横断し、別userの成功や
 選択actorの観測欠落を成功へ混ぜないことも確認する。これはfixtureによる契約試験であり、
-SigV4認証や実VMの証拠ではない。runtimeはprimary/retestを別の
+SigV4認証や実VMの証拠ではない。8 threadの同run ID作成競合ではcontrollerの成功が1つだけで、
+その所有者のみ1回seedでき、重複seedとdrop後の同ID再構築を拒否することを確認する。
+runtimeはprimary/retestを別の
 boot nonce・session fingerprint・daemon InvocationIDへ結び、seed応答喪失後のVM廃棄、同run ID拒否、
 fresh retest transportを実VMで検査する。run終了時は成果物allowlistを照合し、HMAC、private inbox、
 `__pycache__`、未完了partialなどのtransientが残れば完了にしない。
