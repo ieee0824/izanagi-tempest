@@ -76,7 +76,7 @@ def sample(unit=UNIT):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--attempt", choices=("001", "002", "003"), required=True)
+    parser.add_argument("--attempt", choices=("001", "002", "003", "004"), required=True)
     parser.add_argument("--phase", choices=("build", "boot"), default="build")
     args = parser.parse_args()
     if args.phase == "boot" and args.attempt != "001":

@@ -1,4 +1,4 @@
-use izanagi::sandbox::{Sandbox, SandboxConfig, ShareConfig};
+use izanagi::sandbox::{ExecOutput, Sandbox, SandboxConfig, ShareConfig};
 use std::collections::HashMap;
 
 const IMAGE: &str = "/var/lib/tempest-izanagi-bootstrap/base.qcow2";
@@ -11,19 +11,41 @@ struct Report {
     ready: bool,
     guest_uid: bool,
     down: bool,
+    exec_status: &'static str,
+    exec_exit_code: Option<i32>,
+    exec_stdout_matches: Option<bool>,
+    exec_stderr_present: Option<bool>,
+}
+
+fn classify_exec(output: &ExecOutput) -> &'static str {
+    if output.exit_code != 0 {
+        "nonzero_exit"
+    } else if !output.stderr.is_empty() {
+        "unexpected_stderr"
+    } else if output.stdout != EXPECTED_GUEST_UID {
+        "unexpected_uid"
+    } else {
+        "matched"
+    }
 }
 
 async fn probe(sandbox: &mut impl Sandbox, config: &SandboxConfig) -> Report {
     let mut report = Report {
         ready: sandbox.up(config).await.is_ok(),
+        exec_status: "not_attempted",
         ..Report::default()
     };
     if report.ready {
         let command = vec!["/usr/bin/id".into(), "-u".into()];
-        if let Ok(output) = sandbox.exec(&command, &HashMap::new()).await {
-            report.guest_uid = output.exit_code == 0
-                && output.stdout == EXPECTED_GUEST_UID
-                && output.stderr.is_empty();
+        match sandbox.exec(&command, &HashMap::new()).await {
+            Ok(output) => {
+                report.exec_exit_code = Some(output.exit_code);
+                report.exec_stdout_matches = Some(output.stdout == EXPECTED_GUEST_UID);
+                report.exec_stderr_present = Some(!output.stderr.is_empty());
+                report.exec_status = classify_exec(&output);
+                report.guest_uid = report.exec_status == "matched";
+            }
+            Err(_) => report.exec_status = "exec_call_error",
         }
     }
     // Call down even when up fails. The outer systemd cgroup remains necessary
@@ -71,6 +93,10 @@ async fn main() {
             "ready": report.ready,
             "guest_uid_matched": report.guest_uid,
             "down_returned_ok": report.down,
+            "exec_status": report.exec_status,
+            "exec_exit_code": report.exec_exit_code,
+            "exec_stdout_matches": report.exec_stdout_matches,
+            "exec_stderr_present": report.exec_stderr_present,
         })
     );
     std::process::exit(if report.ready && report.guest_uid && report.down {

@@ -47,7 +47,7 @@ class AttemptBindingTests(unittest.TestCase):
             "cgroup_pids": [],
             "external_listener_observed": False,
         }
-        for attempt in ("002", "003"):
+        for attempt in ("002", "003", "004"):
             with self.subTest(attempt=attempt), TemporaryDirectory() as directory:
                 output = Path(directory) / "observation.jsonl"
                 with patch("sys.argv", ["observe", "--attempt", attempt, "--output", str(output)]), \

@@ -20,6 +20,9 @@ binary/image/config/依存のhashと配置、専用systemd unitの回収手順�
 up失敗時もdownを呼びます。`down_returned_ok`は上流APIの結果であり、
 QEMU/cgroup/port/auth一時fileの残留なしは外側から独立に確認します。
 エラー本文、secret、guest出力はstdoutへ転載せず、結果boolのみ出力します。
+次版の診断は固定`exec_status`と数値exit code/stdout一致bool/stderr有無boolを分離します。
+Exec呼出しのErrはtransportとagent拒否を型付きで区別できないため`exec_call_error`の未分類とし、
+exit/stdout/stderr欄はnullです。生error文字列で原因分類しません。
 実環境は`IZANAGI_SECRET_FILE`を固定dummy secret pathへ設定し、空環境から開始します。
 KVM/認証/VM通信の成立はunit testでは検証しません。
 
