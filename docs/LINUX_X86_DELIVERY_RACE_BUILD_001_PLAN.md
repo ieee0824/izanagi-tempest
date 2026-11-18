@@ -86,3 +86,14 @@ Python -E/-sと空環境を使い、script directory内の固定x86/instrument h
 許可metadata差分はbuilt_at、delivery_race_fixture false→true、実instrumenter/dispatcher/quiesceのderivation SHA、出力/入力path移設と対応template SHAだけ。元compile情報の書換えは禁止。
 標準prepare出力をsnapshot新rootへ束縛する際のpath置換/元manifest SHAと、親inputs/image.json hash・全file hashを別provenanceへ記録する。
 実prepare・新definition/root/build/VMはまだ未開始。command/source/許可差分の監査後に定義作成とfull validateだけへ進む。
+
+## 標準prepareと定義full validate結果
+
+room16788監査後、同じ空環境で固定3repoのpinned/cleanを確認し、process-local safe.directoryをその3pathだけ指定した。global設定は変更していない。
+free20GiB以上・新output不在・旧full001002003 inputs/結果参照file不変と旧endpoint鍵不在を確認後、標準prepare74232が同handle終端exit0。
+[正確argv/env/UID記録](LINUX_X86_DELIVERY_RACE_PREPARE_001.json)と[定義16file hash/owner/mode・full validate記録](LINUX_X86_DELIVERY_RACE_DEFINITION_001.json)を保存した。
+親compile commit/tree/dirty/version/全binary SHA/ISO/pinned上流commit/architectureは新inputs.jsonとguest image.jsonに一致。fixture=true、実instrument後2scriptとinstrumenter SHA、template SHAを照合した。
+親inputsからのmetadata差分はbuilt_at/delivery_race_fixture/derivation_sha256と、親snapshot由来source_manifest_sha256の除去だけ。親manifest実SHAは別provenanceへ保存した。
+新definitionだけroot:988/dir0750/file0440へ固定した。固定親Packer/plugin、UID999/env-i/HOME=/nonexistentでfull validate exit0、configuration valid。plugin init/downloadなし。
+実prepare argvのGit trustは固定3pathを当該process環境へ限定した。旧source/worktreeや既存imageは変更していない。
+ここまで新/tmp定義作成だけで、新/var/lib実験root・Packer build・VMは未開始。次は定義結果監査とbuild-only snapshot/caller/observerの具体計画へ進む。
