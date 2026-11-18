@@ -72,3 +72,42 @@ hostのinstalled Rust targetはx86_64-unknown-linux-gnuのみで、musl toolchai
 
 これらのartifactと具体commandの監査後に単発起動へ進みます。
 fresh login、subscription live-call、full guest/派生Debian再構築は本調査では行いません。
+
+## systemdによる起動・回収案（未実行）
+
+hostでは`/usr/bin/systemd-run`、systemd 255 (255.4-1ubuntu8.18)、
+system manager state `running`、cgroup v2をread-onlyで確認しました。
+room #16336に従い、新たな汎用root launcherではなくtransient serviceを候補にします。
+実行対象は監査済み固定harnessのみとし、次のpropertyを固定します。
+
+```ini
+User=tempest-kvm
+Group=tempest-kvm
+SupplementaryGroups=kvm
+Type=exec
+KillMode=control-group
+RuntimeMaxSec=240s
+TimeoutStopSec=5s
+SendSIGKILL=yes
+Restart=no
+UMask=0077
+```
+
+240秒はboot/retry全体の外側上限であり、上流の全retry完遂を保証しません。
+上限に達したrunは失敗として停止し、再実行やfallbackを行いません。
+固定harnessは`env -i`から固定PATHとprivate run領域のみを受け取り、
+通常HOME、Claude設定、実credential、既存MCP設定を渡しません。
+QEMUはsystem serviceの同じcgroupを継承し、通常userへkvm権限を与えません。
+
+実施時は未使用の固定unit名を確認し、起動前後のunit状態とcgroupを保存します。
+`--collect`で証拠を即時に捨てず、Result、ExecMainCode、ExecMainStatus、
+ActiveState、SubState、ControlGroup、InvocationIDを読み取ります。
+正常main終了だけを成功にせず、harnessのReady/固定Exec/down各診断と、
+cgroup配下の残留taskなし、UID999の残留processなし、agent port閉鎖、
+private token/secret fileなしを独立に照合します。
+cgroupが既に削除された場合はunitのterminal状態と当該InvocationIDを照合し、
+不在だけを正常終了の証明にはしません。
+失敗unitのresetやrun領域削除は診断保存後に対象を限定して行います。
+
+systemdの設定案を実行済みの回収証拠とは扱いません。
+harnessと固定path/hashの確定、transient unit設定の検証が起動前の残件です。
