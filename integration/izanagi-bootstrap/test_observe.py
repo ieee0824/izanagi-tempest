@@ -32,7 +32,7 @@ class ListenerBoundaryTests(unittest.TestCase):
 class AttemptBindingTests(unittest.TestCase):
     def test_explicit_attempt_cli_observes_only_selected_unit(self):
         row = {
-            "unit": {"InvocationID": "second-invocation", "ActiveState": "inactive"},
+            "unit": {"InvocationID": "second-invocation", "ActiveState": "inactive", "LoadState": "loaded"},
             "cgroup_pids": [],
             "external_listener_observed": False,
         }
@@ -45,6 +45,22 @@ class AttemptBindingTests(unittest.TestCase):
                     main()
                 read_sample.assert_called_once_with(f"tempest-izanagi-bootstrap-build-{attempt}.service")
                 self.assertTrue(output.is_file())
+
+    def test_unit_gc_is_not_same_invocation_terminal_proof(self):
+        rows = [
+            {"unit": {"InvocationID": "observed", "ActiveState": "active", "LoadState": "loaded"},
+             "cgroup_pids": [123], "external_listener_observed": False},
+            {"unit": {"InvocationID": "", "ActiveState": "inactive", "LoadState": "not-found"},
+             "cgroup_pids": [], "external_listener_observed": False},
+        ]
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "observation.jsonl"
+            with patch("sys.argv", ["observe", "--attempt", "003", "--output", str(output)]), \
+                 patch("observe.os.geteuid", return_value=0), \
+                 patch("observe.sample", side_effect=rows), \
+                 patch("observe.time.sleep"):
+                with self.assertRaisesRegex(SystemExit, "terminal attributes not captured"):
+                    main()
 
 if __name__ == "__main__":
     unittest.main()

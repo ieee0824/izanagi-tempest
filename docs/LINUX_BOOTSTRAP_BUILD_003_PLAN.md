@@ -1,6 +1,7 @@
 # bootstrap attempt003の再監査計画
 
-room #16389に従い準備しました。再buildは未実施です。
+room #16389に従い準備し、#16391後に単発実行しました。
+[image生成と終了観測の結果](LINUX_BOOTSTRAP_BUILD_003.md)を参照してください。以下は当時の計画です。
 [attempt002失敗](LINUX_BOOTSTRAP_BUILD_002.md)への修正はhelperのlock状態検証のみです。
 新rootは`/var/lib/tempest-izanagi-bootstrap-build-003`、
 新unitは`tempest-izanagi-bootstrap-build-003.service`に固定します。

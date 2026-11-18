@@ -94,6 +94,8 @@ def main():
             if row["external_listener_observed"]:
                 raise SystemExit("external listener observed; stop the fixed build unit")
             if invocation and row["unit"].get("ActiveState") in ("inactive", "failed"):
+                if row["unit"].get("LoadState") != "loaded" or current != invocation:
+                    raise SystemExit("same-invocation terminal attributes not captured")
                 if row["cgroup_pids"]:
                     raise SystemExit("terminal unit retains processes")
                 return
