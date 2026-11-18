@@ -1,6 +1,7 @@
 # bootstrap attempt004: 固定id allowlistの準備・再監査
 
-room #16409〜11に対応する準備です。image再build・再bootは未実施です。
+room #16409〜11に対応する準備です。#16417後に単発buildを実行しました。
+[生成物と終了・回収証拠](LINUX_BOOTSTRAP_BUILD_004.md)を参照してください。再bootは未実施です。
 
 生成定義directory番号と実build attempt番号は別です。004を飛ばしたものではありません。
 001はbind修正前の構文検査、002はbind修正後でbuild001のsnapshot元、
