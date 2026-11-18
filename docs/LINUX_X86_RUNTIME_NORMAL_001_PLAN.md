@@ -44,3 +44,10 @@ observerと固定callerの実command・snapshot・preflightのレビュー後に
 ## 残るgate
 
 seed応答喪失後のdiscard、4presence、HTTP sidecar、外部到達拒否positive control、forced delivery race、全route、正式モデル比較は未証明のまま維持する。
+
+## 正確な stage path と caller
+
+run_cli.rs の primary は Vm::boot(&root)、retest は root/retest、vm.rs は directory/sandbox を使う。
+固定shareは work/runs/normal-1/sandbox、normal-1/retest/sandbox、normal-2/sandbox、normal-2/retest/sandbox の順である。
+[review用service](../integration/tempest-izanagi-runtime-normal-001.service) と [固定caller](evidence/runtime-normal-001/run_once.py) を用意した。
+unitのinstall/enable/startは行っていない。runtime_envは空環境からPATH/TZ/LANG/LC_ALL/HOME/TMPDIRだけを渡す。
