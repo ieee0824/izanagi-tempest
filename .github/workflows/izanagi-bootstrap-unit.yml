@@ -29,5 +29,11 @@ jobs:
         run: cargo +stable fmt --manifest-path integration/izanagi-bootstrap/Cargo.toml -- --check
       - name: Test mock bootstrap without starting a VM
         run: cargo +stable test --manifest-path integration/izanagi-bootstrap/Cargo.toml --locked -- --test-threads=1
+      - name: Test listener boundary classification
+        run: python3 -m unittest discover -s integration/izanagi-bootstrap -p 'test_*.py' -v
+      - name: Check preparation scripts without executing them
+        run: |
+          python3 -m py_compile integration/izanagi-bootstrap/prepare.py integration/izanagi-bootstrap/observe.py
+          sh -n integration/izanagi-bootstrap/guest-bootstrap.sh
       - name: Lint bootstrap harness
         run: cargo +stable clippy --manifest-path integration/izanagi-bootstrap/Cargo.toml --all-targets --locked -- -D warnings
