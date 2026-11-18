@@ -2,6 +2,9 @@ import ast
 import copy
 import importlib.util
 import json
+import os
+import struct
+import sys
 from pathlib import Path
 import stat
 import subprocess
@@ -190,3 +193,28 @@ class PublicHelperTests(unittest.TestCase):
             self.assertEqual({mode for _, mode in mapped}, {stat.S_IFREG | 0o444})
             with self.assertRaises(FileExistsError):
                 exec(compile(ast.Module(body=[setup], type_ignores=[]), str(source), 'exec'), namespace)
+
+    @unittest.skipUnless(sys.platform == 'linux' and os.geteuid() != 0,
+                         'requires Linux nonroot user xattr permission enforcement')
+    def test_actual_setup_with_linux_user_xattrs(self):
+        repo = Path(__file__).resolve().parents[1]
+        source = repo / 'integration/image_smoke.py'
+        main = next(n for n in ast.parse(source.read_text()).body
+                    if isinstance(n, ast.FunctionDef) and n.name == 'main')
+        setup = next(n for n in main.body if isinstance(n, ast.If) and
+                     isinstance(n.test, ast.Attribute) and n.test.attr == 'proc_evidence')
+        metadata_source = repo / 'image/transport.py'
+        mapped = next(n for n in ast.parse(metadata_source.read_text()).body
+                      if isinstance(n, ast.FunctionDef) and n.name == 'mapped_metadata')
+        namespace = {'os': os, 'stat': stat, 'struct': struct, 'sys': sys}
+        exec(compile(ast.Module(body=[mapped], type_ignores=[]), str(metadata_source), 'exec'), namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            public = Path(directory)
+            namespace.update(args=type('Args', (), {'proc_evidence': True})(), public=public, ROOT=repo)
+            exec(compile(ast.Module(body=[setup], type_ignores=[]), str(source), 'exec'), namespace)
+            for path in public.iterdir():
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o444)
+                self.assertEqual(os.getxattr(path, 'user.virtfs.uid'), struct.pack('<I', 0))
+                self.assertEqual(os.getxattr(path, 'user.virtfs.mode'), struct.pack('<I', stat.S_IFREG | 0o444))
+                with self.assertRaises(PermissionError):
+                    os.setxattr(path, 'user.virtfs.mode', struct.pack('<I', stat.S_IFREG | 0o444))
