@@ -58,10 +58,13 @@ def sample(unit=UNIT):
                 continue
             args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
             selected = []
+            storage = []
             for index, value in enumerate(args[:-1]):
                 if value in (b"-netdev", b"-vnc"):
                     selected.append([value.decode(), args[index + 1].decode("utf-8", "replace")])
-            network_args.append({"pid": pid, "network_args": selected})
+                if value in (b"-drive", b"-fsdev"):
+                    storage.append([value.decode(), args[index + 1].decode("utf-8", "replace")])
+            network_args.append({"pid": pid, "network_args": selected, "storage_args": storage})
         except (FileNotFoundError, ProcessLookupError):
             pass
     return {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(),

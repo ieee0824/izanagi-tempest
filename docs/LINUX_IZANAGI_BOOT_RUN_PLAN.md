@@ -1,7 +1,9 @@
 # 固定Izanagi最小boot001の配置・実行前監査
 
 room #16401でbuild003のimage生成・最終化・独立回収と終了証拠の組合せが受け入れられました。
-再buildは不要とし、以下は最小bootの準備です。probeはまだ起動していません。
+再buildは不要とし、以下は最小bootの準備です。
+room #16404後に単発起動し、Ready成功・guest UID確認不成立となりました。
+[実測と回収](LINUX_IZANAGI_BOOT_001.md)を参照してください。以下は当時の計画です。
 
 ## artifactと依存
 
