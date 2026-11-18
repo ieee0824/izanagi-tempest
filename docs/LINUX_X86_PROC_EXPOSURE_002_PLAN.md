@@ -2,6 +2,8 @@
 
 ## 状態と担当
 
+単発callerはVM前のhelper xattr設定で失敗した。[結果](LINUX_X86_PROC_EXPOSURE_002.md)を参照。以下は実施前の固定計画・準備記録として保持する。
+
 [ページ観測設計](LINUX_X86_PROC_EXPOSURE_002_DESIGN.md)に基づく準備計画。helper/scriptとsynthetic試験はcoder、専用root/unit/observer/closure/結果回収はpronniaが担当する。
 実装interfaceとsource監査前のため、snapshot・専用root作成・VM起動は未実施。
 [001の失敗結果](LINUX_X86_PROC_EXPOSURE_001.md)と全固定入力・private rawを保持し、再開や遡及合格はしない。
