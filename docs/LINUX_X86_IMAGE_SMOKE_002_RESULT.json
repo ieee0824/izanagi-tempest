@@ -282,7 +282,41 @@
     },
     "runtime_abi_unreadable_paths": [
       "/usr/local/bin/izanagi-agent"
-    ]
+    ],
+    "probe_allow": {
+      "outcome": "allow",
+      "status": 200,
+      "complete": true
+    },
+    "probe_deny": {
+      "outcome": "deny",
+      "status": 403,
+      "complete": true
+    },
+    "probe_unsupported": {
+      "outcome": "unsupported",
+      "status": 501,
+      "complete": true
+    },
+    "descendant_normal": {
+      "parent_returncode": 0,
+      "survived_parent": true,
+      "private_opens_denied": 90
+    },
+    "descendant_timeout": {
+      "parent_returncode": 124,
+      "survived_parent": true,
+      "private_opens_denied": 90
+    },
+    "descendant_abnormal": {
+      "parent_returncode": 137,
+      "survived_parent": true,
+      "private_opens_denied": 90
+    },
+    "capture_proxy_and_backend": {
+      "passed": true,
+      "decoded_packet_lines": 36
+    }
   },
   "input_count_unchanged": 1306,
   "old_inputs_evidence_unchanged": true,

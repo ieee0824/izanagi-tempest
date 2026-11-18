@@ -32,6 +32,11 @@ assert not subprocess.run(['ps','-u','999','-o','pid='],capture_output=True,text
 s=socket.socket();s.settimeout(1);assert s.connect_ex(('127.0.0.1',44571))!=0;s.close()
 checks={k:{field:v[field] for field in ['passed','returncode'] if field in v} for k,v in d['checks'].items() if isinstance(v,dict)}
 selected={k:d['checks'][k] for k in ['installed_artifact_binding','running_agent_build_binding','ebpf_trace_probe','recording_boundary','host_logs_private_markers','runtime_abi_unreadable_paths']}
+for name in ['probe_allow','probe_deny','probe_unsupported']:
+ selected[name]={key:d['checks'][name][key] for key in ['outcome','status','complete']}
+for name in ['descendant_normal','descendant_timeout','descendant_abnormal']:
+ selected[name]={key:d['checks'][name][key] for key in ['parent_returncode','survived_parent','private_opens_denied']}
+selected['capture_proxy_and_backend']=d['checks']['capture_proxy_and_backend']
 files={}
 for p in [root/'work/output/summary.json',root/'work/evidence/exit-status.json',Path('/tmp/tempest-image-smoke-002.log'),Path('/tmp/tempest-image-smoke-observation-002.jsonl')]:files[str(p)]={'sha256':sha(p),'bytes':p.stat().st_size}
 result={'status':'collected_requires_review_observer_terminal_unknown','caller_exit':0,'observer_exit':1,'observer_failure':'same-invocation terminal attributes not captured after GC','unit':'tempest-izanagi-image-smoke-002.service','invocation_id':inv,'host_boot_id':'30389abc903c40ae89a5c6268ec1c432','exit_recorder':e,'trusted_lifecycle':trusted,'observed_samples':len(samples),'observed_qemu':{'pid':285545,'starttime_ticks':35315195,'cwd':str(root/'work/output/workspace')},'check_results':checks,'selected_evidence':selected,'input_count_unchanged':len(meta['files']),'old_inputs_evidence_unchanged':True,'external_runtime_unchanged':True,'cgroup_absent':True,'uid999_absent':True,'agent_port_closed':True,'free_bytes':shutil.disk_usage(root).free,'files':files,'dummy_transport_key':'retained private pending result review; no standalone hash published'}
