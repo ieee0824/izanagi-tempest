@@ -9,7 +9,7 @@ User=tempest-kvm
 Group=tempest-kvm
 SupplementaryGroups=kvm
 WorkingDirectory=/run/tempest-izanagi-bootstrap
-ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/nonexistent TMPDIR=/run/tempest-izanagi-bootstrap IZANAGI_SECRET_FILE=/run/tempest-izanagi-bootstrap/dummy.secret /var/lib/tempest-izanagi-bootstrap/probe
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/nonexistent TMPDIR=/run/tempest-izanagi-bootstrap/tmp IZANAGI_SECRET_FILE=/run/tempest-izanagi-bootstrap/dummy.secret /var/lib/tempest-izanagi-bootstrap/probe
 ExecStopPost=/usr/bin/python3 /var/lib/tempest-izanagi-bootstrap/record_exit.py
 KillMode=control-group
 RuntimeMaxSec=240s

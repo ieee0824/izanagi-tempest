@@ -5,7 +5,7 @@ import os
 import subprocess
 
 UNIT = "tempest-izanagi-bootstrap-boot-001.service"
-OUTPUT = "/run/tempest-izanagi-bootstrap/exit-status.json"
+OUTPUT = "/run/tempest-izanagi-bootstrap/evidence/exit-status.json"
 PROPERTIES = ("InvocationID", "ExecMainCode", "ExecMainStatus", "Result",
               "ActiveState", "SubState", "ControlGroup")
 
