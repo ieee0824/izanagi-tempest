@@ -60,3 +60,13 @@ sidecarはExecへHTTP_PROXY/no_proxy空を注入するため、既存LWS/AWS CLI
 既存artifact/trace検査は維持し、実行しないM3操作を今回の成功実績へ含めない。
 追加closure予定はpublic sidecar_probe.py/proc_evidence.pyとhost pure sidecar_evidence.py。具体source/hashは実装監査後に固定する。
 [caller草案](evidence/sidecar-001/run_once.py)と[service草案](../integration/tempest-izanagi-sidecar-001.service)は専用flagsを指定する。まだsource/依存未確定であり実行しない。
+
+## source統合とclosure草案
+
+PR60/11fde20をff6f884へ取り込み、Linux全136tests/skip0成功。旧通常M3ブロックと新elseの構文木完全一致、両mode共通の実trace probe、既存offline/artifact/read境界/rotation保持を確認した。
+[snapshot作成草案](evidence/sidecar-001/prepare_snapshot.py)は修正smoke・proc core/paging・sidecar probe/evidenceの実bytes SHAをroot作成前にassertし、必須importをすべて含める。
+旧proc003入力/RESULT参照file/鍵不在もroot作成前に照合し、旧001/002/exec等の保全検査を維持する。
+[UID検査草案](evidence/sidecar-001/check_preparation.py)はstdinで渡し、固定help/importと権限/環境だけを確認する。helper main/host実procは実行しない。
+sidecar identityの現在の実装はargv先頭の固定binary path、root UID、PID/starttime前後一致とppid値を保存する。全argvや親実体の直接同定を実測済みとは呼ばない。
+telemetryは1fresh session/最大10MiB/32segment/50000record、fixture JSON最大16384B/exec timeout45秒に限定する。
+caller/service/observerは準備済みだが、final source監査前にroot/snapshot/VMを作成しない。
