@@ -12,7 +12,9 @@ if awk -F: '$3 == 1000 {found=1} END {exit !found}' /etc/passwd ||
 fi
 addgroup -g 1000 izanagi
 adduser -D -u 1000 -G izanagi -s /sbin/nologin izanagi
-passwd -l izanagi
+# adduser -D already creates a locked password. BusyBox passwd -l returns
+# failure for an already locked account; verify state without printing hashes.
+awk -F: '$1 == "izanagi" { found++; if ($2 !~ /^[!*]/) bad=1 } END { exit !(found == 1 && !bad) }' /etc/shadow
 test "$(id -u izanagi)" = 1000
 test "$(id -g izanagi)" = 1000
 test -x /usr/bin/id

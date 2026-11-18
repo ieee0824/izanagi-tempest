@@ -1,6 +1,7 @@
 # bootstrap attempt002の再監査計画
 
-room #16377に従い準備しました。再buildは未実施です。
+room #16377に従い準備しました。room #16383後に単発実行し、helperで失敗しました。
+[結果・回収証拠](LINUX_BOOTSTRAP_BUILD_002.md)を参照してください。以下は当時の計画です。
 [attempt001失敗](LINUX_BOOTSTRAP_BUILD_001.md)の証拠は保持し、旧snapshot/途中imageは変更していません。
 派生setupのみのvda2修正と失敗停止確認を追加し、元/派生setup hashを別記しています。
 
