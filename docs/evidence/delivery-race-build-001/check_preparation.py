@@ -15,7 +15,7 @@ for name in meta['directories']:
  s=Path(name).stat();assert (s.st_uid,s.st_gid,stat.S_IMODE(s.st_mode))==(0,988,0o750)
 for name in ('home','tmp','cache','evidence'):
  s=(ROOT/'work'/name).stat();assert (s.st_uid,s.st_gid,stat.S_IMODE(s.st_mode))==(999,988,0o700)
-for name in ('output-debian','packer-debug.log','serial.log','evidence/exit-status.json'):
+for name in ('output-debian','packer-debug.log','installer-serial.log','evidence/exit-status.json'):
  assert not os.path.lexists(ROOT/'work'/name)
 assert not os.path.lexists('/tmp/tempest-delivery-race-build-001.log')
 env={'PATH':'/usr/bin:/bin','HOME':str(ROOT/'work/home'),'TMPDIR':str(ROOT/'work/tmp'),'PACKER_CACHE_DIR':str(ROOT/'work/cache'),'PACKER_PLUGIN_PATH':str(ROOT/'inputs/plugins'),'CHECKPOINT_DISABLE':'1'}
