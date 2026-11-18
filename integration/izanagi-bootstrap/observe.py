@@ -27,14 +27,14 @@ def loopback(endpoint):
         return False
 
 
-def sample():
-    data = command(["/usr/bin/systemctl", "show", UNIT,
+def sample(unit=UNIT):
+    data = command(["/usr/bin/systemctl", "show", unit,
                     *["--property=" + key for key in PROPERTIES]])
     state = dict(line.split("=", 1) for line in data.splitlines() if "=" in line)
     group = state.get("ControlGroup", "")
     pids = set()
     if group:
-        if group != "/system.slice/" + UNIT:
+        if group != "/system.slice/" + unit:
             raise RuntimeError("unexpected control group")
         root = Path("/sys/fs/cgroup") / group.lstrip("/")
         if root.exists():
@@ -73,7 +73,9 @@ def sample():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--attempt", choices=("001", "002"), default="001")
     args = parser.parse_args()
+    unit = f"tempest-izanagi-bootstrap-build-{args.attempt}.service"
     if os.geteuid() != 0:
         raise SystemExit("root required to observe all unit socket owners")
     invocation = None
@@ -81,7 +83,7 @@ def main():
     descriptor = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as stream:
         while time.monotonic() - start < 3670:
-            row = sample()
+            row = sample(unit)
             current = row["unit"].get("InvocationID")
             if current:
                 if invocation and current != invocation:
