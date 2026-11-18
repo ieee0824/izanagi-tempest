@@ -22,6 +22,7 @@ ATTEMPTS = {
     'proc-exposure-003': ('tempest-izanagi-proc-exposure-003.service', '/var/lib/tempest-izanagi-proc-exposure-003'),
     'sidecar-001': ('tempest-izanagi-sidecar-001.service', '/var/lib/tempest-izanagi-sidecar-001'),
     'host-endpoint-001': ('tempest-izanagi-host-endpoint-001.service', '/var/lib/tempest-izanagi-host-endpoint-001'),
+    'delivery-race-smoke-001': ('tempest-izanagi-delivery-race-smoke-001.service', '/var/lib/tempest-izanagi-delivery-race-smoke-001'),
 }
 
 

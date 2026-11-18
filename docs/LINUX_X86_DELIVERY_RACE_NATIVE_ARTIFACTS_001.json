@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "source_image": "/var/lib/tempest-izanagi-delivery-race-build-001/work/output-debian/debian-x86_64.qcow2",
+  "source_image_sha256_before": "4c2a101c929547c422ce5f7709e4d52db69dbc2032bb7408fc4a4ce16aefe236",
+  "source_image_sha256_after": "4c2a101c929547c422ce5f7709e4d52db69dbc2032bb7408fc4a4ce16aefe236",
+  "partition_sha256": "a3677487f684cab3153bc3dacbbb92231c12e216cead5116d579ac8ffa8cbada",
+  "prior_fixture_report_sha256": "56998df8fcf76b9f1d7cdc7ffbd4b8e78457e290d2f02ea0ecab85df8986a85d",
+  "artifacts": {
+    "agent": {
+      "guest_path": "/usr/local/bin/izanagi-agent",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "guest_mode": "0551",
+      "bytes": 4125448,
+      "sha256": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+      "elf_machine": 62
+    },
+    "http": {
+      "guest_path": "/usr/local/bin/izanagi-http-capture",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "guest_mode": "0755",
+      "bytes": 7716640,
+      "sha256": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+      "elf_machine": 62
+    },
+    "ebpf": {
+      "guest_path": "/opt/izanagi/izanagi-ebpf.o",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "guest_mode": "0440",
+      "bytes": 29464,
+      "sha256": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+      "elf_machine": 247
+    }
+  },
+  "commands": [
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /usr/local/bin/izanagi-agent",
+      "/var/lib/tempest-izanagi-delivery-race-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /usr/local/bin/izanagi-agent /var/lib/tempest-izanagi-delivery-race-build-001/work/offline-proof/native-agent",
+      "/var/lib/tempest-izanagi-delivery-race-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /usr/local/bin/izanagi-http-capture",
+      "/var/lib/tempest-izanagi-delivery-race-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /usr/local/bin/izanagi-http-capture /var/lib/tempest-izanagi-delivery-race-build-001/work/offline-proof/native-http",
+      "/var/lib/tempest-izanagi-delivery-race-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /opt/izanagi/izanagi-ebpf.o",
+      "/var/lib/tempest-izanagi-delivery-race-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /opt/izanagi/izanagi-ebpf.o /var/lib/tempest-izanagi-delivery-race-build-001/work/offline-proof/native-ebpf",
+      "/var/lib/tempest-izanagi-delivery-race-build-001/work/offline-proof/root.partition"
+    ]
+  ],
+  "debugfs_write_flag_used": false,
+  "vm_boot_executed": false,
+  "mounted": false,
+  "extracted_files_executed": false
+}
