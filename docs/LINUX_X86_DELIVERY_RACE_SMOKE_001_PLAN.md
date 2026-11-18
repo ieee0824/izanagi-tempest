@@ -1,5 +1,10 @@
 # Linux x86配送競合M3 smoke001の準備案
 
+## 後続の実行結果
+
+room16816の監査後、単発M3 smokeは終了コード0で完了した。[実測結果と限界](LINUX_X86_DELIVERY_RACE_SMOKE_001.md)を参照。
+以下は準備時点の記録であり、各「未起動」「未実行」はその時点を表す。host completed/大容量controlは未実施。
+
 ## 後続の準備結果
 
 room16811でbuild結果・23固定source/準備案の監査を受理され、snapshot作成とUID検査まで実施した。

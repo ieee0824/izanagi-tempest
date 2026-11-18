@@ -2,7 +2,7 @@
 
 ## 状態
 
-[build001のビルド・offline照合](LINUX_X86_DELIVERY_RACE_BUILD_001.md)は完了し、room16811で結果監査を受理された。[M3 smoke用snapshotとUID検査](LINUX_X86_DELIVERY_RACE_SMOKE_001_PLAN.md)は完了し、その結果監査を待つ段階である。runtime VMは未起動で、以下の試験は未実施。
+[build001のビルド・offline照合](LINUX_X86_DELIVERY_RACE_BUILD_001.md)は完了し、room16811で結果監査を受理された。[M3 forced-reader smoke001](LINUX_X86_DELIVERY_RACE_SMOKE_001.md)もroom16816監査後に単発実行して成功し、その結果監査を待つ段階である。以下の2・3は未実施。
 [build計画](LINUX_X86_DELIVERY_RACE_BUILD_001_PLAN.md)の完了をruntime成功の代用にしない。
 
 ## ビルド後の開始条件

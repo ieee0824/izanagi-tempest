@@ -50,12 +50,13 @@ SHA-256、helper version、作成日時、Rust source tree digest/dirty flag、�
 その source から作られたことを `prepare.py` だけで証明するものではない。ビルドログも保持する。
 ビルド用 root 認証と SSH は上流 lock-down/verify-image により除去する。
 
-## Linux x86_64 向け導出（実VM検証待ち）
+## Linux x86_64 向け導出と限定実VM検証
 
 `prepare.py --architecture x86_64` は固定上流の Debian template の実bytesを検査し、
 ELF machine=62（eBPFのみ247）、QEMU `/usr/bin/qemu-system-x86_64` / q35 / KVM、
 Debian 13.7.0 amd64 ISO、BIOS installer の `/install.amd` へ導出する。
 省略時は従来のaarch64を使用する。上流checkoutは変更しない。
+[固定Linuxの通常M3検証](../docs/LINUX_X86_IMAGE_SMOKE_002.md)と[配送競合fixtureのM3 smoke](../docs/LINUX_X86_DELIVERY_RACE_SMOKE_001.md)は完了した。結果の対象・監視終端欠測・独立終了証拠を各記録に分けて示す。
 ISOは[公式署名検証](https://www.debian.org/CD/verify)を行い、
 固定SHA256 `a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355`
 と実bytesを照合してから使用する。prepareはhash検査のみで、署名検証を代行しない。
@@ -222,6 +223,7 @@ python3 integration/image_smoke.py --izanagi /absolute/path/to/izanagi --image /
 認証済み応答を取得できることを検査する。要求の再投入は行わない。失敗応答は本文を転記せず
 種別・終了コード・stdout/stderr hashだけを記録する。これは配送障害の再現試験であり、
 本番controllerの再試行契約や期限・監査の検証を代替しない。
+固定Linux x86では[専用build/offline照合](../docs/LINUX_X86_DELIVERY_RACE_BUILD_001.md)と[単発M3競合再現](../docs/LINUX_X86_DELIVERY_RACE_SMOKE_001.md)まで確認した。以下のhost completed/大容量controlは別段階の未実施試験である。
 
 host controllerの回復と失敗上限は、同じfixtureで次を実行する。
 `--expect aborted` は修正前のhost binaryの基準確認用である。
