@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import stat
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -97,3 +99,35 @@ class ProcEvidenceTests(unittest.TestCase):
                 value = P.snapshot(root, own_pid=20)
             self.assertEqual([row['pid'] for row in value['records']], [20])
             self.assertTrue(value['pid_set_truncated'])
+
+
+class GuestGuardTests(unittest.TestCase):
+    def test_missing_or_foreign_manifest_is_rejected_before_proc_sampling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / 'image.json'
+            with patch.object(P.os, 'getuid', return_value=1000), \
+                 patch.dict(P.os.environ, {P.CONTROL_KEY: P.CONTROL_VALUE}):
+                with self.assertRaises(FileNotFoundError):
+                    P.require_guest(manifest)
+                manifest.write_text('{}')
+                root_file = SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=0)
+                with patch.object(Path, 'lstat', return_value=root_file), self.assertRaises(RuntimeError):
+                    P.require_guest(manifest)
+
+    def test_fixed_root_owned_manifest_accepts_only_the_actor_with_control(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / 'image.json'
+            manifest.write_text(json.dumps({'izanagi_commit': '16d0b55947006a166cfa29dcb8bfe71f65f8c36a',
+                                            'lws_commit': '2c0ea463f334f10a562e54f1cdc7ba8a474029e2'}))
+            root_file = SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=0)
+            with patch.object(P.os, 'getuid', return_value=1000), \
+                 patch.dict(P.os.environ, {P.CONTROL_KEY: P.CONTROL_VALUE}), \
+                 patch.object(Path, 'lstat', return_value=root_file):
+                P.require_guest(manifest)
+                with patch.object(P.os, 'getuid', return_value=0), self.assertRaises(RuntimeError):
+                    P.require_guest(manifest)
+                for mode, uid in [(stat.S_IFLNK | 0o777, 0), (stat.S_IFREG | 0o666, 0),
+                                  (stat.S_IFREG | 0o644, 1000)]:
+                    with patch.object(Path, 'lstat', return_value=SimpleNamespace(st_mode=mode, st_uid=uid)), \
+                         self.assertRaises(RuntimeError):
+                        P.require_guest(manifest)
