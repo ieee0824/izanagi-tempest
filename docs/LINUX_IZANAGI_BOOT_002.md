@@ -36,6 +36,8 @@ systemctl ExecMainCode1/ExecMainStatus0を保存しました。snapshotはdeacti
 observerはGCで最終属性を取り逃し、unknown/exit1でした。不在を正常terminal証拠にしていません。
 最終journalは同UNIT/Invocation、trusted PID1/UID0/current boot ID、正常deactivation MESSAGE_IDを確認しました。
 client終了値・ExecStopPost・trusted journalを別証拠の組合せとして提出します。
+current boot ID実値は`30389abc903c40ae89a5c6268ec1c432`、trusted source時刻は
+11:20:14.848700〜11:20:26.487155 UTC、差11.638455秒でclient表示11.638秒と整合します。
 
 独立確認でcgroup不在、UID999残留なし、agent36935閉鎖、tmp/share空、
 両boot artifact/image hashと旧exit証拠hashの不変を確認しました。

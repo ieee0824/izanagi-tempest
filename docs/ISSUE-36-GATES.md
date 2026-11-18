@@ -23,7 +23,7 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 | direct profile・report schema | 純粋型・負例実装/レビュー済 | `b27e88d`で独立profile/report型・semantic validator・7test。request catalog/schema/header/count/retry/budget強制はUnobserved必須、既存relay契約へ変換不可。実artifact生成・正式比較受入は未完。[schema](DIRECT_PROFILE_SCHEMA.md) |
 | 秘密の成果物・log・process metadata非露出 | 部分実装 | dummy診断はraw argv/env/stderr/任意pathを公開しない。実credentialを使う正負試験は未実施 |
 | 本番B固定VM経路 | 未実装 | Linux direct probeをIzanagi/guest/HTTP MCPへ結線していない |
-| KVM段階gate | 固定最小VM実device成功・Izanagi未達 | #15865/#15872承認に従い専用user作成、API12、root所有固定配置・hash照合、固定最小VM正常経路を確認。exit0、期限なし、child回収・明示cleanup成功、両errnoなし、UID999残留processなし。[実測](LINUX_KVM_ARTIFACT.md)。unit異常系と区別し、固定Izanagi起動は未実施 |
+| KVM段階gate | 固定最小VM・Izanagi dummy最小経路実測済 | #15865/#15872承認に従い専用user/API12/固定最小VMを確認。[KVM実測](LINUX_KVM_ARTIFACT.md)と[boot002](LINUX_IZANAGI_BOOT_002.md)の認証Ready・固定guest UID1000・down・独立回収を別証拠で記録。外部通信拒否の実通信と本番VM境界、full guestは未達 |
 | x86_64 guest/image再構築 | 計画のみ | KVM全gate成功後にagent/sidecar/LWS/tempest-guest/imageをx86_64で再構築し、manifest、owner/firewall/doas、mailbox、control、clock/timeoutを再測定する（Issue comment 6891290403） |
 | owner手動login後の初回1 run | 未承認・未実施 | usage credits無効のowner確認を外部前提とし、fresh loginと1 runは別承認が必要。反復・複数modelも別承認 |
 | Issue #7での最終受入 | 未完 | direct接続で失うrequest単位監査と正式比較条件を再合意する必要がある |
@@ -36,11 +36,12 @@ synthetic HOME非到達と連続2 runのstate独立性は`d598243`までのdummy
 KVM固定プローブの専用user・配置監査・実device正常経路は確認済みです。
 最小bootstrap image生成・最終化と回収は[build003](LINUX_BOOTSTRAP_BUILD_003.md)で確認済みです。
 systemctl終了属性の取り逃しと、trusted journal/clientによる別証拠の関連付けは区別しています。
-次は[root所有artifact配置と固定Izanagi最小起動](LINUX_IZANAGI_BOOT_RUN_PLAN.md)を監査します。
+固定Izanagiの[boot002](LINUX_IZANAGI_BOOT_002.md)で認証Ready・固定guest UID・downが成功しました。
+次は結果を監査し、full Tempest guest/派生Debianの準備へ接続します。
 
-1. 配置済みimage/harness/終了recorderの固定hash・owner/mode、private run/dummy secretの条件を監査する。
-2. 固定transient commandで認証Ready・guest UID・downを単発実測し、終了記録と独立回収を確認する。
-3. 固定Izanagi成功後に限り、full Tempest guest/派生Debian再構築とVM境界再実測へ進む。
+1. boot002のclient/ExecStopPost/trusted journalと独立回収・image不変の結果を監査する。
+2. 監査後にx86_64 full guest/派生Debianの固定入力・署名・architecture差分を準備する。
+3. buildとVM境界のowner/firewall/doas/mailbox/control/clock/timeout、eBPF/HTTPを再実測する。
 
 dummy HOMEの受入範囲は[Linux HOME・run state隔離gate](LINUX_STATE_ISOLATION.md)に固定します。
 本番B/VMへの結線、fresh login、subscription live-call、正式比較は未達です。

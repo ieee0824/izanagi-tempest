@@ -140,9 +140,9 @@ binaryのdevice実行と専用user作成はartifact監査後の管理者checkpoi
 [setup・build・test手順](integration/izanagi-bootstrap/README.md)と
 [起動前計画](docs/LINUX_IZANAGI_BOOT_PLAN.md)を参照してください。
 専用userのPackerによる[bootstrap image生成と回収](docs/LINUX_BOOTSTRAP_BUILD_003.md)は確認済みです。
-harnessの単発実測は認証Ready/down成功、guest UID確認不成立でした。
-[実測・終了記録・独立回収と残件](docs/LINUX_IZANAGI_BOOT_001.md)を参照してください。
-最小bootの全受入と本番VM境界の検証は未達です。
+harnessの[boot002単発実測](docs/LINUX_IZANAGI_BOOT_002.md)で認証Ready・固定guest UID1000・downと独立回収を確認しました。
+終了属性の観測不足と別証拠による照合、外部通信拒否の実測や本番VM境界の未達は同報告で区別しています。
+full Tempest guest/派生Debianとcredential/live-callは未着手です。
 
 旧 WIP（0f5d190）では固定90秒 watchdog と増加した suite の衝突に整合する失敗を
 91,092 ms・`frame_oversize` Ready の child SIGKILL/watchdog exit1/RUN残留として再現しました。
