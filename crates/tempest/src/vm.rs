@@ -362,12 +362,13 @@ impl Vm {
             return Err(io::Error::other("unexpected export file"));
         }
         let mut collection = json!({"export_id":id,"complete":false,"files":{}});
-        for name in ["api.jsonl", "capture.pcap", "manifest.json"] {
+        let transfer_budget = crate::collection::TransferBudget::new(Instant::now());
+        for name in crate::collection::COLLECTION_ORDER {
             let metadata = files.get(name).cloned().unwrap_or(Value::Null);
             collection["files"][name] = json!({"verified":false,"received_bytes":0,"expected_bytes":metadata["bytes"],"expected_sha256":metadata["sha256"],"reason":"not_started"});
         }
         host_io::json_new(&evidence.join("collection.json"), &collection)?;
-        for name in ["api.jsonl", "capture.pcap", "manifest.json"] {
+        for name in crate::collection::COLLECTION_ORDER {
             let metadata = files.get(name).cloned().unwrap_or(Value::Null);
             let mut record = json!({"verified":false,"received_bytes":0,"expected_bytes":metadata["bytes"],"expected_sha256":metadata["sha256"]});
             let result = if self.poisoned {
@@ -375,8 +376,15 @@ impl Vm {
             } else if metadata.is_null() {
                 Err(crate::collection::error("missing_from_export"))
             } else {
-                self.collect_file(evidence, &id, name, &metadata, &mut record)
-                    .await
+                self.collect_file(
+                    evidence,
+                    &id,
+                    name,
+                    &metadata,
+                    &mut record,
+                    &transfer_budget,
+                )
+                .await
             };
             if let Err(error) = result {
                 record["reason"] = crate::collection::reason(&error).into();
@@ -403,6 +411,7 @@ impl Vm {
         name: &str,
         metadata: &Value,
         record: &mut Value,
+        budget: &crate::collection::TransferBudget,
     ) -> io::Result<()> {
         use crate::collection::error;
         let size = metadata["bytes"]
@@ -419,7 +428,7 @@ impl Vm {
         let mut file = crate::proxy_cli::private_new(&partial)?;
         let mut hash = Sha256::new();
         let mut offset = 0;
-        let deadline = Instant::now() + Duration::from_secs(300);
+        let deadline = budget.file_deadline(Instant::now(), size);
         while offset < size {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
@@ -428,7 +437,7 @@ impl Vm {
                 remaining,
                 self.call(
                     "fetch",
-                    json!({"export_id":id,"file":name,"offset":offset,"max_bytes":32768}),
+                    json!({"export_id":id,"file":name,"offset":offset,"max_bytes":crate::collection::CHUNK_BYTES}),
                 ),
             )
             .await;
@@ -556,5 +565,65 @@ impl Vm {
         Ok(
             json!({"management_stopped":management_ok,"companion_stopped":companion_ok,"down_succeeded":down_ok,"up_exited_successfully":up_ok,"forced_group_stop":forced,"missing_logs":missing,"partial_files_removed":partial_files_removed}),
         )
+    }
+}
+
+#[cfg(test)]
+mod collection_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn exhausted_export_budget_stops_before_any_management_request() {
+        let directory = std::env::temp_dir().join(format!(
+            "tempest-expired-transfer-{}",
+            host_io::random_hex().unwrap()
+        ));
+        host_io::directory(&directory).unwrap();
+        let mut vm = Vm {
+            workspace: directory.join("workspace"),
+            hmac: directory.join("absent-hmac"),
+            config: directory.join("unused-config"),
+            izanagi: directory.join("unused-cli"),
+            directory: directory.clone(),
+            maximum_evidence_file_bytes: 64 * 1024 * 1024,
+            up: None,
+            group: None,
+            boot_nonce: String::new(),
+            session_fingerprint: None,
+            poisoned: false,
+            companion: None,
+            management: None,
+            authorization: None,
+            daemon_identity: None,
+        };
+        // No transport exists: starting a fetch would panic rather than hiding
+        // the regression behind a mock success or a timing-dependent wait.
+        let budget =
+            crate::collection::TransferBudget::new(Instant::now() - Duration::from_secs(601));
+        let mut receipt = json!({"verified":false,"received_bytes":0});
+        let result = vm
+            .collect_file(
+                &directory,
+                "current-export",
+                "capture.pcap",
+                &json!({"bytes":1,"sha256":"0".repeat(64)}),
+                &mut receipt,
+                &budget,
+            )
+            .await;
+        assert_eq!(
+            crate::collection::reason(&result.unwrap_err()),
+            "transfer_deadline"
+        );
+        assert_eq!(receipt["received_bytes"], 0);
+        assert_eq!(receipt["verified"], false);
+        assert_eq!(
+            fs::metadata(directory.join(".capture.pcap.partial"))
+                .unwrap()
+                .len(),
+            0
+        );
+        drop(vm);
+        fs::remove_dir_all(directory).unwrap();
     }
 }
