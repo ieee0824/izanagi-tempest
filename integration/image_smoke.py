@@ -22,7 +22,8 @@ from transport import Mailbox
 from trace_evidence import trace_probe_evidence
 from artifact_evidence import PATHS as ARTIFACT_PATHS, validate_offline, validate_actor
 from exec_evidence import ExecEvidence, MarkerLeak
-from proc_evidence import CONTROL_KEY, CONTROL_VALUE, summarize as summarize_proc
+from proc_evidence import CONTROL_KEY, CONTROL_VALUE
+import proc_paging
 
 
 def sha(path):
@@ -74,6 +75,13 @@ def main():
     from transport import mapped_metadata
     import stat
     mapped_metadata(public, stat.S_IFDIR | 0o777)
+    if args.proc_evidence:
+        for source, name in [('proc_evidence.py', 'proc_evidence.py'), ('proc_paging.py', 'proc-probe.py')]:
+            path = public / name
+            with path.open('xb') as stream:
+                stream.write((ROOT / 'image' / source).read_bytes())
+            path.chmod(0o444)
+            mapped_metadata(path, stat.S_IFREG | 0o444)
     config = output / 'izanagi.toml'
     template = (ROOT / 'tools/m0/izanagi.example.toml').read_text()
     config.write_text(template.replace('image = "default"', 'image = ' + json.dumps(str(args.image.resolve()))))
@@ -105,12 +113,29 @@ def main():
     def proc_probe(stage):
         if not args.proc_evidence:
             return
-        probe = (ROOT / 'image/proc_evidence.py').read_text()
-        result = execute('/usr/bin/env', CONTROL_KEY + '=' + CONTROL_VALUE,
-                         '/usr/bin/python3', '-c', probe)
-        if result.returncode != 0:
-            raise RuntimeError('actor proc observation failed; private exec evidence retained')
-        observed = summarize_proc(json.loads(result.stdout))
+        wire_bytes = 0
+        def request(mode, pairs=None, index=None):
+            nonlocal wire_bytes
+            env_args = [CONTROL_KEY + '=' + CONTROL_VALUE, proc_paging.MODE_KEY + '=' + mode,
+                        proc_paging.STAGE_KEY + '=' + stage]
+            if pairs is not None:
+                env_args.extend([proc_paging.PAGE_KEY + '=' + json.dumps(pairs, separators=(',', ':')),
+                                 proc_paging.INDEX_KEY + '=' + str(index)])
+            result = execute('/usr/bin/env', *env_args, '/usr/bin/python3', '-I', '-B',
+                             '/workspace/readonly-check/proc-probe.py', CONTROL_VALUE)
+            if result.returncode != 0:
+                raise RuntimeError('actor proc observation failed; private exec evidence retained')
+            size = len(result.stdout.encode('utf-8', 'surrogateescape'))
+            wire_bytes += size
+            if size > proc_paging.core.MAX_OUTPUT or wire_bytes > proc_paging.MAX_STAGE_BYTES:
+                raise RuntimeError('actor proc response exceeds fixed byte budget')
+            return json.loads(result.stdout)
+        enumeration = request('enumerate')
+        if enumeration['stage'] != stage:
+            raise RuntimeError('proc enumeration stage mismatch')
+        pages = [request('page', pairs, index) for index, pairs in
+                 enumerate(proc_paging.page_requests(enumeration))]
+        observed = proc_paging.summarize_pages(enumeration, pages, wire_bytes)
         report['checks']['proc_' + stage] = observed
         save()
         if not observed['passed']:

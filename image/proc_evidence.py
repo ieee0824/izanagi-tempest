@@ -52,12 +52,20 @@ def identity(path):
         return failure(error)
 
 
-def snapshot(proc=Path('/proc'), own_pid=None):
+def snapshot(proc=Path('/proc'), own_pid=None, requested_pids=None):
     own_pid = os.getpid() if own_pid is None else own_pid
     started = time.monotonic_ns()
-    pids = sorted(int(path.name) for path in proc.iterdir() if path.name.isdecimal())
-    # Always include the observation process for positive controls.
-    selected = sorted(set([own_pid] + [pid for pid in pids if pid != own_pid][:MAX_PIDS - 1]))
+    if requested_pids is None:
+        pids = sorted(int(path.name) for path in proc.iterdir() if path.name.isdecimal())
+        selected = sorted(set([own_pid] + [pid for pid in pids if pid != own_pid][:MAX_PIDS - 1]))
+        truncated = len(pids) > MAX_PIDS
+    else:
+        pids = list(requested_pids)
+        if not pids or len(pids) > MAX_PIDS - 1 or len(set(pids)) != len(pids) \
+                or any(type(pid) is not int or pid <= 0 for pid in pids):
+            raise ValueError('invalid bounded proc page')
+        selected = sorted(set([own_pid] + pids))
+        truncated = False
     rows = []
     for pid in selected:
         path = proc / str(pid)
@@ -73,7 +81,7 @@ def snapshot(proc=Path('/proc'), own_pid=None):
         rows.append(row)
     result = {'schema_version': 1, 'actor_uid': os.getuid(), 'own_pid': own_pid,
               'started_monotonic_ns': started, 'ended_monotonic_ns': time.monotonic_ns(),
-              'pid_set_truncated': len(pids) > MAX_PIDS, 'records': rows}
+              'pid_set_truncated': truncated, 'records': rows}
     encoded = json.dumps(result, separators=(',', ':')).encode()
     if len(encoded) > MAX_OUTPUT:
         raise RuntimeError('proc snapshot exceeds private capture budget; not complete')

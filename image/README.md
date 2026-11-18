@@ -143,12 +143,19 @@ helperの直接実行は固定guestだけに限定し、hostではsynthetic fixt
 公開canaryをargvと初期envへ渡し、観測process自身で両方が読めたことと、自身のFD一覧取得をpositive controlとする。
 private管理tokenやreply keyをprobeへ渡すことはしない。
 
-最大128PID・各stream8192B・JSON出力128KiBに制限し、切詰め・想定外error・control不成立は
-completeにしない。読取拒否、消滅、読取成功を区別し、PID/starttimeの前後一致を記録する。
+PID/starttime集合を最大4096件まで列挙し、127対象＋観測自身1PIDのページへ分割する。
+1ページ128PID・各stream8192B・応答128KiBの上限を保ち、最大33ページ＋列挙1回、
+各時点の総応答34×128KiB以内とする。欠落・重複・別page/identityの結び付けは拒否する。
+切詰め・想定外error・control不成立はcompleteにしない。列挙後のPID消滅・再利用・不安定なidentityは
+対応件数へ明記し、元のidentityを観測できたと数えない。coverageは全列挙要求への対応であり、
+全identityの存続・読取成功を意味しない。
+
+秘密を含まない`proc_evidence.py`と`proc_paging.py`だけを、検証用read-only共有領域へ起動前に0444で配置する。
+setup/expect/資格情報は含めない。guest Pythonは`-I -B`で固定helperを実行し、公開canaryとpage対象だけを渡す。
 raw snapshotはprivateなexec応答証拠だけへ保存し、summaryには件数・状態・control結果だけを載せる。
 exec応答のdummy目印scanが、観測できたcmdline/env本文にも適用される。
-これは3つのbounded snapshotであり、短命native helper・全PID・全期間・FD内容の非露出を証明しない。
-現在進行中の固定exec-exposure001へは追加せず、別の計画・固定入力で実測する。
+これは3時点のpaged observationであり、同時点の全process・短命native・全期間・FD内容の非露出を証明しない。
+128PID上限で失敗したproc-exposure001は保持し、ページ方式は別の計画・固定入力で実測する。
 
 ## 配送契約
 
