@@ -34,6 +34,30 @@ Issue #6 / PR #31。以下は現行実装と確認済み証拠の対応である
 私有run directoryにはcredential claimを含む証跡があり、リポジトリへ複製しない。
 上記パスはこの検証環境の所在であり、他環境で存在するとは限らない。
 
+## 固定Linux x86での4presence再検証
+
+#14はPR #39でDESIGN/IMPLEMENTATIONの4presence・未実施理由・別分母を接続し、
+PR #46で実probe監査、PR #51で実行前比較計画のbindingを検査へ追加した。
+[固定Linux presence001](https://github.com/ieee0824/izanagi-tempest/blob/1b8c44d/docs/LINUX_X86_RUNTIME_PRESENCE_001.md)
+と[選別結果](https://github.com/ieee0824/izanagi-tempest/blob/1b8c44d/docs/LINUX_X86_RUNTIME_PRESENCE_001_RESULT.json)
+をsource/collectorと照合した。
+
+| finding/retest | primary probe開始/完了 | finding結果 | retest結果 | VM数 |
+|---|---|---|---|---|
+| 有/有 | 同ID各1 | found | passed | 2 |
+| 有/無 | 同ID各1 | found | not_performed / not_configured | 1 |
+| 無/有 | 各0 | not_configured | passed（独立policy検証） | 2 |
+| 無/無 | 各0 | not_configured | not_performed / not_configured | 1 |
+
+4runはすべてcompleted/evaluation performed。未設定self-check/retestはperformed=falseと省略理由を保持し、
+未設定retest directoryは生成しなかった。全resultが実行前の4slot計画へverified bindingされた。
+集計採用4件・欠測0件・予定外0件、finding/retestそれぞれ設定済み分母2・not_configured2、
+条件横断率はnot_computed、formal eligibleは0である。
+6VMのnonce/session/ダミー資格情報の非再利用、回収、1316固定入力と旧証拠の不変を保存した。
+caller exit0とobserverのGC終端unknown/exit1を分け、同InvocationのExecStopPost/trusted journalと
+独立cgroup/UID/port回収を別証拠として照合した。全route・全lifetimeや実モデル比較の証明ではない。
+これは保存結果/sourceの照合であり、MacからLinux実ファイルを再測定したものではない。
+
 ## レビューと後続検証
 
 Sakura投稿15350の最終レビューを反映し、単体試験と実経路の検証範囲を上表で区別した。
