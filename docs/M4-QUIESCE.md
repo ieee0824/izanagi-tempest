@@ -72,8 +72,12 @@ exportがfreeze中だけ実行されることを検査する。全18件成功。
 
 ## 未確認と後続
 
-- 実host controllerがagent終了を明示closeへ結び、全転送RPCを収束させてからこのexportを呼ぶ結合は未実装。
+- host controllerのclose→転送RPC収束→export結合は実装済みで、
+  [固定Linux正常2run/reset](https://github.com/ieee0824/izanagi-tempest/blob/e68b3e7/docs/LINUX_X86_RUNTIME_NORMAL_001.md)
+  のprimary/retest回収を確認した。以下の障害注入や全競合経路の証明とは区別する。
 - daemon再起動、kernel操作失敗/期限切れ、nested cgroup、fork競合を注入した実VM試験は残る。
 - 観測した子と権限境界の検査を、全攻撃手法・別kernelの安全性証明とはしない。
 - 誤identityの拒否後も観測を続けたのは検証用runの負例であり、正式runtimeの同VM復旧フローではない。
-- #13 の配送・露出表、#15 の並行seed/VM破棄、#5 のmock E2Eとclock/run記録は継続する。
+- #13の配送・露出表と残る障害経路の確認は継続する。#5のmock E2Eと#15の主体契約は完了済み。
+  #15の並行予約、seed応答喪失後のVM廃棄と独立した同ID拒否の証拠は
+  [M4実行契約](M4-CONTRACT.md#15の追加検証証拠)を参照する。
