@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-固定snapshotと専用UID検査は完了。VM未起動、最終snapshot/command監査待ち。
+固定snapshotと専用UID検査・監査後、単発実行は失敗して回収済み。[部分結果](LINUX_X86_RUNTIME_SEED_LOSS_001.md)を参照。
 #15に関係する、seed適用後の成功応答喪失→agent未開始→VM discardを単発検査する。
 root /var/lib/tempest-izanagi-runtime-seed-loss-001、unit tempest-izanagi-runtime-seed-loss-001.service を予約する。
 [正常2回結果](LINUX_X86_RUNTIME_NORMAL_001.md) と同じ固定host CLI/Izanagi/image/manifestを使い、core/guest/global設定は変更しない。

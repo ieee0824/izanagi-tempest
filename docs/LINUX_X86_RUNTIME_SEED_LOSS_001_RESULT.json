@@ -1,0 +1,183 @@
+{
+  "status": "failed_retry_diagnostic_assertion",
+  "caller_exit": 1,
+  "observer_exit": 0,
+  "failure": "retry did not reach the existing run-ID reservation",
+  "same_id_retry": "not established; original retry stdout/stderr not retained; no rerun",
+  "unit": "tempest-izanagi-runtime-seed-loss-001.service",
+  "invocation_id": "995c31fa97fa45c3aacac0409017bd85",
+  "host_boot_id": "30389abc903c40ae89a5c6268ec1c432",
+  "seed_evidence": {
+    "witness": {
+      "seed_reply_verified": true,
+      "admin_key_rotated": true,
+      "new_key_verified": true,
+      "old_key_rejected": true,
+      "users": [
+        "worker"
+      ]
+    },
+    "seed_started": 1,
+    "seed_failed": 1,
+    "seed_completed": 0,
+    "distinct_seed_control_ids": 1,
+    "delivery_reads": 35,
+    "delivery_categories": {
+      "reply_unavailable": 34,
+      "ciphertext_received": 1
+    },
+    "agent_stage_operations_absent": true,
+    "scope": "one successful decoded seed reply deliberately withheld; delivery reads may poll the same reply"
+  },
+  "run_status": "aborted",
+  "evaluation": "partial",
+  "finding_outcome": "unknown",
+  "formal_metrics_eligible": false,
+  "agent_export_retest_not_started": true,
+  "cleanup": {
+    "companion_stopped": false,
+    "down_succeeded": true,
+    "forced_group_stop": false,
+    "management_stopped": true,
+    "missing_logs": [],
+    "partial_files_removed": [],
+    "up_exited_successfully": true
+  },
+  "artifact_inventory_complete": true,
+  "observer": {
+    "sample_count": 36,
+    "external_listener_observed": false,
+    "last_observed_unit": {
+      "MainPID": "0",
+      "Result": "exit-code",
+      "ExecMainCode": "1",
+      "ExecMainStatus": "1",
+      "ControlGroup": "",
+      "LoadState": "loaded",
+      "ActiveState": "failed",
+      "SubState": "failed",
+      "InvocationID": "995c31fa97fa45c3aacac0409017bd85"
+    },
+    "observed_sessions": [
+      {
+        "workspace": "/var/lib/tempest-izanagi-runtime-seed-loss-001/work/runs/seed-reply-loss/sandbox",
+        "pid": 292809,
+        "starttime_ticks": 35691077,
+        "binding": {
+          "boot_nonce": "fd258756131355ddc7c682d8f91d23e0",
+          "supervisor_pid": 292804,
+          "session_fingerprint": "7f1e99aa94f032ee011963517b4ad992ad5e5a96b6fc089375669ac2857114a9"
+        }
+      }
+    ],
+    "scope": "sampled sessions; observer caller exit and trusted terminal evidence recorded separately"
+  },
+  "exit_recorder": {
+    "unit_name": "tempest-izanagi-runtime-seed-loss-001.service",
+    "invocation_id": "995c31fa97fa45c3aacac0409017bd85",
+    "unit": {
+      "Result": "exit-code",
+      "ExecMainCode": "1",
+      "ExecMainStatus": "1",
+      "ControlGroup": "/system.slice/tempest-izanagi-runtime-seed-loss-001.service",
+      "ActiveState": "deactivating",
+      "SubState": "stop-post",
+      "InvocationID": "995c31fa97fa45c3aacac0409017bd85"
+    },
+    "service_result": "exit-code",
+    "exit_code": "exited",
+    "exit_status": "1",
+    "scope": "ExecStopPost snapshot; final cgroup and journal checks are separate"
+  },
+  "trusted_lifecycle": [
+    {
+      "UNIT": "tempest-izanagi-runtime-seed-loss-001.service",
+      "MESSAGE_ID": "7d4958e842da4a758f6c1cdc7b36dcc5",
+      "__REALTIME_TIMESTAMP": "1795014352506711",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "995c31fa97fa45c3aacac0409017bd85"
+    },
+    {
+      "UNIT": "tempest-izanagi-runtime-seed-loss-001.service",
+      "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
+      "__REALTIME_TIMESTAMP": "1795014352509669",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "995c31fa97fa45c3aacac0409017bd85"
+    },
+    {
+      "UNIT": "tempest-izanagi-runtime-seed-loss-001.service",
+      "MESSAGE_ID": "98e322203f7a4ed290d09fe03c09fe15",
+      "__REALTIME_TIMESTAMP": "1795014381632803",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "995c31fa97fa45c3aacac0409017bd85"
+    },
+    {
+      "UNIT": "tempest-izanagi-runtime-seed-loss-001.service",
+      "MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c",
+      "__REALTIME_TIMESTAMP": "1795014381674194",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "995c31fa97fa45c3aacac0409017bd85"
+    },
+    {
+      "UNIT": "tempest-izanagi-runtime-seed-loss-001.service",
+      "MESSAGE_ID": "ae8f7b866b0347b9af31fe1c80b127c0",
+      "__REALTIME_TIMESTAMP": "1795014381675488",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "995c31fa97fa45c3aacac0409017bd85"
+    }
+  ],
+  "inputs_unchanged": 1307,
+  "old_inputs_evidence_unchanged": true,
+  "external_runtime_unchanged": true,
+  "cgroup_absent": true,
+  "uid999_absent": true,
+  "observed_ports_closed": [
+    35495
+  ],
+  "transient_keys_absent": true,
+  "free_bytes": 39218446336,
+  "files": {
+    "/var/lib/tempest-izanagi-runtime-seed-loss-001/work/runs/seed-reply-loss/run.json": {
+      "sha256": "b96b8c6da16fd087f7c404594ec58d2ed840e98b5e69f73c8d72cbfd93821210",
+      "bytes": 5869
+    },
+    "/var/lib/tempest-izanagi-runtime-seed-loss-001/work/runs/seed-reply-loss/result.json": {
+      "sha256": "958ad30d04b4eeb6bc07680902e0d0d26f0b12afc73685c95230e7981210fcbf",
+      "bytes": 6381
+    },
+    "/var/lib/tempest-izanagi-runtime-seed-loss-001/work/runs/seed-reply-loss/artifact-inventory.json": {
+      "sha256": "e6db510457c37cf855a70bf69fa50e510c3bfcb8ddd07704f6cfedcae23aa0ac",
+      "bytes": 765
+    },
+    "/var/lib/tempest-izanagi-runtime-seed-loss-001/work/runs/seed-reply-loss/evidence/control.jsonl": {
+      "sha256": "7ba3ff2ca7363620139877b4980256ecb62b1e1235df9140ed0bab4d1be1d918",
+      "bytes": 13589
+    },
+    "/var/lib/tempest-izanagi-runtime-seed-loss-001/work/runs/seed-reply-loss-applied.json": {
+      "sha256": "0060e7b7997da0c4d8869f0595499d15bd875432e4f610d1394a7f1d9d67ef34",
+      "bytes": 130
+    },
+    "/tmp/tempest-runtime-seed-loss-observation-001.jsonl": {
+      "sha256": "f4bf4b6925ed564ba9031666835bb08ab3a8c7cd746e9c711993da64799e581d",
+      "bytes": 36303
+    },
+    "/tmp/tempest-runtime-seed-loss-001.log": {
+      "sha256": "a0c593250a78fbc8d10e0bfc48903d22113439488214e71b43a521cd94699139",
+      "bytes": 843
+    },
+    "/var/lib/tempest-izanagi-runtime-seed-loss-001/work/evidence/exit-status.json": {
+      "sha256": "4a7588fced5fcbe7a4c3ddebe9498cccfdfb4d3625ebcedfef32ddd444fcf463",
+      "bytes": 534
+    }
+  }
+}
