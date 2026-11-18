@@ -26,5 +26,12 @@
   "prepared_free_bytes": 52258439168,
   "vm_boot_executed": false,
   "dummy_transport_key_created": false,
-  "review_unit_verify_exit": 0
+  "review_unit_verify_exit": 0,
+  "bootstrap_tests": {
+    "tests": 13,
+    "seconds": 0.035,
+    "result": "passed"
+  },
+  "preflight_free_bytes": 52258283520,
+  "unit_unused_uid999_absent_output_exit_logs_absent": true
 }

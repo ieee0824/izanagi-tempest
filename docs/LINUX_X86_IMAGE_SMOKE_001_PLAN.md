@@ -82,3 +82,5 @@ ExecStopPostは既存の実測済みrecorderを固定unit/outputへ導出し、�
 未実行の初回trial001に対するinput snapshot version2であり、2回目のVM起動ではない。旧v1root `/var/lib/tempest-izanagi-image-smoke-001` と[全v1入力](LINUX_X86_IMAGE_SMOKE_SNAPSHOT_001.json)は不変更で保持し、v1 observerを実行しない。unit名は未使用の同じ001を使う。image/CLI/guest/core/wheel版本は同じで、新image build/追加packageはない。
 
 v2全1304input・外部runtime SHA・全directory owner/mode、uid999 readable/nonwritable、private work、xattr、root venv prefix/import/AES/--helpを再検査。旧v1全input SHA/modeも不変。空file/別run nonce pathのtrace負例、逐次PID交代・同PID/starttime交代・未観測terminalのobserver負例を含む全64testsが成功した。現行command/service/期待image/share pathはすべてv2を指す。新output/key/exit evidenceは未作成で、実VMはまだ0回。
+
+追加のLinux検証ではbootstrap全13testsも成功し、v2全hash、新output/exit/caller・observer log不在、unit未使用、uid999なし、free52258283520 bytesを確認した。実起動前にこれらは再検査する。
