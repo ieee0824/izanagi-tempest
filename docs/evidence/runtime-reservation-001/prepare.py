@@ -38,9 +38,11 @@ def main():
     assert sha(OLD / 'inputs/tempest') == '4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f'
     ROOT.mkdir(mode=0o750)
     os.chown(ROOT, 0, 988)
+    ROOT.chmod(0o750)
     inputs = ROOT / 'inputs'
     inputs.mkdir(mode=0o750)
     os.chown(inputs, 0, 988)
+    inputs.chmod(0o750)
     work = ROOT / 'work'
     work.mkdir(mode=0o700)
     os.chown(work, 999, 988)

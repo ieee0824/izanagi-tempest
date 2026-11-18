@@ -1,0 +1,21 @@
+{
+  "input_snapshot_file_sha256": "964639ac8bbc5afe7cd6ca0f9b6220b5499027d07ed1744a54a202b4c04305ad",
+  "input_source_commit": "6e3914b60a88c605084b041de580a3681ca1d9e1",
+  "input_files": 8,
+  "root_and_inputs_mode": "0750 root:988; corrected from unexecuted v1 mode0700",
+  "all_input_file_hashes_unchanged": true,
+  "uid999_readable_nonwritable": true,
+  "stdlib_imports_verified": true,
+  "marker_tests": 3,
+  "fault_projection_tests": 2,
+  "uid999_marker_read_0440_verified_in_separate_test_directory": true,
+  "old_tree_entries": 1537,
+  "old_tree_sha256": "4f96c6013ae88321ab3376a636092b962c924d39e52ae1b7dd700a620b70f878",
+  "old_tree_matches_baseline": true,
+  "reservation_cli_executed": false,
+  "vm_executed": false,
+  "free_bytes": 39219318784,
+  "observer_entrypoint": "/var/lib/tempest-izanagi-runtime-reservation-001/inputs/observe_v2.py",
+  "v1_input_files_preserved": true,
+  "observer_v2_identical_to_already_fixed_v1": true
+}

@@ -42,3 +42,20 @@ readiness markerはUID999が置換できないroot直下にroot:988/0440で作�
 ただしroom16630で、observerのumask077によりready mode0440が0400になる点と、公開後writeによる空marker読取raceが指摘された。
 v1 observer/CLIは未実行。旧inputs/observe.pyとsnapshot.jsonは保持し、修正版はinputs/observe_v2.pyへ別固定してsnapshot-v2.jsonを保存する予定。
 実行はv2とUID999 marker読取/排他公開の検査、最終監査後とする。
+
+実体照合による訂正: 準備開始前のrebaseで83c5a8cが既に入り、v1 inputs/observe.pyは修正済みsourceと完全一致していた（SHA256 2563aaac9b0debad4ca990140d7be3d5d9fc37f3aea7db8b3f70812818cc1a0b）。
+旧observerを実行した事実はない。room16634に合わせて実行対象を明示するため、同一修正版bytesをobserve_v2.pyへ別固定した。
+実際に残っていた問題は新ROOT/inputsのumask由来0700であり、v1はUID999 traverse未検査の準備失敗として記録する。
+prepare sourceへ明示chmod0750を追加し、既存新環境のこの2directoryだけを0750へ是正する。入力file/hashと旧seed-loss全treeは変更しない。
+
+## 最終v2準備
+
+[8入力snapshot](LINUX_X86_RUNTIME_RESERVATION_SNAPSHOT_001_V2.json) と [UID検査v2](LINUX_X86_RUNTIME_RESERVATION_PREPARATION_001_V2.json) を保存。
+旧7inputとsnapshot.jsonは保持、新observe_v2.pyだけを追加した。observerはv1と同一の83c5a8c修正版bytesであり、v1未実行のまま実行対象を明示するための追加である。
+root/inputsだけ0750へ是正し、旧seed-loss1537項目のbaseline一致を再確認した（caller64644終端exit0）。
+全8入力を実UID999でread可/write不可/hash一致、stdlib imports、別test directoryでのroot公開marker0440読取を確認。
+新unit not-found/inactive/Invocation空、UID999 processなし、本番observer-ready/observation.jsonl未作成、空き容量39219318784 bytes。
+
+先行observerは `sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-runtime-reservation-001/inputs/observe_v2.py`。
+固定callerは `sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-runtime-reservation-001/inputs/run_once.py`。
+まだ両方未実行。入力snapshot-v2と具体commandの最終監査後に一度だけ開始する。
