@@ -34,6 +34,10 @@ PROFILES = {
         'tempest-izanagi-delivery-race-completed-001.service',
         tuple('/var/lib/tempest-izanagi-delivery-race-completed-001/work/runs/forced-delivery-race'
               + suffix + '/sandbox' for suffix in ('', '/retest'))),
+    'delivery-race-large': (
+        '/var/lib/tempest-izanagi-delivery-race-large-001',
+        'tempest-izanagi-delivery-race-large-001.service',
+        ('/var/lib/tempest-izanagi-delivery-race-large-001/work/runs/forced-delivery-race/sandbox',)),
 }
 
 
