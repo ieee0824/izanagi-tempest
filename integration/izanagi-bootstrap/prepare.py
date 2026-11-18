@@ -44,6 +44,27 @@ def main():
     if template.count(anchor) != 1 or template.count('version = "~> 1"') != 1:
         raise SystemExit("unexpected template layout")
     template = template.replace('version = "~> 1"', 'version = "= 1.1.8"')
+    network_anchor = '  http_directory = "http"'
+    if template.count(network_anchor) != 1 or template.count("{{ .HTTPIP }}") != 2:
+        raise SystemExit("unexpected HTTP configuration")
+    template = template.replace(network_anchor, '''  http_directory = "${path.root}/http"
+  http_bind_address = "127.0.0.1"
+  http_port_min = 18081
+  http_port_max = 18081
+  vnc_bind_address = "127.0.0.1"
+  vnc_port_min = 5901
+  vnc_port_max = 5901
+  host_port_min = 22221
+  host_port_max = 22221
+  ssh_host = "127.0.0.1"
+  qemu_binary = "/usr/bin/qemu-system-x86_64"
+  machine_type = "q35"
+  qemuargs = [
+    ["-netdev", "user,id=user.0,hostfwd=tcp:127.0.0.1:{{ .SSHHostPort }}-:22"]
+  ]''')
+    # Plugin 1.1.8 reports a specific bind address as HTTPIP. Guest loopback
+    # differs from host loopback; use the fixed slirp host alias in boot commands.
+    template = template.replace("{{ .HTTPIP }}", "10.0.2.2")
     extra = '''  provisioner "file" {
     source = "${path.root}/guest-bootstrap.sh"
     destination = "/tmp/tempest-bootstrap.sh"
@@ -79,6 +100,8 @@ def main():
         "variables_sha256": digest(output / "bootstrap.pkrvars.json"),
         "generator_sha256": digest(Path(__file__)), "guest_uid": 1000,
         "qemu_plugin_version": "1.1.8", "image_built": False,
+        "build_host_bind": "127.0.0.1", "build_guest_http_host": "10.0.2.2",
+        "build_ports": {"http": 18081, "ssh_forward": 22221, "vnc": 5901},
     }
     (output / "inputs.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps({"prepared": True, "image_built": False}))
