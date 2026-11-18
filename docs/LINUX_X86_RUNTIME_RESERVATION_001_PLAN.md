@@ -2,7 +2,7 @@
 
 ## 範囲
 
-草案、未実行。seed-loss001の失敗原本を変更せず、同ID拒否だけをVM無しの別検査として保存する。
+実行・回収済み。[結果](LINUX_X86_RUNTIME_RESERVATION_001.md)を参照。seed-loss001の失敗原本を変更せず、同ID拒否だけをVM無しの別検査として保存した。
 旧trialを遡及合格にしない。root /var/lib/tempest-izanagi-runtime-reservation-001、unit tempest-izanagi-runtime-reservation-001.service を新設する。
 
 [固定check](evidence/runtime-reservation-001/check_once.py) のCOMMANDは旧seed-loss001の固定CLI/image/scenario/mock/Pythonと同じ引数を使い、bridgeだけ実在する固定base bridgeを指定する。
