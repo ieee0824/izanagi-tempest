@@ -75,3 +75,12 @@ sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-runtime-seed-loss-001/in
 同ID予約拒否の追加CLIは固定fault script内部でEEXISTを検査し、予定外VMを起動しない。
 VM実行後はwitnessとseed control1/1/0を[projection](evidence/runtime-seed-loss-001/seed_projection.py)で照合し、
 run aborted/partial/agent-export-retest未開始、discard/cleanup、一時key不在、trusted terminal/回収、入力・旧証拠不変を保存する。
+
+## 開始前の独立照合
+
+coderはcfe63deの保存snapshot全1307rowsからcanonical JSONのSHA256を再計算し、
+PREPARATIONのinput treeとの一致、source93be452、repo配送7入力とrunnerのローカルsource hash、
+固定host CLI/imageの既知hash、全入力ownerとfile mode0440/0550を照合した。
+固定caller/serviceとobserverの専用unit/root/1stageも確認し、Sakura16617で単発開始を依頼した。
+これは保存metadata/sourceの独立照合であり、MacからLinux hostの実ファイルを再測定したものではない。
+開始依頼時点では実VM結果は未取得であり、成功・回収・seed適用を先取りして認定しない。
