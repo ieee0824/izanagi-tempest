@@ -1,0 +1,40 @@
+{
+  "scope": "Mac git objects and tracked source only; not Linux inventory or image build",
+  "guest_source_commit": "7ab5d4ee98b009086d83a98320dc752c3372bf4f",
+  "rust_tracked_files": 93,
+  "rust_tree_sha256": "680b42138d4a8d2b1ae2cd7db8f83721366d58ddc754ee590f3471ac0f4452c8",
+  "tree_algorithm": "sorted tracked Cargo.toml/Cargo.lock/crates paths: path+NUL+bytes+NUL",
+  "image_sources": {
+    "image/prepare.py": {
+      "sha256": "4dfa961b927f2b0b097aad2ff5a0eef036b9f0a6c6c50053f398d911b8ef5210",
+      "old_source_equals_current_bytes": true
+    },
+    "image/provision.sh": {
+      "sha256": "2cbd4e8c128f289216aebd21ff364a65b5552ee623df56f345cd17e818ba800e",
+      "old_source_equals_current_bytes": true
+    },
+    "image/dispatcher.py": {
+      "sha256": "2c785fa2d24841ed00e5807604343e31e9409c5b7ae9855d0e0adf5449622b09",
+      "old_source_equals_current_bytes": true
+    },
+    "image/quiesce.py": {
+      "sha256": "34cbc78cfec3caedac52bcaa747df62342383612ee5f3f9aab9ab02bac5cb8b0",
+      "old_source_equals_current_bytes": true
+    },
+    "image/delivery_race_fixture.py": {
+      "sha256": "562a44539935b975f3c9b1eba8e141579d12c5791d62206163578f4ddf170dc6",
+      "old_source_equals_current_bytes": true
+    },
+    "image/x86_template.py": {
+      "sha256": "beff58866542b0df1741b7bd593a8c6605c2f808a0607264f70782ae74d69cc4",
+      "old_source_equals_current_bytes": true
+    }
+  },
+  "fixture_output_sha256": {
+    "dispatcher.py": "faf0c5aef7e5ae7600e77c88df61d84edad6b3cdd39e5b765e65d7a96972e1b9",
+    "quiesce.py": "72fabf3ce527257ab2bb5fb8cb3b8a8ef7e706ff2715b29e5b7c0857bf5390a8"
+  },
+  "prepare_executed": false,
+  "build_executed": false,
+  "new_experiment_root_created": false
+}
