@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-固定snapshotと専用UID検査は完了、最終監査待ち。VM未実施。旧exec-exposure001は変更せず、#13のactor可視/procを既存固定image上の新1VMで限定観測する。
+単発VM試験は初回snapshotのPID集合上限超過で停止した。[結果](LINUX_X86_PROC_EXPOSURE_001.md)を参照。以下の準備・実行記述は実施前の固定計画として保持する。旧exec-exposure001は変更せず、#13のactor可視/procを既存固定image上の新1VMで限定観測する。
 root /var/lib/tempest-izanagi-proc-exposure-001、unit tempest-izanagi-proc-exposure-001.service。
 Izanagi CLI SHA088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8、full003 image SHA5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7eを維持。
 image/core/guest/Rust/global設定やpackageを変更せず、dummyのみで実model/credential/AWSは使わない。

@@ -1,0 +1,143 @@
+{
+  "status": "failed_pid_set_cap_before_claim",
+  "caller_exit": 1,
+  "observer_exit": 0,
+  "unit": "tempest-izanagi-proc-exposure-001.service",
+  "invocation_id": "ec197df910a34e42b0818f2d6333feba",
+  "host_boot_id": "30389abc903c40ae89a5c6268ec1c432",
+  "guest_snapshot_stage": "before_claim",
+  "saved_proc_summary": {
+    "passed": false,
+    "records": 128,
+    "positive_controls": {
+      "cmdline": true,
+      "environ": true,
+      "fd_list": true
+    },
+    "stable_identities": 128,
+    "cmdline_status": {
+      "read": 128
+    },
+    "environ_status": {
+      "denied": 127,
+      "read": 1
+    },
+    "fd_status": {
+      "denied": 127,
+      "listed": 1
+    },
+    "truncated_streams": 0,
+    "unexpected_errors": 0,
+    "scope": "bounded actor-readable proc snapshots; FD listing only, no FD contents or complete lifetime"
+  },
+  "pid_set_truncated": true,
+  "actor_uid": 1000,
+  "summary_recomputed_from_private_guest_json": true,
+  "later_snapshots": "not reached",
+  "final_exec_marker_scan": "not reached; no overall leak-free claim",
+  "capture_executions": 2,
+  "capture_streams": 4,
+  "capture_operations": {
+    "exec": 2
+  },
+  "capture_files_private_modes_verified": true,
+  "collector_scope": "summarize saved guest JSON only; host proc helper snapshot not invoked; markers not recovered or rescanned",
+  "exit_recorder": {
+    "unit_name": "tempest-izanagi-proc-exposure-001.service",
+    "invocation_id": "ec197df910a34e42b0818f2d6333feba",
+    "unit": {
+      "Result": "exit-code",
+      "ExecMainCode": "1",
+      "ExecMainStatus": "1",
+      "ControlGroup": "/system.slice/tempest-izanagi-proc-exposure-001.service",
+      "ActiveState": "deactivating",
+      "SubState": "stop-post",
+      "InvocationID": "ec197df910a34e42b0818f2d6333feba"
+    },
+    "service_result": "exit-code",
+    "exit_code": "exited",
+    "exit_status": "1",
+    "scope": "ExecStopPost snapshot; final cgroup and journal checks are separate"
+  },
+  "trusted_lifecycle": [
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-001.service",
+      "MESSAGE_ID": "7d4958e842da4a758f6c1cdc7b36dcc5",
+      "__REALTIME_TIMESTAMP": "1795019236135486",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "ec197df910a34e42b0818f2d6333feba"
+    },
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-001.service",
+      "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
+      "__REALTIME_TIMESTAMP": "1795019236136901",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "ec197df910a34e42b0818f2d6333feba"
+    },
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-001.service",
+      "MESSAGE_ID": "98e322203f7a4ed290d09fe03c09fe15",
+      "__REALTIME_TIMESTAMP": "1795019255571484",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "ec197df910a34e42b0818f2d6333feba"
+    },
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-001.service",
+      "MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c",
+      "__REALTIME_TIMESTAMP": "1795019255611577",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "ec197df910a34e42b0818f2d6333feba"
+    },
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-001.service",
+      "MESSAGE_ID": "ae8f7b866b0347b9af31fe1c80b127c0",
+      "__REALTIME_TIMESTAMP": "1795019255612614",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "ec197df910a34e42b0818f2d6333feba"
+    }
+  ],
+  "observer_samples": 26,
+  "observed_qemu": {
+    "pid": 300385,
+    "starttime_ticks": 36179402,
+    "cwd": "/var/lib/tempest-izanagi-proc-exposure-001/work/output/workspace"
+  },
+  "inputs_unchanged": 1308,
+  "old_inputs_evidence_unchanged": true,
+  "external_runtime_unchanged": true,
+  "exec001_key_remains_absent": true,
+  "cgroup_absent": true,
+  "uid999_absent": true,
+  "observed_ports_closed": [
+    34227
+  ],
+  "dummy_transport_key": "retained private pending failed-result review",
+  "files": {
+    "/var/lib/tempest-izanagi-proc-exposure-001/work/output/summary.json": {
+      "sha256": "ef1a1f9cc60acfcd6c36e8ed2471b8790745272bee481ab6bc52e3c796cd72a2",
+      "bytes": 1264
+    },
+    "/tmp/tempest-proc-exposure-observation-001.jsonl": {
+      "sha256": "075a8cf956aa12682175b6e11c9c9cbed0decf19fa987b7cde8fbf88583df166",
+      "bytes": 19619
+    },
+    "/var/lib/tempest-izanagi-proc-exposure-001/work/evidence/exit-status.json": {
+      "sha256": "c72f11b20f63817955113dae0a359b7cd8cc9c3ba4aa595f5f9a5f75349e93e7",
+      "bytes": 526
+    },
+    "/tmp/tempest-proc-exposure-001.log": {
+      "sha256": "1825c5a5132f3c1ee872a232ee9d405910fc34a124409e6e04a21dc7969a9d59",
+      "bytes": 873
+    }
+  }
+}
