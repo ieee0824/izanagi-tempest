@@ -14,6 +14,6 @@ Restart=no
 UMask=0077
 NoNewPrivileges=yes
 Delegate=no
-WorkingDirectory=/var/lib/tempest-izanagi-image-smoke-001/work
-ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 HOME=/var/lib/tempest-izanagi-image-smoke-001/work/home TMPDIR=/var/lib/tempest-izanagi-image-smoke-001/work/tmp /var/lib/tempest-izanagi-image-smoke-001/inputs/python/bin/python -I -B /var/lib/tempest-izanagi-image-smoke-001/inputs/repo/integration/image_smoke.py --izanagi /var/lib/tempest-izanagi-image-smoke-001/inputs/izanagi --image /var/lib/tempest-izanagi-image-smoke-001/inputs/image.qcow2 --build-inputs /var/lib/tempest-izanagi-image-smoke-001/inputs/build-inputs.json --output /var/lib/tempest-izanagi-image-smoke-001/work/output
-ExecStopPost=/usr/bin/python3 -I -B /var/lib/tempest-izanagi-image-smoke-001/inputs/record_exit.py
+WorkingDirectory=/var/lib/tempest-izanagi-image-smoke-001-v2/work
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 HOME=/var/lib/tempest-izanagi-image-smoke-001-v2/work/home TMPDIR=/var/lib/tempest-izanagi-image-smoke-001-v2/work/tmp /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/python/bin/python -I -B /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/repo/integration/image_smoke.py --izanagi /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/izanagi --image /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/image.qcow2 --build-inputs /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/build-inputs.json --output /var/lib/tempest-izanagi-image-smoke-001-v2/work/output
+ExecStopPost=/usr/bin/python3 -I -B /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/record_exit.py

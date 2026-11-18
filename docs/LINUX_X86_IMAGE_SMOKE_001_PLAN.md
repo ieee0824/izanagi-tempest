@@ -4,11 +4,11 @@ room #16520/#16526 に対応する可逆準備。[full image build003](LINUX_X86
 
 ## 入力と依存の固定
 
-root `/var/lib/tempest-izanagi-image-smoke-001`、unit `tempest-izanagi-image-smoke-001.service` を新設用に予約した。生成image SHA `5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e` と固定host CLI SHA `088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8` を新inputsへコピーした。build-inputs.jsonはfull003の実manifestからbyte-identicalでコピーし、guest metadataの期待値を維持する。
+root `/var/lib/tempest-izanagi-image-smoke-001-v2`、unit `tempest-izanagi-image-smoke-001.service` を新設用に予約した。生成image SHA `5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e` と固定host CLI SHA `088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8` を新inputsへコピーした。build-inputs.jsonはfull003の実manifestからbyte-identicalでコピーし、guest metadataの期待値を維持する。
 
-[全1304入力のfile hash/mode/owner、symlink target、directoryと外部runtimeのSHA](LINUX_X86_IMAGE_SMOKE_SNAPSHOT_001.json)を保存。[専用userでの実検証](LINUX_X86_IMAGE_SMOKE_PREPARATION_001.json)を参照。root:tempest-kvm、directory0750、通常file0440/executable0550。venvのsymlinkは固定inputs内またはroot所有/usr/bin/python3.12に限定し、リンク先のglobal binaryをchmodしない。uid999で全入力readable/nonwritableを確認した。
+[全1304入力のfile hash/mode/owner、symlink target、directoryと外部runtimeのSHA](LINUX_X86_IMAGE_SMOKE_SNAPSHOT_001_V2.json)を保存。[専用userでの実検証](LINUX_X86_IMAGE_SMOKE_PREPARATION_001_V2.json)を参照。root:tempest-kvm、directory0750、通常file0440/executable0550。venvのsymlinkは固定inputs内またはroot所有/usr/bin/python3.12に限定し、リンク先のglobal binaryをchmodしない。uid999で全入力readable/nonwritableを確認した。
 
-固定wheelhouseとhash付きrequirementsからroot専用venvを新規生成しoffline installした。Python -I -B/env-i、root snapshotのprefix、cryptography50.0.2/cffi2.1.1/pycparser3.12、AES-GCM dummy roundtripをuid999で確認。pip/global Pythonの更新や追加APTは行っていない。元の成功venv/全wheelと旧full001002003入力・証拠は不変更。全58 Python testsは成功。guest内実artifact inventory用commandも既知ELFの正例と不正headerの負例で確認した。
+固定wheelhouseとhash付きrequirementsからroot専用venvを新規生成しoffline installした。Python -I -B/env-i、root snapshotのprefix、cryptography50.0.2/cffi2.1.1/pycparser3.12、AES-GCM dummy roundtripをuid999で確認。pip/global Pythonの更新や追加APTは行っていない。元の成功venv/全wheelと旧full001002003入力・証拠は不変更。全64 Python testsは成功。guest内実artifact inventory用commandも既知ELFの正例と不正headerの負例で確認した。
 
 work/home、work/tmp、work/evidenceはuid999 private0700、work/outputは未作成。host mapped-xattrのset/getを専用userの一時fileで検査してから同fileを削除した。scriptは新output内に独立random transport HMAC file0600を生成し、ambient secretを使用しない。まだdummy transport鍵は作成していない。runtime原本をprivateに保持し、鍵値/鍵単体hash/raw summaryやguest argv全体を公開しない。
 
@@ -27,11 +27,11 @@ Izanagi/LWS core sourceとguest imageは変更しない。host smokeは新root r
 rootのread-only observerを先行する。
 
 ```sh
-sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-image-smoke-001/inputs/repo/integration/image_smoke_observe.py \
+sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/repo/integration/image_smoke_observe.py \
   --output /tmp/tempest-image-smoke-observation-001.jsonl
 ```
 
-observerは固定unit/cgroup/Invocationのみを読み、単一QEMU、user restrict=on、127.0.0.1の動的agent forward、固定base imageのsnapshot=on、固定workspace mapped-xattr/readonly=onを検査する。0QEMUの初期状態をpositive runtime証拠にせず、複数VM/制限緩和/非loopbackは失敗。raw fw_cfg/全argvは採取しない。観測失敗時はこのunitだけstop/必要時killし、別runへ移行しない。
+observerは固定unit/cgroup/Invocationと初回QEMU PID+process starttimeを保持し、観測identityの交代・PID再利用・identity不正/欠測・VM未観測terminalを拒否する。単一QEMU、user restrict=on、127.0.0.1の動的agent forward、固定base imageのsnapshot=on、固定workspace mapped-xattr/readonly=onを検査する。0QEMUの初期状態をpositive runtime証拠にせず、複数VM/制限緩和/非loopbackは失敗。raw fw_cfg/全argvは採取しない。観測失敗時はこのunitだけstop/必要時killし、別runへ移行しない。
 
 以下を新private `/tmp/tempest-image-smoke-001.log` へumask0077/noclobberで記録する。newimageの実bootを含むため、まだ実行していない。
 
@@ -42,17 +42,17 @@ sudo -n /usr/bin/systemd-run --unit=tempest-izanagi-image-smoke-001 --wait --pip
   --property=RuntimeMaxSec=1800s --property=TimeoutStopSec=10s \
   --property=SendSIGKILL=yes --property=Restart=no --property=UMask=0077 \
   --property=NoNewPrivileges=yes --property=Delegate=no \
-  --property='ExecStopPost=/usr/bin/python3 -I -B /var/lib/tempest-izanagi-image-smoke-001/inputs/record_exit.py' \
-  --working-directory=/var/lib/tempest-izanagi-image-smoke-001/work \
+  --property='ExecStopPost=/usr/bin/python3 -I -B /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/record_exit.py' \
+  --working-directory=/var/lib/tempest-izanagi-image-smoke-001-v2/work \
   /usr/bin/env -i PATH=/usr/bin:/bin TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 \
-  HOME=/var/lib/tempest-izanagi-image-smoke-001/work/home \
-  TMPDIR=/var/lib/tempest-izanagi-image-smoke-001/work/tmp \
-  /var/lib/tempest-izanagi-image-smoke-001/inputs/python/bin/python -I -B \
-  /var/lib/tempest-izanagi-image-smoke-001/inputs/repo/integration/image_smoke.py \
-  --izanagi /var/lib/tempest-izanagi-image-smoke-001/inputs/izanagi \
-  --image /var/lib/tempest-izanagi-image-smoke-001/inputs/image.qcow2 \
-  --build-inputs /var/lib/tempest-izanagi-image-smoke-001/inputs/build-inputs.json \
-  --output /var/lib/tempest-izanagi-image-smoke-001/work/output
+  HOME=/var/lib/tempest-izanagi-image-smoke-001-v2/work/home \
+  TMPDIR=/var/lib/tempest-izanagi-image-smoke-001-v2/work/tmp \
+  /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/python/bin/python -I -B \
+  /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/repo/integration/image_smoke.py \
+  --izanagi /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/izanagi \
+  --image /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/image.qcow2 \
+  --build-inputs /var/lib/tempest-izanagi-image-smoke-001-v2/inputs/build-inputs.json \
+  --output /var/lib/tempest-izanagi-image-smoke-001-v2/work/output
 ```
 
 ExecStopPostは既存の実測済みrecorderを固定unit/outputへ導出し、同Invocation/終了値の選別snapshotを新work/evidence/exit-status.jsonへO_EXCL/NOFOLLOW/fsyncで保存する。deactivating snapshotと最終terminal/cgroup回収は区別する。caller handleの終端とunitの状態を混同しない。GCでobserverがunknownになった場合はそのまま残し、trusted PID1/UID0/currentboot journal、exit recorder、script private結果、実成果物を別に照合する。
@@ -73,4 +73,12 @@ ExecStopPostは既存の実測済みrecorderを固定unit/outputへ導出し、�
 
 [review専用unit定義](../integration/tempest-izanagi-image-smoke-001.service)をsystemd-analyze verify --man=noで検査しexit0。hostへunitをinstall/enable/startしていない。実行は上記のtransient単発commandで行う計画。root snapshotへの配置とoffline venv installのsetup logはprivate rootに保持する。全input closureは1304 entries、root venvの新prefixと専用userでのimport/crypto/--help検証まで完了。
 
-準備時のunitはnot-found/inactive、専用uid999 processなし。空き容量は約54.4GBで、直前値は実行前に再採取する。
+準備時のunitはnot-found/inactive、専用uid999 processなし。空き容量は約52.2GBで、直前値は実行前に再採取する。
+
+## v2再固定の理由と範囲
+
+16531/16532の「同時1台でも逐次別VMに交代できる」反例を09b91beで修正し、cba819dでROOTをv2へ固定した。sourceはPID stat field22をcmdline読取前後で照合し、observer process内でPID+starttimeを保持する。host bootIDは準備記録と最終trusted journalで別に束縛する。1秒sample間に完結して一度も見えなかったprocessの不存在や全lifetime完全監査を保証するものではない。
+
+未実行の初回trial001に対するinput snapshot version2であり、2回目のVM起動ではない。旧v1root `/var/lib/tempest-izanagi-image-smoke-001` と[全v1入力](LINUX_X86_IMAGE_SMOKE_SNAPSHOT_001.json)は不変更で保持し、v1 observerを実行しない。unit名は未使用の同じ001を使う。image/CLI/guest/core/wheel版本は同じで、新image build/追加packageはない。
+
+v2全1304input・外部runtime SHA・全directory owner/mode、uid999 readable/nonwritable、private work、xattr、root venv prefix/import/AES/--helpを再検査。旧v1全input SHA/modeも不変。空file/別run nonce pathのtrace負例、逐次PID交代・同PID/starttime交代・未観測terminalのobserver負例を含む全64testsが成功した。現行command/service/期待image/share pathはすべてv2を指す。新output/key/exit evidenceは未作成で、実VMはまだ0回。
