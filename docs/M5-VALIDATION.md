@@ -38,14 +38,38 @@ Issue #6 / PR #31。以下は現行実装と確認済み証拠の対応である
 
 上記は当時の検証報告であり、私有パスの存在やhashを現在再測定できたという意味ではない。
 新しい固定x86 imageでは[正常2回/reset](LINUX_X86_RUNTIME_NORMAL_001.md)を保存証拠付きで確認した。
-finding/retestの4presenceは新imageで未実施であり、#14で追跡する。
+finding/retestの4presenceも新imageで実施済みであり、下記に保存証拠と限界を示す。
 
 [seed-loss001](LINUX_X86_RUNTIME_SEED_LOSS_001.md)は成功seed返信の喪失、agent未開始、VM廃棄を確認したが、
 同run ID拒否の検査がCLIのstdout/stderr契約と不一致でtrial全体は失敗した。
 旧scriptには削除済みbridgeによるENOENTを拒否成功と誤認し得る問題と、失敗seed返信でも注入する問題もあった。
 PR #47/#48で修正したが、旧報告の同ID拒否や適用成功をその修正だけで遡及認定しない。
-#15は既存runへの[VMなし予約拒否検査](LINUX_X86_RUNTIME_RESERVATION_001_PLAN.md)を独立証拠として追加するまで未完了である。
+#15は既存runへの[VMなし予約拒否追加証拠](LINUX_X86_RUNTIME_RESERVATION_001.md)と正常2回・主体/競合検証を合わせて完了条件を満たし、close済み。旧seed-loss trial自体の失敗と旧retry出力欠測は保持する。
 mockの部分評価成功と正式モデル比較の適格性は引き続き区別する。
+
+## 固定Linux x86での4presence再検証
+
+#14はPR #39でDESIGN/IMPLEMENTATIONの4presence・未実施理由・別分母を接続し、
+PR #46で実probe監査、PR #51で実行前比較計画のbindingを検査へ追加した。
+[固定Linux presence001](https://github.com/ieee0824/izanagi-tempest/blob/1b8c44d/docs/LINUX_X86_RUNTIME_PRESENCE_001.md)
+と[選別結果](https://github.com/ieee0824/izanagi-tempest/blob/1b8c44d/docs/LINUX_X86_RUNTIME_PRESENCE_001_RESULT.json)
+をsource/collectorと照合した。
+
+| finding/retest | primary probe開始/完了 | finding結果 | retest結果 | VM数 |
+|---|---|---|---|---|
+| 有/有 | 同ID各1 | found | passed | 2 |
+| 有/無 | 同ID各1 | found | not_performed / not_configured | 1 |
+| 無/有 | 各0 | not_configured | passed（独立policy検証） | 2 |
+| 無/無 | 各0 | not_configured | not_performed / not_configured | 1 |
+
+4runはすべてcompleted/evaluation performed。未設定self-check/retestはperformed=falseと省略理由を保持し、
+未設定retest directoryは生成しなかった。全resultが実行前の4slot計画へverified bindingされた。
+集計採用4件・欠測0件・予定外0件、finding/retestそれぞれ設定済み分母2・not_configured2、
+条件横断率はnot_computed、formal eligibleは0である。
+6VMのnonce/session/ダミー資格情報の非再利用、回収、1316固定入力と旧証拠の不変を保存した。
+caller exit0とobserverのGC終端unknown/exit1を分け、同InvocationのExecStopPost/trusted journalと
+独立cgroup/UID/port回収を別証拠として照合した。全route・全lifetimeや実モデル比較の証明ではない。
+これは保存結果/sourceの照合であり、MacからLinux実ファイルを再測定したものではない。
 
 ## レビューと後続検証
 
