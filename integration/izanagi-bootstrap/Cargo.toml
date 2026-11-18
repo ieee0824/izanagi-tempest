@@ -1,0 +1,17 @@
+[package]
+name = "tempest-izanagi-bootstrap"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+izanagi = { git = "https://github.com/ieee0824/izanagi.git", rev = "16d0b55947006a166cfa29dcb8bfe71f65f8c36a" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"
+libc = "0.2"
+
+[dev-dependencies]
+anyhow = "1"
+async-trait = "0.1"

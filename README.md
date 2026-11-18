@@ -136,6 +136,10 @@ unitは固定IO→HLTのABI/境界とdummy childの期限・回収だけを検�
 binaryのdevice実行と専用user作成はartifact監査後の管理者checkpointです。
 [管理者手順](docs/LINUX_KVM_ADMIN_GATE.md)と[固定検証器設計](docs/LINUX_KVM_MINIMAL_PROBE.md)を参照してください。
 
+固定Izanagiの最小boot harnessは独立workspaceで準備中です。
+[setup・build・test手順](integration/izanagi-bootstrap/README.md)と
+[起動前計画](docs/LINUX_IZANAGI_BOOT_PLAN.md)を参照してください。VM起動はまだ行っていません。
+
 旧 WIP（0f5d190）では固定90秒 watchdog と増加した suite の衝突に整合する失敗を
 91,092 ms・`frame_oversize` Ready の child SIGKILL/watchdog exit1/RUN残留として再現しました。
 当時の ownership 遷移は未記録で、過去事象の実行時因果確定とは区別します。残留は root0700 で証拠保全済みです。
