@@ -13,7 +13,17 @@
       "Filename": "pool/universe/p/python3.12/python3.12-venv_3.12.3-1ubuntu0.17_amd64.deb",
       "SHA256": "b8d4bfea3df63945b6a202bd0773caf7727dde86d2df91df6e88a8ccf7c18b7e",
       "Size": "5684",
-      "Depends": "python3.12 (= 3.12.3-1ubuntu0.17), python3-pip-whl (>= 22.2), python3-setuptools-whl"
+      "Depends": "python3.12 (= 3.12.3-1ubuntu0.17), python3-pip-whl (>= 22.2), python3-setuptools-whl",
+      "download_path": "/tmp/tempest-x86-python-debs-001/python3.12-venv_3.12.3-1ubuntu0.17_amd64.deb",
+      "actual_sha256": "b8d4bfea3df63945b6a202bd0773caf7727dde86d2df91df6e88a8ccf7c18b7e",
+      "actual_size": 5684,
+      "file_names": [
+        "./usr/lib/python3.12/ensurepip/__init__.py",
+        "./usr/lib/python3.12/ensurepip/__main__.py",
+        "./usr/lib/python3.12/ensurepip/_uninstall.py",
+        "./usr/share/lintian/overrides/python3.12-venv",
+        "./usr/share/doc/python3.12-venv"
+      ]
     },
     {
       "Package": "python3-pip-whl",
@@ -21,7 +31,16 @@
       "Filename": "pool/universe/p/python-pip/python3-pip-whl_24.0+dfsg-1ubuntu1.3_all.deb",
       "SHA256": "4b7c50db8f261b208c1d9cde8db148c1f682cc516957b986ada5088cfcee1359",
       "Size": "1706638",
-      "Depends": "ca-certificates"
+      "Depends": "ca-certificates",
+      "download_path": "/tmp/tempest-x86-python-debs-001/python3-pip-whl_24.0+dfsg-1ubuntu1.3_all.deb",
+      "actual_sha256": "4b7c50db8f261b208c1d9cde8db148c1f682cc516957b986ada5088cfcee1359",
+      "actual_size": 1706638,
+      "file_names": [
+        "./usr/share/doc/python3-pip-whl/NEWS.Debian.gz",
+        "./usr/share/doc/python3-pip-whl/changelog.Debian.gz",
+        "./usr/share/doc/python3-pip-whl/copyright",
+        "./usr/share/python-wheels/pip-24.0-py3-none-any.whl"
+      ]
     },
     {
       "Package": "python3-setuptools-whl",
@@ -29,8 +48,16 @@
       "Filename": "pool/universe/s/setuptools/python3-setuptools-whl_68.1.2-2ubuntu1.2_all.deb",
       "SHA256": "edfa94cc1f6a33af99cfaf6ebfe35dbcd9c4bdd8555b90c0d8e78479faf5c8f0",
       "Size": "716284",
-      "Depends": null
+      "Depends": null,
+      "download_path": "/tmp/tempest-x86-python-debs-001/python3-setuptools-whl_68.1.2-2ubuntu1.2_all.deb",
+      "actual_sha256": "edfa94cc1f6a33af99cfaf6ebfe35dbcd9c4bdd8555b90c0d8e78479faf5c8f0",
+      "actual_size": 716284,
+      "file_names": [
+        "./usr/share/doc/python3-setuptools-whl/changelog.Debian.gz",
+        "./usr/share/doc/python3-setuptools-whl/copyright",
+        "./usr/share/python-wheels/setuptools-68.1.2-py3-none-any.whl"
+      ]
     }
   ],
-  "status": "candidate audit only; no download or install"
+  "status": "three exact deb archives downloaded and hashes/sizes verified; not installed"
 }
