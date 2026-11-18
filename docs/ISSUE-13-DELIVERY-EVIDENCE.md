@@ -31,7 +31,7 @@ request上限と応答枠を別に検査する。将来argv配送を加える場
 | doas入口・root native呼出 | actorはdeliverのみ。native/watch/shell代理実行を許さない | smoke002 doas_other/native/watch/tokenless_seed拒否、保存暗号文の反復/並列取得は安定 | native内部PIPEの実bytesをactor経路で観測したものではない |
 | native argv/env/stdin | source上、tokenはstdin、setup/probeはprivate path、envは固定PATH/audit ID | dispatcherのcommand/env構築とfinally削除を確認 | /proc cmdline、親shell、execve、env/FDの全実行・全期間の直接目印検査は未確認 |
 | events/alerts rotations、up stdout/stderr | host private保存。公開は選別結果 | smoke002 host_logs_private_markers passed、実eBPF nonce/PID/path一致 | ログが記録しなかった経路の不存在証明ではない |
-| host CLI exec stdout/stderr、失敗診断 | 新exec-evidence0700/各file0600。公開は件数/種別/leak有無 | PR #54の7試験でstderr漏出拒否・timeout部分bytes等を確認 | [exec-exposure001計画](LINUX_X86_EXEC_EXPOSURE_001_PLAN.md)の実VM試験は未実施。native PIPEとは別scope |
+| host CLI exec stdout/stderr、失敗診断 | 新exec-evidence0700/各file0600。公開は件数/種別/leak有無 | [exec-exposure001](LINUX_X86_EXEC_EXPOSURE_001.md)は保存scan173exec/346stream・漏出0、expected-error読取7、metadata/権限整合を確認 | markerを再取得した独立再scanではない。host timeout0のため部分bytesはunit fixtureのみ。native PIPEとは別scope |
 
 exec-evidenceの目印はdummy管理token/reply AES key/private payloadであり、許可されてagentへ渡るworker資格情報と混ぜない。
 raw stream、目印値、鍵値を公開しない。host timeout部分出力の単体fixtureと実VMで起きたtimeoutは区別し、
@@ -43,7 +43,9 @@ raw stream、目印値、鍵値を公開しない。host timeout部分出力の�
 - [正常2run/reset](LINUX_X86_RUNTIME_NORMAL_001.md): primary/retestのfresh VMと回収。observer GC終端unknownは別trusted終了証拠と区別。
 - [seed-loss001](LINUX_X86_RUNTIME_SEED_LOSS_001.md): 成功返信喪失→agent未開始→廃棄は確認。trial末尾の旧診断検査失敗は保持。
 - [reservation001](LINUX_X86_RUNTIME_RESERVATION_001.md): 別検査でEEXIST、旧1537項目不変。旧trialの遡及合格ではない。
+- [exec-exposure001](LINUX_X86_EXEC_EXPOSURE_001.md): 保存scanと173metadata/519private fileの整合、trusted終了・回収・1307入力不変。operation件数はdeliver読取を含み、状態変更の新規投入数ではない。
 
-まずexec応答とexpected-error診断の限定実測を行い、この表の該当欄だけを更新する。
+exec応答とexpected-error診断の限定実測を保存結果/sourceへ結び、この表の該当欄を更新した。
+次はPR #55のactor視点/proc 3snapshotを別rootで実測する。現時点では単体5件のみ確認済みで、実VMは未実施。
 直接/proc観測とnative PIPE、回収不能・競合経路は実測/制約を個別に整理する。HTTP sidecar・外部positive control・
 全route coverage・実モデル比較の検証を、この表だけで完了扱いにしない。#13はopenのまま追跡する。
