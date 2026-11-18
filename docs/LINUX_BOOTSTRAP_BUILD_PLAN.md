@@ -18,6 +18,24 @@ host通常HOME、認証済みCLI、実credential、実AWSは入力に含みま�
 build中はAlpine package取得用egressを使うため、実験runのnetwork拒否とは区別します。
 build用root guest認証は上流lock-down/verify-imageで除去し、成功manifestと完成image hashを保存します。
 
+snapshot作成時の対応は次のとおりです。まだ配置していません。
+
+| 照合済み取得物 | snapshot内の配置先（root配下） | mode |
+| --- | --- | --- |
+| Packer1.15.0 binary | inputs/packer | 0550 |
+| plugin1.1.8 binaryと登録checksum | inputs/plugins/github.com/hashicorp/qemu/配下の同名file | binary0550/checksum0440 |
+| Alpine3.23.3 ISO | inputs/base.iso | 0440 |
+| x86_64 musl agent | inputs/izanagi-agent | 0440 |
+| 派生template/helper/http/lock-down/verify | inputs/definition/配下 | 0440 |
+
+各directoryをroot:tempest-kvm0750で作成し、全fileのinstall後hashを元の記録へ再照合します。
+vars内のISO/agent絶対pathをsnapshot先へ固定し、変換前後vars hashをmanifestへ記録します。
+`http_directory=${path.root}/http`により、書込み可能なworkをcwdにしてもHTTP入力はroot所有snapshotです。
+snapshot後の`inputs`全fileのSHA256一覧、`namei -l`、専用userのread/execute可と非writeを確認します。
+manifest自身もroot所有0440とし、hash一覧の自己参照は含めません。
+snapshotのvarsで再度Packer validateを行い、既存source/private pathへの依存が残っていないか確認します。
+buildを開始する前にこの配置結果をルームへ提示します。
+
 ## 一時listen範囲
 
 QEMU plugin 1.1.8 source commit `ad7af6f6b764d5adf42cd3cd578c868b80f6bd87`を参照しました。
