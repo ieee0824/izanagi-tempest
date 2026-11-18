@@ -358,6 +358,7 @@ packer build -var-file=tempest.pkrvars.json debian.pkr.hcl
 
 Linux x86_64/KVM向けには`image/prepare.py --architecture x86_64`で固定Debian定義を導出できます。
 固定入力からの無人image生成とlock-downに加え、[通常M3の採取・権限境界](docs/LINUX_X86_IMAGE_SMOKE_002.md)と[専用fixtureの配送競合・回復](docs/LINUX_X86_DELIVERY_RACE_SMOKE_001.md)を固定Linux上で確認しました。各記録の限定範囲と監視終端欠測を保持し、Internet全般や本番MCPの検証へは一般化しません。
+[固定host CLIとmockのcompleted回復・fresh retest](docs/LINUX_X86_DELIVERY_RACE_COMPLETED_001.md)も確認しました。空のmock操作による配送試験であり、正式なモデル比較には含めません。
 固定ISO/ELF検査、loopback接続、serial診断と具体コマンドは[image/README.md](image/README.md)を参照してください。
 `restrict_network=true` のまま、M2操作、owner/doas分離、私有入力・応答、短時間PCAPを検証しています。
 一般のエージェント終了・回収フローは未実装です。

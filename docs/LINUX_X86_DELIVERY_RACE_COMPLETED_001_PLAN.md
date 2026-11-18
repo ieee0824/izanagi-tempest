@@ -1,5 +1,10 @@
 # Linux x86固定host CLI配送競合completed001案
 
+## 後続の実行結果
+
+room16827監査後、固定callerは終了コード0、独立collectorも終了コード0。[実測結果と限界](LINUX_X86_DELIVERY_RACE_COMPLETED_001.md)を参照する。
+以下は準備段階の記録であり、各「未実施」「未作成」はその時点を表す。大容量controlは引き続き未実施。
+
 ## 後続の準備結果
 
 room16824のsource/argv/容量監査後、prepare9846とUID check48780は各同handleで終了コード0。

@@ -223,7 +223,7 @@ python3 integration/image_smoke.py --izanagi /absolute/path/to/izanagi --image /
 認証済み応答を取得できることを検査する。要求の再投入は行わない。失敗応答は本文を転記せず
 種別・終了コード・stdout/stderr hashだけを記録する。これは配送障害の再現試験であり、
 本番controllerの再試行契約や期限・監査の検証を代替しない。
-固定Linux x86では[専用build/offline照合](../docs/LINUX_X86_DELIVERY_RACE_BUILD_001.md)と[単発M3競合再現](../docs/LINUX_X86_DELIVERY_RACE_SMOKE_001.md)まで確認した。以下のhost completed/大容量controlは別段階の未実施試験である。
+固定Linux x86では[専用build/offline照合](../docs/LINUX_X86_DELIVERY_RACE_BUILD_001.md)、[単発M3競合再現](../docs/LINUX_X86_DELIVERY_RACE_SMOKE_001.md)、[固定host CLIのcompleted回復とfresh retest](../docs/LINUX_X86_DELIVERY_RACE_COMPLETED_001.md)を確認した。大容量controlは別段階の未実施試験である。
 
 host controllerの回復と失敗上限は、同じfixtureで次を実行する。
 `--expect aborted` は修正前のhost binaryの基準確認用である。
