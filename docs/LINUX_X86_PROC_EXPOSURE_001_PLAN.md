@@ -48,3 +48,5 @@ HTTP sidecar、外部positive control、forced delivery race、全route/正式�
 room16681に従い、actor UID1000だけでhost/guestを区別せず、root所有/etc/tempest/image.jsonの固定Izanagi/LWS manifestを確認するguest guardを待つ。
 host上ではproc helperのmainや実/proc snapshotを呼ばず、synthetic fixtureだけで検査する。
 現在のprepare/caller/observerは未実行。guard sourceとclosureの監査後にsnapshot作成へ進む。
+
+PR56/c51ee52のguest guardを12cfcadで取り込み、helper実bytesを元PRへ照合した。prepareはroot作成前にhelper SHA256 e42426fabb4b7b590d385262b6b584c372f5afe02ad2c38645a74a8217d968b5 の完全一致を要求する。Linux全110Python＋bootstrap13成功。host実/proc採取はしていない。

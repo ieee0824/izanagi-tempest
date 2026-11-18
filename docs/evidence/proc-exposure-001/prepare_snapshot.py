@@ -11,6 +11,7 @@ def sha(p):
  return h.hexdigest()
 repo=Path('/home/ubuntu/izanagi-tempest')
 assert '--proc-evidence' in (repo/'integration/image_smoke.py').read_text(), 'wait for reviewed proc evidence implementation'
+assert sha(repo/'image/proc_evidence.py')=='e42426fabb4b7b590d385262b6b584c372f5afe02ad2c38645a74a8217d968b5', 'requires reviewed PR56 guest guard before root creation'
 for n in ['001','002','003']:
  for r in json.loads((repo/('docs/LINUX_X86_FULL_SNAPSHOT_'+n+'.json')).read_text()):assert sha(r['path'])==r['sha256']
  for p,r in json.loads((repo/('docs/LINUX_X86_FULL_BUILD_'+n+'_RESULT.json')).read_text())['files'].items():assert sha(p)==r['sha256']
