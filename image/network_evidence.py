@@ -66,6 +66,10 @@ class EndpointReceiver:
                     connection.settimeout(2)
                     data = b''
                     while b'\n' not in data and len(data) <= MAX_FRAME:
+                        remaining = self.deadline - time.monotonic()
+                        if self.stop.is_set() or remaining <= 0:
+                            raise TimeoutError('receiver stopped or expired')
+                        connection.settimeout(min(2, remaining))
                         part = connection.recv(MAX_FRAME + 1 - len(data))
                         if not part:
                             break
@@ -96,7 +100,12 @@ class EndpointReceiver:
         with socket.create_connection(('127.0.0.1', self.identity['port']), timeout=2) as connection:
             connection.sendall(data)
             received = b''
+            deadline = time.monotonic() + 3
             while len(received) < len(data):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('host control deadline')
+                connection.settimeout(min(2, remaining))
                 part = connection.recv(MAX_FRAME + 1)
                 if not part:
                     break
@@ -141,7 +150,7 @@ def wait_observer(path, identity, receiver, timeout=10):
         if not snapshot['thread_alive'] or snapshot['errors']:
             raise RuntimeError('host receiver unavailable before observer ack')
         try:
-            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         except FileNotFoundError:
             if observed_inode is not None:
                 raise ValueError('network observer ack disappeared during publication')

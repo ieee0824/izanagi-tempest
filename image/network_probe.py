@@ -39,7 +39,12 @@ def local_control(nonce):
                 with connection:
                     connection.settimeout(2)
                     data = b''
+                    deadline = time.monotonic() + 2
                     while len(data) < len(payload):
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError('local control frame deadline')
+                        connection.settimeout(remaining)
                         part = connection.recv(MAX_FRAME + 1 - len(data))
                         if not part:
                             break
@@ -56,7 +61,12 @@ def local_control(nonce):
         with socket.create_connection(listener.getsockname(), timeout=2) as client:
             client.sendall(payload)
             reply = b''
+            deadline = time.monotonic() + 2
             while len(reply) < len(payload):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('local control reply deadline')
+                client.settimeout(remaining)
                 part = client.recv(MAX_FRAME)
                 if not part:
                     break
