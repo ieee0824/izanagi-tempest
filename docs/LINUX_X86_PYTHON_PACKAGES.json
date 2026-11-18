@@ -1,0 +1,36 @@
+{
+  "installed_python3.12": "3.12.3-1ubuntu0.17",
+  "pip": "/usr/bin/python3 -I -m pip: No module named pip",
+  "simulation": {
+    "upgraded": 0,
+    "newly_installed": 3,
+    "removed": 0
+  },
+  "packages": [
+    {
+      "Package": "python3.12-venv",
+      "Version": "3.12.3-1ubuntu0.17",
+      "Filename": "pool/universe/p/python3.12/python3.12-venv_3.12.3-1ubuntu0.17_amd64.deb",
+      "SHA256": "b8d4bfea3df63945b6a202bd0773caf7727dde86d2df91df6e88a8ccf7c18b7e",
+      "Size": "5684",
+      "Depends": "python3.12 (= 3.12.3-1ubuntu0.17), python3-pip-whl (>= 22.2), python3-setuptools-whl"
+    },
+    {
+      "Package": "python3-pip-whl",
+      "Version": "24.0+dfsg-1ubuntu1.3",
+      "Filename": "pool/universe/p/python-pip/python3-pip-whl_24.0+dfsg-1ubuntu1.3_all.deb",
+      "SHA256": "4b7c50db8f261b208c1d9cde8db148c1f682cc516957b986ada5088cfcee1359",
+      "Size": "1706638",
+      "Depends": "ca-certificates"
+    },
+    {
+      "Package": "python3-setuptools-whl",
+      "Version": "68.1.2-2ubuntu1.2",
+      "Filename": "pool/universe/s/setuptools/python3-setuptools-whl_68.1.2-2ubuntu1.2_all.deb",
+      "SHA256": "edfa94cc1f6a33af99cfaf6ebfe35dbcd9c4bdd8555b90c0d8e78479faf5c8f0",
+      "Size": "716284",
+      "Depends": null
+    }
+  ],
+  "status": "candidate audit only; no download or install"
+}

@@ -184,3 +184,9 @@ env -i PATH=/usr/bin:/bin HOME=/tmp/tempest-x86-full-python-001/home /usr/bin/py
 ```
 
 既存 Python 3.12.3 は ensurepip を提供しておらず exit 1。partial venv を保持し、再試行・追加 APT・代替 bootstrap・source compile は行っていない。wheel 取得と install は未実施。OS が案内した候補は python3.12-venv だが、依存・version/hash・変更範囲を別途監査するまでは導入しない。global Python と既存資格情報は変更していない。
+
+### Python 依存の read-only APT 調査
+
+room #16477 の依頼で installed/candidate と simulation を確認。既存 python3.12 は `3.12.3-1ubuntu0.17`、候補も同じ。`/usr/bin/python3 -I -m pip --version` は No module named pip。venv/pip-whl/setuptools-whl は未導入。
+
+`apt-get --simulate --no-install-recommends install python3.12-venv` は新規3、更新0、削除0。候補の version/依存/filename/size/SHA は [APT index 候補記録](LINUX_X86_PYTHON_PACKAGES.json)。これは既存 index の記載であり、deb bytes の取得・実 SHA 照合・install は未実施。既存 Python binary/lib 変更を要求する simulation ではなかった。実 install と partial venv の再生成はまだ実行していない。
