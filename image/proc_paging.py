@@ -42,9 +42,15 @@ def validate_pairs(pairs, limit):
 
 def enumerate_processes(proc=Path('/proc'), stage='test'):
     started = time.monotonic_ns()
-    ids = sorted(int(path.name) for path in proc.iterdir() if path.name.isdecimal())
-    if not ids or len(ids) > MAX_ENUMERATED:
-        raise RuntimeError('proc enumeration exceeds finite PID budget')
+    ids = []
+    for path in proc.iterdir():
+        if path.name.isdecimal():
+            ids.append(int(path.name))
+            if len(ids) > MAX_ENUMERATED:
+                raise RuntimeError('proc enumeration exceeds finite PID budget')
+    ids.sort()
+    if not ids:
+        raise RuntimeError('proc enumeration is empty')
     pairs, unbound = [], {}
     for pid in ids:
         identity = core.identity(proc / str(pid))
