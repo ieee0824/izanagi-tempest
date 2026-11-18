@@ -1,0 +1,36 @@
+# Linux x86 runtime presence001 計画
+
+## 範囲と状態
+
+草案、snapshot/VM未実施。#14のfinding/retest有無4通りを正式runtimeのmockで確認する。
+root /var/lib/tempest-izanagi-runtime-presence-001、unit tempest-izanagi-runtime-presence-001.service。
+host CLI4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f、Izanagi CLI/image/manifestは正常001/seed-loss001と同じ固定実体をコピーする。
+production Rust/guest/image/global設定は変更せず、実model/credential/AWSは使用しない。
+
+## 固定実行と判定
+
+[runner](evidence/runtime-presence-001/run_presence.py) はPR46で補強済みruntime_presence.mainを固定引数で呼び出す。
+順序は11 primary/retest→10 primary→01 primary/retest→00 primary、予定6VMのみ逐次実行する。
+finding有のprimary probe開始/完了は同ID1回、無は0回、失敗probeなし。configured/performed/省略理由を照合する。
+未設定retest directoryを生成せず、設定時はchecks_passed、findingはfound/not_configured、retestはpassed/not_performedを要求する。
+6つのVM binding/nonce/session/dummy credential非再利用、固定image、各stage cleanupと一時material不在を追加検査する。
+
+既存tempest report --aggregateを実行しportfolio4runs、finding/retestそれぞれconfigured_denominator2/not_configured2、cross_condition_rates=not_computed、formal_eligible0を要求する。
+条件を跨いだ率や正式モデル比較へ昇格しない。原本run/集計/API/PCAP/logはprivate、公開は選別flag/count/hash。
+
+## 固定入力と独立観測
+
+新root所有read-only input closure、hash固定wheel由来の新prefix venv、UID9990700 work/home/tmp/evidenceを作成し、runsはrunnerが新規作成する。
+runner/presence script/mock/scenario/bridge/codec/observer/bootstrap/exit recorder、固定CLI/image/manifestを固定する。
+observerはruntime_normal_observe.py --trial presence。6stage専用unit/rootとPID/starttime/cwd/launch binding、同時1VM、snapshot/read-only share/restrict/loopbackを検査する。
+
+env-i/Python-I-B、User999/Group988/kvm993、KillModecontrol-group/RuntimeMax1800/Stop10/Restartno/NNP/UMask0077/Delegate=noを維持する。
+旧normal/seed-loss/reservation/full/smoke入力・証拠を保持し、旧seed-loss1537項目treeと予約拒否証拠の不変も確認する。
+全input/外部runtime/owner/mode/UID read可/write不可境界、venv/AES/xattr、旧証拠、未使用unit/出力/UID/KVM/容量の最終監査後に単発開始する。
+観測違反/失敗/期限超過は当該unitだけ回収し部分証拠保持、暗黙retryなし。
+GCはobserver terminal unknownとして保持し、同Invocation exit recorder/trusted journal/最終cgroup・UID・port回収を別に確認する。
+
+## 残るgate
+
+HTTP sidecar、外部到達拒否positive control、forced delivery race、全route/正式モデル比較は別gateのまま。
+旧seed-loss001の失敗原本と予約拒否の独立追加証拠は変更しない。
