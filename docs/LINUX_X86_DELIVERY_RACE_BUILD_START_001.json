@@ -1,0 +1,44 @@
+{
+  "unit": "tempest-izanagi-delivery-race-build-001.service",
+  "invocation_id": "f5ff6db2e2714f8fa265e8e95d3399b7",
+  "boot_id": "30389abc903c40ae89a5c6268ec1c432",
+  "snapshot_input_rows_sha256": "34e665e1af93a02a1f3a9e2e049cb29d0d947f49a7e4006e6c2968d04c38dc87",
+  "scope": "build only; fixture runtime not started",
+  "preflight": {
+    "session": 34342,
+    "exit": 0,
+    "free_bytes": 22462996480,
+    "dedicated_uid_full_validate_exit": 0,
+    "uid999_empty": true,
+    "unit_unused": true,
+    "ports_bindable": [
+      18082,
+      22222,
+      5902
+    ],
+    "new_outputs_absent": true,
+    "old_inputs_and_evidence_unchanged": true
+  },
+  "observer": {
+    "session": 87131,
+    "path": "/tmp/tempest-delivery-race-build-observation-001.jsonl",
+    "started_before_caller": true
+  },
+  "caller": {
+    "session": 34339,
+    "path": "/tmp/tempest-delivery-race-build-001.log",
+    "attempts": 1
+  },
+  "first_live_observation": {
+    "samples": 38,
+    "main_pid": 310024,
+    "qemu_pid": 310225,
+    "qemu_starttime_ticks": 37156503,
+    "qemu_cwd": "/var/lib/tempest-izanagi-delivery-race-build-001/work",
+    "observer_errors": 0
+  },
+  "result": "running when recorded; this is not terminal evidence",
+  "room_start_instruction": 16800,
+  "room_handles_report": 16804,
+  "previous_preflight_terminal": "unavailable after context loss; not used as success evidence; read-only checks repeated"
+}
