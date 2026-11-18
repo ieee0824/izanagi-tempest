@@ -30,6 +30,7 @@ for row in json.loads((previous_proc/'snapshot.json').read_text())['files']:
  if row['type']=='file':assert sha(row['path'])==row['sha256']
  else:assert os.readlink(row['path'])==row['target']
 for path,metadata in json.loads((repo/'docs/LINUX_X86_PROC_EXPOSURE_001_RESULT.json').read_text())['files'].items():assert sha(path)==metadata['sha256']
+proc_cleanup=json.loads((repo/'docs/LINUX_X86_PROC_EXPOSURE_001_KEY_CLEANUP.json').read_text());assert proc_cleanup['absence_verified'] and not os.path.lexists(proc_cleanup['path'])
 root.mkdir(mode=0o750);os.chown(root,0,gid);root.chmod(0o750)
 inputs=root/'inputs';inputs.mkdir(mode=0o750);os.chown(inputs,0,gid);inputs.chmod(0o750)
 work=root/'work';work.mkdir(mode=0o700);os.chown(work,uid,gid)

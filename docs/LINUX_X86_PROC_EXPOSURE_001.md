@@ -31,3 +31,9 @@ collectorの選別RESULT生成は確認したが、元collector呼出しの終�
 room16691でcoderが有限ページ数・総bytes上限を持つPID集合のページ分割方式を具体化中。
 次試験は別root/profile/入力の計画として監査し、001の固定入力や結果を上書きしない。
 FD内容・短命native process・全期間/全route・HTTP sidecar・外部positive control・forced delivery race・正式モデル比較は未証明のまま。
+
+## 監査後の鍵回収追補
+
+room16701のsource監査後、同Invocation failed/残留cgroup・UID999なし/port34227閉鎖を再確認した。
+親pathの実体directoryと当該izanagi-hmacの通常単link/UID999:GID988/0600を照合して当該fileだけ削除し、非存在を確認した。
+値/単体hashは読んでいない。[別追補metadata](LINUX_X86_PROC_EXPOSURE_001_KEY_CLEANUP.json)を保存し、元RESULTの歴史的状態・固定入力・raw証拠を保持した。
