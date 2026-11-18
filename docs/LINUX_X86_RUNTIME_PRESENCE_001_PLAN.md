@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-未実行v1 snapshotと専用UID検査は完了。集計計画の接続不足（room16644）のため実行不可、VM未実施。#14のfinding/retest有無4通りを正式runtimeのmockで確認する。
+未実行v1を保持し、事前4slot計画を接続したv2 snapshotと専用UID検査は完了。最終監査待ち、VM未実施。#14のfinding/retest有無4通りを正式runtimeのmockで確認する。
 root /var/lib/tempest-izanagi-runtime-presence-001、unit tempest-izanagi-runtime-presence-001.service。
 host CLI4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f、Izanagi CLI/image/manifestは正常001/seed-loss001と同じ固定実体をコピーする。
 production Rust/guest/image/global設定は変更せず、実model/credential/AWSは使用しない。
@@ -60,3 +60,22 @@ room16644でaggregate::generate_innerがruns/aggregate-plan.jsonと各resultのv
 既存1307inputとv1 metadataは未実行原本として保持する。runnerはinterface提示まで変更しない。
 修正版は実行前に4slot計画を固定し、aggregate selection committed4/unavailable0/unplanned0も要求する。portfolio件数だけでは欠測を合格にしない。
 posthoc計画作成は行わず、新closure/計画/最終監査が揃うまでobserver/caller/VMを開始しない。
+
+## v2: 事前計画接続を含む最終準備
+
+PR51/79700e7のruntime_presence --comparison-plan接続と、e377ae1の逐次hash計画helperを取り込んだ。
+旧inputs1307fileとsnapshot.jsonは不変更。inputs-v2へ更新script/mock/scenario/bridge/codec、runner/caller、create_plan、comparison-planだけを追加した。
+[全1316入力](LINUX_X86_RUNTIME_PRESENCE_SNAPSHOT_001_V2.json)、[UID検査](LINUX_X86_RUNTIME_PRESENCE_PREPARATION_001_V2.json)、[事前4slot計画](LINUX_X86_RUNTIME_PRESENCE_COMPARISON_PLAN_001.json) を保存。
+source9ae56ac、input tree SHA f861927a9ceb4549a6c4d36e1c5e338e4f652b3fadb283013e066c3555b92671。
+plan SHA f3b85a85e907d5481687c11dbc6a1ced630915d35b4e41a235d6f1cc77ffcf67、校正normal result SHA9176292317fd5ce8184184c7824104248f29463ff0043feeb0b94df42294cc71。
+
+prepare_v2 caller8777/UID検査23476は同handle終端exit0、Linux全92tests成功。
+全v1/v2 input readable/nonwritable/hash/mode/owner、追加directory0750、旧venv prefix/version/AES/help/xattr/private work、新runs/exit/log未作成を確認した。
+unit未使用/UID999残留なし、free37006409728 bytes。計画はrunsが未作成の時点でroot:988/0440/O_EXCL固定し、posthoc更新しない。
+runnerは集計selection rule/planned/discovered/committed4・unavailable0/unplanned0の完全一致とportfolio分母を要求する。
+
+先行observerは前記の固定inputs/repo/integration/runtime_normal_observe.py --trial presenceを使用。
+v2 callerは `python3 -I -B docs/evidence/runtime-presence-001/run_once_v2.py`。
+[service v2](../integration/tempest-izanagi-runtime-presence-001-v2.service) とCOMMAND/ExecStart一致、verify成功。
+asset CLI/image/pythonとexit recorderは旧inputsを参照し、実行コードだけinputs-v2/run_presence.pyへ切り替える。v1 runner/callerは実行しない。
+最終v2監査後の単発開始まで、observer/caller/VMを起動しない。

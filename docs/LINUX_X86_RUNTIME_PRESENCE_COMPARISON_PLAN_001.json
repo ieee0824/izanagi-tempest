@@ -1,0 +1,177 @@
+{
+  "schema_version": 1,
+  "plan_id": "linux-presence-001",
+  "created_ns": 1795016237930939060,
+  "stopping_rule": {
+    "kind": "fixed_slots",
+    "slots": 4,
+    "retry": "new_slot_only",
+    "minimum_interval_seconds": 0
+  },
+  "slots": [
+    {
+      "slot_id": "finding-1-retest-1",
+      "run_id": "finding-1-retest-1",
+      "finding_configured": true,
+      "retest_configured": true,
+      "comparison_conditions": {
+        "actor": "worker",
+        "adapter": {
+          "adapter": "mock",
+          "model": "deterministic_script",
+          "tempest_version": "0.1.0"
+        },
+        "environment": {
+          "agent_input_sha256": "a662467dfb32d10b86e34de8abd44cfa2bcf01e0a1ce5816560bb842e4d0d71d",
+          "binary_mode": "production",
+          "budget": {
+            "max_calls": 50,
+            "timeout_ms": 900000
+          },
+          "codec_sha256": "79298daa3afef1f99b14818dc97c6970dc72ded14bc378e90d8e71d04e2ab3ea",
+          "companion_sha256": "a57e731cda947b570ee91c8902652c9553f404080dcf3dd1407692be8fb16c45",
+          "formal_test_only": false,
+          "host_arch": "x86_64",
+          "host_os": "linux",
+          "image_sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e",
+          "izanagi_sha256": "088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8",
+          "max_export_file_bytes": 67108864,
+          "native_test_upstream": null,
+          "restrict_network": true,
+          "share_read_only": true,
+          "snapshot": true,
+          "tempest_sha256": "4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f"
+        },
+        "scenario": {
+          "id": "s3-overread-001",
+          "sha256": "7c2cc8dacc784c9f2dc079f7ac61f7d2983617fea1c8757b75f059fa30d8fb69"
+        },
+        "schema_version": 1
+      },
+      "evaluator_sha256": "4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f"
+    },
+    {
+      "slot_id": "finding-1-retest-0",
+      "run_id": "finding-1-retest-0",
+      "finding_configured": true,
+      "retest_configured": false,
+      "comparison_conditions": {
+        "actor": "worker",
+        "adapter": {
+          "adapter": "mock",
+          "model": "deterministic_script",
+          "tempest_version": "0.1.0"
+        },
+        "environment": {
+          "agent_input_sha256": "a662467dfb32d10b86e34de8abd44cfa2bcf01e0a1ce5816560bb842e4d0d71d",
+          "binary_mode": "production",
+          "budget": {
+            "max_calls": 50,
+            "timeout_ms": 900000
+          },
+          "codec_sha256": "79298daa3afef1f99b14818dc97c6970dc72ded14bc378e90d8e71d04e2ab3ea",
+          "companion_sha256": "a57e731cda947b570ee91c8902652c9553f404080dcf3dd1407692be8fb16c45",
+          "formal_test_only": false,
+          "host_arch": "x86_64",
+          "host_os": "linux",
+          "image_sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e",
+          "izanagi_sha256": "088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8",
+          "max_export_file_bytes": 67108864,
+          "native_test_upstream": null,
+          "restrict_network": true,
+          "share_read_only": true,
+          "snapshot": true,
+          "tempest_sha256": "4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f"
+        },
+        "scenario": {
+          "id": "s3-overread-001",
+          "sha256": "979b817e053d0f345d27a6d6e3a22b51b5a696abc5874cb2b2ffbfef61c82a94"
+        },
+        "schema_version": 1
+      },
+      "evaluator_sha256": "4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f"
+    },
+    {
+      "slot_id": "finding-0-retest-1",
+      "run_id": "finding-0-retest-1",
+      "finding_configured": false,
+      "retest_configured": true,
+      "comparison_conditions": {
+        "actor": "worker",
+        "adapter": {
+          "adapter": "mock",
+          "model": "deterministic_script",
+          "tempest_version": "0.1.0"
+        },
+        "environment": {
+          "agent_input_sha256": "a662467dfb32d10b86e34de8abd44cfa2bcf01e0a1ce5816560bb842e4d0d71d",
+          "binary_mode": "production",
+          "budget": {
+            "max_calls": 50,
+            "timeout_ms": 900000
+          },
+          "codec_sha256": "79298daa3afef1f99b14818dc97c6970dc72ded14bc378e90d8e71d04e2ab3ea",
+          "companion_sha256": "a57e731cda947b570ee91c8902652c9553f404080dcf3dd1407692be8fb16c45",
+          "formal_test_only": false,
+          "host_arch": "x86_64",
+          "host_os": "linux",
+          "image_sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e",
+          "izanagi_sha256": "088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8",
+          "max_export_file_bytes": 67108864,
+          "native_test_upstream": null,
+          "restrict_network": true,
+          "share_read_only": true,
+          "snapshot": true,
+          "tempest_sha256": "4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f"
+        },
+        "scenario": {
+          "id": "s3-overread-001",
+          "sha256": "d17eedb87c5fd68e213e96d2770978b839955fa000d4a027ab8222d6c69f2c77"
+        },
+        "schema_version": 1
+      },
+      "evaluator_sha256": "4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f"
+    },
+    {
+      "slot_id": "finding-0-retest-0",
+      "run_id": "finding-0-retest-0",
+      "finding_configured": false,
+      "retest_configured": false,
+      "comparison_conditions": {
+        "actor": "worker",
+        "adapter": {
+          "adapter": "mock",
+          "model": "deterministic_script",
+          "tempest_version": "0.1.0"
+        },
+        "environment": {
+          "agent_input_sha256": "a662467dfb32d10b86e34de8abd44cfa2bcf01e0a1ce5816560bb842e4d0d71d",
+          "binary_mode": "production",
+          "budget": {
+            "max_calls": 50,
+            "timeout_ms": 900000
+          },
+          "codec_sha256": "79298daa3afef1f99b14818dc97c6970dc72ded14bc378e90d8e71d04e2ab3ea",
+          "companion_sha256": "a57e731cda947b570ee91c8902652c9553f404080dcf3dd1407692be8fb16c45",
+          "formal_test_only": false,
+          "host_arch": "x86_64",
+          "host_os": "linux",
+          "image_sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e",
+          "izanagi_sha256": "088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8",
+          "max_export_file_bytes": 67108864,
+          "native_test_upstream": null,
+          "restrict_network": true,
+          "share_read_only": true,
+          "snapshot": true,
+          "tempest_sha256": "4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f"
+        },
+        "scenario": {
+          "id": "s3-overread-001",
+          "sha256": "ce2c89fb4c06a044cf9d9ee44307e6edcbfe02d26781c42d3c99c6c64902a071"
+        },
+        "schema_version": 1
+      },
+      "evaluator_sha256": "4354c40b7fba68ec03e4cbb8cd1407ce3ba7566816801b69dec09d85a984dc6f"
+    }
+  ]
+}
