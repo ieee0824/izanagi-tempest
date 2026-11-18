@@ -119,6 +119,23 @@ class EvidenceTests(unittest.TestCase):
             network.assert_not_called()
 
 
+    def test_teardown_health_keeps_identity_and_interval_boundaries(self):
+        records = copy.deepcopy(self.records)
+        event = copy.deepcopy(records[-1]['payload']['Event'])
+        event.update(source_seq=7, event_id=f'{SESSION}:{SOURCE}:7',
+                     observed_monotonic_ns=self.probe['ended_monotonic_ns'] + 1,
+                     quality={'issues': ['source_unavailable']}, payload={'CollectorHealth': {'healthy': False}})
+        records.append({'storage_gap': False, 'payload': {'Event': event}})
+        self.assertTrue(E.validate_records(records, self.probe, NONCE, SESSION)['passed'])
+        event['session_id'] = 'other'
+        with self.assertRaises(ValueError):
+            E.validate_records(records, self.probe, NONCE, SESSION)
+        event['session_id'] = SESSION
+        event['observed_monotonic_ns'] = self.probe['ended_monotonic_ns'] - 1
+        with self.assertRaises(ValueError):
+            E.validate_records(records, self.probe, NONCE, SESSION)
+
+
 class LoopbackFixtureTests(unittest.TestCase):
     def test_actual_receiver_and_client_with_synthetic_loopback_proxy(self):
         # This proxy tests the fixture's real sockets only, not the Izanagi sidecar.
@@ -162,6 +179,17 @@ class LoopbackFixtureTests(unittest.TestCase):
             with socket.socket() as sock:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind(('127.0.0.1', port))
+
+
+    def test_receiver_socket_closed_if_thread_start_fails(self):
+        with socket.socket() as reservation:
+            reservation.bind(('127.0.0.1', 0))
+            port = reservation.getsockname()[1]
+        with patch.object(P.threading.Thread, 'start', side_effect=RuntimeError('thread exhaustion')):
+            with self.assertRaisesRegex(RuntimeError, 'thread exhaustion'):
+                P.exercise(NONCE, 1, port, 1)
+        with socket.socket() as check:
+            check.bind(('127.0.0.1', port))
 
 
 class RunnerTests(unittest.TestCase):
