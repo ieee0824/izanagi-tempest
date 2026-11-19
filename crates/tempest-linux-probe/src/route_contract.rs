@@ -301,6 +301,44 @@ impl FixedMcpArtifact {
     }
 }
 
+/// Start the fixed caller with inherited pipes. The ready byte tells the
+/// supervisor that the child has closed its copies of the other endpoints.
+fn spawn_fixed_caller(
+    pipes: [OwnedFd; 4],
+    expected: [&Value; 2],
+    deadline: Instant,
+) -> Result<libc::pid_t, super::os::Fault> {
+    use super::{capsule, contract::Role, identity::Process, os, seccomp};
+
+    let parent = Process::bind(std::process::id())?;
+    let pid = os::clone_isolated()?;
+    if pid != 0 {
+        return Ok(pid);
+    }
+    super::lease::clear();
+    let [gate, requests, responses, ready] = pipes;
+    let keep = [
+        gate.as_raw_fd(),
+        requests.as_raw_fd(),
+        responses.as_raw_fd(),
+        ready.as_raw_fd(),
+        parent.fd(),
+    ];
+    if os::close_except(&keep).is_err()
+        || capsule::drop_privileges(Role::B.uid()).is_err()
+        || !parent.alive().unwrap_or(false)
+        || seccomp::install(Role::B, false).is_err()
+    {
+        unsafe { libc::_exit(125) };
+    }
+    drop(parent);
+    use std::io::Write;
+    if std::fs::File::from(ready).write_all(b"Y").is_err() {
+        unsafe { libc::_exit(125) };
+    }
+    run_fixed_caller(gate, requests, responses, expected, deadline)
+}
+
 /// Run the local fixture caller after the supervisor's thaw confirmation.
 fn run_fixed_caller(
     gate: OwnedFd,
@@ -309,16 +347,6 @@ fn run_fixed_caller(
     expected: [&Value; 2],
     deadline: Instant,
 ) -> ! {
-    use super::os;
-
-    let keep = [
-        gate.as_raw_fd(),
-        requests.as_raw_fd(),
-        responses.as_raw_fd(),
-    ];
-    if os::close_except(&keep).is_err() {
-        unsafe { libc::_exit(125) };
-    }
     let result = exchange_after_release(gate, requests, responses, expected, deadline);
     unsafe {
         libc::_exit(match result {
