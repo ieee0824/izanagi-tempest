@@ -607,6 +607,36 @@ mod tests {
     #[test]
     #[ignore = "fixed Linux host with root cgroup access; run in an isolated test process"]
     fn fixed_dummy_frozen_holder_and_progress() {
+        fixed_dummy(DummyCase::Positive);
+    }
+
+    #[test]
+    #[ignore = "fixed Linux host with root cgroup access"]
+    fn fixed_dummy_rejects_extra_pipe_fd() {
+        fixed_dummy(DummyCase::ExtraFd);
+    }
+
+    #[test]
+    #[ignore = "fixed Linux host with root cgroup access"]
+    fn fixed_dummy_rejects_wrong_role() {
+        fixed_dummy(DummyCase::WrongRole);
+    }
+
+    #[test]
+    #[ignore = "fixed Linux host with root cgroup access"]
+    fn fixed_dummy_rejects_exited_worker() {
+        fixed_dummy(DummyCase::ExitedWorker);
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum DummyCase {
+        Positive,
+        ExtraFd,
+        WrongRole,
+        ExitedWorker,
+    }
+
+    fn fixed_dummy(case: DummyCase) {
         use super::*;
         use crate::{
             guard::Guard,
@@ -646,6 +676,9 @@ mod tests {
             unsafe {
                 libc::close(guard.fd());
                 libc::close(descriptors[0]);
+                if case == DummyCase::ExtraFd && libc::dup(descriptors[1]) < 0 {
+                    libc::_exit(1);
+                }
                 let interval = libc::timespec {
                     tv_sec: 0,
                     tv_nsec: 1_000_000,
@@ -660,7 +693,12 @@ mod tests {
         let sample = || unsafe { (*counter).load(Ordering::Relaxed) };
         let result = (|| -> Result<(), Fault> {
             let worker = Process::bind(child as u32)?;
-            group.attach(Role::B, worker.pid)?;
+            let placement = if case == DummyCase::WrongRole {
+                Role::A
+            } else {
+                Role::B
+            };
+            group.attach(placement, worker.pid)?;
             let initial = sample();
             let progress = |baseline| {
                 let deadline = Instant::now() + Duration::from_secs(1);
@@ -674,6 +712,17 @@ mod tests {
             };
             progress(initial)?;
             eprintln!("dummy phase=before initial={initial} observed={}", sample());
+            if case == DummyCase::ExitedWorker {
+                worker.kill()?;
+                let until = Instant::now() + Duration::from_secs(1);
+                while worker.alive()? {
+                    if Instant::now() >= until {
+                        return Err(Fault::Identity);
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                }
+                eprintln!("dummy worker_exit_observed=1");
+            }
             let metadata = read_end.metadata()?;
             let deadline = Instant::now() + Duration::from_secs(2);
             let expected = vec![TaskPipeFd {
@@ -683,7 +732,8 @@ mod tests {
                 writes: true,
             }];
             let mut frozen = 0;
-            group.inspect_while_frozen(
+            let mut observed_holders = None;
+            let inspection = group.inspect_while_frozen(
                 &guard,
                 deadline,
                 Role::B,
@@ -710,22 +760,41 @@ mod tests {
                     if observed != frozen {
                         return Err(Fault::Identity);
                     }
+                    observed_holders = Some(actual.len());
                     Ok(actual)
                 },
                 &expected,
-            )?;
+            );
+            if case != DummyCase::Positive {
+                let expected_count = if case == DummyCase::ExtraFd {
+                    Some(2)
+                } else {
+                    None
+                };
+                if !matches!(inspection, Err(Fault::Identity)) || observed_holders != expected_count
+                {
+                    return Err(Fault::Identity);
+                }
+                eprintln!("dummy rejected holders={observed_holders:?}");
+                return Ok(());
+            }
+            inspection?;
             progress(frozen)?;
             eprintln!("dummy phase=thawed frozen={frozen} observed={}", sample());
             Ok(())
         })();
-        unsafe {
+        let reaped = unsafe {
             libc::kill(child, libc::SIGKILL);
-            while libc::waitpid(child, std::ptr::null_mut(), 0) < 0
-                && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
-            {}
+            let mut reaped = libc::waitpid(child, std::ptr::null_mut(), 0);
+            while reaped < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                reaped = libc::waitpid(child, std::ptr::null_mut(), 0);
+            }
             libc::munmap(shared, bytes);
-        }
+            reaped
+        };
         group.cleanup().unwrap();
+        assert_eq!(reaped, child);
+        eprintln!("dummy worker_reaped=1 group_removed=1");
         result.unwrap();
     }
 
