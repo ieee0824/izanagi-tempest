@@ -1,11 +1,25 @@
 """Validate fixed guest acknowledgements and private export on the host."""
 import json
+from pathlib import Path
 import re
+import stat
 import uuid
 
 PHASES = ('control_before', 'allow_same_run', 'deny_other', 'control_after')
 FIELDS = {'schema_version', 'run_nonce', 'boot_id'}
 COUNT_FIELDS = ('received', 'matched')
+RECEIVER_PATH = Path('readonly-check/fixed-vm-receive.py')
+RECEIVER_SOURCE = Path(__file__).resolve().parents[1] / 'image/fixed_vm_receive.py'
+
+
+def stage_receiver(workspace, mapped_metadata):
+    """Publish the fixed script into the harness's mapped read-only share."""
+    destination = workspace / RECEIVER_PATH
+    with destination.open('xb') as stream:
+        stream.write(RECEIVER_SOURCE.read_bytes())
+    mapped_metadata(destination, stat.S_IFREG | 0o444)
+    destination.chmod(0o444)
+
 
 
 def unique_object(pairs):
@@ -82,7 +96,7 @@ def observe_guest(execute, *, run_nonce, boot_id, phase, operation):
         raise ValueError('invalid expected guest operation')
     if (operation == 'report' and phase != PHASES[-1]) or (operation == 'request' and phase == 'deny_other'):
         raise ValueError('invalid operation for guest phase')
-    argv = ['/usr/bin/python3', '-I', '-B', '/workspace/readonly-check/fixed-vm-receive.py',
+    argv = ['/usr/bin/python3', '-I', '-B', str(Path('/workspace') / RECEIVER_PATH),
             operation, run_nonce, phase]
     if operation == 'request':
         argv.append(f'tempest-dummy-v1:{run_nonce}:{phase}')
