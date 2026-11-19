@@ -866,3 +866,87 @@ int connect4_worker_wait(void)
         return -1;
     return await_connect4_release(3);
 }
+
+static int try_connect4_loopback(uint16_t port)
+{
+    const struct sockaddr_in address = {
+        .sin_family = AF_INET,
+        .sin_port = htons(port),
+        .sin_addr = { .s_addr = htonl(INADDR_LOOPBACK) },
+    };
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    if (fd < 0)
+        return -1;
+    int result = connect(fd, (const struct sockaddr *)&address, sizeof(address));
+    int error = result < 0 ? errno : 0;
+    close(fd);
+    return error;
+}
+
+/* Call in the dedicated child. The manager observes the actual exit status
+ * and separately counts accepted connections on both listeners. */
+_Noreturn void run_connect4_worker(uint16_t allowed, uint16_t denied)
+{
+    if (allowed == 0 || denied == 0 || allowed == denied ||
+        connect4_worker_wait() < 0)
+        _exit(70);
+    if (try_connect4_loopback(allowed) != 0)
+        _exit(71);
+    int refused = try_connect4_loopback(denied);
+    if (refused == EPERM)
+        _exit(0);
+    if (refused == 0)
+        _exit(72);
+    if (refused > 0 && refused < 128)
+        _exit(128 + refused);
+    _exit(73);
+}
+
+int open_connect4_listener(uint16_t *port)
+{
+    if (port == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    *port = 0;
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                    IPPROTO_TCP);
+    if (fd < 0)
+        return -1;
+    struct sockaddr_in address = {
+        .sin_family = AF_INET,
+        .sin_addr = { .s_addr = htonl(INADDR_LOOPBACK) },
+    };
+    socklen_t length = sizeof(address);
+    if (bind(fd, (struct sockaddr *)&address, length) == 0 &&
+        listen(fd, 8) == 0 &&
+        getsockname(fd, (struct sockaddr *)&address, &length) == 0) {
+        *port = ntohs(address.sin_port);
+        return fd;
+    }
+    int error = errno;
+    close(fd);
+    errno = error;
+    return -1;
+}
+
+/* Call once the producer for this phase has completed. Each listener is
+ * nonblocking, and unexpected traffic beyond the backlog is a test failure. */
+int count_connect4_accepts(int listener)
+{
+    int flags = fcntl(listener, F_GETFL);
+    if (flags < 0)
+        return -1;
+    if (!(flags & O_NONBLOCK)) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (int count = 0; count < 16; ++count) {
+        int accepted = accept4(listener, NULL, NULL, SOCK_CLOEXEC);
+        if (accepted < 0)
+            return errno == EAGAIN || errno == EWOULDBLOCK ? count : -1;
+        close(accepted);
+    }
+    errno = EOVERFLOW;
+    return -1;
+}
