@@ -164,6 +164,8 @@ impl ParentPipe {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Holder {
     pub process: Process,
+    pub tid: u32,
+    pub task_start_ticks: u64,
     pub fd: u32,
     pub writes: bool,
 }
@@ -181,7 +183,11 @@ pub(super) fn verify_holders(
         || a != b
         || a.is_empty()
         || a.iter().any(|h| {
-            h.process.pid == 0 || h.process.start_ticks == 0 || h.process.cgroup_inode == 0
+            h.process.pid == 0
+                || h.process.start_ticks == 0
+                || h.process.cgroup_inode == 0
+                || h.tid == 0
+                || h.task_start_ticks == 0
         })
     {
         return Err(Rejection::Holders);
@@ -547,6 +553,8 @@ mod tests {
     fn duplicate_fd_unknown_scan_and_reused_pid_fail_holder_contract() {
         let expected = [Holder {
             process: process(),
+            tid: process().pid,
+            task_start_ticks: process().start_ticks,
             fd: 3,
             writes: true,
         }];

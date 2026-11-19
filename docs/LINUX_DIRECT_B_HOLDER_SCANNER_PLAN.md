@@ -24,6 +24,14 @@ room16927/16931へのレビュー用。現行`route_contract::verify_holders`は
 
 ## child OS backendの読取専用調査
 
+## 実装途中の観測module
+
+room16933を受け、`holder_scan.rs`へ上限付きread/ID列挙、stat開始tick/flags parser、全taskごとの対象pipe FD観測を追加した。`Holder`にTID/task開始tickを追加し、共有tableもtaskごとに区別する。先の単thread限定案は最終方針として採用しない。KCMPによる未観測のtable共有正規化はしない。
+
+これは指定PIDの読取専用観測で、host全PID・cgroup所属・pidfd・実barrier・別FD table負例は未実装。観測結果は`verify_holders`へ未結線で、接続拒否を維持する。自己走査はread_dir自身の一時FDによりUnknownとなるため、実pipe/dup/複数threadのテスト対象は独立subprocessへ置いた。新3testとclippy/fmt/diff確認が成功した。別table負例と全体走査を続ける。
+
+## host metadataの解釈
+
 固定hostの観測値は[metadata](LINUX_DIRECT_B_HOST_METADATA_001.json)に保存した。kernel 6.8.0-147-generic、cgroup2fs、CONFIG_CGROUP_BPF/BPF_SYSCALL/CGROUP_FREEZERはy、BTFあり。unprivileged_bpf_disabledは2。bpftoolは存在し、clang/llcはPATHにない。設定値は実際のconnect4 attach成功を証明しない。`bpftool feature probe`もprogramをloadし得るため実行していない。
 
 固定Izanagi binaryのldd上の依存はloader/libgcc_s/libm/libcで、現capsuleの4 library roleと対応する。ただしlddは動的設定探索やdlopenの完全閉包を証明せず、mount capsule・固定inode/hash・起動時の実検査が残る。Izanagiはhost loopback TCPへ接続するためempty netnsだけでは正対照を満たさない。専用child cgroupで固定sessionportのみ許すBPFと別seccomp/mount/FD制約が候補で、policy load/attach、新VM、auth/APIは未実行。production backend、real catalog/transport、lifecycleと連続run受入は引き続き未達である。

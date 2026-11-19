@@ -27,6 +27,9 @@ mod capture;
 mod cgroup;
 mod contract;
 mod guard;
+// Read-only observations, deliberately not an authorization or barrier API.
+#[allow(dead_code)]
+mod holder_scan;
 mod identity;
 mod lease;
 mod os;
