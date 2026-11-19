@@ -534,6 +534,12 @@ static int check_connect4_pidfd_pid(int pidfd, pid_t child)
     return 0;
 }
 
+static int empty_supplementary_groups(const char *value)
+{
+    value += strspn(value, " \t");
+    return strcmp(value, "\n") == 0;
+}
+
 static int check_connect4_worker_privileges(pid_t child)
 {
     static const char *const required[] = {
@@ -569,7 +575,10 @@ static int check_connect4_worker_privileges(pid_t child)
             size_t key = strcspn(required[field], ":") + 1;
             if (strncmp(line, required[field], key) != 0)
                 continue;
-            if ((seen & (1U << field)) || strcmp(line, required[field]) != 0) {
+            int matches = strcmp(required[field], "Groups:\t\n") == 0
+                ? empty_supplementary_groups(line + key)
+                : strcmp(line, required[field]) == 0;
+            if ((seen & (1U << field)) || !matches) {
                 fprintf(stderr, "worker status field=%.*s reason=%s\n",
                         (int)(key - 1), required[field],
                         (seen & (1U << field)) ? "duplicate" : "mismatch");

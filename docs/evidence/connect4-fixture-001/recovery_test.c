@@ -30,6 +30,9 @@ static void check_controller_death(void)
 
 int main(void)
 {
+    assert(empty_supplementary_groups("\t \n"));
+    assert(!empty_supplementary_groups("\t 62004 \n"));
+    assert(!empty_supplementary_groups("\t "));
     check_controller_death();
     int gate[2];
     assert(pipe(gate) == 0);
