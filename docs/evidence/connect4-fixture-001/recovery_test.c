@@ -190,12 +190,6 @@ static void check_fixed_transfer(void)
 static void check_fixed_agent_exchange(int early_exec, int close_gate)
 {
     int privileged = geteuid() == 0;
-    int input[2], output[2], connect_status[2], gate[2], readiness[2];
-    assert(pipe2(input, O_CLOEXEC | O_NONBLOCK) == 0);
-    assert(pipe2(output, O_CLOEXEC | O_NONBLOCK) == 0);
-    assert(pipe2(connect_status, O_CLOEXEC | O_NONBLOCK) == 0);
-    assert(pipe2(gate, O_CLOEXEC) == 0);
-    assert(pipe2(readiness, O_CLOEXEC) == 0);
     uint16_t port;
     int listener = open_connect4_listener(&port);
     assert(listener >= 0);
@@ -204,54 +198,43 @@ static void check_fixed_agent_exchange(int early_exec, int close_gate)
     int64_t now = monotonic_ns();
     assert(now >= 0);
     int64_t deadline = now + 2000000000;
-    pid_t child = fork();
-    assert(child >= 0);
-    if (child == 0) {
-        const int inherited[] = {gate[0], readiness[1], input[0], output[1], connect_status[1]};
-        if (map_worker_pipes(inherited, sizeof(inherited) / sizeof(inherited[0])) < 0)
-            _exit(7);
-        if ((privileged ? drop_connect4_worker_privileges() :
-             prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL)) < 0)
-            _exit(6);
-        _exit(run_fixed_relay_worker(port, deadline));
-    }
-    close(input[0]);
-    close(output[1]);
-    close(connect_status[1]);
-    close(gate[0]);
-    close(readiness[1]);
+    struct connect4_worker worker;
+    struct fixed_relay_pipes relay;
+    assert(spawn_fixed_relay_worker(port, deadline, &worker, &relay) == 0);
+    pid_t child = worker.pid;
     const struct worker_pipe pipes[] = {
-        {3, O_RDONLY, gate[1], O_WRONLY},
-        {5, O_RDONLY, input[1], O_WRONLY},
-        {6, O_WRONLY, output[0], O_RDONLY},
-        {7, O_WRONLY, connect_status[0], O_RDONLY},
+        {3, O_RDONLY, worker.gate, O_WRONLY},
+        {5, O_RDONLY, relay.request, O_WRONLY},
+        {6, O_WRONLY, relay.response, O_RDONLY},
+        {7, O_WRONLY, relay.status, O_RDONLY},
     };
-    assert(confirm_connect4_ready(readiness[0]) == 0);
-    close(readiness[0]);
+    assert(confirm_connect4_ready(worker.ready) == 0);
+    close(worker.ready);
     if (privileged)
         assert(check_connect4_worker_privileges(child) == 0);
     assert(check_worker_pipes(child, pipes, sizeof(pipes) / sizeof(pipes[0])) == 0);
     assert(count_connect4_accepts(listener) == 0);
     if (!close_gate)
-        assert(write(gate[1], "R", 1) == 1);
-    close(gate[1]);
+        assert(write(worker.gate, "R", 1) == 1);
+    close(worker.gate);
     int connect_errno;
     if (close_gate) {
-        assert(read_before(connect_status[0], &connect_errno, sizeof(connect_errno), deadline) < 0 &&
+        assert(read_before(relay.status, &connect_errno, sizeof(connect_errno), deadline) < 0 &&
                errno == EPIPE);
         int status;
         assert(waitpid(child, &status, 0) == child);
+        close(worker.pidfd);
         assert(WIFEXITED(status) && WEXITSTATUS(status) == 1);
         assert(count_connect4_accepts(listener) == 0);
-        close(connect_status[0]);
+        close(relay.status);
         close(listener);
-        close(input[1]);
-        close(output[0]);
+        close(relay.request);
+        close(relay.response);
         return;
     }
-    assert(read_before(connect_status[0], &connect_errno, sizeof(connect_errno), deadline) == 0);
+    assert(read_before(relay.status, &connect_errno, sizeof(connect_errno), deadline) == 0);
     assert(connect_errno == 0);
-    close(connect_status[0]);
+    close(relay.status);
     struct pollfd ready = {.fd = listener, .events = POLLIN};
     assert(poll_before(&ready, deadline) == 0);
     int peer = accept4(listener, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
@@ -259,13 +242,13 @@ static void check_fixed_agent_exchange(int early_exec, int close_gate)
     close(listener);
     unsigned char observed[sizeof(response)];
     if (early_exec) {
-        assert(write_before(input[1], request[1], sizeof(request[1]), deadline) == 0);
+        assert(write_before(relay.request, request[1], sizeof(request[1]), deadline) == 0);
     } else {
-        assert(write_before(input[1], request, sizeof(request), deadline) == 0);
+        assert(write_before(relay.request, request, sizeof(request), deadline) == 0);
         assert(write_before(peer, response, sizeof(response), deadline) == 0);
         assert(read_before(peer, observed, sizeof(request), deadline) == 0);
         assert(memcmp(observed, request, sizeof(request)) == 0);
-        assert(read_before(output[0], observed, sizeof(response), deadline) == 0);
+        assert(read_before(relay.response, observed, sizeof(response), deadline) == 0);
         assert(memcmp(observed, response, sizeof(response)) == 0);
     }
     ready = (struct pollfd){.fd = peer, .events = POLLIN};
@@ -273,10 +256,11 @@ static void check_fixed_agent_exchange(int early_exec, int close_gate)
     assert(read(peer, observed, sizeof(observed)) == 0);
     int status;
     assert(waitpid(child, &status, 0) == child);
+    close(worker.pidfd);
     assert(WIFEXITED(status) && WEXITSTATUS(status) == (early_exec ? 2 : 0));
     close(peer);
-    close(input[1]);
-    close(output[0]);
+    close(relay.request);
+    close(relay.response);
 }
 
 static void check_adopted_relay(void)

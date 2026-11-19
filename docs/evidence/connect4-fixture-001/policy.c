@@ -1530,43 +1530,73 @@ struct connect4_worker {
     int ready;
 };
 
-/* The manager calls this before taking the lease. Forked child remaps the
- * pipe ends from temporary numbers to avoid collisions with FD 3 or 4. */
-int spawn_connect4_worker(uint16_t allowed, uint16_t denied,
-                           struct connect4_worker *worker, atomic_int *release_seen)
+struct fixed_relay_pipes {
+    int request;
+    int response;
+    int status;
+};
+
+/* Fork before taking the lease. Child pipe ends are remapped together
+ * so no inherited descriptor can collide with the fixed layout. */
+static int spawn_worker(uint16_t allowed, uint16_t denied,
+                        struct connect4_worker *worker, atomic_int *release_seen,
+                        struct fixed_relay_pipes *relay, int64_t deadline)
 {
-    int gate[2], ready[2];
+    enum { GATE, READY, REQUEST, RESPONSE, STATUS };
+    const unsigned count = relay == NULL ? 2 : 5;
+    int pipes[5][2];
+    unsigned opened = 0;
     *worker = (struct connect4_worker){-1, -1, -1, -1};
-    if (pipe2(gate, O_CLOEXEC) < 0)
-        return -1;
-    if (pipe2(ready, O_CLOEXEC) < 0) {
+    if (relay != NULL)
+        *relay = (struct fixed_relay_pipes){-1, -1, -1};
+    for (; opened < count; ++opened) {
+        int flags = O_CLOEXEC | (opened >= REQUEST ? O_NONBLOCK : 0);
+        if (pipe2(pipes[opened], flags) < 0)
+            break;
+    }
+    if (opened != count) {
         int error = errno;
-        close(gate[0]);
-        close(gate[1]);
+        for (unsigned i = 0; i < opened; ++i) {
+            close(pipes[i][0]);
+            close(pipes[i][1]);
+        }
         errno = error;
         return -1;
     }
+
+    const unsigned child_end[] = {0, 1, 0, 1, 1};
+    int privileged = geteuid() == 0;
     pid_t child = fork();
     if (child == 0) {
-        const int inherited[] = {gate[0], ready[1]};
-        if (map_worker_pipes(inherited, sizeof(inherited) / sizeof(inherited[0])) < 0)
+        int inherited[5];
+        for (unsigned i = 0; i < count; ++i)
+            inherited[i] = pipes[i][child_end[i]];
+        if (map_worker_pipes(inherited, count) < 0)
             _exit(69);
-        _exit(run_connect4_worker(allowed, denied, release_seen));
+        if (relay == NULL)
+            _exit(run_connect4_worker(allowed, denied, release_seen));
+        if ((privileged ? drop_connect4_worker_privileges() :
+             prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL)) < 0)
+            _exit(70);
+        _exit(run_fixed_relay_worker(allowed, deadline));
     }
 
     int error = errno;
-    close(gate[0]);
-    close(ready[1]);
+    for (unsigned i = 0; i < count; ++i)
+        close(pipes[i][child_end[i]]);
     if (child > 0) {
         int pidfd = retain_connect4_worker(child);
         if (pidfd >= 0) {
-            *worker = (struct connect4_worker){child, pidfd, gate[1], ready[0]};
+            *worker = (struct connect4_worker){child, pidfd, pipes[GATE][1], pipes[READY][0]};
+            if (relay != NULL)
+                *relay = (struct fixed_relay_pipes){pipes[REQUEST][1], pipes[RESPONSE][0],
+                                                  pipes[STATUS][0]};
             return 0;
         }
         error = errno;
     }
-    close(gate[1]);
-    close(ready[0]);
+    for (unsigned i = 0; i < count; ++i)
+        close(pipes[i][1 - child_end[i]]);
     if (child > 0) {
         /* This manager is the sole reaper. The PID cannot have been reused. */
         kill(child, SIGKILL);
@@ -1574,6 +1604,19 @@ int spawn_connect4_worker(uint16_t allowed, uint16_t denied,
     }
     errno = error;
     return -1;
+}
+
+int spawn_connect4_worker(uint16_t allowed, uint16_t denied,
+                          struct connect4_worker *worker, atomic_int *release_seen)
+{
+    return spawn_worker(allowed, denied, worker, release_seen, NULL, 0);
+}
+
+int spawn_fixed_relay_worker(uint16_t port, int64_t deadline,
+                             struct connect4_worker *worker,
+                             struct fixed_relay_pipes *relay)
+{
+    return spawn_worker(port, 0, worker, NULL, relay, deadline);
 }
 
 struct connect4_trial {
