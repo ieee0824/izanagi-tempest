@@ -34,3 +34,15 @@ link FDをcontrollerだけが持つ構成では、異常終了でworkerの終了
 接続前、worker試行中、worker回収後の対照を別区間として記録する。各区間では親が両listenerのaccept増分を独立集計する。worker区間の合格条件は許可側1、許可外側0、および許可外TCP接続で期待する拒否errnoの一致。前後対照は両listenerに各1件を要求し、各区間の遅延接続を次区間の成功に数えない。
 
 controllerは子を待機点へ置いてから起動許可用のleaseを取得する。lease取得後はforkしない。既存の管理経路がlease取得済みの状態からforkする場合は、子分岐の最初にコピーを閉じる。CLOEXECだけではforkでコピーされるFDを防げないため、試験ではcontroller正常終了後と強制終了後の両方で、独立管理側によるlease再取得を確認する。
+
+## pidfd回収の再現
+
+リポジトリrootから次を実行する。BPFのロードやcgroup変更には入らず、実子の生存中、pin状態不明、解除後の終了済みを検査する。
+
+```sh
+test_dir=$(mktemp -d)
+gcc -std=c17 -Wall -Wextra -Werror docs/evidence/connect4-fixture-001/recovery_test.c -o "$test_dir/recovery-test"
+timeout 5s "$test_dir/recovery-test"
+```
+
+固定hostで終了0、出力は `live=EBUSY unknown=ESTALE exited=reaped`。
