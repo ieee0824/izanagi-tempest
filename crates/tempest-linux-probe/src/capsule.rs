@@ -415,3 +415,16 @@ pub(super) fn enter(
     };
     Err(std::io::Error::last_os_error().into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_library_set_is_rejected_before_mounting() {
+        assert_eq!(
+            install_libraries(Path::new("/dev/null"), &[], None),
+            Err(Fault::Identity)
+        );
+    }
+}
