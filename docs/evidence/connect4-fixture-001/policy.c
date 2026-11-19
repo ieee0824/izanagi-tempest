@@ -13,6 +13,7 @@
 #include <sys/vfs.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <poll.h>
 
 enum { CONNECT4_INSTRUCTION_COUNT = 8 };
@@ -327,4 +328,33 @@ int unpin_connect4_after_exit(const char *path, int worker_pidfd, int cgroup_fd,
     if (result < 0)
         errno = error;
     return result;
+}
+
+/* Both admission and recovery must independently open this same immutable
+ * lock entry in the root-owned fixture state directory. Never unlink it. */
+int acquire_connect4_lease(int state_fd)
+{
+    int lease = openat(state_fd, "admission.lock",
+                       O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (lease < 0)
+        return -1;
+    struct stat metadata;
+    if (fstat(lease, &metadata) < 0)
+        goto fail;
+    if (!S_ISREG(metadata.st_mode) || metadata.st_uid != 0 ||
+        (metadata.st_mode & 07777) != 0600 || metadata.st_nlink != 1) {
+        errno = ESTALE;
+        goto fail;
+    }
+    if (flock(lease, LOCK_EX | LOCK_NB) < 0)
+        goto fail;
+    return lease;
+
+fail:
+    {
+        int error = errno;
+        close(lease);
+        errno = error;
+        return -1;
+    }
 }
