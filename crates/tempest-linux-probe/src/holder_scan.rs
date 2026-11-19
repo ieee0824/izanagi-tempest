@@ -305,10 +305,44 @@ mod tests {
                 (values[0], values[1]),
                 &mut budget,
             );
+            let duplicate_rejected = required_task_pipe_fds(
+                Path::new("/proc"),
+                child.id(),
+                (values[0], values[1]),
+                values[5] as u32,
+                true,
+                &mut budget,
+            );
+            use std::os::fd::AsRawFd;
+            let stdin_fd = child.stdin.as_ref().unwrap().as_raw_fd();
+            let stdin_pipe = std::fs::metadata(format!("/proc/self/fd/{stdin_fd}")).unwrap();
+            let stdin_identity = (stdin_pipe.dev(), stdin_pipe.ino());
+            let exact = required_task_pipe_fds(
+                Path::new("/proc"),
+                child.id(),
+                stdin_identity,
+                0,
+                false,
+                &mut budget,
+            );
+            let missing = required_task_pipe_fds(
+                Path::new("/proc"),
+                child.id(),
+                (0, 0),
+                0,
+                false,
+                &mut budget,
+            );
             child.stdin.take().unwrap().write_all(b"stop\n").unwrap();
             let mut rest = String::new();
             reader.read_to_string(&mut rest).unwrap();
             assert!(child.wait().unwrap().success(), "{rest}");
+            assert_eq!(duplicate_rejected, Err(Unknown::Format));
+            assert_eq!(missing, Err(Unknown::Format));
+            let exact = exact.unwrap();
+            for tid in [values[2], values[3]] {
+                assert!(exact.iter().any(|row| u64::from(row.tid) == tid));
+            }
             let rows = observed.unwrap();
             for tid in [values[2], values[3]] {
                 for (fd, writes) in [(values[4], false), (values[5], true), (values[6], true)] {
