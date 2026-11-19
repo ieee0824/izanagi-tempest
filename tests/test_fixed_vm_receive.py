@@ -188,6 +188,19 @@ class FixedVmReceiveTests(unittest.TestCase):
 
 
 class FixedRelayCleanupTests(unittest.TestCase):
+    def test_wait_ready_rejects_readiness_at_absolute_deadline(self):
+        from fixed_relay_pipe_smoke import wait_ready
+
+        with (
+            patch('fixed_relay_pipe_smoke.time.monotonic', side_effect=(1.0, 2.0)),
+            patch('fixed_relay_pipe_smoke.select.poll') as poll,
+        ):
+            poll.return_value.poll.return_value = [(42, 1)]
+            with self.assertRaisesRegex(TimeoutError, 'fixed relay deadline'):
+                wait_ready(42, 1, 2.0)
+        poll.return_value.poll.assert_called_once_with(1000)
+
+
     @unittest.skipUnless(sys.platform == 'linux', 'requires Linux pidfd')
     def test_pidfd_open_failure_reaps_real_child(self):
         from fixed_relay_pipe_smoke import exercise
