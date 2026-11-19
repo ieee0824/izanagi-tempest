@@ -179,3 +179,12 @@ sudo -n sh -c 'umask 077 && exec "$1" linux-isolation-probe --fixed-mcp-stdio-fi
 終了コード、JSON の `trial_reason`、`recovery_reason`、
 `root_cleanup_reason`、`untracked_cleanup_errno` と、終了後に両専用パスが
 存在しないことを保存する。結果のスコープはローカルの固定 stdio と回収である。
+
+初回は room #17119 の範囲でコード `3e4f102` の CLI
+（SHA-256 `6e8daac31bcc85ee671812572a6cc873993229aa6c3ade6b4e7575e73b139edb`）
+を親 `umask 077` で1回起動した。Izanagi と依存4点の SHA-256 は一致。
+試験は exit 1、`trial_reason=kernel`。このビルドでは失敗段階と errno は不明。
+両子の pidfd 終了と回収は各2件、未回収0件、回収と root 削除の理由は null。
+事後に両専用パスと対象 UID プロセスは存在しなかった。先に /run 上の CLI
+コピーを起動しようとした際は OS に拒否され、試験入口には到達しなかった。
+結果を room #17120 に報告した。Izanagi の root 管理 staging は残している。

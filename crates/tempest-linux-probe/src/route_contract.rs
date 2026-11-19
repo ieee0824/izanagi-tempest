@@ -309,6 +309,8 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
     let mut counts = super::registry::Counts::default();
     let mut untracked_errno = None;
     let mut trial_reason = None;
+    let mut trial_errno = None;
+    let mut phase = "preflight";
     let mut recovery_reason = None;
     let mut root_cleanup_reason = None;
     let result: Result<(), Fault> = (|| {
@@ -332,6 +334,7 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
                 os::private_directory(root)?;
                 root_fds.push(fs::File::open(root)?);
             }
+            phase = "cgroup_create";
             let mut group = Group::create()?;
             let mut registry = Registry::default();
             let result = run_fixed_exchange(
@@ -341,11 +344,15 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
                 &mut registry,
                 [&roots[0], &roots[1]],
                 Instant::now() + Duration::from_secs(10),
+                &mut phase,
             );
             if let Err(Fault::UntrackedChildCleanup(errno)) = result {
                 untracked_errno = Some(errno);
             }
             trial_reason = result.as_ref().err().map(Fault::reason);
+            if let Err(Fault::Kernel(errno)) = result {
+                trial_errno = Some(errno);
+            }
             let recovery = recover_fixed_exchange(&mut group, &mut registry, &mut counts);
             recovery_reason = recovery.as_ref().err().map(Fault::reason);
             recovery?;
@@ -372,6 +379,8 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
             "production_authorized": false,
             "reason": reason,
             "trial_reason": trial_reason,
+            "trial_phase": phase,
+            "trial_errno": trial_errno,
             "recovery_reason": recovery_reason,
             "root_cleanup_reason": root_cleanup_reason,
             "untracked_cleanup_errno": untracked_errno,
@@ -394,10 +403,12 @@ fn run_fixed_exchange(
     registry: &mut super::registry::Registry,
     roots: [&std::path::Path; 2],
     deadline: Instant,
+    phase: &mut &'static str,
 ) -> Result<(), super::os::Fault> {
     use super::{contract::Role, identity::Descriptor, os};
     use std::os::fd::AsFd;
 
+    *phase = "pipes";
     let [caller_root, mcp_root] = roots;
     let (request_read, request_write) = os::pipe()?;
     let (response_read, response_write) = os::pipe()?;
@@ -413,17 +424,21 @@ fn run_fixed_exchange(
     let stderr = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
 
     let expected = mcp_stdio_fixture::expected_results();
+    *phase = "caller_spawn";
     let caller = bind_fresh_child(spawn_fixed_caller(
         caller_root,
         [caller_gate, request_write, response_read, ready_writer],
         [&expected[0], &expected[1]],
         deadline,
     )?)?;
+    *phase = "caller_attach";
     let caller_record = track_fresh_child(registry, Role::B, &caller)?;
     group.attach(Role::B, caller.pid)?;
     registry.attached(caller_record)?;
+    *phase = "caller_ready";
     mcp_stdio_fixture::expect_control_byte(ready, b'Y', deadline)?;
 
+    *phase = "mcp_spawn";
     let mcp = bind_fresh_child(artifact.spawn_waiting(
         mcp_root,
         [request_read.as_fd(), response_write.as_fd(), stderr.as_fd()],
@@ -431,7 +446,9 @@ fn run_fixed_exchange(
         release.as_fd(),
     )?)?;
     drop((request_read, response_write, bootstrap, stderr));
+    *phase = "mcp_attach";
     let mcp_record = FixedMcpArtifact::attach_and_start(group, registry, Role::A, &mcp, start)?;
+    *phase = "mcp_inspection_and_release";
     artifact.release_exchange_after_inspection(
         group,
         guard,
@@ -440,6 +457,7 @@ fn run_fixed_exchange(
         release,
         deadline,
     )?;
+    *phase = "exchange_exit";
     reap_fixed_exchange(
         [(&caller, caller_record), (&mcp, mcp_record)],
         registry,
