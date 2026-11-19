@@ -1,6 +1,6 @@
 # Issue #36 gate台帳
 
-最終更新: 2026-11-18、branch `pronnia/linux-direct-stage`。
+最終更新: 2026-11-19、branch `pronnia/linux-direct-stage`。
 dummy HOME最終独立実測は`d598243`、KVM build-only実装は`623b34b`、
 失敗時assert強化は`dfe9573`、これを含む`3161333`の
 [Linux CI](https://github.com/ieee0824/izanagi-tempest/actions/runs/43786676394)で12test・clippy・fmt成功を確認しました。
@@ -26,7 +26,8 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 | KVM段階gate | 固定最小VM・Izanagi dummy最小経路実測済 | #15865/#15872承認に従い専用user/API12/固定最小VMを確認。[KVM実測](LINUX_KVM_ARTIFACT.md)と[boot002](LINUX_IZANAGI_BOOT_002.md)の認証Ready・固定guest UID1000・down・独立回収を別証拠で記録。full guestとVM外host endpointの選別dummy検査は後述。本番B/VM結線は未達 |
 | x86_64 guest/image再構築 | 固定build・選別dummy VM検査済、全受入は未達 | [full build003](LINUX_X86_FULL_BUILD_003.md)と[smoke002](LINUX_X86_IMAGE_SMOKE_002.md)で固定artifact/読取境界、実agent hash、owner/firewall/doas/mailbox、200/403/501、quiesce/export/API/PCAP、nonce/PID/path付きeBPFを確認。observer GC unknown等は別終了証拠と区別。全route/全期間・sidecar・外部対照・clock一般保証には拡張しない |
 | runtime reset/主体/presence | 固定mock検査済、正式model未達 | [正常2run/reset](LINUX_X86_RUNTIME_NORMAL_001.md)、[seed返信喪失](LINUX_X86_RUNTIME_SEED_LOSS_001.md)と[独立予約拒否](LINUX_X86_RUNTIME_RESERVATION_001.md)、[4presence](LINUX_X86_RUNTIME_PRESENCE_001.md)を監査。#14/#15は完了。seed-loss旧trialの失敗/旧retry欠測は保持 |
-| 配送方式・露出調査 | #13調査完了、未確認範囲あり | [配送証拠表](ISSUE-13-DELIVERY-EVIDENCE.md)とPR #59で方式/上限/障害処理を設計へ反映。exec保存scanと[proc003](LINUX_X86_PROC_EXPOSURE_003.md)の3時点限定観測を確認。PIPE/FD内容/短命native/全期間/強制競合等は未測定のまま |
+| 配送方式・露出調査 | #13調査完了、未確認範囲あり | [配送証拠表](ISSUE-13-DELIVERY-EVIDENCE.md)とPR #59で方式/上限/障害処理を設計へ反映。exec保存scanと[proc003](LINUX_X86_PROC_EXPOSURE_003.md)の3時点限定観測を確認。PIPE/FD内容/短命native/全期間等は未測定のまま。強制競合の限定fixture結果は次行へ分離 |
+| 強制配送競合と大容量回収 | 小容量の固定fixture実測済、大容量は失敗・修正再検証中 | [専用smoke](LINUX_X86_DELIVERY_RACE_SMOKE_001.md)と[completed試験](LINUX_X86_DELIVERY_RACE_COMPLETED_001.md)で単回export・forced reader回収・同ID認証済み再読取・3file receipt・fresh retestを監査。[large001](LINUX_X86_DELIVERY_RACE_LARGE_001_RESULT.md)は300秒転送期限とkernel drop155で事前completed期待に失敗。#64/PR #66と#65/PR #67の固定新binaryをbuild済み、新image build中。実VM再検証は未完。旧失敗/partial/unknownを保持し、全負荷・全期間の保証へ拡張しない |
 | HTTP sidecar実起動 | 固定loopback限定で実測・監査済 | [sidecar001](LINUX_X86_SIDECAR_001.md)の1VMで正常転送1/別port failed1/非許可Host rejected1、receiver対照[1,1]とfresh telemetry bindingを確認。保存fixture/audit再計算・13exec/26stream scan・1311入力不変と別終了回収を監査。PR #61で範囲をmainへ反映。observer終端unknown/全argv・親実体・exe直接hash未測定は保持。外部egress/分類精度/全writerは未完 |
 | VM外host endpointの拒否対照 | 当該endpoint限定で実測・監査済 | [host-endpoint001](LINUX_X86_HOST_ENDPOINT_001.md)の1VMでhost前後対照2/guest loopback成功、10.0.2.2対象portへのerrno111拒否・追加accept0を確認。独立root ack/PID/cgroup/全owner/inodeとready-live-closed、停止後counterを保存再計算。PR #63で範囲をmain記録。Internet全般/本番MCP/B通信へ一般化しない |
 | owner手動login後の初回1 run | 未承認・未実施 | usage credits無効のowner確認を外部前提とし、fresh loginと1 runは別承認が必要。反復・複数modelも別承認 |
@@ -48,7 +49,7 @@ image生成の成功を、そのimageの実VM隔離・実トレース採取成�
 
 1. full image smoke002と正常runtime/reset・seed返信喪失/独立予約拒否・4presence・proc003の限定dummy結果を保存し監査した。
    単一QEMU lifetimeはPID/starttime/cwdで拘束し、observer GC終端unknownとtrusted終了/独立回収を区別する。
-2. HTTP sidecarとVM外host endpointは専用modeの単発結果を取得・監査済み。Internet全般/本番Bへの一般化、clock一般性、forced delivery race、全route等は未確認のまま残る。
+2. HTTP sidecarとVM外host endpointは専用modeの単発結果を取得・監査済み。強制配送競合は専用smoke/completedの限定fixtureで確認したが、大容量controlは失敗し#64/#65で再検証中。Internet全般/本番Bへの一般化、clock一般性、全route等は未確認のまま残る。
    通常smokeのHTTP/PCAPやTraceStartedだけで代替しない。制限解除・書込共有・実modelへfallbackしない。
 3. 本番B固定VM経路、direct egress、owner-private config/login/session/cleanupの本番受入を実装・レビューする。
    fresh login/live-call/反復比較は既存の段階承認の範囲外であり、dummy結果から認証や正式比較成功を推定しない。
