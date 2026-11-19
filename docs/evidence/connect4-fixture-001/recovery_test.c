@@ -210,7 +210,7 @@ static void check_fixed_agent_exchange(void)
         close(connect_status[0]);
         int socket_fd = open_fixed_relay_connection(port, deadline);
         int connect_errno = socket_fd < 0 ? errno : 0;
-        if (write_before(connect_status[1], &connect_errno, sizeof(connect_errno), deadline) < 0)
+        if (write(connect_status[1], &connect_errno, sizeof(connect_errno)) != sizeof(connect_errno))
             _exit(5);
         close(connect_status[1]);
         if (socket_fd < 0)
