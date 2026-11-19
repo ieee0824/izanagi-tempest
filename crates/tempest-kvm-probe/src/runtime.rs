@@ -335,12 +335,15 @@ mod tests {
         // An unmapped address or closed FD can immediately be reused by an
         // unrelated libtest thread. Observe resource lifetime in its own
         // address space, while retaining the real munmap/close assertions.
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
+        let launch_guard = crate::TEST_CHILD_LAUNCH_LOCK.lock().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", name, "--test-threads=1"])
             .env_clear()
             .env(CHILD, name)
-            .status()
+            .spawn()
             .unwrap();
+        drop(launch_guard);
+        let status = child.wait().unwrap();
         assert!(status.success(), "isolated resource test failed: {name}");
         true
     }
