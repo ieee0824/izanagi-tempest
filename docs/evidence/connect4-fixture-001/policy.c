@@ -1637,6 +1637,44 @@ static int record_connect4_trial(const struct connect4_trial *trial);
 
 int handoff_connect4_worker_fd(int channel, pid_t worker, int worker_pidfd);
 
+/* Preserve the worker identity for deferred recovery if immediate cleanup fails. */
+static int finish_connect4_worker(const struct connect4_trial *trial,
+                                  const struct connect4_worker *worker,
+                                  int pinned, int saved,
+                                  struct connect4_pending_recovery *pending)
+{
+    if (syscall(SYS_pidfd_send_signal, worker->pidfd, SIGKILL, NULL, 0) < 0 &&
+        errno != ESRCH)
+        saved = errno;
+    struct pollfd exited = { .fd = worker->pidfd, .events = POLLIN };
+    if (poll(&exited, 1, 2000) == 1 && confirm_worker_exit(worker->pidfd) == 0) {
+        int recovered = pinned ? recover_connect4_pin(trial->state_fd, trial->pin_path, worker->pidfd,
+                                 trial->cgroup_fd, trial->device, trial->cgroup_id,
+                                 trial->link_id, trial->program_id)
+            : confirm_unpinned_connect4_trial(trial);
+        if (recovered < 0) {
+            *pending = (struct connect4_pending_recovery){worker->pid, worker->pidfd,
+                CONNECT4_PIN_UNKNOWN};
+            return -1;
+        }
+        *pending = (struct connect4_pending_recovery){worker->pid, worker->pidfd,
+            pinned ? CONNECT4_PIN_REMOVED : CONNECT4_PIN_ABSENT};
+        if (retry_connect4_recovery(trial, pending) < 0)
+            return -1;
+        fputs("worker_exit_observed=1 worker_reaped_by_pidfd=1\n", stderr);
+    } else {
+        *pending = (struct connect4_pending_recovery){worker->pid, worker->pidfd,
+            pinned ? CONNECT4_PIN_HELD : CONNECT4_PIN_UNKNOWN};
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    if (saved != 0) {
+        errno = saved;
+        return -1;
+    }
+    return 0;
+}
+
 int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
                        int handoff_channel, atomic_int *known_worker,
                        int supervisor_fault,
@@ -1732,35 +1770,8 @@ int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
                                             denied_listener, &phases[1]);
 
     int saved = result < 0 ? errno : 0;
-    if (syscall(SYS_pidfd_send_signal, worker.pidfd, SIGKILL, NULL, 0) < 0 &&
-        errno != ESRCH)
-        saved = errno;
-    struct pollfd exited = { .fd = worker.pidfd, .events = POLLIN };
-    if (poll(&exited, 1, 2000) == 1 && confirm_worker_exit(worker.pidfd) == 0) {
-        int recovered = pinned ? recover_connect4_pin(trial->state_fd, trial->pin_path, worker.pidfd,
-                                 trial->cgroup_fd, trial->device, trial->cgroup_id,
-                                 trial->link_id, trial->program_id)
-            : confirm_unpinned_connect4_trial(trial);
-        if (recovered < 0) {
-            *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd,
-                CONNECT4_PIN_UNKNOWN};
-            return -1;
-        }
-        *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd,
-            pinned ? CONNECT4_PIN_REMOVED : CONNECT4_PIN_ABSENT};
-        if (retry_connect4_recovery(trial, pending) < 0)
-            return -1;
-        fputs("worker_exit_observed=1 worker_reaped_by_pidfd=1\n", stderr);
-    } else {
-        *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd,
-            pinned ? CONNECT4_PIN_HELD : CONNECT4_PIN_UNKNOWN};
-        errno = ETIMEDOUT;
+    if (finish_connect4_worker(trial, &worker, pinned, saved, pending) < 0)
         return -1;
-    }
-    if (saved != 0) {
-        errno = saved;
-        return -1;
-    }
     return measure_connect4_control(allowed_listener, allowed_port, denied_listener,
                                       denied_port, &phases[2]);
 }
