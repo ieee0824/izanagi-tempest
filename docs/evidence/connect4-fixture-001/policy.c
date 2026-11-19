@@ -1302,3 +1302,43 @@ int retry_connect4_recovery(const struct connect4_trial *trial,
     *pending = (struct connect4_pending_recovery){-1, -1, CONNECT4_PIN_UNKNOWN};
     return 0;
 }
+
+/* The manager owns an already registered, dedicated empty cgroup and the
+ * private trial directory. Keep the original link FD through recovery. */
+int prepare_connect4_trial(int state_fd, int cgroup_fd, const char *pin_path,
+                            uint16_t allowed_port, struct connect4_trial *trial)
+{
+    struct connect4_trial candidate = {
+        .state_fd = state_fd, .cgroup_fd = cgroup_fd, .link_fd = -1,
+        .pin_path = pin_path,
+    };
+    if (pin_path == NULL || *pin_path != '/') {
+        errno = EINVAL;
+        return -1;
+    }
+    if (read_connect4_cgroup_identity(cgroup_fd, &candidate.device,
+                                     &candidate.cgroup_id) < 0 ||
+        confirm_unpinned_connect4_trial(&candidate) < 0)
+        return -1;
+
+    int program = load_connect4_policy(allowed_port);
+    if (program < 0)
+        return -1;
+    if (read_connect4_program_id(program, &candidate.program_id) == 0)
+        candidate.link_fd = attach_connect4_policy(program, cgroup_fd);
+    int error = errno;
+    close(program);
+    if (candidate.link_fd < 0) {
+        errno = error;
+        return -1;
+    }
+    if (read_connect4_link_id(candidate.link_fd, candidate.program_id,
+                              candidate.cgroup_id, &candidate.link_id) < 0) {
+        error = errno;
+        close(candidate.link_fd);
+        errno = error;
+        return -1;
+    }
+    *trial = candidate;
+    return 0;
+}
