@@ -189,6 +189,7 @@ static void check_fixed_transfer(void)
 
 static void check_fixed_agent_exchange(void)
 {
+    int privileged = geteuid() == 0;
     int input[2], output[2], connect_status[2], gate[2], readiness[2];
     assert(pipe2(input, O_CLOEXEC | O_NONBLOCK) == 0);
     assert(pipe2(output, O_CLOEXEC | O_NONBLOCK) == 0);
@@ -209,7 +210,8 @@ static void check_fixed_agent_exchange(void)
         const int inherited[] = {gate[0], readiness[1], input[0], output[1], connect_status[1]};
         if (map_worker_pipes(inherited, sizeof(inherited) / sizeof(inherited[0])) < 0)
             _exit(7);
-        if (prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0)
+        if ((privileged ? drop_connect4_worker_privileges() :
+             prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL)) < 0)
             _exit(6);
         int socket_fd = connect_fixed_relay_worker(port, deadline);
         if (socket_fd < 0)
@@ -236,6 +238,8 @@ static void check_fixed_agent_exchange(void)
     };
     assert(confirm_connect4_ready(readiness[0]) == 0);
     close(readiness[0]);
+    if (privileged)
+        assert(check_connect4_worker_privileges(child) == 0);
     assert(check_worker_pipes(child, pipes, sizeof(pipes) / sizeof(pipes[0])) == 0);
     assert(count_connect4_accepts(listener) == 0);
     assert(write(gate[1], "R", 1) == 1);
