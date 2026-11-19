@@ -178,15 +178,13 @@ impl FixedMcpArtifact {
         }
     }
 
-    /// The request gate is consumed here. On failure the caller receives
-    /// EOF instead of the byte that starts the exchange.
-    pub(super) fn release_exchange_after_inspection(
+    /// Check both workers' pipe endpoints and wait for confirmed thaw.
+    fn inspect_before_exchange(
         &self,
         group: &mut super::cgroup::Group,
         guard: &super::guard::Guard,
         workers: [(super::contract::Role, &super::identity::Process); 2],
         ends: [(&super::identity::Descriptor, u32); 2],
-        caller_gate: OwnedFd,
         deadline: Instant,
     ) -> Result<(), super::os::Fault> {
         use super::{
@@ -204,7 +202,6 @@ impl FixedMcpArtifact {
             stdin.pipe_identity(libc::O_RDONLY)?,
             stdout.pipe_identity(libc::O_WRONLY)?,
         ];
-        self.wait_for_runtime(mcp, deadline)?;
         let manager = pipes.map(|identity| ManagerPipe {
             identity,
             expected: &[],
@@ -241,13 +238,7 @@ impl FixedMcpArtifact {
                 Ok(())
             },
             &(),
-        )?;
-        if Instant::now() >= deadline {
-            return Err(Fault::Identity);
-        }
-        use std::io::Write;
-        std::fs::File::from(caller_gate).write_all(b"R")?;
-        Ok(())
+        )
     }
 
     pub(super) fn verify_stdio(
@@ -448,15 +439,22 @@ fn run_fixed_exchange(
     drop((request_read, response_write, bootstrap, stderr));
     *phase = "mcp_attach";
     let mcp_record = FixedMcpArtifact::attach_and_start(group, registry, Role::A, &mcp, start)?;
-    *phase = "mcp_inspection_and_release";
-    artifact.release_exchange_after_inspection(
+    *phase = "mcp_runtime_wait";
+    artifact.wait_for_runtime(&mcp, deadline)?;
+    *phase = "mcp_frozen_inspection";
+    artifact.inspect_before_exchange(
         group,
         guard,
         [(Role::B, &caller), (Role::A, &mcp)],
         [(&stdin, caller_ends[0]), (&stdout, caller_ends[1])],
-        release,
         deadline,
     )?;
+    *phase = "caller_release";
+    if Instant::now() >= deadline {
+        return Err(os::Fault::Kernel(libc::ETIMEDOUT));
+    }
+    use std::io::Write;
+    std::fs::File::from(release).write_all(b"R")?;
     *phase = "exchange_exit";
     reap_fixed_exchange(
         [(&caller, caller_record), (&mcp, mcp_record)],
