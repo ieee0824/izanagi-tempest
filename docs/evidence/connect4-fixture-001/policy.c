@@ -884,6 +884,20 @@ static int stop_test_controller(int controller_pidfd)
     return -1;
 }
 
+static int send_connect4_release(int gate_fd)
+{
+    const char token = 'R';
+    ssize_t sent;
+    do {
+        sent = write(gate_fd, &token, sizeof(token));
+    } while (sent < 0 && errno == EINTR);
+    if (sent == 1)
+        return 0;
+    if (sent == 0)
+        errno = EIO;
+    return -1;
+}
+
 static int release_connect4_worker(int state_fd, int ready_fd,
                             const struct worker_pipe *pipes, size_t pipe_count,
                             int controller_pidfd,
@@ -964,12 +978,7 @@ static int release_connect4_worker(int state_fd, int ready_fd,
     if (controller_is_live(controller_pidfd) < 0)
         goto done;
     stage = "release-token";
-    const char token = 'R';
-    ssize_t sent = write(gate_fd, &token, sizeof(token));
-    if (sent == 1)
-        result = 0;
-    else if (sent == 0)
-        errno = EIO;
+    result = send_connect4_release(gate_fd);
 
 done:;
     int error = errno;
@@ -1798,6 +1807,24 @@ static int finish_connect4_worker(const struct connect4_trial *trial,
         return -1;
     }
     return 0;
+}
+
+/* Control workers have the same privileges and descriptors as restricted
+ * workers. The immediate caller owns the child and its pidfd. */
+int release_fixed_relay_control(const struct connect4_worker *worker,
+                                const struct fixed_relay_pipes *relay,
+                                int controller_pidfd)
+{
+    struct worker_pipe pipes[FIXED_RELAY_PIPE_COUNT];
+    describe_fixed_relay_pipes(worker, relay, pipes);
+    if (controller_is_live(controller_pidfd) < 0 ||
+        confirm_connect4_ready(worker->ready) < 0 ||
+        check_connect4_pidfd_pid(worker->pidfd, worker->pid) < 0 ||
+        check_connect4_worker_privileges(worker->pid) < 0 ||
+        check_worker_pipes(worker->pid, pipes, FIXED_RELAY_PIPE_COUNT) < 0 ||
+        controller_is_live(controller_pidfd) < 0)
+        return -1;
+    return send_connect4_release(worker->gate);
 }
 
 /* The caller retains the pidfd and must finish or recover the worker on

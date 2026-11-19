@@ -271,8 +271,15 @@ static void check_fixed_alternate_exchange(int wrong_token)
     struct connect4_worker worker;
     struct fixed_relay_pipes relay;
     assert(spawn_fixed_alternate_worker(port, deadline, &worker, &relay) == 0);
-    assert(confirm_connect4_ready(worker.ready) == 0);
-    assert(write(worker.gate, "R", 1) == 1);
+    if (geteuid() == 0) {
+        int controller = (int)syscall(SYS_pidfd_open, getpid(), 0);
+        assert(controller >= 0);
+        assert(release_fixed_relay_control(&worker, &relay, controller) == 0);
+        close(controller);
+    } else {
+        assert(confirm_connect4_ready(worker.ready) == 0);
+        assert(send_connect4_release(worker.gate) == 0);
+    }
     int connect_errno;
     assert(read_fixed_relay_connect_errno(&relay, deadline, &connect_errno) == 0);
     assert(connect_errno == 0);
