@@ -72,6 +72,8 @@ pub(super) enum ExchangeStage {
     ReleaseEofTimeout = 141,
     ReleaseReadDenied = 142,
     ReleaseEofDenied = 143,
+    ReleaseReadPollDenied = 144,
+    ReleaseEofPollDenied = 145,
     PipeSetup = 130,
     InitializeSend = 131,
     InitializeResponse = 132,
@@ -115,7 +117,7 @@ pub(super) fn exchange(
 }
 
 fn expect_stdout_eof(responses: &mut File, deadline: Instant) -> io::Result<()> {
-    if read(responses, &mut [0], deadline)? != 0 {
+    if read(responses, &mut [0], deadline).map_err(|error| error.1)? != 0 {
         return Err(invalid("unexpected bytes before stdout EOF"));
     }
     Ok(())
@@ -125,8 +127,8 @@ fn expect_stdout_eof(responses: &mut File, deadline: Instant) -> io::Result<()> 
 pub(super) enum ControlError {
     Missing,
     WrongByte,
-    Read(io::Error),
-    EofWait(io::Error),
+    Read(PipeReadError),
+    EofWait(PipeReadError),
     Extra,
 }
 
@@ -135,7 +137,7 @@ impl ControlError {
         match self {
             Self::Missing => invalid("missing fixture control byte"),
             Self::WrongByte => invalid("incorrect fixture control byte"),
-            Self::Read(error) | Self::EofWait(error) => error,
+            Self::Read(error) | Self::EofWait(error) => error.1,
             Self::Extra => invalid("unexpected data after fixture control byte"),
         }
     }
@@ -144,16 +146,24 @@ impl ControlError {
         match self {
             Self::Missing => ExchangeStage::ReleaseMissing,
             Self::WrongByte => ExchangeStage::ReleaseWrongByte,
-            Self::Read(error) if error.kind() == io::ErrorKind::TimedOut => {
+            Self::Read(error) if error.1.kind() == io::ErrorKind::TimedOut => {
                 ExchangeStage::ReleaseReadTimeout
             }
-            Self::EofWait(error) if error.kind() == io::ErrorKind::TimedOut => {
+            Self::EofWait(error) if error.1.kind() == io::ErrorKind::TimedOut => {
                 ExchangeStage::ReleaseEofTimeout
             }
-            Self::Read(error) if error.raw_os_error() == Some(libc::EPERM) => {
+            Self::Read(PipeReadError(true, error)) if error.raw_os_error() == Some(libc::EPERM) => {
+                ExchangeStage::ReleaseReadPollDenied
+            }
+            Self::EofWait(PipeReadError(true, error))
+                if error.raw_os_error() == Some(libc::EPERM) =>
+            {
+                ExchangeStage::ReleaseEofPollDenied
+            }
+            Self::Read(error) if error.1.raw_os_error() == Some(libc::EPERM) => {
                 ExchangeStage::ReleaseReadDenied
             }
-            Self::EofWait(error) if error.raw_os_error() == Some(libc::EPERM) => {
+            Self::EofWait(error) if error.1.raw_os_error() == Some(libc::EPERM) => {
                 ExchangeStage::ReleaseEofDenied
             }
             Self::Read(_) => ExchangeStage::ReleaseRead,
@@ -224,13 +234,18 @@ fn send(file: &mut File, mut bytes: &[u8], deadline: Instant) -> io::Result<()> 
     Ok(())
 }
 
-fn read(file: &mut File, buffer: &mut [u8], deadline: Instant) -> io::Result<usize> {
+#[derive(Debug)]
+pub(super) struct PipeReadError(bool, io::Error);
+
+fn read(file: &mut File, buffer: &mut [u8], deadline: Instant) -> Result<usize, PipeReadError> {
     loop {
-        ready(file, libc::POLLIN, deadline)?;
+        ready(file, libc::POLLIN, deadline).map_err(|error| PipeReadError(true, error))?;
         match file.read(buffer) {
             Err(error) if retryable(&error) => continue,
-            result if Instant::now() < deadline => return result,
-            _ => return Err(io::ErrorKind::TimedOut.into()),
+            result if Instant::now() < deadline => {
+                return result.map_err(|error| PipeReadError(false, error));
+            }
+            _ => return Err(PipeReadError(false, io::ErrorKind::TimedOut.into())),
         }
     }
 }
@@ -251,7 +266,7 @@ fn receive(
     let mut frame = Vec::new();
     let mut buffer = [0; 4096];
     loop {
-        let count = read(file, &mut buffer, deadline)?;
+        let count = read(file, &mut buffer, deadline).map_err(|error| error.1)?;
         if count == 0 {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
@@ -292,7 +307,7 @@ mod tests {
         let error = expect_control_byte(reader, b'R', Instant::now() + Duration::from_millis(20))
             .unwrap_err();
         assert!(
-            matches!(error, ControlError::EofWait(error) if error.kind() == io::ErrorKind::TimedOut)
+            matches!(error, ControlError::EofWait(error) if error.1.kind() == io::ErrorKind::TimedOut)
         );
         drop(writer);
 
