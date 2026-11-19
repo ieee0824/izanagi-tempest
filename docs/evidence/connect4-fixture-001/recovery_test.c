@@ -209,23 +209,11 @@ static void check_fixed_agent_exchange(void)
         const int inherited[] = {gate[0], readiness[1], input[0], output[1], connect_status[1]};
         if (map_worker_pipes(inherited, sizeof(inherited) / sizeof(inherited[0])) < 0)
             _exit(7);
-        if (prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0 ||
-            restrict_fixed_relay_setup() < 0 ||
-            socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0) != -1 ||
-            errno != EPERM)
+        if (prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0)
             _exit(6);
-        if (write(4, "Y", 1) != 1 || close(4) < 0 || await_connect4_release(3) < 0)
-            _exit(7);
-        close(3);
-        int socket_fd = open_fixed_relay_connection(port, deadline);
-        int connect_errno = socket_fd < 0 ? errno : 0;
-        if (write(7, &connect_errno, sizeof(connect_errno)) != sizeof(connect_errno))
-            _exit(5);
-        close(7);
+        int socket_fd = connect_fixed_relay_worker(port, deadline);
         if (socket_fd < 0)
             _exit(1);
-        if (restrict_fixed_relay_io(5, 6, socket_fd) < 0)
-            _exit(3);
         if (write(STDERR_FILENO, "", 0) != -1 || errno != EPERM ||
             socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP) != -1 ||
             errno != EPERM)

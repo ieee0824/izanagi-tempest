@@ -1285,6 +1285,31 @@ fail:;
     return -1;
 }
 
+/* Run in the isolated child after mapping its five fixed pipe ends.
+ * A failure is terminal. The parent owns recovery and reaping. */
+int connect_fixed_relay_worker(uint16_t port, int64_t deadline)
+{
+    if (restrict_fixed_relay_setup() < 0)
+        return -1;
+    if (write(4, "Y", 1) != 1 || close(4) < 0 || await_connect4_release(3) < 0)
+        return -1;
+    if (close(3) < 0)
+        return -1;
+
+    int socket_fd = open_fixed_relay_connection(port, deadline);
+    int connect_errno = socket_fd < 0 ? errno : 0;
+    if (write(7, &connect_errno, sizeof(connect_errno)) != sizeof(connect_errno) ||
+        close(7) < 0)
+        return -1;
+    if (socket_fd < 0) {
+        errno = connect_errno;
+        return -1;
+    }
+    if (restrict_fixed_relay_io(5, 6, socket_fd) < 0)
+        return -1;
+    return socket_fd;
+}
+
 static int try_connect4_loopback(uint16_t port)
 {
     int fd;
