@@ -202,13 +202,18 @@ fn ready(file: &File, events: i16, deadline: Instant) -> io::Result<()> {
         if remaining.is_zero() {
             return Err(io::ErrorKind::TimedOut.into());
         }
-        let millis = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+        // ppoll avoids the timed poll restart-block path across suspension.
+        // Keep the absolute deadline authoritative after every wakeup.
+        let timeout = libc::timespec {
+            tv_sec: remaining.as_secs().min(i32::MAX as u64) as libc::time_t,
+            tv_nsec: remaining.subsec_nanos().into(),
+        };
         let mut descriptor = libc::pollfd {
             fd: file.as_raw_fd(),
             events,
             revents: 0,
         };
-        match unsafe { libc::poll(&mut descriptor, 1, millis) } {
+        match unsafe { libc::ppoll(&mut descriptor, 1, &timeout, std::ptr::null()) } {
             1 if Instant::now() < deadline => return Ok(()),
             0 | 1 => continue,
             _ => {
