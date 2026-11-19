@@ -165,13 +165,23 @@ impl FixedMcpArtifact {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(Fault::Identity);
+                return Err(Fault::Kernel(libc::ETIMEDOUT));
             }
-            let identity = child.identity()?;
-            if identity.code == executable && child.thread_count()? >= 2 {
-                if child.identity()? != identity || Instant::now() >= deadline {
-                    return Err(Fault::Identity);
-                }
+            if !child.alive()? {
+                return Err(child.exited());
+            }
+            let observed = (|| {
+                let identity = child.identity()?;
+                Ok::<_, Fault>(
+                    identity.code == executable
+                        && child.thread_count()? >= 2
+                        && child.identity()? == identity,
+                )
+            })();
+            if !child.alive()? {
+                return Err(child.exited());
+            }
+            if observed? && Instant::now() < deadline {
                 return Ok(());
             }
             std::thread::sleep(remaining.min(Duration::from_millis(2)));
@@ -301,6 +311,8 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
     let mut untracked_errno = None;
     let mut trial_reason = None;
     let mut trial_errno = None;
+    let mut trial_child_exit = None;
+    let mut trial_child_signal = None;
     let mut phase = "preflight";
     let mut recovery_reason = None;
     let mut root_cleanup_reason = None;
@@ -341,8 +353,11 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
                 untracked_errno = Some(errno);
             }
             trial_reason = result.as_ref().err().map(Fault::reason);
-            if let Err(Fault::Kernel(errno)) = result {
-                trial_errno = Some(errno);
+            match result {
+                Err(Fault::Kernel(errno)) => trial_errno = Some(errno),
+                Err(Fault::Child(status)) => trial_child_exit = Some(status),
+                Err(Fault::ChildSignal(signal, _)) => trial_child_signal = Some(signal),
+                _ => {}
             }
             let recovery = recover_fixed_exchange(&mut group, &mut registry, &mut counts);
             recovery_reason = recovery.as_ref().err().map(Fault::reason);
@@ -372,6 +387,8 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
             "trial_reason": trial_reason,
             "trial_phase": phase,
             "trial_errno": trial_errno,
+            "trial_child_exit": trial_child_exit,
+            "trial_child_signal": trial_child_signal,
             "recovery_reason": recovery_reason,
             "root_cleanup_reason": root_cleanup_reason,
             "untracked_cleanup_errno": untracked_errno,
