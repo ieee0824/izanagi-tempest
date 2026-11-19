@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'integration'))
-from fixed_vm_receive_observe import PHASES, validate_guest_export
+from fixed_vm_receive_observe import PHASES, validate_guest_export, validate_trial_counts
 
 
 class FixedVmReceiveTests(unittest.TestCase):
@@ -31,3 +31,39 @@ class FixedVmReceiveTests(unittest.TestCase):
         self.assertEqual(report['phases'][2]['delta'], {'received': 1, 'matched': 0})
         with self.assertRaisesRegex(ValueError, 'unexpected guest count'):
             validate_guest_export(json.dumps(report).encode(), run_nonce=nonce, boot_id=boot_id)
+
+    def test_trial_accepts_only_matching_host_intervals(self):
+        process = runpy.run_path(str(ROOT / 'image/fixed_vm_receive.py'))['process']
+        nonce = 'b' * 32
+        boot_id = '3d6aa964-65a7-4c14-9444-70ecc42b55f8'
+        host_phases = []
+        total = 0
+        with TemporaryDirectory() as directory, patch('pathlib.Path.read_text', return_value=boot_id):
+            process.__globals__['RECORD_DIR'] = Path(directory)
+            for phase in PHASES:
+                process('start', nonce, phase, None)
+                if phase != 'deny_other':
+                    process('request', nonce, phase, f'tempest-dummy-v1:{nonce}:{phase}')
+                process('end', nonce, phase, None)
+                delta = int(phase in ('control_before', 'control_after'))
+                host_phases.append({
+                    'run_nonce': nonce,
+                    'boot_id': boot_id,
+                    'phase': phase,
+                    'start': {'accepted': total, 'matched': total},
+                    'end': {'accepted': total + delta, 'matched': total + delta},
+                    'delta': {'accepted': delta, 'matched': delta},
+                })
+                total += delta
+            report = process('report', nonce, PHASES[-1], None)
+        raw = json.dumps(report).encode()
+        self.assertEqual(validate_trial_counts(raw, host_phases, run_nonce=nonce, boot_id=boot_id), report)
+
+        host_phases[2]['delta']['accepted'] = 1
+        with self.assertRaisesRegex(ValueError, 'unexpected alternate host listener count'):
+            validate_trial_counts(raw, host_phases, run_nonce=nonce, boot_id=boot_id)
+        host_phases[2]['delta']['accepted'] = 0
+
+        host_phases[2]['run_nonce'] = 'c' * 32
+        with self.assertRaisesRegex(ValueError, 'host phase binding mismatch'):
+            validate_trial_counts(raw, host_phases, run_nonce=nonce, boot_id=boot_id)
