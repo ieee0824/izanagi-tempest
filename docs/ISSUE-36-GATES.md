@@ -115,3 +115,11 @@ tmpfs 使用量 4096 B・17 inode、exit 0。16 MiB／128 inode の tmpfs に
 ホストの通常 HOME と既存設定を持ち込まず、新しいネットワーク namespace
 で固定の `--version` のみを起動する。実ログイン、モデル呼び出し、
 `--version` 以外の実行に必要な動的依存は未検証。
+
+合成データによる bind の回帰も専用 Linux で実測した。同じファイルを
+2箇所に bind し、dev/inode 一致と書込 open の `EROFS` を確認した。
+この特権テストは通常の `cargo test` ではスキップする。
+再実行には `cargo test -p tempest-linux-probe --lib --locked --no-run` が
+表示するテスト実行ファイルを root で起動し、
+`--ignored --exact claude_offline::tests::synthetic_loader_aliases_are_read_only_binds_of_the_same_inode`
+を指定する。

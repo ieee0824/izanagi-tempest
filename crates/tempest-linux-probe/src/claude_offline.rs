@@ -299,8 +299,27 @@ fn verify_mount_table(root: &Path) -> Result<(), Fault> {
     Ok(())
 }
 
+fn mount_artifact(root: &Path, artifact: &Artifact, staged: &File) -> Result<(), Fault> {
+    use super::capsule;
+    let identity = capsule::library_identity(staged)?;
+    for target in artifact.targets {
+        let path = root.join(target);
+        drop(
+            OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&path)?,
+        );
+        capsule::bind_read_only(staged, &path)?;
+        if capsule::verify_bound_file(&path, |file| verify_artifact(file, artifact))? != identity {
+            return Err(Fault::Identity);
+        }
+    }
+    Ok(())
+}
+
 fn run_in_root(scratch: &Path, root: &Path) -> Result<(u64, u64), Fault> {
-    use super::{capsule, os};
+    use super::os;
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     for dir in [
         "bin",
@@ -315,22 +334,7 @@ fn run_in_root(scratch: &Path, root: &Path) -> Result<(u64, u64), Fault> {
     }
     for (index, artifact) in ARTIFACTS.iter().enumerate() {
         let staged = stage_artifact(artifact, &scratch.join(format!("artifact-{index}")))?;
-        let identity = capsule::library_identity(&staged)?;
-        for target in artifact.targets {
-            let path = root.join(target);
-            drop(
-                OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&path)?,
-            );
-            capsule::bind_read_only(&staged, &path)?;
-            if capsule::verify_bound_file(&path, |file| verify_artifact(file, artifact))?
-                != identity
-            {
-                return Err(Fault::Identity);
-            }
-        }
+        mount_artifact(root, artifact, &staged)?;
     }
     let settings = root.join("home/fixture/config/settings.json");
     fs::write(&settings, b"{}\n")?;
@@ -364,7 +368,10 @@ fn run_in_root(scratch: &Path, root: &Path) -> Result<(u64, u64), Fault> {
     ))
 }
 
-fn trial(scratch: &Path) -> Result<(u64, u64), Fault> {
+fn trial<T>(
+    scratch: &Path,
+    execute: impl FnOnce(&Path, &Path) -> Result<T, Fault>,
+) -> Result<T, Fault> {
     use super::{capsule, os};
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     os::syscall(unsafe { libc::unshare(libc::CLONE_NEWNS | libc::CLONE_NEWNET) })?;
@@ -372,7 +379,7 @@ fn trial(scratch: &Path) -> Result<(u64, u64), Fault> {
     let root = scratch.join("root");
     fs::create_dir(&root)?;
     capsule::mount_root(&root)?;
-    let result = run_in_root(scratch, &root);
+    let result = execute(scratch, &root);
     // Detach the complete private mount tree before touching staging files.
     let path = CString::new(root.as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
     os::syscall(unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) })?;
@@ -392,7 +399,7 @@ pub(super) fn run() -> std::process::ExitCode {
     let scratch = Path::new(std::ffi::OsStr::from_bytes(
         unsafe { CStr::from_ptr(path) }.to_bytes(),
     ));
-    let result = trial(scratch);
+    let result = trial(scratch, run_in_root);
     // Retain a mounted tree on unmount failure. Its private namespace
     // vanishes at process exit, and an error cannot be reported as success.
     let cleanup = fs::read_to_string("/proc/self/mountinfo").and_then(|table| {
@@ -449,6 +456,48 @@ mod tests {
                 "lib64/ld-linux-x86-64.so.2",
                 "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
             ]));
+    }
+
+    #[test]
+    #[ignore = "requires root and private mount/network namespace support"]
+    fn synthetic_loader_aliases_are_read_only_binds_of_the_same_inode() {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let scratch = Path::new("/var/lib").join(format!(
+            "tempest-claude-test-{}",
+            super::super::private_io::random_hex().unwrap()
+        ));
+        fs::DirBuilder::new()
+            .recursive(false)
+            .create(&scratch)
+            .unwrap();
+        let result = trial(&scratch, |scratch, root| {
+            let path = scratch.join("dummy");
+            fs::write(&path, b"dummy")?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o555))?;
+            let expected = "b5a2c96250612366ea272ffac6d9744aaf4b45aacd96aa7cfcb931ee3b558259";
+            let artifact = Artifact {
+                source: "/unused",
+                bytes: 5,
+                sha256: expected,
+                targets: &["loader", "loader-alias"],
+            };
+            let snapshot = File::open(path)?;
+            mount_artifact(root, &artifact, &snapshot)?;
+            let first = fs::metadata(root.join("loader"))?;
+            let second = fs::metadata(root.join("loader-alias"))?;
+            assert_eq!((first.dev(), first.ino()), (second.dev(), second.ino()));
+            let error = OpenOptions::new()
+                .write(true)
+                .open(root.join("loader"))
+                .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(libc::EROFS));
+            Ok(())
+        });
+        fs::remove_file(scratch.join("dummy")).unwrap();
+        fs::remove_dir(scratch.join("root")).unwrap();
+        fs::remove_dir(&scratch).unwrap();
+        result.unwrap();
     }
 
     #[test]
