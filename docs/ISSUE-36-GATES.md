@@ -39,6 +39,29 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 
 ## 次の段階実装gate
 
+### 固定 CLI のオフライン起動に使ったファイル
+
+[Issue #36 の測定記録](https://github.com/ieee0824/izanagi-tempest/issues/36#issuecomment-7010159462)と
+cc-sakura 投稿 17357 に基づく Linux x86_64 の `--version` 用の一覧です。
+固定 CLI を専用設定とともに新規 root に配置し、下記の読み取り専用入力で起動できました。
+共有ライブラリのターゲットは `/usr/lib/x86_64-linux-gnu/` 配下です。
+
+| 入力 | SHA-256 |
+|---|---|
+| Claude Code 2.1.325 | `0dc4f4a9a165fc60746d7ae8489712e5fc352f1e7ad4eb22e7141bd0812eb0cf` |
+| `librt.so.1` | `5a00236da5864e8d1123d74e616713110708d6e3e604188f4f256dab4c6941d4` |
+| `libc.so.6` | `755a371e86cc9f564ab54f66140747700fb0a103f698f659f2060f707897e09a` |
+| `ld-linux-x86-64.so.2` | `5fc0940888e9d2e1a00e66d6b1a559c36364ee867683652e1074fa576952cc3f` |
+| `libpthread.so.0` | `cd34f895c9d2aa669d5d2654bed6b71210fc9003c3a1e96bb5311a40feb86039` |
+| `libdl.so.2` | `4dbcca3c01ca84d092b5b7b2610f5835b55fc70a0288dd9d766b40ac9386e2d9` |
+| `libm.so.6` | `5dcc4d25466e29ca390ed6fabb371c69b65dff6fa4e91c34561057a020d6994a` |
+
+ELF の `PT_INTERP` が指定する `/lib64/ld-linux-x86-64.so.2` にも上表と同じローダーを配置しました。
+試験では `ld.so.cache`、`/etc`、`/proc`、`/dev`、通常 HOME を配置せず、起動後に一時 root を回収しました。
+個々のファイルの必要性、動的ロード、ログインやモデル実行時の依存は未確認です。
+
+### 残りの受入
+
 synthetic HOME非到達と連続2 runのstate独立性は`d598243`までのdummy実測で確認済みです。
 実Claude設定・credential・sessionへの成立は未検証のままです。
 
