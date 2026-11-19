@@ -25,6 +25,7 @@ mod ancillary;
 mod capsule;
 mod capture;
 mod cgroup;
+mod claude_offline;
 mod contract;
 mod guard;
 // Read-only observations, deliberately not an authorization or barrier API.
@@ -51,3 +52,8 @@ pub fn worker() -> std::process::ExitCode {
 }
 
 mod private_io;
+
+/// Run only the pinned offline Claude version fixture.
+pub fn claude_offline_version() -> std::process::ExitCode {
+    claude_offline::run()
+}

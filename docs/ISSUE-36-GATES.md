@@ -91,3 +91,27 @@ dummy HOMEの受入範囲は[Linux HOME・run state隔離gate](LINUX_STATE_ISOLA
 本番B/VMへの結線、fresh login、subscription live-call、正式比較は未達です。
 KVMの永続host変更は承認済み設計に従う管理者checkpointとして分離し、
 失敗時にroot QEMU、TCG、既存macOS/aarch64実測へfallbackしません。
+
+### 固定 Claude バイナリのオフライン再現
+
+専用 Linux x86_64 で、事前に照合した Claude Code 2.1.325 の実体を
+root 所有・0555 の `/var/lib/tempest-claude-offline/claude` に置く。
+ファイルをネットワークから取得する処理は含まない。固定 CLI と共有ライブラリ
+6点のパス・容量・SHA-256 は、以下のビルド対象の固定表にある。
+
+```sh
+cargo build -p tempest-linux-probe --bin tempest-claude-offline-version --locked
+sudo -n target/debug/tempest-claude-offline-version
+cargo test -p tempest-linux-probe --locked
+cargo clippy -p tempest-linux-probe --all-targets --locked -- -D warnings
+```
+
+専用ホストで再現した結果は `2.1.325`、UID/GID `999:988`、
+tmpfs 使用量 4096 B・17 inode、exit 0。16 MiB／128 inode の tmpfs に
+8ファイルを個別に bind し、ローダーの2パスは同じ検査済み inode を参照した。
+実マウント表は root と8配置に一致し、全マウントで ro/nosuid/nodev を
+確認した。空設定の検査は実行前後で一致し、試験用マウントと領域を回収した。
+ソース一式と staging は root 管理で、試験を開始するたびに digest を照合する。
+ホストの通常 HOME と既存設定を持ち込まず、新しいネットワーク namespace
+で固定の `--version` のみを起動する。実ログイン、モデル呼び出し、
+`--version` 以外の実行に必要な動的依存は未検証。
