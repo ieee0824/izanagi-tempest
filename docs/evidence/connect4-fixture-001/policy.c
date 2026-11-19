@@ -302,7 +302,8 @@ int check_connect4_cgroup_empty(int cgroup_fd, dev_t device, uint64_t id)
  * for recovery. Success returns a second, independently opened link FD. */
 int pin_and_verify_connect4_link(int link_fd, const char *path, int cgroup_fd,
                                  dev_t device, uint64_t cgroup_id,
-                                 uint32_t link_id, uint32_t program_id)
+                                 uint32_t link_id, uint32_t program_id,
+                                 int *pinned)
 {
     dev_t actual_device;
     uint64_t actual_cgroup_id;
@@ -316,6 +317,7 @@ int pin_and_verify_connect4_link(int link_fd, const char *path, int cgroup_fd,
     if (check_connect4_link(link_fd, link_id, program_id, cgroup_id) < 0 ||
         pin_connect4_link(link_fd, path) < 0)
         return -1;
+    *pinned = 1;
     return reopen_connect4_link(path, link_id, program_id, cgroup_id);
 }
 
@@ -695,7 +697,7 @@ int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
                             int link_fd,
                             const char *path, int cgroup_fd, dev_t device,
                             uint64_t cgroup_id, uint32_t link_id,
-                            uint32_t program_id)
+                            uint32_t program_id, int *pinned)
 {
     int lease = acquire_connect4_lease(state_fd);
     if (lease < 0)
@@ -714,7 +716,7 @@ int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
                  check_connect4_worker_membership(cgroup_fd, child) == 0)
             verified = pin_and_verify_connect4_link(link_fd, path, cgroup_fd,
                                                      device, cgroup_id, link_id,
-                                                     program_id);
+                                                     program_id, pinned);
     }
     int result = -1;
     if (verified >= 0 &&
@@ -1149,6 +1151,32 @@ struct connect4_trial {
     const char *pin_path;
 };
 
+/* Only used when this manager observed that pin creation never succeeded.
+ * An unexpected path or release marker is a recovery discrepancy. */
+static int confirm_unpinned_connect4_trial(const struct connect4_trial *trial)
+{
+    int lease = acquire_connect4_lease(trial->state_fd);
+    if (lease < 0)
+        return -1;
+    struct stat metadata;
+    int result = -1;
+    if (lstat(trial->pin_path, &metadata) == 0) {
+        errno = EEXIST;
+    } else if (errno == ENOENT) {
+        if (fstatat(trial->state_fd, "release-intent", &metadata,
+                    AT_SYMLINK_NOFOLLOW) == 0)
+            errno = ESTALE;
+        else if (errno == ENOENT)
+            result = check_connect4_cgroup_empty(trial->cgroup_fd,
+                                                  trial->device, trial->cgroup_id);
+    }
+    int error = errno;
+    close(lease);
+    if (result < 0)
+        errno = error;
+    return result;
+}
+
 /* The manager supplies a fresh, registered trial and retains ownership of
  * its cgroup and original link FD, including on recovery failure. */
 int run_connect4_trial(const struct connect4_trial *trial,
@@ -1167,6 +1195,7 @@ int run_connect4_trial(const struct connect4_trial *trial,
     struct connect4_worker worker;
     if (spawn_connect4_worker(allowed_port, denied_port, &worker) < 0)
         return -1;
+    int pinned = 0;
     int result = place_connect4_worker(trial->state_fd, trial->cgroup_fd,
                                          trial->device, trial->cgroup_id,
                                          worker.pid, worker.pidfd);
@@ -1176,7 +1205,7 @@ int run_connect4_trial(const struct connect4_trial *trial,
                                             trial->link_fd, trial->pin_path,
                                             trial->cgroup_fd, trial->device,
                                             trial->cgroup_id, trial->link_id,
-                                            trial->program_id);
+                                            trial->program_id, &pinned);
     close(worker.gate);
     close(worker.ready);
     if (result == 0)
@@ -1189,9 +1218,11 @@ int run_connect4_trial(const struct connect4_trial *trial,
         saved = errno;
     struct pollfd exited = { .fd = worker.pidfd, .events = POLLIN };
     if (poll(&exited, 1, 2000) == 1 && confirm_worker_exit(worker.pidfd) == 0) {
-        if (recover_connect4_pin(trial->state_fd, trial->pin_path, worker.pidfd,
+        int recovered = pinned ? recover_connect4_pin(trial->state_fd, trial->pin_path, worker.pidfd,
                                  trial->cgroup_fd, trial->device, trial->cgroup_id,
-                                 trial->link_id, trial->program_id) < 0) {
+                                 trial->link_id, trial->program_id)
+            : confirm_unpinned_connect4_trial(trial);
+        if (recovered < 0) {
             *pending = (struct connect4_worker){worker.pid, worker.pidfd, -1, -1};
             return -1;
         }
