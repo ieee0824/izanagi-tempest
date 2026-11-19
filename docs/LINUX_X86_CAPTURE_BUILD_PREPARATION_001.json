@@ -1,0 +1,25 @@
+{
+  "input_files_checked": 29,
+  "input_rows_sha256": "9536047ed2c0ef72de57bcd9e6489a2674a84a6d6f1910187f4094aa8e684db7",
+  "all_inputs_readable_nonwritable": true,
+  "argv": [
+    "/var/lib/tempest-izanagi-capture-build-001/inputs/packer",
+    "validate",
+    "-var-file=/var/lib/tempest-izanagi-capture-build-001/inputs/definition/packer/tempest.pkrvars.json",
+    "/var/lib/tempest-izanagi-capture-build-001/inputs/definition/packer/debian.pkr.hcl"
+  ],
+  "env": {
+    "PATH": "/usr/bin:/bin",
+    "HOME": "/var/lib/tempest-izanagi-capture-build-001/work/home",
+    "TMPDIR": "/var/lib/tempest-izanagi-capture-build-001/work/tmp",
+    "PACKER_CACHE_DIR": "/var/lib/tempest-izanagi-capture-build-001/work/cache",
+    "PACKER_PLUGIN_PATH": "/var/lib/tempest-izanagi-capture-build-001/inputs/plugins",
+    "CHECKPOINT_DISABLE": "1"
+  },
+  "uid": 999,
+  "full_validate_exit": 0,
+  "build_executed": false,
+  "vm_executed": false,
+  "session": 72174,
+  "exit_code": 0
+}
