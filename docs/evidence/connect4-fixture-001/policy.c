@@ -15,6 +15,8 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <poll.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 enum { CONNECT4_INSTRUCTION_COUNT = 8 };
 
@@ -297,11 +299,7 @@ int pin_and_verify_connect4_link(int link_fd, const char *path, int cgroup_fd,
     return reopen_connect4_link(path, link_id, program_id, cgroup_id);
 }
 
-/* The caller supplies the original worker pidfd and owns the exclusive
- * recovery lease over both the private pin path and the cgroup. */
-int unpin_connect4_after_exit(const char *path, int worker_pidfd, int cgroup_fd,
-                              dev_t device, uint64_t cgroup_id,
-                              uint32_t link_id, uint32_t program_id)
+static int confirm_worker_exit(int worker_pidfd)
 {
     if (worker_pidfd < 0) {
         errno = EBADF;
@@ -317,23 +315,21 @@ int unpin_connect4_after_exit(const char *path, int worker_pidfd, int cgroup_fd,
         return -1;
     }
 
-    int link = reopen_connect4_link(path, link_id, program_id, cgroup_id);
-    if (link < 0)
-        return -1;
-    int result = check_connect4_cgroup_empty(cgroup_fd, device, cgroup_id);
-    if (result == 0)
-        result = unlink(path);
-    int error = errno;
-    close(link);
-    if (result < 0)
-        errno = error;
-    return result;
+    return 0;
 }
 
 /* Both admission and recovery must independently open this same immutable
  * lock entry in the root-owned fixture state directory. Never unlink it. */
 int acquire_connect4_lease(int state_fd)
 {
+    struct stat directory;
+    if (fstat(state_fd, &directory) < 0)
+        return -1;
+    if (!S_ISDIR(directory.st_mode) || directory.st_uid != 0 ||
+        (directory.st_mode & 07777) != 0700) {
+        errno = ESTALE;
+        return -1;
+    }
     int lease = openat(state_fd, "admission.lock",
                        O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     if (lease < 0)
@@ -357,4 +353,137 @@ fail:
         errno = error;
         return -1;
     }
+}
+
+/* State is per trial. Keep this marker until the state directory is retired.
+ * Persist it before writing the token that permits the worker to connect. */
+static int record_release_intent(int state_fd)
+{
+    int marker = openat(state_fd, "release-intent",
+                        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                        0600);
+    if (marker < 0)
+        return -1;
+    if (close(marker) < 0)
+        return -1;
+    return fsync(state_fd);
+}
+
+static int confirm_release_state(int state_fd, int worker_pidfd)
+{
+    struct stat marker;
+    if (fstatat(state_fd, "release-intent", &marker, AT_SYMLINK_NOFOLLOW) == 0)
+        return confirm_worker_exit(worker_pidfd);
+    if (errno != ENOENT)
+        return -1;
+    // No release token could have been sent. Cgroup emptiness is still required.
+    return 0;
+}
+
+/* After release intent, require the original pidfd even if the controller
+ * lost the result of the release operation. */
+int recover_connect4_pin(int state_fd, const char *path, int worker_pidfd,
+                         int cgroup_fd, dev_t device, uint64_t cgroup_id,
+                         uint32_t link_id, uint32_t program_id)
+{
+    int lease = acquire_connect4_lease(state_fd);
+    if (lease < 0)
+        return -1;
+
+    /* The independent manager retained this pidfd before admission.
+     * A live worker is stopped even when admission never succeeded. The
+     * manager retries EBUSY within its recovery deadline, leaving the pin. */
+    int result = 0;
+    if (worker_pidfd >= 0 &&
+        syscall(SYS_pidfd_send_signal, worker_pidfd, SIGKILL, NULL, 0) < 0 &&
+        errno != ESRCH)
+        result = -1;
+    if (result == 0 && worker_pidfd >= 0)
+        result = confirm_worker_exit(worker_pidfd);
+    if (result == 0)
+        result = confirm_release_state(state_fd, worker_pidfd);
+    int link = -1;
+    if (result == 0) {
+        link = reopen_connect4_link(path, link_id, program_id, cgroup_id);
+        if (link < 0)
+            result = -1;
+    }
+    if (result == 0)
+        result = check_connect4_cgroup_empty(cgroup_fd, device, cgroup_id);
+    if (result == 0)
+        result = unlink(path);
+
+    int error = errno;
+    if (link >= 0)
+        close(link);
+    close(lease);
+    if (result < 0)
+        errno = error;
+    return result;
+}
+
+/* The manager owns the worker and holds its original pidfd. Gate FD is
+ * a private pipe write end that only the manager can use. */
+int release_connect4_worker(int state_fd, int gate_fd, int worker_pidfd,
+                            int link_fd,
+                            const char *path, int cgroup_fd, dev_t device,
+                            uint64_t cgroup_id, uint32_t link_id,
+                            uint32_t program_id)
+{
+    int lease = acquire_connect4_lease(state_fd);
+    if (lease < 0)
+        return -1;
+
+    siginfo_t status = {0};
+    int verified = -1;
+    if (worker_pidfd < 0) {
+        errno = EBADF;
+    } else if (waitid(P_PIDFD, (id_t)worker_pidfd, &status,
+                      WEXITED | WNOHANG | WNOWAIT) == 0) {
+        if (status.si_pid != 0)
+            errno = ESRCH;
+        else
+            verified = pin_and_verify_connect4_link(link_fd, path, cgroup_fd,
+                                                     device, cgroup_id, link_id,
+                                                     program_id);
+    }
+    int result = -1;
+    if (verified >= 0 && record_release_intent(state_fd) == 0) {
+        const char token = 'R';
+        ssize_t sent = write(gate_fd, &token, sizeof(token));
+        if (sent == 1)
+            result = 0;
+        else if (sent == 0)
+            errno = EIO;
+    }
+    int error = errno;
+    if (verified >= 0)
+        close(verified);
+    close(lease);
+    if (result < 0)
+        errno = error;
+    return result;
+}
+
+/* The manager forks the blocked worker before acquiring a lease. It retains
+ * the returned pidfd and the exclusive gate write end.
+ * The controller and worker must not inherit the manager's recovery lease. */
+int retain_connect4_worker(pid_t child)
+{
+    if (child <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    int fd = (int)syscall(SYS_pidfd_open, child, 0);
+    if (fd < 0)
+        return -1;
+    siginfo_t status = {0};
+    int checked = waitid(P_PIDFD, (id_t)fd, &status,
+                         WEXITED | WNOHANG | WNOWAIT);
+    if (checked == 0 && status.si_pid == 0)
+        return fd;
+    int error = checked < 0 ? errno : ESRCH;
+    close(fd);
+    errno = error;
+    return -1;
 }
