@@ -207,6 +207,27 @@ fn parse_frozen(events: &str) -> Result<bool, Fault> {
     frozen.ok_or(Fault::Identity)
 }
 
+fn wait_for_freezer_state(
+    expected: bool,
+    until: Instant,
+    mut read_state: impl FnMut() -> Result<bool, Fault>,
+) -> Result<(), Fault> {
+    loop {
+        if Instant::now() >= until {
+            return Err(Fault::Identity);
+        }
+        let frozen = read_state()?;
+        let remaining = until.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Fault::Identity);
+        }
+        if frozen == expected {
+            return Ok(());
+        }
+        thread::sleep(remaining.min(Duration::from_millis(5)));
+    }
+}
+
 fn mkdir(directory: &fs::File, name: &str) -> Result<(), Fault> {
     let name = component(name)?;
     super::os::syscall(unsafe { libc::mkdirat(directory.as_raw_fd(), name.as_ptr(), 0o755) })
@@ -429,20 +450,7 @@ impl Group {
 
     #[allow(dead_code)]
     pub(super) fn wait_frozen(&self, expected: bool, until: Instant) -> Result<(), Fault> {
-        loop {
-            if Instant::now() >= until {
-                return Err(Fault::Identity);
-            }
-            let frozen = self.frozen()?;
-            let remaining = until.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(Fault::Identity);
-            }
-            if frozen == expected {
-                return Ok(());
-            }
-            thread::sleep(remaining.min(Duration::from_millis(5)));
-        }
+        wait_for_freezer_state(expected, until, || self.frozen())
     }
 
     /// Keep ownership of the dedicated group through observation and consumption.
@@ -796,6 +804,14 @@ mod tests {
         assert_eq!(reaped, child);
         eprintln!("dummy worker_reaped=1 group_removed=1");
         result.unwrap();
+    }
+
+    #[test]
+    fn simulated_freezer_noncompletion_reaches_deadline() {
+        let until = Instant::now() + Duration::from_millis(20);
+        let result = wait_for_freezer_state(true, until, || Ok(false));
+        assert!(matches!(result, Err(Fault::Identity)));
+        assert!(Instant::now() >= until);
     }
 
     #[test]
