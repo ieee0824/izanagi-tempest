@@ -79,6 +79,49 @@ static void check_invalid_handoff(void)
     puts("extra_or_truncated_fds=rejected-and-closed ack=absent");
 }
 
+static void check_worker_pipe_identity(void)
+{
+    int gate[2], response[2], unrelated[2];
+    assert(pipe2(gate, O_CLOEXEC) == 0);
+    assert(pipe2(response, O_CLOEXEC) == 0);
+    assert(pipe2(unrelated, O_CLOEXEC) == 0);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        int gate_end = fcntl(gate[0], F_DUPFD_CLOEXEC, 8);
+        int response_end = fcntl(response[1], F_DUPFD_CLOEXEC, 8);
+        if (gate_end < 0 || response_end < 0 ||
+            dup3(gate_end, 3, O_CLOEXEC) < 0 || dup3(response_end, 4, O_CLOEXEC) < 0 ||
+            syscall(SYS_close_range, 0U, 2U, 0U) < 0 ||
+            syscall(SYS_close_range, 5U, ~0U, 0U) < 0)
+            _exit(1);
+        char byte = 'Y';
+        if (write(4, &byte, 1) != 1)
+            _exit(2);
+        _exit(read(3, &byte, 1) != 0);
+    }
+    close(gate[0]);
+    close(response[1]);
+    struct pollfd ready = {.fd = response[0], .events = POLLIN};
+    char byte;
+    int synchronized = poll(&ready, 1, 2000) == 1 && read(response[0], &byte, 1) == 1 && byte == 'Y';
+    struct worker_pipe pipes[] = {
+        {3, O_RDONLY, gate[1], O_WRONLY},
+        {4, O_WRONLY, response[0], O_RDONLY},
+    };
+    int valid = synchronized && check_worker_pipes(child, pipes, 2) == 0;
+    int extra = valid && check_worker_pipes(child, pipes, 1) < 0 && errno == ESTALE;
+    pipes[1].parent_fd = unrelated[0];
+    int wrong_inode = valid && check_worker_pipes(child, pipes, 2) < 0 && errno == ESTALE;
+    close(gate[1]);
+    close(response[0]);
+    close(unrelated[0]);
+    close(unrelated[1]);
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    assert(valid && extra && wrong_inode && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 static void check_worker_owned_connection(void)
 {
     uint16_t port;
@@ -123,6 +166,7 @@ int main(void)
     assert(!empty_supplementary_groups("\t "));
     check_controller_death();
     check_invalid_handoff();
+    check_worker_pipe_identity();
     check_worker_owned_connection();
     int gate[2];
     assert(pipe(gate) == 0);
