@@ -124,6 +124,31 @@ fn install_filter(role: Option<Role>, bootstrap_exec: bool) -> Result<(), Fault>
             program.push(jump(number as u32, 0, 1));
             program.push(statement(ret, libc::SECCOMP_RET_ALLOW));
         }
+        // Mio's signal wakeup pair is private to this process. Match all
+        // three scalar arguments, including their high words.
+        program.push(jump(libc::SYS_socketpair as u32, 0, 14));
+        for (index, expected) in [
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let offset = 16 + index as u32 * 8;
+            let remaining = 4 * (2 - index as u8);
+            program.extend([
+                statement(load, offset + 4),
+                jump(0, 0, remaining + 3),
+                statement(load, offset),
+                jump(expected as u32, 0, remaining + 1),
+            ]);
+        }
+        program.extend([
+            statement(ret, libc::SECCOMP_RET_ALLOW),
+            statement(ret, deny),
+            statement(load, 0),
+        ]);
         // Let glibc fall back to the inspectable clone flags.
         program.extend([
             jump(libc::SYS_clone3 as u32, 0, 1),
@@ -259,5 +284,21 @@ mod tests {
         });
         thread.join().unwrap();
         denied(unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) });
+        let mut pair = [-1; 2];
+        let flags = libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC;
+        assert_eq!(
+            unsafe { libc::socketpair(libc::AF_UNIX, flags, 0, pair.as_mut_ptr()) },
+            0
+        );
+        for fd in pair {
+            assert_eq!(unsafe { libc::close(fd) }, 0);
+        }
+        for (family, kind, protocol) in [
+            (libc::AF_INET, flags, 0),
+            (libc::AF_UNIX, libc::SOCK_STREAM, 0),
+            (libc::AF_UNIX, flags, 1),
+        ] {
+            denied(unsafe { libc::socketpair(family, kind, protocol, pair.as_mut_ptr()) });
+        }
     }
 }
