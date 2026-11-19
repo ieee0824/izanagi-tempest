@@ -102,6 +102,25 @@ pub(super) fn verify_library(snapshot: &Snapshot, target: &Path) -> Result<Libra
     Ok(identity)
 }
 
+/// Bind the opened inode, then make the individual mount read-only.
+fn bind_read_only(source: &fs::File, target: &Path) -> Result<(), Fault> {
+    os::mount(
+        Some(Path::new(&format!("/proc/self/fd/{}", source.as_raw_fd()))),
+        target,
+        None,
+        libc::MS_BIND,
+        None,
+    )?;
+    os::mount(
+        None,
+        target,
+        None,
+        libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
+        None,
+    )?;
+    Ok(())
+}
+
 fn bind(
     snapshot: &Snapshot,
     root: &Path,
@@ -187,20 +206,7 @@ fn bind(
     if metadata_identity(&target.symlink_metadata()?)? != identity {
         return Err(Fault::Identity);
     }
-    os::mount(
-        Some(Path::new(&format!("/proc/self/fd/{}", source.as_raw_fd()))),
-        &target,
-        None,
-        libc::MS_BIND,
-        None,
-    )?;
-    os::mount(
-        None,
-        &target,
-        None,
-        libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
-        None,
-    )?;
+    bind_read_only(&source, &target)?;
     if verify_library(snapshot, &target)? != identity {
         return Err(Fault::Identity);
     }
