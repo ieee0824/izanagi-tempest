@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* Fixed IPv4 loopback policy for the local isolation fixture. */
 #include <arpa/inet.h>
 #include <linux/bpf.h>
@@ -5,6 +6,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <errno.h>
 
 enum { CONNECT4_INSTRUCTION_COUNT = 8 };
 
@@ -36,4 +40,47 @@ int build_connect4_policy(uint16_t listener_port,
     };
     memcpy(output, instructions, sizeof(instructions));
     return 0;
+}
+
+/* The controller must keep the worker stopped until attach and pin are
+ * independently verified. These helpers never release a worker. */
+
+static int bpf_call(enum bpf_cmd command, union bpf_attr *attr)
+{
+    return (int)syscall(SYS_bpf, command, attr, sizeof(*attr));
+}
+
+int load_connect4_policy(uint16_t listener_port)
+{
+    struct bpf_insn instructions[CONNECT4_INSTRUCTION_COUNT];
+    if (build_connect4_policy(listener_port, instructions) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    static const char license[] = "GPL";
+    union bpf_attr attr = {
+        .prog_type = BPF_PROG_TYPE_CGROUP_SOCK_ADDR,
+        .expected_attach_type = BPF_CGROUP_INET4_CONNECT,
+        .insn_cnt = CONNECT4_INSTRUCTION_COUNT,
+        .insns = (uintptr_t)instructions,
+        .license = (uintptr_t)license,
+    };
+    return bpf_call(BPF_PROG_LOAD, &attr);
+}
+
+int attach_connect4_policy(int program_fd, int cgroup_fd)
+{
+    if (program_fd < 0 || cgroup_fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    union bpf_attr attr = {
+        .link_create = {
+            .prog_fd = (uint32_t)program_fd,
+            .target_fd = (uint32_t)cgroup_fd,
+            .attach_type = BPF_CGROUP_INET4_CONNECT,
+        },
+    };
+    return bpf_call(BPF_LINK_CREATE, &attr);
 }
