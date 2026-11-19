@@ -118,6 +118,70 @@ impl FixedMcpArtifact {
         }
     }
 
+    /// Verify the two-worker route and return only after confirmed thaw.
+    pub(super) fn inspect_before_exchange(
+        &self,
+        group: &mut super::cgroup::Group,
+        guard: &super::guard::Guard,
+        workers: [(super::contract::Role, &super::identity::Process); 2],
+        ends: [(&super::identity::Descriptor, u32); 2],
+        deadline: Instant,
+    ) -> Result<(), super::os::Fault> {
+        use super::{
+            contract::Role,
+            holder_scan::{Budget, ManagerPipe, task_pipe_fds},
+            os::Fault,
+        };
+
+        let [(role, caller), (_, mcp)] = workers;
+        if role != Role::B {
+            return Err(Fault::Identity);
+        }
+        let [(stdin, request_fd), (stdout, response_fd)] = ends;
+        let pipes = [
+            stdin.pipe_identity(libc::O_RDONLY)?,
+            stdout.pipe_identity(libc::O_WRONLY)?,
+        ];
+        self.wait_for_runtime(mcp, deadline)?;
+        let manager = pipes.map(|identity| ManagerPipe {
+            identity,
+            expected: &[],
+        });
+        group.inspect_while_frozen(
+            guard,
+            deadline,
+            workers,
+            &manager,
+            |_| {
+                let mut budget = Budget {
+                    deadline,
+                    bytes_left: 262144,
+                    entries_left: 8192,
+                };
+                self.verify_stdio(mcp, stdin, stdout, &mut budget)?;
+                for (pipe, fd, writes) in
+                    [(pipes[0], request_fd, true), (pipes[1], response_fd, false)]
+                {
+                    let observed =
+                        task_pipe_fds(std::path::Path::new("/proc"), caller.pid, pipe, &mut budget)
+                            .map_err(|_| Fault::Identity)?;
+                    if observed
+                        != [super::holder_scan::TaskPipeFd {
+                            tid: caller.pid,
+                            start_ticks: caller.birth,
+                            fd,
+                            writes,
+                        }]
+                    {
+                        return Err(Fault::Identity);
+                    }
+                }
+                Ok(())
+            },
+            &(),
+        )
+    }
+
     pub(super) fn verify_stdio(
         &self,
         child: &super::identity::Process,
