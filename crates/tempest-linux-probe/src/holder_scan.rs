@@ -153,7 +153,11 @@ pub(super) fn access_mode(fdinfo: &str) -> Result<i32, Unknown> {
             flags = Some(u32::from_str_radix(value.trim(), 8).map_err(|_| Unknown::Format)?);
         }
     }
-    match flags.ok_or(Unknown::Format)? & libc::O_ACCMODE as u32 {
+    let flags = flags.ok_or(Unknown::Format)?;
+    if flags & libc::O_PATH as u32 != 0 {
+        return Err(Unknown::Format);
+    }
+    match flags & libc::O_ACCMODE as u32 {
         0 => Ok(libc::O_RDONLY),
         1 => Ok(libc::O_WRONLY),
         _ => Err(Unknown::Format),
@@ -287,6 +291,10 @@ mod tests {
         assert_eq!(
             access_mode("pos:\t0\nflags:\t02000001\n"),
             Ok(libc::O_WRONLY)
+        );
+        assert_eq!(
+            access_mode(&format!("flags: {:o}", libc::O_PATH | libc::O_CLOEXEC)),
+            Err(Unknown::Format)
         );
         for bad in ["", "flags: 8", "flags: 2", "flags: 0\nflags: 1"] {
             assert_eq!(access_mode(bad), Err(Unknown::Format));
