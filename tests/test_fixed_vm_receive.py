@@ -185,3 +185,19 @@ class FixedVmReceiveTests(unittest.TestCase):
                         lambda: {'accepted': 0, 'matched': 0}, lambda _phase: result,
                         run_nonce='b' * 32, boot_id='3d6aa964-65a7-4c14-9444-70ecc42b55f8',
                     )
+
+
+class FixedRelayCleanupTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'linux', 'requires Linux pidfd')
+    def test_pidfd_open_failure_reaps_real_child(self):
+        from fixed_relay_pipe_smoke import exercise
+
+        failure = OSError(errno.EMFILE, 'injected pidfd_open failure')
+        with patch('os.pidfd_open', side_effect=failure) as pidfd_open:
+            with self.assertRaises(OSError) as raised:
+                exercise('complete')
+        self.assertIs(raised.exception, failure)
+        pidfd_open.assert_called_once()
+        (pid,) = pidfd_open.call_args.args
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(pid, os.WNOHANG)
