@@ -885,21 +885,21 @@ static int try_connect4_loopback(uint16_t port)
 
 /* Call in the dedicated child. The manager observes the actual exit status
  * and separately counts accepted connections on both listeners. */
-_Noreturn void run_connect4_worker(uint16_t allowed, uint16_t denied)
+static int run_connect4_worker(uint16_t allowed, uint16_t denied)
 {
     if (allowed == 0 || denied == 0 || allowed == denied ||
         connect4_worker_wait() < 0)
-        _exit(70);
+        return 70;
     if (try_connect4_loopback(allowed) != 0)
-        _exit(71);
+        return 71;
     int refused = try_connect4_loopback(denied);
     if (refused == EPERM)
-        _exit(0);
+        return 0;
     if (refused == 0)
-        _exit(72);
+        return 72;
     if (refused > 0 && refused < 128)
-        _exit(128 + refused);
-    _exit(73);
+        return 128 + refused;
+    return 73;
 }
 
 int open_connect4_listener(uint16_t *port)
@@ -949,4 +949,254 @@ int count_connect4_accepts(int listener)
     }
     errno = EOVERFLOW;
     return -1;
+}
+
+struct connect4_phase {
+    int allowed_accepts;
+    int denied_accepts;
+    int worker_code;
+    int worker_status;
+};
+
+int measure_connect4_control(int allowed_listener, uint16_t allowed_port,
+                             int denied_listener, uint16_t denied_port,
+                             struct connect4_phase *phase)
+{
+    *phase = (struct connect4_phase){-1, -1, -1, -1};
+    if (try_connect4_loopback(allowed_port) != 0 ||
+        try_connect4_loopback(denied_port) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    phase->allowed_accepts = count_connect4_accepts(allowed_listener);
+    phase->denied_accepts = count_connect4_accepts(denied_listener);
+    if (phase->allowed_accepts != 1 || phase->denied_accepts != 1) {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
+}
+
+/* Observe without reaping so the manager can still use the original pidfd
+ * for recovery. On timeout the manager must keep the policy pinned. */
+int measure_connect4_worker(int pidfd, int allowed_listener, int denied_listener,
+                            struct connect4_phase *phase)
+{
+    *phase = (struct connect4_phase){-1, -1, -1, -1};
+    struct pollfd worker = { .fd = pidfd, .events = POLLIN };
+    int ready = poll(&worker, 1, 2000);
+    if (ready < 0)
+        return -1;
+    if (ready == 0) {
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    if (confirm_worker_exit(pidfd) < 0)
+        return -1;
+    siginfo_t status = {0};
+    if (waitid(P_PIDFD, (id_t)pidfd, &status, WEXITED | WNOHANG | WNOWAIT) < 0)
+        return -1;
+    phase->worker_code = status.si_code;
+    phase->worker_status = status.si_status;
+    phase->allowed_accepts = count_connect4_accepts(allowed_listener);
+    phase->denied_accepts = count_connect4_accepts(denied_listener);
+    if (status.si_code != CLD_EXITED || status.si_status != 0 ||
+        phase->allowed_accepts != 1 || phase->denied_accepts != 0) {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
+}
+
+/* Move only the manager's live, unreaped direct child while its private
+ * release pipe is still closed to commands. Verify the destination by FD. */
+int place_connect4_worker(int state_fd, int cgroup_fd, dev_t device,
+                          uint64_t cgroup_id, pid_t child, int pidfd)
+{
+    if (child <= 0 || pidfd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    int lease = acquire_connect4_lease(state_fd);
+    if (lease < 0)
+        return -1;
+    int result = -1;
+    if (check_connect4_cgroup_empty(cgroup_fd, device, cgroup_id) < 0 ||
+        check_connect4_pidfd_pid(pidfd, child) < 0)
+        goto done;
+
+    siginfo_t status = {0};
+    if (waitid(P_PIDFD, (id_t)pidfd, &status, WEXITED | WNOHANG | WNOWAIT) < 0)
+        goto done;
+    if (status.si_pid != 0) {
+        errno = ESRCH;
+        goto done;
+    }
+
+    int members = openat(cgroup_fd, "cgroup.procs",
+                         O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (members < 0)
+        goto done;
+    char value[32];
+    int size = snprintf(value, sizeof(value), "%ld\n", (long)child);
+    ssize_t written = write(members, value, (size_t)size);
+    int write_error = errno;
+    close(members);
+    if (written != size) {
+        errno = written < 0 ? write_error : EIO;
+        goto done;
+    }
+    result = check_connect4_worker_membership(cgroup_fd, child);
+
+done:;
+    int error = errno;
+    close(lease);
+    if (result < 0)
+        errno = error;
+    return result;
+}
+
+struct connect4_worker {
+    pid_t pid;
+    int pidfd;
+    int gate;
+    int ready;
+};
+
+/* The manager calls this before taking the lease. Forked child remaps the
+ * pipe ends from temporary numbers to avoid collisions with FD 3 or 4. */
+int spawn_connect4_worker(uint16_t allowed, uint16_t denied,
+                           struct connect4_worker *worker)
+{
+    int gate[2], ready[2];
+    *worker = (struct connect4_worker){-1, -1, -1, -1};
+    if (pipe2(gate, O_CLOEXEC) < 0)
+        return -1;
+    if (pipe2(ready, O_CLOEXEC) < 0) {
+        int error = errno;
+        close(gate[0]);
+        close(gate[1]);
+        errno = error;
+        return -1;
+    }
+    pid_t child = fork();
+    if (child == 0) {
+        int gate_read = fcntl(gate[0], F_DUPFD_CLOEXEC, 5);
+        int ready_write = fcntl(ready[1], F_DUPFD_CLOEXEC, 5);
+        if (gate_read < 0 || ready_write < 0)
+            _exit(69);
+        int gate_target = dup3(gate_read, 3, O_CLOEXEC);
+        if (gate_target < 0)
+            _exit(69);
+        int ready_target = dup3(ready_write, 4, O_CLOEXEC);
+        if (ready_target < 0) {
+            close(gate_target);
+            _exit(69);
+        }
+        close(gate_read);
+        close(ready_write);
+        int status = run_connect4_worker(allowed, denied);
+        close(gate_target);
+        /* The worker closes the readiness end after its notification.
+         * On a setup failure it may still be open. */
+        close(ready_target);
+        _exit(status);
+    }
+
+    int error = errno;
+    close(gate[0]);
+    close(ready[1]);
+    if (child > 0) {
+        int pidfd = retain_connect4_worker(child);
+        if (pidfd >= 0) {
+            *worker = (struct connect4_worker){child, pidfd, gate[1], ready[0]};
+            return 0;
+        }
+        error = errno;
+    }
+    close(gate[1]);
+    close(ready[0]);
+    if (child > 0) {
+        /* This manager is the sole reaper. The PID cannot have been reused. */
+        kill(child, SIGKILL);
+        while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {}
+    }
+    errno = error;
+    return -1;
+}
+
+struct connect4_trial {
+    int state_fd;
+    int cgroup_fd;
+    dev_t device;
+    uint64_t cgroup_id;
+    int link_fd;
+    uint32_t link_id;
+    uint32_t program_id;
+    const char *pin_path;
+};
+
+/* The manager supplies a fresh, registered trial and retains ownership of
+ * its cgroup and original link FD, including on recovery failure. */
+int run_connect4_trial(const struct connect4_trial *trial,
+                       int allowed_listener, uint16_t allowed_port,
+                       int denied_listener, uint16_t denied_port,
+                       struct connect4_phase phases[static 3],
+                       struct connect4_worker *pending)
+{
+    *pending = (struct connect4_worker){-1, -1, -1, -1};
+    for (unsigned i = 0; i < 3; ++i)
+        phases[i] = (struct connect4_phase){-1, -1, -1, -1};
+    if (measure_connect4_control(allowed_listener, allowed_port, denied_listener,
+                                 denied_port, &phases[0]) < 0)
+        return -1;
+
+    struct connect4_worker worker;
+    if (spawn_connect4_worker(allowed_port, denied_port, &worker) < 0)
+        return -1;
+    int result = place_connect4_worker(trial->state_fd, trial->cgroup_fd,
+                                         trial->device, trial->cgroup_id,
+                                         worker.pid, worker.pidfd);
+    if (result == 0)
+        result = release_connect4_worker(trial->state_fd, worker.gate,
+                                            worker.ready, worker.pid, worker.pidfd,
+                                            trial->link_fd, trial->pin_path,
+                                            trial->cgroup_fd, trial->device,
+                                            trial->cgroup_id, trial->link_id,
+                                            trial->program_id);
+    close(worker.gate);
+    close(worker.ready);
+    if (result == 0)
+        result = measure_connect4_worker(worker.pidfd, allowed_listener,
+                                            denied_listener, &phases[1]);
+
+    int saved = result < 0 ? errno : 0;
+    if (syscall(SYS_pidfd_send_signal, worker.pidfd, SIGKILL, NULL, 0) < 0 &&
+        errno != ESRCH)
+        saved = errno;
+    struct pollfd exited = { .fd = worker.pidfd, .events = POLLIN };
+    if (poll(&exited, 1, 2000) == 1 && confirm_worker_exit(worker.pidfd) == 0) {
+        if (recover_connect4_pin(trial->state_fd, trial->pin_path, worker.pidfd,
+                                 trial->cgroup_fd, trial->device, trial->cgroup_id,
+                                 trial->link_id, trial->program_id) < 0) {
+            *pending = (struct connect4_worker){worker.pid, worker.pidfd, -1, -1};
+            return -1;
+        }
+        if (waitpid(worker.pid, NULL, WNOHANG) != worker.pid) {
+            *pending = (struct connect4_worker){worker.pid, worker.pidfd, -1, -1};
+            errno = ECHILD;
+            return -1;
+        }
+    } else {
+        *pending = (struct connect4_worker){worker.pid, worker.pidfd, -1, -1};
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    close(worker.pidfd);
+    if (saved != 0) {
+        errno = saved;
+        return -1;
+    }
+    return measure_connect4_control(allowed_listener, allowed_port, denied_listener,
+                                      denied_port, &phases[2]);
 }
