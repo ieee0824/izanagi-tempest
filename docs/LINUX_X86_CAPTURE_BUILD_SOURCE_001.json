@@ -1,0 +1,12 @@
+{
+  "docs/evidence/capture-build-001/prepare_snapshot.py": "f16748085fac04a7f9a807f2b7ade4f7502acfc0d303b694e9e749b8a0fc1ac3",
+  "docs/evidence/capture-build-001/check_preparation.py": "28dfb5bbce28660889559db105fd36c501df7b4182c4983ebc8d1d44c581dd11",
+  "docs/evidence/capture-build-001/run_once.py": "62c54ce37c6e66d8d1f8e8a993246a95e384581c266f2d05ebb2a0bc5ab4bc6f",
+  "integration/capture_build_observe.py": "e5433926c435cc6cfe336b5f5b77ec630259a6a24a07c3855f775ba7c4b5ab6e",
+  "integration/izanagi-bootstrap/observe.py": "d9261442b8120fc7d7221c4ad8f4a4678a9990953603da11e72fcc90a16bbd28",
+  "integration/izanagi-bootstrap/record_exit.py": "3fb15eaec175996316857a01676d2972f9b38af6888d1bbbf16e015a915ee43b",
+  "docs/LINUX_X86_CAPTURE_DEFINITION_001.json": "da4aaa007199d038311cb0756c807645a7ce2924ba7c68d4341bdd70baeb2aa6",
+  "docs/LINUX_X86_CAPTURE_COMPILE_BINDING_001.json": "1ba7d70f0cc3c87a27e28e8fc4e60d3bdaf96c5bb327b26adff38a59e6759154",
+  "docs/LINUX_X86_CAPTURE_GUEST_BUILD_001_RESULT.json": "8fc9dcc89e003a220ecad7b3e44e0fb05217bc548ec2b3915ef2c3cf652031de",
+  "docs/LINUX_X86_IMAGE_HARDLINK_001_RESULT.json": "c10c380b1e76322c3c29ef716da0da3d444056bc49d9f1f4d3238f9704811beb"
+}
