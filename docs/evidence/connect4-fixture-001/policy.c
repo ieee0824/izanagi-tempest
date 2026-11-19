@@ -1394,3 +1394,118 @@ done:;
         errno = error;
     return result;
 }
+
+#define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-001"
+#define CONNECT4_PIN_PATH "/sys/fs/bpf/" CONNECT4_TRIAL_NAME
+
+/* Keep failed setup directories for inspection. A second invocation must
+ * stop at the original entry, even if it never reached worker admission. */
+int create_connect4_trial_directory(int parent, const char *name)
+{
+    struct stat parent_info, child_info, entry_info;
+    if (fstat(parent, &parent_info) < 0)
+        return -1;
+    if (!S_ISDIR(parent_info.st_mode) || parent_info.st_uid != 0 ||
+        (parent_info.st_mode & 0022) != 0 || name == NULL ||
+        *name == '\0' || strcmp(name, ".") == 0 || strcmp(name, "..") == 0 ||
+        strchr(name, '/') != NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (mkdirat(parent, name, 0700) < 0)
+        return -1;
+    int child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (child < 0)
+        return -1;
+    if (fstat(child, &child_info) < 0 ||
+        fstatat(parent, name, &entry_info, AT_SYMLINK_NOFOLLOW) < 0) {
+        int error = errno;
+        close(child);
+        errno = error;
+        return -1;
+    }
+    if (!S_ISDIR(child_info.st_mode) || child_info.st_uid != 0 ||
+        (child_info.st_mode & 07777) != 0700 ||
+        child_info.st_dev != parent_info.st_dev ||
+        child_info.st_dev != entry_info.st_dev ||
+        child_info.st_ino != entry_info.st_ino) {
+        close(child);
+        errno = ESTALE;
+        return -1;
+    }
+    return child;
+}
+
+static int open_connect4_parent(const char *path, long magic)
+{
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return -1;
+    struct stat metadata;
+    struct statfs filesystem;
+    int error = 0;
+    if (fstat(fd, &metadata) < 0 || fstatfs(fd, &filesystem) < 0)
+        error = errno;
+    else if (metadata.st_uid != 0 || (metadata.st_mode & 0022) != 0 ||
+             (magic != 0 && filesystem.f_type != magic))
+        error = ESTALE;
+    if (error != 0) {
+        close(fd);
+        errno = error;
+        return -1;
+    }
+    return fd;
+}
+
+int create_connect4_fixture_state(int *state_fd, int *cgroup_fd)
+{
+    *state_fd = -1;
+    *cgroup_fd = -1;
+    int state_parent = open_connect4_parent("/var/lib", 0);
+    if (state_parent < 0)
+        return -1;
+    int cgroup_parent = open_connect4_parent("/sys/fs/cgroup", CGROUP2_SUPER_MAGIC);
+    int bpffs = open_connect4_parent("/sys/fs/bpf", BPF_FS_MAGIC);
+    int state = -1, cgroup = -1, result = -1;
+    if (cgroup_parent < 0 || bpffs < 0)
+        goto done;
+    struct stat existing;
+    if (fstatat(bpffs, CONNECT4_TRIAL_NAME, &existing, AT_SYMLINK_NOFOLLOW) == 0) {
+        errno = EEXIST;
+        goto done;
+    }
+    if (errno != ENOENT)
+        goto done;
+    state = create_connect4_trial_directory(state_parent, CONNECT4_TRIAL_NAME);
+    if (state < 0)
+        goto done;
+    int lock = openat(state, "admission.lock",
+                      O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (lock < 0)
+        goto done;
+    if (close(lock) < 0 || fsync(state) < 0 || fsync(state_parent) < 0)
+        goto done;
+    cgroup = create_connect4_trial_directory(cgroup_parent, CONNECT4_TRIAL_NAME);
+    if (cgroup < 0)
+        goto done;
+    *state_fd = state;
+    *cgroup_fd = cgroup;
+    result = 0;
+
+done:;
+    int error = errno;
+    if (result < 0) {
+        if (state >= 0)
+            close(state);
+        if (cgroup >= 0)
+            close(cgroup);
+    }
+    close(state_parent);
+    if (cgroup_parent >= 0)
+        close(cgroup_parent);
+    if (bpffs >= 0)
+        close(bpffs);
+    if (result < 0)
+        errno = error;
+    return result;
+}
