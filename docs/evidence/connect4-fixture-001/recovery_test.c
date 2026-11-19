@@ -202,12 +202,8 @@ static void check_fixed_agent_exchange(int early_exec, int close_gate)
     struct fixed_relay_pipes relay;
     assert(spawn_fixed_relay_worker(port, deadline, &worker, &relay) == 0);
     pid_t child = worker.pid;
-    const struct worker_pipe pipes[] = {
-        {3, O_RDONLY, worker.gate, O_WRONLY},
-        {5, O_RDONLY, relay.request, O_WRONLY},
-        {6, O_WRONLY, relay.response, O_RDONLY},
-        {7, O_WRONLY, relay.status, O_RDONLY},
-    };
+    struct worker_pipe pipes[FIXED_RELAY_PIPE_COUNT];
+    describe_fixed_relay_pipes(&worker, &relay, pipes);
     assert(confirm_connect4_ready(worker.ready) == 0);
     close(worker.ready);
     if (privileged)

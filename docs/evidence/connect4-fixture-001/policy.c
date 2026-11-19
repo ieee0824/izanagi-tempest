@@ -1536,6 +1536,18 @@ struct fixed_relay_pipes {
     int status;
 };
 
+enum { FIXED_RELAY_PIPE_COUNT = 4 };
+
+static void describe_fixed_relay_pipes(
+    const struct connect4_worker *worker, const struct fixed_relay_pipes *relay,
+    struct worker_pipe pipes[static FIXED_RELAY_PIPE_COUNT])
+{
+    pipes[0] = (struct worker_pipe){3, O_RDONLY, worker->gate, O_WRONLY};
+    pipes[1] = (struct worker_pipe){5, O_RDONLY, relay->request, O_WRONLY};
+    pipes[2] = (struct worker_pipe){6, O_WRONLY, relay->response, O_RDONLY};
+    pipes[3] = (struct worker_pipe){7, O_WRONLY, relay->status, O_RDONLY};
+}
+
 /* Fork before taking the lease. Child pipe ends are remapped together
  * so no inherited descriptor can collide with the fixed layout. */
 static int spawn_worker(uint16_t allowed, uint16_t denied,
@@ -1716,6 +1728,35 @@ static int finish_connect4_worker(const struct connect4_trial *trial,
         return -1;
     }
     return 0;
+}
+
+/* The caller retains the pidfd and must finish or recover the worker on
+ * failure as well as on success. The upper owner must already know its PID. */
+int place_and_release_fixed_relay(const struct connect4_trial *trial,
+                                  const struct connect4_worker *worker,
+                                  const struct fixed_relay_pipes *relay,
+                                  int controller_pidfd, int handoff_channel,
+                                  int *pinned)
+{
+    *pinned = 0;
+    if (handoff_channel < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (controller_is_live(controller_pidfd) < 0 ||
+        place_connect4_worker(trial->state_fd, trial->cgroup_fd, trial->device,
+                              trial->cgroup_id, worker->pid, worker->pidfd) < 0 ||
+        handoff_connect4_worker_fd(handoff_channel, worker->pid, worker->pidfd) < 0)
+        return -1;
+
+    struct worker_pipe pipes[FIXED_RELAY_PIPE_COUNT];
+    describe_fixed_relay_pipes(worker, relay, pipes);
+    return release_connect4_worker(trial->state_fd, worker->ready,
+                                   pipes, FIXED_RELAY_PIPE_COUNT, controller_pidfd,
+                                   worker->pid, worker->pidfd, trial->link_fd,
+                                   trial->pin_path, trial->cgroup_fd, trial->device,
+                                   trial->cgroup_id, trial->link_id, trial->program_id,
+                                   pinned, 0);
 }
 
 int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
