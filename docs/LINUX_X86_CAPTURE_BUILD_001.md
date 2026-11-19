@@ -1,0 +1,15 @@
+# 新capture fixture image build 001 実測
+
+caller40711は同handle終端exit0。observer39683は339sample/policy error0だが、unit GCでsame-Invocation終端属性を取得できずexit1。このunknownをobserver成功と読み替えず、exit recorderと独立trusted journalで正常終了を確認した。
+
+[collector57320の結果](LINUX_X86_CAPTURE_BUILD_001_RESULT.json)はexit0。固定observerのBuildLifetimeへ全sampleをreplayし、単一QEMU327995/start39020414・固定cwd・installer network/storage/listenerを確認した。Invocation `19bf093edd7743d08154172eb63abf50`、29入力/10source/9compile binding/新guest/旧証拠とhardlink例外bindingを照合。UID999空・cgroup不在・3port閉を確認した。
+
+完成qcow2のSHA256は `b46a44433488b067db24940e4a7231604628f35403517856a3c84f01939c65df`、virtual size4GiB、backingなし、dirty/corrupt flagなし。Packer完了とinstall security markerを保存ログで確認した。[直前検査](LINUX_X86_CAPTURE_BUILD_PREFLIGHT_001.json)と[各handle終端/容量](LINUX_X86_CAPTURE_BUILD_LIFECYCLE_001.json)を保存した。
+
+## Offline追補
+
+UID999のoffline fixture25211/native88622は各exit0。imageをmount/bootせず、抽出fileも実行せず、readonly debugfsで照合した。[fixture offline結果](LINUX_X86_CAPTURE_BUILD_OFFLINE_001.json)では新installed manifestの全compile/derivation情報、dispatcher/mailbox/quiesce、LWSと新guest SHA3bc9fd0a…・owner-modeが定義と一致した。metadataは新source0656333のもので、旧fixtureの後付け変更ではない。
+
+[native artifact追補](LINUX_X86_CAPTURE_NATIVE_ARTIFACTS_001.json)でagent/HTTP/eBPFの旧固定SHA、ELF machine62/62/247、root所有とmode0551/0755/0440を確認。imageとpartition SHAは照合前後で不変。派生RAW/partitionと抽出物は新work/offline-proofに保持した。
+
+build collectorのinstalled bytes未照合という歴史的記録は変更せず、このoffline追補を追加証拠とする。実runtimeの16MiB要求・drop0・大容量配送成功はまだ未測定。新large案は[別計画](LINUX_X86_CAPTURE_LARGE_001_PLAN.md)へ分け、新snapshot/VMは未開始。

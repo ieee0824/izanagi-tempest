@@ -1,0 +1,218 @@
+{
+  "unit": "tempest-izanagi-capture-build-001.service",
+  "invocation_id": "19bf093edd7743d08154172eb63abf50",
+  "boot_id": "30389abc903c40ae89a5c6268ec1c432",
+  "caller_session": 40711,
+  "observer_session": 39683,
+  "caller_exit": 0,
+  "observer_exit": 1,
+  "observer_terminal": "unknown: same-invocation terminal attributes unavailable after unit GC",
+  "exit_recorder": {
+    "unit_name": "tempest-izanagi-capture-build-001.service",
+    "invocation_id": "19bf093edd7743d08154172eb63abf50",
+    "unit": {
+      "Result": "success",
+      "ExecMainCode": "1",
+      "ExecMainStatus": "0",
+      "ControlGroup": "/system.slice/tempest-izanagi-capture-build-001.service",
+      "ActiveState": "deactivating",
+      "SubState": "stop-post",
+      "InvocationID": "19bf093edd7743d08154172eb63abf50"
+    },
+    "service_result": "success",
+    "exit_code": "exited",
+    "exit_status": "0",
+    "scope": "ExecStopPost snapshot; final cgroup and journal checks are separate"
+  },
+  "trusted_lifecycle": [
+    {
+      "UNIT": "tempest-izanagi-capture-build-001.service",
+      "MESSAGE_ID": "7d4958e842da4a758f6c1cdc7b36dcc5",
+      "__REALTIME_TIMESTAMP": "1795047645700968",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "19bf093edd7743d08154172eb63abf50"
+    },
+    {
+      "UNIT": "tempest-izanagi-capture-build-001.service",
+      "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
+      "__REALTIME_TIMESTAMP": "1795047645704278",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "19bf093edd7743d08154172eb63abf50"
+    },
+    {
+      "UNIT": "tempest-izanagi-capture-build-001.service",
+      "MESSAGE_ID": "7ad2d189f7e94e70a38c781354912448",
+      "__REALTIME_TIMESTAMP": "1795047983782616",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "19bf093edd7743d08154172eb63abf50"
+    },
+    {
+      "UNIT": "tempest-izanagi-capture-build-001.service",
+      "MESSAGE_ID": "ae8f7b866b0347b9af31fe1c80b127c0",
+      "__REALTIME_TIMESTAMP": "1795047983783557",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "19bf093edd7743d08154172eb63abf50"
+    }
+  ],
+  "observations": 339,
+  "observer_last": {
+    "time": "2026-11-19T00:26:24.269917+00:00",
+    "unit": {
+      "MainPID": "0",
+      "Result": "success",
+      "ExecMainCode": "0",
+      "ExecMainStatus": "0",
+      "ControlGroup": "",
+      "LoadState": "not-found",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "InvocationID": ""
+    },
+    "cgroup_pids": [],
+    "listeners": [],
+    "qemu_network": [],
+    "external_listener_observed": false
+  },
+  "qemu_identity": {
+    "pid": 327995,
+    "starttime_ticks": 39020414,
+    "cwd": "/var/lib/tempest-izanagi-capture-build-001/work"
+  },
+  "fixed_observer_replay_passed": true,
+  "new_guest_build_report_sha256": "8fc9dcc89e003a220ecad7b3e44e0fb05217bc548ec2b3915ef2c3cf652031de",
+  "hardlink_exception_report_sha256": "c10c380b1e76322c3c29ef716da0da3d444056bc49d9f1f4d3238f9704811beb",
+  "observer_errors": 0,
+  "external_listener_observed": false,
+  "inputs_unchanged": 29,
+  "old_inputs_evidence_unchanged": true,
+  "external_runtime_unchanged": true,
+  "cgroup_absent": true,
+  "uid999_processes_absent": true,
+  "ports_closed": true,
+  "image_info": {
+    "children": [
+      {
+        "name": "file",
+        "info": {
+          "children": [],
+          "virtual-size": 2139553792,
+          "filename": "/var/lib/tempest-izanagi-capture-build-001/work/output-debian/debian-x86_64.qcow2",
+          "format": "file",
+          "actual-size": 2139590656,
+          "format-specific": {
+            "type": "file",
+            "data": {}
+          },
+          "dirty-flag": false
+        }
+      }
+    ],
+    "virtual-size": 4294967296,
+    "filename": "/var/lib/tempest-izanagi-capture-build-001/work/output-debian/debian-x86_64.qcow2",
+    "cluster-size": 65536,
+    "format": "qcow2",
+    "actual-size": 2139590656,
+    "format-specific": {
+      "type": "qcow2",
+      "data": {
+        "compat": "1.1",
+        "compression-type": "zlib",
+        "lazy-refcounts": false,
+        "refcount-bits": 16,
+        "corrupt": false,
+        "extended-l2": false
+      }
+    },
+    "dirty-flag": false
+  },
+  "files": {
+    "/var/lib/tempest-izanagi-capture-build-001/work/output-debian/debian-x86_64.qcow2": {
+      "bytes": 2139553792,
+      "sha256": "b46a44433488b067db24940e4a7231604628f35403517856a3c84f01939c65df",
+      "uid": 999,
+      "gid": 988,
+      "mode": "0600"
+    },
+    "/tmp/tempest-capture-build-001.log": {
+      "bytes": 31797,
+      "sha256": "f8996fa3b3783fac2704c0df91c860828de1d5718cf74a7ccae36769ed99f98e",
+      "uid": 1000,
+      "gid": 1000,
+      "mode": "0600"
+    },
+    "/tmp/tempest-capture-build-observation-001.jsonl": {
+      "bytes": 395274,
+      "sha256": "3a95bb711d8c100352c39d1b49957eb05fc41d8bece16ebb29d72c03e0645d23",
+      "uid": 0,
+      "gid": 0,
+      "mode": "0600"
+    },
+    "/var/lib/tempest-izanagi-capture-build-001/work/packer-debug.log": {
+      "bytes": 159953,
+      "sha256": "27271bde5a21049f819700f7bfc7b8259df03153728015621f67370d85fa78f5",
+      "uid": 999,
+      "gid": 988,
+      "mode": "0600"
+    },
+    "/var/lib/tempest-izanagi-capture-build-001/work/installer-serial.log": {
+      "bytes": 222211,
+      "sha256": "fdc4fd91f63ad38b44bdf76cfc828d4a576a873fc188670794ff8ce92ed99bbc",
+      "uid": 999,
+      "gid": 988,
+      "mode": "0600"
+    },
+    "/var/lib/tempest-izanagi-capture-build-001/work/evidence/exit-status.json": {
+      "bytes": 522,
+      "sha256": "48b4f16a8d276c1851f526d5931adf90ee647714e3ec9defaf4010cda1b240c9",
+      "uid": 999,
+      "gid": 988,
+      "mode": "0600"
+    },
+    "/var/lib/tempest-izanagi-capture-build-001/work/evidence/journal.private.jsonl": {
+      "bytes": 6351,
+      "sha256": "d8552b5ac30c3a9016c3eda59b23b6e36b99796ed3ffe929c81173d0b5c13657",
+      "uid": 0,
+      "gid": 0,
+      "mode": "0600"
+    }
+  },
+  "fixture_expected_manifest": {
+    "tempest_guest_source_tree_sha256": "0658b34a13d191c600de78d611cc998d90ac89f75f675e91483d5f0793eacb9a",
+    "tempest_guest_source_dirty": false,
+    "schema_version": 1,
+    "architecture": "x86_64",
+    "izanagi_commit": "16d0b55947006a166cfa29dcb8bfe71f65f8c36a",
+    "lws_commit": "2c0ea463f334f10a562e54f1cdc7ba8a474029e2",
+    "tempest_guest_version": "0.1.0",
+    "tempest_guest_source_commit": "06563333e895924fb0b3892dfd1213a5285eb33f",
+    "built_at": "2026-11-18T23:55:47.033397+00:00",
+    "iso_sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
+    "input_sha256": {
+      "agent": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+      "ebpf": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+      "http": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+      "lws": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+      "guest": "3bc9fd0a15aa2f1e0e14f8a33731d0051242ae48ca991e937ad8506ae30d4284"
+    },
+    "delivery_race_fixture": true,
+    "derivation_sha256": {
+      "prepare.py": "4dfa961b927f2b0b097aad2ff5a0eef036b9f0a6c6c50053f398d911b8ef5210",
+      "provision.sh": "2cbd4e8c128f289216aebd21ff364a65b5552ee623df56f345cd17e818ba800e",
+      "dispatcher.py": "faf0c5aef7e5ae7600e77c88df61d84edad6b3cdd39e5b765e65d7a96972e1b9",
+      "quiesce.py": "72fabf3ce527257ab2bb5fb8cb3b8a8ef7e706ff2715b29e5b7c0857bf5390a8",
+      "x86_template.py": "beff58866542b0df1741b7bd593a8c6605c2f808a0607264f70782ae74d69cc4",
+      "delivery_race_fixture.py": "562a44539935b975f3c9b1eba8e141579d12c5791d62206163578f4ddf170dc6"
+    }
+  },
+  "install_security_marker_observed": true,
+  "installed_fixture_bytes": "not yet verified; separate offline proof required",
+  "fixture_runtime_executed": false
+}

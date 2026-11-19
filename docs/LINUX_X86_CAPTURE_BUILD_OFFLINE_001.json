@@ -1,0 +1,207 @@
+{
+  "source_image": "/var/lib/tempest-izanagi-capture-build-001/work/output-debian/debian-x86_64.qcow2",
+  "source_image_sha256_before": "b46a44433488b067db24940e4a7231604628f35403517856a3c84f01939c65df",
+  "source_image_sha256_after": "b46a44433488b067db24940e4a7231604628f35403517856a3c84f01939c65df",
+  "raw_bytes": 4294967296,
+  "raw_sha256": "64a6e7f89312e8c0eb8be7ea16e276aaf4fea231efaa6a4758ce2f40096e0d0a",
+  "partition": {
+    "node": "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/disk.raw1",
+    "start": 2048,
+    "size": 7194624,
+    "type": "83",
+    "bootable": true
+  },
+  "partition_sha256": "d5955ed555fe8087876f0090229e6ca692d03b240f9aa90628e4f822dc1dc4de",
+  "data_partitions_nonoverlapping": true,
+  "extended_logical_containment_verified": true,
+  "commands": [
+    [
+      "/usr/bin/qemu-img",
+      "convert",
+      "-f",
+      "qcow2",
+      "-O",
+      "raw",
+      "/var/lib/tempest-izanagi-capture-build-001/work/output-debian/debian-x86_64.qcow2",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/disk.raw"
+    ],
+    [
+      "/usr/sbin/sfdisk",
+      "--json",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/disk.raw"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /etc/tempest/image.json",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /etc/tempest/image.json /var/lib/tempest-izanagi-capture-build-001/work/offline-proof/image_metadata",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /usr/local/bin/tempest-guest",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /usr/local/bin/tempest-guest /var/lib/tempest-izanagi-capture-build-001/work/offline-proof/dispatcher",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /usr/local/libexec/tempest-mailbox",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /usr/local/libexec/tempest-mailbox /var/lib/tempest-izanagi-capture-build-001/work/offline-proof/mailbox",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /usr/local/libexec/tempest-quiesce",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /usr/local/libexec/tempest-quiesce /var/lib/tempest-izanagi-capture-build-001/work/offline-proof/quiesce",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /usr/local/libexec/tempest-guest-native",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /usr/local/libexec/tempest-guest-native /var/lib/tempest-izanagi-capture-build-001/work/offline-proof/guest",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "stat /usr/local/bin/lws",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/root.partition"
+    ],
+    [
+      "/usr/sbin/debugfs",
+      "-R",
+      "dump /usr/local/bin/lws /var/lib/tempest-izanagi-capture-build-001/work/offline-proof/lws",
+      "/var/lib/tempest-izanagi-capture-build-001/work/offline-proof/root.partition"
+    ]
+  ],
+  "artifacts": {
+    "image_metadata": {
+      "guest_path": "/etc/tempest/image.json",
+      "guest_mode": "0644",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "bytes": 2408,
+      "sha256": "86a7f18e63b5bb1a13b1111e829ce7e07313d210a0fff8a7e8c3dfa550fbab07"
+    },
+    "dispatcher": {
+      "guest_path": "/usr/local/bin/tempest-guest",
+      "guest_mode": "0755",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "bytes": 13331,
+      "sha256": "faf0c5aef7e5ae7600e77c88df61d84edad6b3cdd39e5b765e65d7a96972e1b9"
+    },
+    "mailbox": {
+      "guest_path": "/usr/local/libexec/tempest-mailbox",
+      "guest_mode": "0755",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "bytes": 13331,
+      "sha256": "faf0c5aef7e5ae7600e77c88df61d84edad6b3cdd39e5b765e65d7a96972e1b9"
+    },
+    "quiesce": {
+      "guest_path": "/usr/local/libexec/tempest-quiesce",
+      "guest_mode": "0755",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "bytes": 5139,
+      "sha256": "72fabf3ce527257ab2bb5fb8cb3b8a8ef7e706ff2715b29e5b7c0857bf5390a8"
+    },
+    "guest": {
+      "guest_path": "/usr/local/libexec/tempest-guest-native",
+      "guest_mode": "0755",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "bytes": 4021520,
+      "sha256": "3bc9fd0a15aa2f1e0e14f8a33731d0051242ae48ca991e937ad8506ae30d4284"
+    },
+    "lws": {
+      "guest_path": "/usr/local/bin/lws",
+      "guest_mode": "0755",
+      "guest_uid": 0,
+      "guest_gid": 0,
+      "bytes": 14774032,
+      "sha256": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e"
+    }
+  },
+  "installed_manifest": {
+    "tempest_guest_source_tree_sha256": "0658b34a13d191c600de78d611cc998d90ac89f75f675e91483d5f0793eacb9a",
+    "tempest_guest_source_dirty": false,
+    "schema_version": 1,
+    "architecture": "x86_64",
+    "izanagi_commit": "16d0b55947006a166cfa29dcb8bfe71f65f8c36a",
+    "lws_commit": "2c0ea463f334f10a562e54f1cdc7ba8a474029e2",
+    "tempest_guest_version": "0.1.0",
+    "tempest_guest_source_commit": "06563333e895924fb0b3892dfd1213a5285eb33f",
+    "built_at": "2026-11-18T23:55:47.033397+00:00",
+    "iso_sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
+    "input_sha256": {
+      "agent": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+      "ebpf": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+      "http": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+      "lws": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+      "guest": "3bc9fd0a15aa2f1e0e14f8a33731d0051242ae48ca991e937ad8506ae30d4284"
+    },
+    "delivery_race_fixture": true,
+    "derivation_sha256": {
+      "prepare.py": "4dfa961b927f2b0b097aad2ff5a0eef036b9f0a6c6c50053f398d911b8ef5210",
+      "provision.sh": "2cbd4e8c128f289216aebd21ff364a65b5552ee623df56f345cd17e818ba800e",
+      "dispatcher.py": "faf0c5aef7e5ae7600e77c88df61d84edad6b3cdd39e5b765e65d7a96972e1b9",
+      "quiesce.py": "72fabf3ce527257ab2bb5fb8cb3b8a8ef7e706ff2715b29e5b7c0857bf5390a8",
+      "x86_template.py": "beff58866542b0df1741b7bd593a8c6605c2f808a0607264f70782ae74d69cc4",
+      "delivery_race_fixture.py": "562a44539935b975f3c9b1eba8e141579d12c5791d62206163578f4ddf170dc6"
+    },
+    "service_uid": 999,
+    "service_gid": 989,
+    "packages": {
+      "awscli": "2.23.6-1",
+      "tcpdump": "4.99.5-2",
+      "iptables": "1.8.11-2",
+      "opendoas": "6.8.2-1+b1",
+      "python3": "3.13.5-1",
+      "python3-cryptography": "43.0.0-3+deb13u1"
+    },
+    "installed_sha256": {
+      "/usr/local/bin/lws": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+      "/usr/local/libexec/tempest-guest-native": "3bc9fd0a15aa2f1e0e14f8a33731d0051242ae48ca991e937ad8506ae30d4284",
+      "/usr/local/bin/tempest-guest": "faf0c5aef7e5ae7600e77c88df61d84edad6b3cdd39e5b765e65d7a96972e1b9",
+      "/usr/local/libexec/tempest-mailbox": "faf0c5aef7e5ae7600e77c88df61d84edad6b3cdd39e5b765e65d7a96972e1b9",
+      "/usr/local/libexec/tempest-quiesce": "72fabf3ce527257ab2bb5fb8cb3b8a8ef7e706ff2715b29e5b7c0857bf5390a8"
+    }
+  },
+  "fixture_manifest_and_installed_scripts_match": true,
+  "mounted": false,
+  "debugfs_write_flag_used": false,
+  "vm_boot_executed": false,
+  "extracted_files_executed": false,
+  "runtime_race_test_executed": false
+}
