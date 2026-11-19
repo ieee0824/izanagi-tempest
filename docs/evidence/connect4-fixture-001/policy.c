@@ -643,47 +643,74 @@ static int check_pipe_end(int fd, int direction, struct stat *identity)
     return 0;
 }
 
-/* The fixed worker retains only gate read end 3 at this stage. */
-static int check_connect4_worker_fds(pid_t child, int gate_fd)
+struct worker_pipe {
+    int child_fd;
+    int child_direction;
+    int parent_fd;
+    int parent_direction;
+};
+
+static int check_worker_pipes(pid_t child, const struct worker_pipe *pipes, size_t count)
 {
-    struct stat writer, reader;
-    if (check_pipe_end(gate_fd, O_WRONLY, &writer) < 0)
-        return -1;
     char path[64];
     snprintf(path, sizeof(path), "/proc/%ld/fd", (long)child);
     DIR *table = opendir(path);
     if (!table)
         return -1;
-    int found = 0;
-    int verified = 0;
-    for (unsigned i = 0; i < 8; ++i) {
+
+    size_t found = 0;
+    int result = -1;
+    for (;;) {
         errno = 0;
         struct dirent *entry = readdir(table);
         if (!entry) {
-            verified = errno == 0 && found;
+            if (errno == 0 && found == count)
+                result = 0;
+            else if (errno == 0)
+                errno = ESTALE;
             break;
         }
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
-        if (found || strcmp(entry->d_name, "3") != 0)
-            break;
-        if (fstatat(dirfd(table), "3", &reader, 0) < 0) {
-            int error = errno;
-            closedir(table);
-            errno = error;
-            return -1;
+
+        const struct worker_pipe *expected = NULL;
+        for (size_t i = 0; i < count; ++i) {
+            char fd_name[32];
+            snprintf(fd_name, sizeof(fd_name), "%d", pipes[i].child_fd);
+            if (strcmp(entry->d_name, fd_name) == 0) {
+                expected = &pipes[i];
+                break;
+            }
         }
-        if (!S_ISFIFO(reader.st_mode) || reader.st_dev != writer.st_dev ||
-            reader.st_ino != writer.st_ino)
+        if (!expected) {
+            errno = ESTALE;
             break;
-        found = 1;
+        }
+        struct stat parent_end, child_end;
+        if (check_pipe_end(expected->parent_fd, expected->parent_direction, &parent_end) < 0 ||
+            fstatat(dirfd(table), entry->d_name, &child_end, 0) < 0)
+            break;
+        if (!S_ISFIFO(child_end.st_mode) || child_end.st_dev != parent_end.st_dev ||
+            child_end.st_ino != parent_end.st_ino) {
+            errno = ESTALE;
+            break;
+        }
+        if (check_worker_pipe_direction(child, expected->child_fd, expected->child_direction) < 0)
+            break;
+        ++found;
     }
+    int error = errno;
     closedir(table);
-    if (!verified) {
-        errno = ESTALE;
-        return -1;
-    }
-    return check_worker_pipe_direction(child, 3, O_RDONLY);
+    if (result < 0)
+        errno = error;
+    return result;
+}
+
+/* The fixed worker retains only gate read end 3 at this stage. */
+static int check_connect4_worker_fds(pid_t child, int gate_fd)
+{
+    const struct worker_pipe gate = {3, O_RDONLY, gate_fd, O_WRONLY};
+    return check_worker_pipes(child, &gate, 1);
 }
 
 /* The manager has closed its own copy of the readiness write end. */
