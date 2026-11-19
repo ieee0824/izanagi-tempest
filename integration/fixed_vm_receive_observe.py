@@ -5,7 +5,9 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import stat
+import time
 import uuid
 
 PHASES = ('control_before', 'allow_same_run', 'deny_other', 'control_after')
@@ -15,6 +17,71 @@ FIXED_IMAGE_SHA256 = '8e6ad453eea6a270fcee63e3dae5e79f90a4d25e70420c07f9fde52d2f
 FIXED_GUEST_SHA256 = '3bc9fd0a15aa2f1e0e14f8a33731d0051242ae48ca991e937ad8506ae30d4284'
 RECEIVER_PATH = Path('readonly-check/fixed-vm-receive.py')
 RECEIVER_SOURCE = Path(__file__).resolve().parents[1] / 'image/fixed_vm_receive.py'
+
+
+class AlternateListener:
+    """Count loopback accepts independently of the worker's connect status."""
+
+    request = b'tempest-alternate-dummy-v1'
+    response = b'tempest-alternate-ack-v1'
+
+    def __init__(self):
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self._listener.bind(('127.0.0.1', 0))
+            self._listener.listen(8)
+        except OSError:
+            self._listener.close()
+            raise
+        self.port = self._listener.getsockname()[1]
+        self._accepted = 0
+        self._matched = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exception):
+        self._listener.close()
+
+    def _accept(self, timeout):
+        self._listener.settimeout(timeout)
+        peer, _ = self._listener.accept()
+        self._accepted += 1
+        return peer
+
+    def serve_control(self, *, deadline):
+        """Serve one fixed request while its control worker runs."""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('alternate control deadline elapsed')
+        with self._accept(remaining) as peer:
+            observed = bytearray()
+            while len(observed) < len(self.request):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('alternate request deadline elapsed')
+                peer.settimeout(remaining)
+                chunk = peer.recv(len(self.request) - len(observed))
+                if not chunk:
+                    raise ValueError('incomplete alternate request')
+                observed.extend(chunk)
+            if observed != self.request:
+                raise ValueError('unexpected alternate request')
+            self._matched += 1
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('alternate response deadline elapsed')
+            peer.settimeout(remaining)
+            peer.sendall(self.response)
+
+    def snapshot(self):
+        """Call after the phase worker completes and control serving ends."""
+        for _ in range(16):
+            try:
+                self._accept(0).close()
+            except BlockingIOError:
+                return {'accepted': self._accepted, 'matched': self._matched}
+        raise ValueError('alternate listener received unexpected excess connections')
 
 
 def stage_receiver(workspace, mapped_metadata):

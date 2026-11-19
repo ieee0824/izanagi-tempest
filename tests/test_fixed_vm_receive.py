@@ -4,7 +4,9 @@ import json
 import os
 from pathlib import Path
 import runpy
+import socket
 import sys
+import time
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 import unittest
@@ -14,6 +16,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'integration'))
 from fixed_vm_receive_observe import (
+    AlternateListener,
     PHASES,
     TrialBoundaries,
     collect_trial,
@@ -35,6 +38,20 @@ def phase_transport(phase, refused=errno.EPERM):
 
 
 class FixedVmReceiveTests(unittest.TestCase):
+    def test_alternate_listener_counts_unserviced_accept_separately(self):
+        with AlternateListener() as listener:
+            self.assertEqual(listener.snapshot(), {'accepted': 0, 'matched': 0})
+            address = ('127.0.0.1', listener.port)
+            with socket.create_connection(address, timeout=2) as peer:
+                peer.sendall(b'tempest-alternate-dummy-v1')
+                listener.serve_control(deadline=time.monotonic() + 2)
+                with peer.makefile('rb') as stream:
+                    self.assertEqual(stream.read(), b'tempest-alternate-ack-v1')
+            self.assertEqual(listener.snapshot(), {'accepted': 1, 'matched': 1})
+            with socket.create_connection(address, timeout=2):
+                self.assertEqual(listener.snapshot(), {'accepted': 2, 'matched': 1})
+            self.assertEqual(listener.snapshot(), {'accepted': 2, 'matched': 1})
+
     def test_request_requires_trial_connection(self):
         execute = Mock()
         nonce = 'a' * 32
