@@ -111,11 +111,13 @@ impl FixedMcpArtifact {
         use super::capsule;
 
         const EXEC_FD: libc::c_int = 6;
-        let setup = || {
-            capsule::prepare_mcp_root(root, &self.libraries)?;
-            capsule::drop_privileges(MCP_UID)
-        };
-        if setup().is_err() || !parent.alive().unwrap_or(false) {
+        if capsule::prepare_mcp_root(root, &self.libraries).is_err() {
+            unsafe { libc::_exit(120) };
+        }
+        if capsule::drop_privileges(MCP_UID).is_err() {
+            unsafe { libc::_exit(121) };
+        }
+        if !parent.alive().unwrap_or(false) {
             unsafe { libc::_exit(125) };
         }
         let mappings = [
@@ -129,7 +131,7 @@ impl FixedMcpArtifact {
             unsafe { libc::_exit(126) };
         }
         if super::seccomp::install_mcp_stdio().is_err() {
-            unsafe { libc::_exit(126) };
+            unsafe { libc::_exit(122) };
         }
         let argv = [c"/izanagi".as_ptr(), c"mcp".as_ptr(), std::ptr::null()];
         let env = [
@@ -172,11 +174,13 @@ impl FixedMcpArtifact {
             }
             let observed = (|| {
                 let identity = child.identity()?;
-                Ok::<_, Fault>(
-                    identity.code == executable
-                        && child.thread_count()? >= 2
-                        && child.identity()? == identity,
-                )
+                if identity.code != executable || child.thread_count()? < 2 {
+                    return Ok(false);
+                }
+                if child.identity()? != identity {
+                    return Err(Fault::Identity);
+                }
+                Ok(true)
             })();
             if !child.alive()? {
                 return Err(child.exited());

@@ -188,3 +188,15 @@ sudo -n sh -c 'umask 077 && exec "$1" linux-isolation-probe --fixed-mcp-stdio-fi
 事後に両専用パスと対象 UID プロセスは存在しなかった。先に /run 上の CLI
 コピーを起動しようとした際は OS に拒否され、試験入口には到達しなかった。
 結果を room #17120 に報告した。Izanagi の root 管理 staging は残している。
+
+診断版 `924ba46`（CLI SHA-256
+`398675c617ee092988aba11e585293c72d8adc2011381fa76721948d52877848`）を
+同じ親 umask と SHA 検査で1回実行した。exit 1、`mcp_runtime_wait` で
+`identity`、errno は null。凍結・B 解放前に停止した。直子2件を回収、
+未回収0、回収と root 削除の異常なし。両専用パスと対象 UID プロセスの
+事後不在を確認し、room #17124 に報告した。
+
+後続の診断版では元 pidfd の非消費観測で終了コードとシグナルを記録する。
+MCP 子の root 準備失敗は 120、権限降格は 121、seccomp は 122、
+親不在または bootstrap gate 失敗は 125、FD 再配置は 126、
+execveat が戻った場合は 127 として区別する。
