@@ -215,7 +215,7 @@ static void check_fixed_agent_exchange(int early_exec, int close_gate)
     close(worker.gate);
     int connect_errno;
     if (close_gate) {
-        assert(read_before(relay.status, &connect_errno, sizeof(connect_errno), deadline) < 0 &&
+        assert(read_fixed_relay_connect_errno(&relay, deadline, &connect_errno) < 0 &&
                errno == EPIPE);
         int status;
         assert(waitpid(child, &status, 0) == child);
@@ -228,7 +228,7 @@ static void check_fixed_agent_exchange(int early_exec, int close_gate)
         close(relay.response);
         return;
     }
-    assert(read_before(relay.status, &connect_errno, sizeof(connect_errno), deadline) == 0);
+    assert(read_fixed_relay_connect_errno(&relay, deadline, &connect_errno) == 0);
     assert(connect_errno == 0);
     close(relay.status);
     struct pollfd ready = {.fd = listener, .events = POLLIN};
@@ -250,6 +250,9 @@ static void check_fixed_agent_exchange(int early_exec, int close_gate)
     ready = (struct pollfd){.fd = peer, .events = POLLIN};
     assert(poll_before(&ready, deadline) == 0);
     assert(read(peer, observed, sizeof(observed)) == 0);
+    int relay_exit;
+    assert(observe_fixed_relay_exit(&worker, deadline, &relay_exit) == 0);
+    assert(relay_exit == (early_exec ? 2 : 0));
     int status;
     assert(waitpid(child, &status, 0) == child);
     close(worker.pidfd);
@@ -257,6 +260,41 @@ static void check_fixed_agent_exchange(int early_exec, int close_gate)
     close(peer);
     close(relay.request);
     close(relay.response);
+}
+
+static void check_fixed_relay_refused_connection(void)
+{
+    int reserved = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    assert(reserved >= 0);
+    struct sockaddr_in address = {
+        .sin_family = AF_INET,
+        .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)},
+    };
+    assert(bind(reserved, (struct sockaddr *)&address, sizeof(address)) == 0);
+    socklen_t size = sizeof(address);
+    assert(getsockname(reserved, (struct sockaddr *)&address, &size) == 0);
+
+    int64_t now = monotonic_ns();
+    assert(now >= 0);
+    int64_t deadline = now + 2000000000;
+    struct connect4_worker worker;
+    struct fixed_relay_pipes relay;
+    assert(spawn_fixed_relay_worker(ntohs(address.sin_port), deadline, &worker, &relay) == 0);
+    assert(confirm_connect4_ready(worker.ready) == 0);
+    assert(write(worker.gate, "R", 1) == 1);
+    int connect_errno, relay_exit;
+    assert(read_fixed_relay_connect_errno(&relay, deadline, &connect_errno) == 0);
+    assert(connect_errno == ECONNREFUSED);
+    assert(observe_fixed_relay_exit(&worker, deadline, &relay_exit) == 0);
+    assert(relay_exit == 1);
+    assert(waitpid(worker.pid, NULL, 0) == worker.pid);
+    close(worker.pidfd);
+    close(worker.ready);
+    close(worker.gate);
+    close(relay.request);
+    close(relay.response);
+    close(relay.status);
+    close(reserved);
 }
 
 static void check_adopted_relay(void)
@@ -348,6 +386,7 @@ int main(void)
     check_fixed_agent_exchange(0, 0);
     check_fixed_agent_exchange(1, 0);
     check_fixed_agent_exchange(0, 1);
+    check_fixed_relay_refused_connection();
     check_adopted_relay();
     int gate[2];
     assert(pipe(gate) == 0);

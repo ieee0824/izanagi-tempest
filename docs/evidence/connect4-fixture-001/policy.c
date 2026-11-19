@@ -1631,6 +1631,39 @@ int spawn_fixed_relay_worker(uint16_t port, int64_t deadline,
     return spawn_worker(port, 0, worker, NULL, relay, deadline);
 }
 
+int read_fixed_relay_connect_errno(const struct fixed_relay_pipes *relay,
+                                   int64_t deadline, int *connect_errno)
+{
+    int reported;
+    if (read_before(relay->status, &reported, sizeof(reported), deadline) < 0)
+        return -1;
+    if (reported < 0 || reported > 4095) {
+        errno = EPROTO;
+        return -1;
+    }
+    *connect_errno = reported;
+    return 0;
+}
+
+/* Leave the child waitable so cleanup can still verify the original pidfd. */
+int observe_fixed_relay_exit(const struct connect4_worker *worker,
+                             int64_t deadline, int *relay_exit)
+{
+    struct pollfd exited = {.fd = worker->pidfd, .events = POLLIN};
+    if (poll_before(&exited, deadline) < 0)
+        return -1;
+    siginfo_t status = {0};
+    if (waitid(P_PIDFD, (id_t)worker->pidfd, &status, WEXITED | WNOHANG | WNOWAIT) < 0)
+        return -1;
+    if (status.si_pid != worker->pid || status.si_code != CLD_EXITED ||
+        status.si_status > 2) {
+        errno = EPROTO;
+        return -1;
+    }
+    *relay_exit = status.si_status;
+    return 0;
+}
+
 struct connect4_trial {
     int state_fd;
     int cgroup_fd;
