@@ -63,7 +63,10 @@ pub(super) fn expected_results() -> [serde_json::Value; 2] {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
 pub(super) enum ExchangeStage {
-    Release = 125,
+    ReleaseMissing = 125,
+    ReleaseRead = 136,
+    ReleaseEofWait = 137,
+    ReleaseExtra = 138,
     PipeSetup = 130,
     InitializeSend = 131,
     InitializeResponse = 132,
@@ -113,18 +116,47 @@ fn expect_stdout_eof(responses: &mut File, deadline: Instant) -> io::Result<()> 
     Ok(())
 }
 
+#[derive(Debug)]
+pub(super) enum ControlError {
+    Missing,
+    Read(io::Error),
+    EofWait(io::Error),
+    Extra,
+}
+
+impl ControlError {
+    pub(super) fn into_io(self) -> io::Error {
+        match self {
+            Self::Missing => invalid("missing fixture control byte"),
+            Self::Read(error) | Self::EofWait(error) => error,
+            Self::Extra => invalid("unexpected data after fixture control byte"),
+        }
+    }
+
+    pub(super) fn stage(&self) -> ExchangeStage {
+        match self {
+            Self::Missing => ExchangeStage::ReleaseMissing,
+            Self::Read(_) => ExchangeStage::ReleaseRead,
+            Self::EofWait(_) => ExchangeStage::ReleaseEofWait,
+            Self::Extra => ExchangeStage::ReleaseExtra,
+        }
+    }
+}
+
 pub(super) fn expect_control_byte(
     reader: OwnedFd,
     expected: u8,
     deadline: Instant,
-) -> io::Result<()> {
+) -> Result<(), ControlError> {
     let mut reader = File::from(reader);
     let mut byte = [0];
-    if read(&mut reader, &mut byte, deadline)? != 1 || byte != [expected] {
-        return Err(invalid("missing fixture control byte"));
+    if read(&mut reader, &mut byte, deadline).map_err(ControlError::Read)? != 1
+        || byte != [expected]
+    {
+        return Err(ControlError::Missing);
     }
-    if read(&mut reader, &mut byte, deadline)? != 0 {
-        return Err(invalid("unexpected data after fixture control byte"));
+    if read(&mut reader, &mut byte, deadline).map_err(ControlError::EofWait)? != 0 {
+        return Err(ControlError::Extra);
     }
     Ok(())
 }
@@ -238,7 +270,9 @@ mod tests {
         writer.write_all(b"R").unwrap();
         let error = expect_control_byte(reader, b'R', Instant::now() + Duration::from_millis(20))
             .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            matches!(error, ControlError::EofWait(error) if error.kind() == io::ErrorKind::TimedOut)
+        );
         drop(writer);
 
         for frame in [&b"R"[..], &b"RR"[..]] {
@@ -248,7 +282,7 @@ mod tests {
             if frame.len() == 1 {
                 result.unwrap();
             } else {
-                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+                assert!(matches!(result, Err(ControlError::Extra)));
             }
         }
     }

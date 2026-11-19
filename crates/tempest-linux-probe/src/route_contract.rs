@@ -461,7 +461,8 @@ fn run_fixed_exchange(
     group.attach(Role::B, caller.pid)?;
     registry.attached(caller_record)?;
     *phase = "caller_ready";
-    mcp_stdio_fixture::expect_control_byte(ready, b'Y', deadline)?;
+    mcp_stdio_fixture::expect_control_byte(ready, b'Y', deadline)
+        .map_err(mcp_stdio_fixture::ControlError::into_io)?;
 
     *phase = "mcp_spawn";
     let mcp = bind_fresh_child(artifact.spawn_waiting(
@@ -642,8 +643,7 @@ fn exchange_after_release(
     expected: [&Value; 2],
     deadline: Instant,
 ) -> Result<(), mcp_stdio_fixture::ExchangeStage> {
-    mcp_stdio_fixture::expect_control_byte(gate, b'R', deadline)
-        .map_err(|_| mcp_stdio_fixture::ExchangeStage::Release)?;
+    mcp_stdio_fixture::expect_control_byte(gate, b'R', deadline).map_err(|error| error.stage())?;
     let [initialize, catalog] = expected;
     mcp_stdio_fixture::exchange(requests, responses, initialize, catalog, deadline)
         .map_err(|(stage, _)| stage)
@@ -1216,7 +1216,7 @@ mod tests {
                 [&Value::Null; 2],
                 Instant::now() + Duration::from_secs(1),
             ),
-            Err(mcp_stdio_fixture::ExchangeStage::Release),
+            Err(mcp_stdio_fixture::ExchangeStage::ReleaseMissing),
         );
         assert_eq!(std::fs::File::from(request_read).read(&mut [0]).unwrap(), 0);
     }
