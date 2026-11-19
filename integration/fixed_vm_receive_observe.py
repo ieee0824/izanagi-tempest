@@ -109,3 +109,37 @@ def observe_guest(execute, *, run_nonce, boot_id, phase, operation):
             raise ValueError('invalid guest report framing')
         return validate_guest_export(stdout[:-1], run_nonce=run_nonce, boot_id=boot_id)
     return validate_guest_ack(stdout, run_nonce=run_nonce, boot_id=boot_id, phase=phase, operation=operation)
+
+
+def preflight_guest(execute, build_inputs):
+    """Check the dedicated image and capture boot identity before the first phase."""
+    if build_inputs.get('fixed_vm_receiver_fixture') is not True:
+        raise ValueError('fixed receiver fixture image required')
+    code = """import json, os, pwd, stat, uuid
+from pathlib import Path
+path = Path('/run/tempest-fixed-vm-receiver')
+info = path.lstat()
+owner = pwd.getpwnam('izanagi')
+if (owner.pw_uid == 0 or os.geteuid() != owner.pw_uid or os.getegid() != owner.pw_gid
+    or (info.st_uid, info.st_gid) != (owner.pw_uid, owner.pw_gid)
+    or not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700
+    or next(path.iterdir(), None) is not None):
+    raise SystemExit('invalid fixed receiver record directory')
+boot = uuid.UUID(Path('/proc/sys/kernel/random/boot_id').read_text().strip())
+print(json.dumps({'boot_id': str(boot), 'uid': info.st_uid, 'gid': info.st_gid}))
+"""
+    result = execute('/usr/bin/python3', '-I', '-B', '-c', code, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError('fixed guest receiver preflight failed')
+    stdout = result.stdout
+    if len(stdout) > 256 or stdout.count('\n') != 1 or not stdout.endswith('\n'):
+        raise ValueError('invalid guest preflight framing')
+    record = json.loads(stdout, object_pairs_hook=unique_object)
+    if not isinstance(record, dict) or set(record) != {'boot_id', 'uid', 'gid'}:
+        raise ValueError('invalid guest preflight schema')
+    boot_id = record['boot_id']
+    if not isinstance(boot_id, str) or str(uuid.UUID(boot_id)) != boot_id:
+        raise ValueError('invalid guest preflight boot ID')
+    if any(type(record[key]) is not int or record[key] <= 0 for key in ('uid', 'gid')):
+        raise ValueError('invalid guest preflight ownership')
+    return record
