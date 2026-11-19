@@ -815,6 +815,19 @@ mod tests {
     }
 
     #[test]
+    fn simulated_freezer_completion_after_deadline_is_rejected() {
+        let until = Instant::now() + Duration::from_millis(20);
+        let result = wait_for_freezer_state(true, until, || {
+            thread::sleep(until.saturating_duration_since(Instant::now()));
+            while Instant::now() < until {
+                thread::yield_now();
+            }
+            Ok(true)
+        });
+        assert!(matches!(result, Err(Fault::Identity)));
+    }
+
+    #[test]
     fn frozen_event_requires_a_unique_complete_value() {
         assert!(matches!(
             super::parse_frozen("populated 1\nfrozen 1\n"),
