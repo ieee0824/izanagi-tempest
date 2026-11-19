@@ -448,23 +448,38 @@ impl Group {
     /// Keep ownership of the dedicated group through observation and consumption.
     /// The observer's result stays local and no frozen proof survives thaw.
     #[allow(dead_code)]
-    pub(super) fn inspect_while_frozen<T>(
+    pub(super) fn inspect_while_frozen<T: PartialEq>(
         &mut self,
         until: Instant,
+        worker: (Role, u32),
         observe: impl FnOnce(&Self) -> Result<T, Fault>,
-        consume: impl FnOnce(T) -> Result<(), Fault>,
+        expected: &T,
     ) -> Result<(), Fault> {
-        if !self.armed || Instant::now() >= until {
+        if !self.armed || worker.1 == 0 || Instant::now() >= until {
             return Err(Fault::Identity);
         }
         let result = (|| {
             self.request_frozen(true)?;
             self.wait_frozen(true, until)?;
+            let check_worker = || {
+                if self.members(worker.0)? != [worker.1] || !self.bound(worker.0, worker.1)? {
+                    return Err(Fault::Identity);
+                }
+                Ok(())
+            };
+            check_worker()?;
             let observation = observe(self)?;
+            check_worker()?;
             if Instant::now() >= until || !self.frozen()? || Instant::now() >= until {
                 return Err(Fault::Identity);
             }
-            consume(observation)?;
+            // This comparison is the only consumption of the observation.
+            // No callback can publish an admission before thaw succeeds.
+            if &observation != expected {
+                return Err(Fault::Identity);
+            }
+            drop(observation);
+            check_worker()?;
             if Instant::now() >= until || !self.frozen()? || Instant::now() >= until {
                 return Err(Fault::Identity);
             }
