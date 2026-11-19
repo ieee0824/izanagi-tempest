@@ -39,6 +39,13 @@ impl Descriptor {
         })
     }
 
+    pub(super) fn pipe_identity(&self, access: i32) -> Result<(u64, u64), Fault> {
+        if self.mode & libc::S_IFMT != libc::S_IFIFO || self.access != access {
+            return Err(Fault::Identity);
+        }
+        Ok((self.dev, self.ino))
+    }
+
     pub(super) fn matches(&self, pid: u32, fd: i32) -> Result<bool, Fault> {
         let metadata = fs::metadata(format!("/proc/{pid}/fd/{fd}"))?;
         let info = fs::read_to_string(format!("/proc/{pid}/fdinfo/{fd}"))?;

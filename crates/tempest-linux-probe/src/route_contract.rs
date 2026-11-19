@@ -76,18 +76,23 @@ impl FixedMcpArtifact {
     pub(super) fn verify_stdio(
         &self,
         child: &super::identity::Process,
-        stdin: (&super::identity::Descriptor, (u64, u64)),
-        stdout: (&super::identity::Descriptor, (u64, u64)),
+        stdin: &super::identity::Descriptor,
+        stdout: &super::identity::Descriptor,
         budget: &mut super::holder_scan::Budget,
     ) -> Result<(), super::os::Fault> {
         use super::{holder_scan::required_task_pipe_fds, os::Fault};
 
         let executable = self.executable.identity()?;
-        verify_mcp_stdio(child, executable, stdin.0, stdout.0)?;
+        verify_mcp_stdio(child, executable, stdin, stdout)?;
         let proc_root = std::path::Path::new("/proc");
-        let readers = required_task_pipe_fds(proc_root, child.pid, stdin.1, 0, false, budget)
+        let request_pipe = stdin.pipe_identity(libc::O_RDONLY)?;
+        let response_pipe = stdout.pipe_identity(libc::O_WRONLY)?;
+        if request_pipe == response_pipe {
+            return Err(Fault::Identity);
+        }
+        let readers = required_task_pipe_fds(proc_root, child.pid, request_pipe, 0, false, budget)
             .map_err(|_| Fault::Identity)?;
-        let writers = required_task_pipe_fds(proc_root, child.pid, stdout.1, 1, true, budget)
+        let writers = required_task_pipe_fds(proc_root, child.pid, response_pipe, 1, true, budget)
             .map_err(|_| Fault::Identity)?;
         if !readers
             .iter()
@@ -96,7 +101,7 @@ impl FixedMcpArtifact {
         {
             return Err(Fault::Identity);
         }
-        verify_mcp_stdio(child, executable, stdin.0, stdout.0)
+        verify_mcp_stdio(child, executable, stdin, stdout)
     }
 }
 
