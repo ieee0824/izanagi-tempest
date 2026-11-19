@@ -570,8 +570,10 @@ cargo test --locked -p tempest-kvm-probe --lib -- --test-threads=4
 固定ダミー試験では、専用ユーザー所有のモード `0700` のディレクトリと、
 同じユーザー所有のモード `0600` の `settings.json`（内容は `{}`）を用意します。
 検査は設定ファイルだけを読み、Claude Code の起動やログインを行いません。
+専用ユーザーで実行する場合は、未作成のパスを指定して `--initialize` で生成できます。
+`--audit` は検査に成功したときに種類・所有 UID・権限だけを JSON で出力します。
 
 ```sh
-python3 integration/check_claude_dummy_config.py CONFIG_DIRECTORY --owner-uid FIXTURE_UID
+python3 integration/check_claude_dummy_config.py NEW_CONFIG_DIRECTORY --owner-uid FIXTURE_UID --initialize --audit
 python3 -m unittest discover -s tests -p test_claude_dummy_config.py -v
 ```

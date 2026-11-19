@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -33,3 +34,26 @@ class ClaudeDummyConfigTests(unittest.TestCase):
             settings.unlink()
             settings.symlink_to("/dev/null")
             self.assertEqual(check().returncode, 1)
+
+    def test_initialization_and_metadata_audit(self):
+        with tempfile.TemporaryDirectory() as parent:
+            directory = Path(parent) / "fixture"
+            uid = os.geteuid()
+            args = [sys.executable, str(SCRIPT), str(directory), "--owner-uid", str(uid)]
+            result = subprocess.run(
+                args + ["--initialize", "--audit"], capture_output=True, check=True, timeout=5
+            )
+            self.assertEqual(json.loads(result.stdout), {
+                "root": {"kind": "directory", "uid": uid, "mode": "0700"},
+                "settings.json": {"kind": "regular", "uid": uid, "mode": "0600"},
+            })
+            settings = directory / "settings.json"
+            before = settings.stat()
+            repeat = subprocess.run(args + ["--initialize"], capture_output=True, timeout=5)
+            self.assertEqual(repeat.returncode, 1)
+            self.assertEqual(settings.stat().st_ino, before.st_ino)
+            self.assertEqual(settings.read_bytes(), b"{}\n")
+            (directory / "unexpected").write_text("dummy")
+            rejected = subprocess.run(args + ["--audit"], capture_output=True, timeout=5)
+            self.assertEqual(rejected.returncode, 1)
+            self.assertEqual(rejected.stdout, b"")
