@@ -1,0 +1,34 @@
+name: KVM probe unit checks
+
+on:
+  push:
+    branches:
+      - 'pronnia/linux-direct-stage'
+  pull_request:
+    paths:
+      - '.github/workflows/kvm-unit.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/tempest-kvm-probe/**'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust tools
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: cargo +stable fmt --all -- --check
+      - name: Test fixed dummy backends without KVM device access
+        run: cargo +stable test --locked -p tempest-kvm-probe -- --test-threads=1
+      - name: Check resource lifetime fixtures under parallel libtest
+        run: cargo +stable test --locked -p tempest-kvm-probe --lib -- --test-threads=4
+      - name: Lint KVM probe
+        run: cargo +stable clippy --locked -p tempest-kvm-probe --all-targets -- -D warnings

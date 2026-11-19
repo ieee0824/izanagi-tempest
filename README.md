@@ -351,3 +351,19 @@ cargo run --locked -p tempest -- mcp-proxy \
 
 stdin/stdoutはMCP JSON-lines専用です。上限超過は中継せず、応答不明の要求を成功扱いしません。
 summaryは`rpc_transport_only`であり、VM終了や`tempest run`全体の完了を示しません。
+
+### Linux検証用プローブ
+
+Linuxの隔離・固定KVMの検証コードは、それぞれ `tempest-linux-probe` と
+`tempest-kvm-probe` にあります。通常のLinux CIはroot権限、VM、モデル認証を
+使わず、直列と4スレッドのテストを実行します。
+
+```sh
+cargo test --locked -p tempest-linux-probe -- --test-threads=1
+cargo test --locked -p tempest-linux-probe --lib -- --test-threads=4
+cargo test --locked -p tempest-kvm-probe -- --test-threads=1
+cargo test --locked -p tempest-kvm-probe --lib -- --test-threads=4
+```
+
+固定ホストでの検証範囲は[FD走査の記録](docs/LINUX_DIRECT_B_HOLDER_SCANNER_PLAN.md)と
+[loopback試験の記録](docs/LINUX_DIRECT_B_CONNECT4_FIXTURE_PLAN.md)にあります。

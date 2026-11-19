@@ -1182,6 +1182,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempest-kvm-probe"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "tempest-linux-probe"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "tempest-model"
 version = "0.1.0"
 dependencies = [
