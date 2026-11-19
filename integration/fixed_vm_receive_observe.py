@@ -156,3 +156,27 @@ print(json.dumps({'boot_id': str(boot), 'uid': info.st_uid, 'gid': info.st_gid, 
     if record['guest_sha256'] != FIXED_GUEST_SHA256:
         raise ValueError('guest executable digest mismatch')
     return record
+
+
+def validate_trial_counts(guest_export, host_phases, *, run_nonce, boot_id):
+    """Require the same ordered intervals in guest and alternate-host counters."""
+    guest = validate_guest_export(guest_export, run_nonce=run_nonce, boot_id=boot_id)
+    if not isinstance(host_phases, list) or len(host_phases) != len(PHASES):
+        raise ValueError('incomplete host phase records')
+    total = 0
+    for phase, host in zip(PHASES, host_phases, strict=True):
+        if (
+            not isinstance(host, dict)
+            or set(host) != {'run_nonce', 'boot_id', 'phase', 'start', 'end', 'delta'}
+            or (host['run_nonce'], host['boot_id'], host['phase']) != (run_nonce, boot_id, phase)
+        ):
+            raise ValueError('host phase binding mismatch')
+        delta = int(phase in ('control_before', 'control_after'))
+        for field, expected in (('start', total), ('end', total + delta), ('delta', delta)):
+            counts = host[field]
+            if not isinstance(counts, dict) or set(counts) != {'accepted', 'matched'}:
+                raise ValueError('invalid host counter schema')
+            if any(type(count) is not int or count != expected for count in counts.values()):
+                raise ValueError('unexpected alternate host listener count')
+        total += delta
+    return guest
