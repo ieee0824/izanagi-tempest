@@ -265,6 +265,42 @@ pub(super) fn map_descriptors(
     os::close_except(&keep)
 }
 
+fn enter_root(root: &Path) -> Result<(), Fault> {
+    use std::os::unix::ffi::OsStrExt;
+    let root = CString::new(root.as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
+    os::syscall(unsafe { libc::chdir(root.as_ptr()) })?;
+    os::syscall(unsafe { libc::chroot(c".".as_ptr()) })?;
+    os::syscall(unsafe { libc::chdir(c"/work".as_ptr()) })?;
+    Ok(())
+}
+
+fn drop_privileges(uid: u32) -> Result<(), Fault> {
+    for cap in 0..=40 {
+        os::syscall(unsafe { libc::prctl(libc::PR_CAPBSET_DROP, cap, 0, 0, 0) })?;
+    }
+    os::syscall(unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        )
+    })?;
+    os::syscall(unsafe { libc::setgroups(0, std::ptr::null()) })?;
+    os::syscall(unsafe { libc::setresgid(uid, uid, uid) })?;
+    os::syscall(unsafe { libc::setresuid(uid, uid, uid) })?;
+    // UID transitions clear PDEATHSIG. Restore it before the syscall policy
+    // makes this setting immutable to the payload.
+    os::syscall(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) })?;
+    // Fixed Linux capability ABI v3. No retained effective/permitted/inheritable bits.
+    let header = [0x20080522_u32, 0];
+    let data = [0_u32; 6];
+    os::syscall(unsafe { libc::syscall(libc::SYS_capset, header.as_ptr(), data.as_ptr()) as i32 })?;
+    os::syscall(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) })?;
+    Ok(())
+}
+
 pub(super) fn enter(
     role: Role,
     scenario: Scenario,
@@ -352,11 +388,7 @@ pub(super) fn enter(
     *step = 5;
     map_descriptors(mappings, 6)?;
     *step = 6;
-    use std::os::unix::ffi::OsStrExt;
-    let root = CString::new(root.as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
-    os::syscall(unsafe { libc::chdir(root.as_ptr()) })?;
-    os::syscall(unsafe { libc::chroot(c".".as_ptr()) })?;
-    os::syscall(unsafe { libc::chdir(c"/work".as_ptr()) })?;
+    enter_root(root)?;
     *step = 7;
     for (resource, value) in [
         (libc::RLIMIT_CORE, 0),
@@ -377,29 +409,7 @@ pub(super) fn enter(
     ] {
         limit(resource, value)?;
     }
-    for cap in 0..=40 {
-        os::syscall(unsafe { libc::prctl(libc::PR_CAPBSET_DROP, cap, 0, 0, 0) })?;
-    }
-    os::syscall(unsafe {
-        libc::prctl(
-            libc::PR_CAP_AMBIENT,
-            libc::PR_CAP_AMBIENT_CLEAR_ALL,
-            0,
-            0,
-            0,
-        )
-    })?;
-    os::syscall(unsafe { libc::setgroups(0, std::ptr::null()) })?;
-    os::syscall(unsafe { libc::setresgid(role.uid(), role.uid(), role.uid()) })?;
-    os::syscall(unsafe { libc::setresuid(role.uid(), role.uid(), role.uid()) })?;
-    // UID transitions clear PDEATHSIG. Restore it before the syscall policy
-    // makes this setting immutable to the payload.
-    os::syscall(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) })?;
-    // Fixed Linux capability ABI v3. No retained effective/permitted/inheritable bits.
-    let header = [0x20080522_u32, 0];
-    let data = [0_u32; 6];
-    os::syscall(unsafe { libc::syscall(libc::SYS_capset, header.as_ptr(), data.as_ptr()) as i32 })?;
-    os::syscall(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) })?;
+    drop_privileges(role.uid())?;
     *step = 8;
     seccomp::install(role, true)?;
     let argv = [
