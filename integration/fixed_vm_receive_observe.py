@@ -242,3 +242,35 @@ class TrialBoundaries:
     def require_complete(self):
         if self._next is not None:
             raise ValueError('incomplete trial boundary observations')
+
+
+def collect_trial(execute, observe_route, snapshot_host, run_phase, *, run_nonce, boot_id):
+    """Collect the fixed phase evidence around a harness-owned connection runner."""
+    binding = {'run_nonce': run_nonce, 'boot_id': boot_id}
+    forward, fingerprint = observe_route()
+    boundaries = TrialBoundaries(**binding, forward=forward, session_fingerprint=fingerprint)
+
+    def observe_boundary(phase, edge):
+        ack = observe_guest(execute, **binding, phase=phase, operation=edge)
+        current_forward, current_fingerprint = observe_route()
+        boundaries.observe(phase, edge, guest_ack=ack, forward=current_forward,
+                           session_fingerprint=current_fingerprint)
+
+    host_phases = []
+    for phase in PHASES:
+        observe_boundary(phase, 'start')
+        before = dict(snapshot_host())
+        run_phase(phase)
+        after = dict(snapshot_host())
+        observe_boundary(phase, 'end')
+        host_phases.append({
+            **binding, 'phase': phase, 'start': before, 'end': after,
+            'delta': {key: after[key] - before[key] for key in ('accepted', 'matched')},
+        })
+
+    boundaries.require_complete()
+    guest = observe_guest(execute, **binding, phase=PHASES[-1], operation='report')
+    if observe_route() != (forward, fingerprint):
+        raise ValueError('fixed VM identity changed during final report')
+    validate_trial_counts(json.dumps(guest).encode(), host_phases, **binding)
+    return {'guest': guest, 'host_phases': host_phases, 'forward': forward}
