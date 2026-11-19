@@ -189,31 +189,56 @@ static void check_fixed_transfer(void)
 
 static void check_fixed_agent_exchange(void)
 {
-    int input[2], output[2], peer[2];
+    int input[2], output[2];
     assert(pipe2(input, O_CLOEXEC | O_NONBLOCK) == 0);
     assert(pipe2(output, O_CLOEXEC | O_NONBLOCK) == 0);
-    assert(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, peer) == 0);
+    uint16_t port;
+    int listener = open_connect4_listener(&port);
+    assert(listener >= 0);
     unsigned char request[2][47] = {{0xff, 3, 5}, {0xff, 3, 6}};
     unsigned char response[3][47] = {{0xff, 3, 5}, {0xff, 3, 3}, {0xff, 3, 7}};
-    assert(write(input[1], request, sizeof(request)) == sizeof(request));
-    assert(write(peer[1], response, sizeof(response)) == sizeof(response));
     int64_t now = monotonic_ns();
     assert(now >= 0);
-    int64_t deadline = now + 1000000000;
-    assert(relay_fixed_agent_request(input[0], output[1], peer[0], deadline) == 0);
+    int64_t deadline = now + 2000000000;
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        close(listener);
+        close(input[1]);
+        close(output[0]);
+        int socket_fd;
+        if (connect4_loopback(port, &socket_fd) != 0 ||
+            fcntl(socket_fd, F_SETFL, O_NONBLOCK) < 0)
+            _exit(1);
+        if (relay_fixed_agent_request(input[0], output[1], socket_fd, deadline) < 0)
+            _exit(2);
+        _exit(relay_fixed_agent_request(input[0], output[1], socket_fd, deadline) == 0 ||
+              errno != EPROTO);
+    }
+    close(input[0]);
+    close(output[1]);
+    struct pollfd ready = {.fd = listener, .events = POLLIN};
+    assert(poll_before(&ready, deadline) == 0);
+    int peer = accept4(listener, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
+    assert(peer >= 0);
+    close(listener);
+    assert(write_before(input[1], request, sizeof(request), deadline) == 0);
+    assert(write_before(peer, response, sizeof(response), deadline) == 0);
     unsigned char observed[sizeof(response)];
-    assert(read_before(peer[1], observed, sizeof(request), deadline) == 0);
+    assert(read_before(peer, observed, sizeof(request), deadline) == 0);
     assert(memcmp(observed, request, sizeof(request)) == 0);
     assert(read_before(output[0], observed, sizeof(response), deadline) == 0);
     assert(memcmp(observed, response, sizeof(response)) == 0);
-    assert(write(input[1], request[1], sizeof(request[1])) == sizeof(request[1]));
-    assert(relay_fixed_agent_request(input[0], output[1], peer[0], deadline) < 0 && errno == EPROTO);
-    assert(read(peer[1], observed, sizeof(observed)) < 0 && errno == EAGAIN);
-    for (unsigned i = 0; i < 2; ++i) {
-        close(input[i]);
-        close(output[i]);
-        close(peer[i]);
-    }
+    assert(write_before(input[1], request[1], sizeof(request[1]), deadline) == 0);
+    ready = (struct pollfd){.fd = peer, .events = POLLIN};
+    assert(poll_before(&ready, deadline) == 0);
+    assert(read(peer, observed, sizeof(observed)) == 0);
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    close(peer);
+    close(input[1]);
+    close(output[0]);
 }
 
 int main(void)
