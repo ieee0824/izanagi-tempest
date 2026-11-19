@@ -61,3 +61,27 @@ route bindingは親発行run nonce、VM boot nonce、supervisor PID/starttime、
 実測受入は、同runのexec/HTTP→LWS正常経路とHTTP/API/PCAP/control intent、上表の別run/host/credential/egress負例、catalog/FD/session/binary入替拒否、異常時閉鎖と全group回収、連続2runのbinding/state独立性を必要とする。全対象についてcaller/observer同handle終端、同Invocation trusted終了、UID/cgroup/port/FD/mount/root cleanupを独立保存する。GCunknown/receipt false/欠測は成功に補完しない。proofが不十分なら本番起動を許可せず残gateとして報告する。
 
 [読取専用source baselineと既存artifact SHA](LINUX_DIRECT_B_VM_ROUTE_SOURCE_001.json)を保存した。新結線binaryとそのproduction catalogは未作成・未測定である。本案は[DESIGN](DESIGN.md)の薄い外部連携方針と[IMPLEMENTATION](IMPLEMENTATION.md)のMCP予算・管理/agent経路分離を維持する将来案であり、既存direct調査の受入範囲を変更しない。
+
+## room16913レビュー後の内部契約と残実装
+
+最初のsource差分は `tempest-linux-probe/src/route_contract.rs` の内部・未結線prototypeである。`ParentPipe`は親がOwnedFdで両endを保持し、実fstatのFIFO/device/inodeとF_GETFLのread/write方向を確認する。これはsocketのpeer credentialではない。`verify_holders`は親が取得する全holderのPID/starttime/cgroup inode・FD番号・directionの集合を比較し、unknown・extra dup FD・欠測・PID再利用を拒否する。ただし実host全holder scannerは未実装であり、B/G内の局所観測をその代用にしない。test内のsynthetic holder集合は実process唯一性の証拠ではない。
+
+`Gate`はrun/VM/session/executable/catalog/supervisor binding、固定dummy catalogのentry/schema/digest、有限call/frame/絶対期限、単一inflight、正整数IDの非再使用、応答対応と異常応答後の閉鎖を検査する。schemaはdummy用の限定subsetで、実Izanagi production catalog compilerではない。initialize/tools/listやVM接続の実transportも未結線。専用fixture接続点 `connect_fixture` は常に `OsIsolationUnavailable` を返す。この型・負例成功からVMを起動する入口はない。既存run()/worker()/seccompとLaunchPermit経路は変更していない。
+
+### Trusted MCP childのOS強制案（未実装）
+
+固定Izanagi sourceの `session.rs::SessionBackend::connect_agent` と `agent_session.rs::connect` はQEMU sessionのhost_portに対する127.0.0.1 TCP接続と認証Readyを使う。したがって、空net namespaceに移すだけではこの正例が成立しない。Unix socketに接続する実装だったとは扱わない。
+
+候補はMCP child専用cgroupにrootが固定cgroup-BPF connect4/egress制約を接続し、検証済み当該QEMUの127.0.0.1:host_port TCPだけを許可すること。IPv6/UDP/raw/AF_UNIX等の別socket family/typeとsocket FDの継承・遅延注入を別seccomp/FD closureで拒否し、他host port・10.0.2.2・外部・別run portへの正負対照を行う。Bはこれと独立にsocket/connect拒否を維持する。cgroup programと読取専用policyのhash/link/attach先inode・継承/移動禁止・child pidfd/全descendantを再検証し、backend対応/attach/検証が欠ければ起動前拒否する。現環境でBPF利用可・この制約が成立すると測定したわけではない。
+
+同portのreceiver差替えはport filterだけでは排除できないので、QEMU PID/starttime/cgroup/socket所有とsession fingerprintを照合し、既存per-run認証Readyでも拒否を確認する。port許可をVM identity証明にしない。
+
+childのfilesystemは別mount capsuleに固定executable/loader/libs、当該sessionの必要fileとdummy HMACだけを親FDから公開する。通常HOME、他run、設定/認証探索先、汎用host rootやproc/fdを公開しない。何が必要fileかは実固定MCPで測定してclosureへ含め、argv/envからの任意path追加を認めない。hostネットワークを残すTCBなので、net制約・mount・caps/seccomp・pidfd/cgroupの全てがVM実測前の必須gateである。現在のprototypeはこのbackendを持たず必ず停止する。
+
+### 次の実装一覧
+
+1. privileged全holder scannerの有限走査・dup/fork/消滅時Unknown・同時性/寿命拘束と、B/G局所観測の別report。
+2. child専用cgroup-BPF/FD closure/mount/権限dropを実装し、固定session以外のhost/別run/egress拒否と正例を独立観測する。
+3. real catalog/schemaのreview済み変換、bounded MCP handshake/transport、既存relay admission/drainとVM session lifetimeを統合する。
+4. source/OS契約のレビュー後にclean artifact buildと明示的なdummy VM試験。連続2run/異常回収/情報非露出を保存する。
+5. Linux direct production capability/proof/backendとLaunchPermit接続は別の設計・受入。owner-private config/login/session/cleanupとsubscription egress、fresh login/live callの許可、#7/#8/#36全体gateは未達のまま。
