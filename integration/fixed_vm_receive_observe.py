@@ -1,4 +1,5 @@
 """Validate fixed guest acknowledgements and private export on the host."""
+import errno
 import hashlib
 import json
 import os
@@ -258,10 +259,19 @@ def collect_trial(execute, observe_route, snapshot_host, run_phase, *, run_nonce
                            session_fingerprint=current_fingerprint)
 
     host_phases = []
+    connect_results = {}
     for phase in PHASES:
         observe_boundary(phase, 'start')
         before = dict(snapshot_host())
-        run_phase(phase)
+        connect_errno = run_phase(phase)
+        if phase == 'allow_same_run':
+            if connect_errno is not None:
+                raise ValueError('unexpected alternate listener attempt during allow phase')
+        else:
+            expected = errno.EPERM if phase == 'deny_other' else 0
+            if type(connect_errno) is not int or connect_errno != expected:
+                raise ValueError('unexpected alternate listener connect errno')
+        connect_results[phase] = connect_errno
         after = dict(snapshot_host())
         observe_boundary(phase, 'end')
         host_phases.append({
@@ -274,4 +284,5 @@ def collect_trial(execute, observe_route, snapshot_host, run_phase, *, run_nonce
     if observe_route() != (forward, fingerprint):
         raise ValueError('fixed VM identity changed during final report')
     validate_trial_counts(json.dumps(guest).encode(), host_phases, **binding)
-    return {'guest': guest, 'host_phases': host_phases, 'forward': forward}
+    return {'guest': guest, 'host_phases': host_phases, 'forward': forward,
+            'alternate_connect_errno': connect_results}

@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import json
 import os
@@ -142,6 +143,21 @@ class FixedVmReceiveTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'identity changed during final report'):
                 collect_trial(
                     None, lambda: (forward, b'a' * 32),
-                    lambda: {'accepted': 0, 'matched': 0}, lambda _phase: None,
+                    lambda: {'accepted': 0, 'matched': 0},
+                    lambda phase: {'allow_same_run': None, 'deny_other': errno.EPERM}.get(phase, 0),
                     run_nonce=nonce, boot_id=boot_id,
                 )
+
+    def test_trial_requires_policy_errno_even_when_host_count_is_zero(self):
+        def guest_ack(_execute, *, run_nonce, boot_id, phase, operation):
+            return dict(run_nonce=run_nonce, boot_id=boot_id, phase=phase, operation=operation)
+
+        with patch('fixed_vm_receive_observe.observe_guest', side_effect=guest_ack):
+            for result in (0, errno.ECONNREFUSED, errno.ETIMEDOUT, None):
+                with self.subTest(result=result), self.assertRaisesRegex(ValueError, 'connect errno'):
+                    collect_trial(
+                        None, lambda: ({'pid': 42}, b'a' * 32),
+                        lambda: {'accepted': 0, 'matched': 0},
+                        lambda phase: {'allow_same_run': None, 'deny_other': result}.get(phase, 0),
+                        run_nonce='b' * 32, boot_id='3d6aa964-65a7-4c14-9444-70ecc42b55f8',
+                    )
