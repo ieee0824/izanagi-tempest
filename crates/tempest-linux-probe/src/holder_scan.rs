@@ -28,10 +28,12 @@ pub(super) fn task_pipe_fds(
         let task = tasks.join(tid.to_string());
         let before = start_ticks(&budget.read(&task.join("stat"), 65536)?, *tid)?;
         let fds = budget.ids(&task.join("fd"))?;
+        let mut identities = Vec::with_capacity(fds.len());
         for fd in &fds {
             budget.check()?;
             let path = task.join("fd").join(fd.to_string());
             let a = std::fs::metadata(&path).map_err(|_| Unknown::Io)?;
+            identities.push((a.dev(), a.ino(), a.mode(), a.rdev()));
             if a.mode() & libc::S_IFMT != libc::S_IFIFO || (a.dev(), a.ino()) != pipe_identity {
                 continue;
             }
@@ -48,6 +50,22 @@ pub(super) fn task_pipe_fds(
                 fd: *fd,
                 writes: access == libc::O_WRONLY,
             });
+        }
+        // Compare all descriptor identities, including nonmatching objects.
+        // This detects observed changes, but cannot establish stationarity.
+        for (fd, identity) in fds.iter().zip(identities) {
+            budget.check()?;
+            let metadata =
+                std::fs::metadata(task.join("fd").join(fd.to_string())).map_err(|_| Unknown::Io)?;
+            if (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.mode(),
+                metadata.rdev(),
+            ) != identity
+            {
+                return Err(Unknown::Format);
+            }
         }
         if budget.ids(&task.join("fd"))? != fds
             || start_ticks(&budget.read(&task.join("stat"), 65536)?, *tid)? != before
