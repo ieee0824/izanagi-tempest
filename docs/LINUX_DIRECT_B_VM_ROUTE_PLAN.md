@@ -85,3 +85,29 @@ childのfilesystemは別mount capsuleに固定executable/loader/libs、当該ses
 3. real catalog/schemaのreview済み変換、bounded MCP handshake/transport、既存relay admission/drainとVM session lifetimeを統合する。
 4. source/OS契約のレビュー後にclean artifact buildと明示的なdummy VM試験。連続2run/異常回収/情報非露出を保存する。
 5. Linux direct production capability/proof/backendとLaunchPermit接続は別の設計・受入。owner-private config/login/session/cleanupとsubscription egress、fresh login/live callの許可、#7/#8/#36全体gateは未達のまま。
+
+### 固定バイナリの最初の結線（room #17034）
+
+入口は固定 Izanagi の `mcp` サブコマンドとする。固定 source の
+`src/main.rs::run_with` は通常の設定読み込みより前に
+`commands::cmd_mcp` へ分岐し、実装は stdin/stdout の改行区切り JSON-RPC
+と stdin EOF による終了を使う。最初の結線ではローカルの固定 dummy caller
+から `initialize` と `tools/list` だけを送る。既存 VM session は当該 run
+との binding に固定する。この二つのフレームで VM agent への接続成功は判定しない。
+実 catalog は照合用にのみ扱う。現在の `Gate` は `dummy_exec` と
+`dummy_http` 専用なので、実 catalog を通すために許可条件を緩めない。
+
+- 監督プロセスが `route_contract::ParentPipe` でデータ用の二本を生成する。
+  MCP child が要求の読み端を stdin、応答の書き端を stdout に割り当て、
+  B が逆側の二端を持つ。stderr は監督側へ分離する。子は既存
+  `os::close_except` で不要端を閉じてから、事前継承した制御 FD で通知する。
+  監督側も対象の四端を閉じる。遅延 FD 受け渡しは行わない。
+- 監督プロセスは元 pidfd と starttime を保持し、二子を別 role に配置する。
+  `Group::inspect_while_frozen` に期待 role 集合、二本の pipe と四端の期待配置、
+  親の残存端ゼロを渡す。解凍確認成功後のみ B のデータ送信を解放する。
+  exec 前に止める場合は exec 後の FD 配置も照合するまで B を解放しない。
+- EOF と元 pidfd の終了を有限期限で確認し、異常時は `Group::kill` 後に
+  子を回収して `Group::cleanup` を行う。監督の異常終了に対しては、
+  connect4 fixture で確認済みの上位 subreaper の所有順序を移植候補とする。
+  B の既存 seccomp は維持する。MCP child の session 専用 connect4 制約と
+  mount/権限境界は別 role に実装し、C fixture での実測をその実装の証跡に流用しない。
