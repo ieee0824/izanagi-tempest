@@ -245,6 +245,30 @@ class TrialBoundaries:
             raise ValueError('incomplete trial boundary observations')
 
 
+def validate_phase_transport(phase, observed):
+    """Check each child's connect result independently of its relay completion."""
+    required = {
+        'control_before': {'agent': 0, 'alternate': 0},
+        'allow_same_run': {'agent': 0},
+        'deny_other': {'alternate': errno.EPERM},
+        'control_after': {'agent': 0, 'alternate': 0},
+    }[phase]
+    if not isinstance(observed, dict) or observed.keys() != required.keys():
+        raise ValueError('missing or unexpected phase transport result')
+    result = {}
+    for route, expected_errno in required.items():
+        row = observed[route]
+        if not isinstance(row, dict) or set(row) != {'connect_errno', 'relay_exit'}:
+            raise ValueError('invalid phase transport result')
+        if type(row['connect_errno']) is not int or row['connect_errno'] != expected_errno:
+            raise ValueError('unexpected phase connect errno')
+        expected_exit = 'not_started' if expected_errno else 'complete'
+        if row['relay_exit'] != expected_exit:
+            raise ValueError('unexpected phase relay exit')
+        result[route] = dict(row)
+    return result
+
+
 def collect_trial(execute, observe_route, snapshot_host, run_phase, *, run_nonce, boot_id):
     """Collect the fixed phase evidence around a harness-owned connection runner."""
     binding = {'run_nonce': run_nonce, 'boot_id': boot_id}
@@ -263,15 +287,7 @@ def collect_trial(execute, observe_route, snapshot_host, run_phase, *, run_nonce
     for phase in PHASES:
         observe_boundary(phase, 'start')
         before = dict(snapshot_host())
-        connect_errno = run_phase(phase)
-        if phase == 'allow_same_run':
-            if connect_errno is not None:
-                raise ValueError('unexpected alternate listener attempt during allow phase')
-        else:
-            expected = errno.EPERM if phase == 'deny_other' else 0
-            if type(connect_errno) is not int or connect_errno != expected:
-                raise ValueError('unexpected alternate listener connect errno')
-        connect_results[phase] = connect_errno
+        connect_results[phase] = validate_phase_transport(phase, run_phase(phase))
         after = dict(snapshot_host())
         observe_boundary(phase, 'end')
         host_phases.append({
@@ -285,4 +301,4 @@ def collect_trial(execute, observe_route, snapshot_host, run_phase, *, run_nonce
         raise ValueError('fixed VM identity changed during final report')
     validate_trial_counts(json.dumps(guest).encode(), host_phases, **binding)
     return {'guest': guest, 'host_phases': host_phases, 'forward': forward,
-            'alternate_connect_errno': connect_results}
+            'phase_transport': connect_results}

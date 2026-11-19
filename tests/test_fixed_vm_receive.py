@@ -22,6 +22,15 @@ from fixed_vm_receive_observe import (
 )
 
 
+def phase_transport(phase, refused=errno.EPERM):
+    if phase == 'deny_other':
+        return {'alternate': {'connect_errno': refused, 'relay_exit': 'not_started'}}
+    result = {'agent': {'connect_errno': 0, 'relay_exit': 'complete'}}
+    if phase != 'allow_same_run':
+        result['alternate'] = {'connect_errno': 0, 'relay_exit': 'complete'}
+    return result
+
+
 class FixedVmReceiveTests(unittest.TestCase):
     def test_denied_guest_receipt_cannot_be_hidden_by_closing_phase(self):
         process = runpy.run_path(str(ROOT / 'image/fixed_vm_receive.py'))['process']
@@ -144,7 +153,7 @@ class FixedVmReceiveTests(unittest.TestCase):
                 collect_trial(
                     None, lambda: (forward, b'a' * 32),
                     lambda: {'accepted': 0, 'matched': 0},
-                    lambda phase: {'allow_same_run': None, 'deny_other': errno.EPERM}.get(phase, 0),
+                    phase_transport,
                     run_nonce=nonce, boot_id=boot_id,
                 )
 
@@ -158,6 +167,21 @@ class FixedVmReceiveTests(unittest.TestCase):
                     collect_trial(
                         None, lambda: ({'pid': 42}, b'a' * 32),
                         lambda: {'accepted': 0, 'matched': 0},
-                        lambda phase: {'allow_same_run': None, 'deny_other': result}.get(phase, 0),
+                        lambda phase: phase_transport(phase, result),
+                        run_nonce='b' * 32, boot_id='3d6aa964-65a7-4c14-9444-70ecc42b55f8',
+                    )
+
+    def test_trial_rejects_failed_relay_after_successful_connect(self):
+        def guest_ack(_execute, *, run_nonce, boot_id, phase, operation):
+            return dict(run_nonce=run_nonce, boot_id=boot_id, phase=phase, operation=operation)
+
+        with patch('fixed_vm_receive_observe.observe_guest', side_effect=guest_ack):
+            for status in ('timeout', 'short_io', 'not_started'):
+                result = phase_transport('control_before')
+                result['agent']['relay_exit'] = status
+                with self.subTest(status=status), self.assertRaisesRegex(ValueError, 'relay exit'):
+                    collect_trial(
+                        None, lambda: ({'pid': 42}, b'a' * 32),
+                        lambda: {'accepted': 0, 'matched': 0}, lambda _phase: result,
                         run_nonce='b' * 32, boot_id='3d6aa964-65a7-4c14-9444-70ecc42b55f8',
                     )
