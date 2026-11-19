@@ -1326,6 +1326,35 @@ int run_fixed_relay_worker(uint16_t port, int64_t deadline)
     return relay_fixed_agent_request(5, 6, socket_fd, deadline) == 0 ? 0 : 2;
 }
 
+static const char alternate_request[] = "tempest-alternate-dummy-v1";
+static const char alternate_response[] = "tempest-alternate-ack-v1";
+
+static int relay_fixed_token(int source, int destination, const char *expected,
+                             size_t size, int64_t deadline)
+{
+    char token[sizeof(alternate_request)];
+    if (size > sizeof(token) || read_before(source, token, size, deadline) < 0)
+        return -1;
+    if (memcmp(token, expected, size) != 0) {
+        errno = EPROTO;
+        return -1;
+    }
+    return write_before(destination, token, size, deadline);
+}
+
+static int run_fixed_alternate_worker(uint16_t port, int64_t deadline)
+{
+    int socket_fd = connect_fixed_relay_worker(port, deadline);
+    if (socket_fd < 0)
+        return 1;
+    if (relay_fixed_token(5, socket_fd, alternate_request,
+                          sizeof(alternate_request) - 1, deadline) < 0 ||
+        relay_fixed_token(socket_fd, 6, alternate_response,
+                          sizeof(alternate_response) - 1, deadline) < 0)
+        return 2;
+    return 0;
+}
+
 static int try_connect4_loopback(uint16_t port)
 {
     int fd;
@@ -1552,7 +1581,7 @@ static void describe_fixed_relay_pipes(
  * so no inherited descriptor can collide with the fixed layout. */
 static int spawn_worker(uint16_t allowed, uint16_t denied,
                         struct connect4_worker *worker, atomic_int *release_seen,
-                        struct fixed_relay_pipes *relay, int64_t deadline)
+                        struct fixed_relay_pipes *relay, int64_t deadline, int alternate)
 {
     enum { GATE, READY, REQUEST, RESPONSE, STATUS };
     const unsigned count = relay == NULL ? 2 : 5;
@@ -1590,7 +1619,8 @@ static int spawn_worker(uint16_t allowed, uint16_t denied,
         if ((privileged ? drop_connect4_worker_privileges() :
              prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL)) < 0)
             _exit(70);
-        _exit(run_fixed_relay_worker(allowed, deadline));
+        _exit(alternate ? run_fixed_alternate_worker(allowed, deadline)
+                        : run_fixed_relay_worker(allowed, deadline));
     }
 
     int error = errno;
@@ -1621,14 +1651,21 @@ static int spawn_worker(uint16_t allowed, uint16_t denied,
 int spawn_connect4_worker(uint16_t allowed, uint16_t denied,
                           struct connect4_worker *worker, atomic_int *release_seen)
 {
-    return spawn_worker(allowed, denied, worker, release_seen, NULL, 0);
+    return spawn_worker(allowed, denied, worker, release_seen, NULL, 0, 0);
 }
 
 int spawn_fixed_relay_worker(uint16_t port, int64_t deadline,
                              struct connect4_worker *worker,
                              struct fixed_relay_pipes *relay)
 {
-    return spawn_worker(port, 0, worker, NULL, relay, deadline);
+    return spawn_worker(port, 0, worker, NULL, relay, deadline, 0);
+}
+
+int spawn_fixed_alternate_worker(uint16_t port, int64_t deadline,
+                                 struct connect4_worker *worker,
+                                 struct fixed_relay_pipes *relay)
+{
+    return spawn_worker(port, 0, worker, NULL, relay, deadline, 1);
 }
 
 int read_fixed_relay_connect_errno(const struct fixed_relay_pipes *relay,

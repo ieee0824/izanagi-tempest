@@ -262,6 +262,56 @@ static void check_fixed_agent_exchange(int early_exec, int close_gate)
     close(relay.response);
 }
 
+static void check_fixed_alternate_exchange(int wrong_token)
+{
+    uint16_t port;
+    int listener = open_connect4_listener(&port);
+    assert(listener >= 0);
+    int64_t deadline = monotonic_ns() + 2000000000;
+    struct connect4_worker worker;
+    struct fixed_relay_pipes relay;
+    assert(spawn_fixed_alternate_worker(port, deadline, &worker, &relay) == 0);
+    assert(confirm_connect4_ready(worker.ready) == 0);
+    assert(write(worker.gate, "R", 1) == 1);
+    int connect_errno;
+    assert(read_fixed_relay_connect_errno(&relay, deadline, &connect_errno) == 0);
+    assert(connect_errno == 0);
+    struct pollfd ready = {.fd = listener, .events = POLLIN};
+    assert(poll_before(&ready, deadline) == 0);
+    int peer = accept4(listener, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
+    assert(peer >= 0);
+
+    char token[sizeof(alternate_request)];
+    memcpy(token, alternate_request, sizeof(token));
+    if (wrong_token)
+        token[0] = 'X';
+    assert(write_before(relay.request, token, sizeof(token) - 1, deadline) == 0);
+    if (wrong_token) {
+        assert(read_before(peer, token, 1, deadline) < 0 && errno == EPIPE);
+    } else {
+        assert(read_before(peer, token, sizeof(token) - 1, deadline) == 0);
+        assert(memcmp(token, alternate_request, sizeof(token) - 1) == 0);
+        assert(write_before(peer, alternate_response, sizeof(alternate_response) - 1,
+                            deadline) == 0);
+        assert(read_before(relay.response, token, sizeof(alternate_response) - 1,
+                           deadline) == 0);
+        assert(memcmp(token, alternate_response, sizeof(alternate_response) - 1) == 0);
+    }
+
+    int worker_exit;
+    assert(observe_fixed_relay_exit(&worker, deadline, &worker_exit) == 0);
+    assert(worker_exit == (wrong_token ? 2 : 0));
+    assert(waitpid(worker.pid, NULL, 0) == worker.pid);
+    close(worker.pidfd);
+    close(worker.ready);
+    close(worker.gate);
+    close(relay.request);
+    close(relay.response);
+    close(relay.status);
+    close(peer);
+    close(listener);
+}
+
 static void check_fixed_relay_refused_connection(void)
 {
     int reserved = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
@@ -387,6 +437,8 @@ int main(void)
     check_fixed_agent_exchange(1, 0);
     check_fixed_agent_exchange(0, 1);
     check_fixed_relay_refused_connection();
+    check_fixed_alternate_exchange(0);
+    check_fixed_alternate_exchange(1);
     check_adopted_relay();
     int gate[2];
     assert(pipe(gate) == 0);
