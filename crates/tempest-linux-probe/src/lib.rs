@@ -31,6 +31,9 @@ mod identity;
 mod lease;
 mod os;
 mod registry;
+// Deliberately unconnected contract prototype; no route/launcher entry point.
+#[allow(dead_code)]
+mod route_contract;
 mod runtime;
 mod seccomp;
 mod watchdog;
