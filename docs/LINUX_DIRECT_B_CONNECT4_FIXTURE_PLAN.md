@@ -52,3 +52,16 @@ timeout 5s "$test_dir/recovery-test"
 監督をworkerの直接の親にする。監督が元のpidfd、cgroup FD、元link FD、台帳と許可パイプの書き込み端を保持する。試験制御側には結果取得と試験開始要求のための専用パイプだけを渡す。配置、準備完了の確認、許可トークンの送信、`waitid(P_PIDFD)`とreap、cgroupとlinkの回収はすべて監督が行う。試験制御側へpidfdを渡してwait/reapを委譲する構成は採らない。
 
 監督は試験制御側の終了、要求パイプのEOF、期限切れを回収の契機とする。子を生成したら許可前の失敗でも元pidfdで停止を確認する。固定済みlinkは子が終了しcgroupが空になるまで維持する。試験制御側を強制終了する試験では、起動許可前と許可後の両方で、監督が子を回収し、linkとcgroupを回収して台帳を退役させたことを確認する。監督自体の強制終了からの回収は別の障害条件であり、試験制御側の強制終了試験の成功に含めない。
+
+## 固定ホストでの試験前後の確認
+
+`fixture.c` は引数なしで固定名の専用cgroup、台帳、pinを使う。実行に先立ち、同名のcgroup・pin・稼働中台帳・退役済み台帳がいずれも存在しないことを管理側で確認する。既存パスが見つかった場合は、その試行への帰属を確認するまで保持する。ビルドと非特権回帰は試験入口を起動せずに実施できる。
+
+```sh
+test_dir=$(mktemp -d)
+gcc -std=c17 -Wall -Wextra -Werror -fanalyzer docs/evidence/connect4-fixture-001/fixture.c -o "$test_dir/fixture"
+gcc -std=c17 -Wall -Wextra -Werror docs/evidence/connect4-fixture-001/recovery_test.c -o "$test_dir/recovery-test"
+timeout 5s "$test_dir/recovery-test"
+```
+
+非特権回帰では `controller_killed=ECANCELED` と `live=EBUSY unknown=ESTALE exited=reaped` を得た。正常な実機試験の受入には、前・中・後の受理件数が順に `(1,1)`、`(1,0)`、`(1,1)` であること、workerの正常終了、固定pinと専用cgroupの不在、元台帳の不在と退役済み台帳の存在を個別に確認する。起動許可の前後で制御側を停止する負例には、停止を各段階へ同期させるテスト用の入口が別途必要である。
