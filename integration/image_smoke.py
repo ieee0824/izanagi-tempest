@@ -57,7 +57,11 @@ def main():
     parser.add_argument('--fixed-vm-relay-trial', nargs=4,
                         metavar=('UNIT', 'CLIENT', 'ALLOW_ENTRY', 'DENY_ENTRY'),
                         help='run the four fixed relay phases after receiver preflight')
+    parser.add_argument('--fixed-vm-relay-recovery', type=Path,
+                        help='verify supervisor loss after a fixed relay connects')
     args = parser.parse_args()
+    if args.fixed_vm_relay_recovery and not args.fixed_vm_relay_trial:
+        parser.error('fixed relay recovery requires --fixed-vm-relay-trial')
     if args.fixed_vm_relay_trial and (
         not args.fixed_vm_receiver_preflight or os.geteuid() != 0
     ):
@@ -340,6 +344,8 @@ def main():
 
                 def launch(phase, route, agent_port, alternate_port, nonce):
                     entry = deny_entry if phase == 'deny_other' else allow_entry
+                    if phase == 'fault_recovery':
+                        entry = args.fixed_vm_relay_recovery.resolve(strict=True)
                     return subprocess.run([
                         entry, phase, route, str(agent_port), str(alternate_port), nonce,
                         relay_client, 'IZANAGI_SECRET_FILE=' + str(hmac_path),
@@ -349,6 +355,30 @@ def main():
                 report['checks']['fixed_vm_relay'] = fixed_vm_receive_observe.collect_relay_trial(
                     execute, observe_route, launch, run_nonce=secrets.token_hex(16),
                     boot_id=report['checks']['fixed_vm_receiver']['boot_id'])
+                if args.fixed_vm_relay_recovery:
+                    initial_route = observe_route()
+                    with fixed_vm_receive_observe.AlternateListener() as alternate:
+                        recovery = launch('fault_recovery', 'agent', initial_route[0]['port'],
+                                          alternate.port, secrets.token_hex(16))
+                        alternate_counts = alternate.snapshot()
+                    lines = recovery.stderr.splitlines()
+                    expected = [
+                        b'fault=relay-supervisor-after-connect connect_errno=0',
+                        b'supervisor_exit_observed=1 adopted_worker_reaped=1 pin=removed',
+                    ]
+                    if (recovery.returncode != 0 or recovery.stdout or lines != expected or
+                            alternate_counts != {'accepted': 0, 'matched': 0} or
+                            observe_route() != initial_route):
+                        raise RuntimeError('fixed relay supervisor recovery evidence mismatch')
+                    management = execute('/bin/echo', 'fixed-relay-recovered', timeout=10)
+                    if (management.returncode != 0 or management.stdout != 'fixed-relay-recovered\n'
+                            or observe_route() != initial_route):
+                        raise RuntimeError('fixed VM management failed after relay recovery')
+                    report['checks']['fixed_vm_relay_recovery'] = {
+                        'connect_errno': 0, 'supervisor_sigkill': True, 'adopted_worker_reaped': True,
+                        'pin_removed': True, 'cgroup_removed': True,
+                        'alternate_counts': alternate_counts, 'management_continued': True,
+                    }
                 report['status'] = 'fixed_relay_trial_collected'
             save()
             return

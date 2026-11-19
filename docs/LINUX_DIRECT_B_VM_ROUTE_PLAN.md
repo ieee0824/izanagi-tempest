@@ -545,3 +545,22 @@ cargo build --locked --manifest-path integration/izanagi-bootstrap/Cargo.toml --
 固定イメージ・Izanagi・入力定義を指定する preflight の引数に加え、
 専用 systemd unit 内で root から `integration/image_smoke.py` に
 `--fixed-vm-relay-trial UNIT CLIENT ALLOW_ENTRY DENY_ENTRY` を渡す。
+
+#### 実 VM 稼働中の監督強制終了と回収（#79）
+
+`279168b` を基点に、同じ固定イメージと固定 Izanagi で4区間を再実行した。
+専用 unit の invocation は `8a5821c32401495ca655f658c968c57f`、
+boot ID は `44f013c0-16a7-481a-8b7b-458c34946859`。
+4区間完了後、同じ agent 転送へ固定リレー子が TCP 接続し、接続成功を
+制御パイプで受け取った監督だけが SIGKILL で終了した。上位 subreaper が
+引き継いだ pidfd でリレー子を回収し、BPF ピンを除去した。試験用 cgroup を
+削除し、台帳を退役させた。別 listener の受理・一致はいずれも0件だった。
+
+回収の前後で QEMU の転送所有者と private session の指紋が一致し、
+独立した管理経路の固定 echo が成功した。サービスと VM の up/down は
+すべて exit 0。停止後に一時 HMAC、3区間分の BPF ピンと cgroup はなく、
+入力 qcow2 の SHA-256 は不変だった。
+
+再試行には前節の2本のバイナリに加えて、同じ試行固有の
+`FIXED_VM_TRIAL_SUFFIX` と `CONNECT4_CASE=11` で `fixture.c` をビルドし、
+`--fixed-vm-relay-recovery` にそのバイナリを渡す。

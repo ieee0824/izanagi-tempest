@@ -2330,7 +2330,7 @@ done:;
 #ifndef CONNECT4_CASE
 #define CONNECT4_CASE 0
 #endif
-#if CONNECT4_CASE == 9 || CONNECT4_CASE == 10
+#if CONNECT4_CASE >= 9
 #ifndef FIXED_VM_TRIAL_SUFFIX
 #error "set FIXED_VM_TRIAL_SUFFIX to this trial's unique suffix"
 #endif
@@ -2357,6 +2357,8 @@ done:;
 #define CONNECT4_TRIAL_NAME "tempest-fixed-vm-relay-allow-" FIXED_VM_TRIAL_SUFFIX
 #elif CONNECT4_CASE == 10
 #define CONNECT4_TRIAL_NAME "tempest-fixed-vm-relay-deny-" FIXED_VM_TRIAL_SUFFIX
+#elif CONNECT4_CASE == 11
+#define CONNECT4_TRIAL_NAME "tempest-fixed-vm-relay-recovery-" FIXED_VM_TRIAL_SUFFIX
 #else
 #error "unknown connect4 fixture case"
 #endif
