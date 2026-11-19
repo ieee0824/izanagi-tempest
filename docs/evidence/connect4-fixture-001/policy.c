@@ -1509,3 +1509,36 @@ done:;
         errno = error;
     return result;
 }
+
+/* Call after the worker is reaped and the original link FD is closed.
+ * Retain state on discrepancy so another invocation cannot overwrite it. */
+int remove_connect4_fixture_cgroup(int state_fd, int cgroup_fd)
+{
+    int lease = acquire_connect4_lease(state_fd);
+    if (lease < 0)
+        return -1;
+    int parent = open_connect4_parent("/sys/fs/cgroup", CGROUP2_SUPER_MAGIC);
+    int result = -1;
+    dev_t device;
+    uint64_t id;
+    struct stat entry;
+    struct stat pin;
+    if (lstat(CONNECT4_PIN_PATH, &pin) == 0) {
+        errno = EEXIST;
+    } else if (errno == ENOENT && parent >= 0 &&
+        read_connect4_cgroup_identity(cgroup_fd, &device, &id) == 0 &&
+        check_connect4_cgroup_empty(cgroup_fd, device, id) == 0 &&
+        fstatat(parent, CONNECT4_TRIAL_NAME, &entry, AT_SYMLINK_NOFOLLOW) == 0) {
+        if (!S_ISDIR(entry.st_mode) || entry.st_dev != device || entry.st_ino != id)
+            errno = ESTALE;
+        else
+            result = unlinkat(parent, CONNECT4_TRIAL_NAME, AT_REMOVEDIR);
+    }
+    int error = errno;
+    if (parent >= 0)
+        close(parent);
+    close(lease);
+    if (result < 0)
+        errno = error;
+    return result;
+}
