@@ -1,0 +1,38 @@
+name: Linux isolation probe unit checks
+
+on:
+  push:
+    branches:
+      - 'pronnia/linux-direct-stage'
+    paths:
+      - '.github/workflows/linux-probe-unit.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/tempest-linux-probe/**'
+  pull_request:
+    paths:
+      - '.github/workflows/linux-probe-unit.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/tempest-linux-probe/**'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-probe-unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust tools
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: cargo +stable fmt --all -- --check
+      # Fork/FD lifetime fixtures run serially. This does not prove parallel safety.
+      - name: Test local contracts without root, a VM, or model credentials
+        run: cargo +stable test --locked -p tempest-linux-probe -- --test-threads=1
+      - name: Lint Linux isolation probe
+        run: cargo +stable clippy --locked -p tempest-linux-probe --all-targets -- -D warnings
