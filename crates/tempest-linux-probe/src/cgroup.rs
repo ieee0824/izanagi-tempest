@@ -451,18 +451,35 @@ impl Group {
     pub(super) fn inspect_while_frozen<T: PartialEq>(
         &mut self,
         until: Instant,
-        worker: (Role, u32),
+        role: Role,
+        worker: &super::identity::Process,
         observe: impl FnOnce(&Self) -> Result<T, Fault>,
         expected: &T,
     ) -> Result<(), Fault> {
-        if !self.armed || worker.1 == 0 || Instant::now() >= until {
+        if !self.armed || worker.pid == 0 || Instant::now() >= until {
             return Err(Fault::Identity);
         }
         let result = (|| {
             self.request_frozen(true)?;
             self.wait_frozen(true, until)?;
             let check_worker = || {
-                if self.members(worker.0)? != [worker.1] || !self.bound(worker.0, worker.1)? {
+                use super::holder_scan::{Budget, start_ticks};
+                let mut budget = Budget {
+                    deadline: until,
+                    bytes_left: 65536,
+                    entries_left: 0,
+                };
+                let path = std::path::PathBuf::from(format!("/proc/{}/stat", worker.pid));
+                if !worker.alive()?
+                    || self.members(role)? != [worker.pid]
+                    || !self.bound(role, worker.pid)?
+                    || budget
+                        .read(&path, 65536)
+                        .and_then(|data| start_ticks(&data, worker.pid))
+                        .map_err(|_| Fault::Identity)?
+                        != worker.birth
+                    || !worker.alive()?
+                {
                     return Err(Fault::Identity);
                 }
                 Ok(())
