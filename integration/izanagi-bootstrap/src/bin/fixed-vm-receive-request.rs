@@ -2,6 +2,7 @@
 
 use izanagi::protocol::{Message, load_shared_secret_from_file};
 use izanagi::protocol_client::ProtocolClient;
+use izanagi::session::{SessionBackend, load_session};
 use std::io::{self, Write};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::Path;
@@ -50,6 +51,7 @@ async fn request(
     response: OwnedFd,
     command: OwnedFd,
     secret: Vec<u8>,
+    token_hash: Option<String>,
     argv: Vec<String>,
 ) -> Option<Vec<u8>> {
     let mut client = ProtocolClient::new(
@@ -57,7 +59,7 @@ async fn request(
         Sender::from_owned_fd(command).ok()?,
         Some(secret),
     );
-    client.handshake_and_wait_ready(None).await.ok()?;
+    client.handshake_and_wait_ready(token_hash).await.ok()?;
     client
         .send_message(&Message::Exec {
             cmd: argv,
@@ -85,6 +87,11 @@ fn run() -> Option<()> {
     let response = take_pipe(4, libc::O_RDONLY)?;
     let secret_file = std::env::var_os("IZANAGI_SECRET_FILE")?;
     let secret = load_shared_secret_from_file(Path::new(&secret_file)).ok()?;
+    let session_dir = std::env::var_os("IZANAGI_FIXED_SESSION_DIR")?;
+    let session = load_session(Path::new(&session_dir)).ok()??;
+    let SessionBackend::Qemu { token_hash, .. } = session.backend else {
+        return None;
+    };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -92,7 +99,7 @@ fn run() -> Option<()> {
     let stdout = runtime.block_on(async {
         tokio::time::timeout(
             Duration::from_secs(10),
-            request(response, command, secret, argv),
+            request(response, command, secret, token_hash, argv),
         )
         .await
         .ok()?
@@ -142,10 +149,12 @@ mod tests {
         let (agent_output, response) = pipe().unwrap();
         let secret = b"fixed test dummy key".to_vec();
         let mut agent = ProtocolClient::new(agent_input, agent_output, Some(secret.clone()));
+        let token_hash = "a".repeat(64);
         let host = request(
             response.into_nonblocking_fd().unwrap(),
             command.into_nonblocking_fd().unwrap(),
             secret,
+            Some(token_hash.clone()),
             argv.clone(),
         );
         let guest = async {
@@ -153,8 +162,8 @@ mod tests {
                 agent.recv_message().await.unwrap(),
                 Some(Message::Hello {
                     authenticated: true,
-                    token: None
-                })
+                    token: Some(token)
+                }) if token == token_hash
             ));
             agent
                 .send_message(&Message::Hello {

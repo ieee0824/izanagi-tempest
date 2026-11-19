@@ -1859,6 +1859,7 @@ struct fixed_relay_client {
     const char *phase;
     /* Complete IZANAGI_SECRET_FILE assignment from the trusted VM owner. */
     const char *secret_env;
+    const char *session_env;
 };
 
 /* Called only by the trusted harness. The client runs as the dedicated VM
@@ -1879,7 +1880,7 @@ int exchange_fixed_relay_client(const struct fixed_relay_pipes *relay,
         char *const argv[] = {
             (char *)client->binary, (char *)client->run_nonce, (char *)client->phase, NULL,
         };
-        char *const env[] = {(char *)client->secret_env, NULL};
+        char *const env[] = {(char *)client->secret_env, (char *)client->session_env, NULL};
         execve(client->binary, argv, env);
         _exit(127);
     }

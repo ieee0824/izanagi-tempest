@@ -232,8 +232,10 @@ static uint16_t parse_relay_port(const char *value)
  * VM controller. Run identity and listener ownership are checked by it. */
 static int run_vm_relay_entry(int argc, char **argv)
 {
-    if (argc != 8 || geteuid() != 0 || argv[6][0] != '/' ||
-        strncmp(argv[7], "IZANAGI_SECRET_FILE=/", sizeof("IZANAGI_SECRET_FILE=/") - 1) != 0)
+    if (argc != 9 || geteuid() != 0 || argv[6][0] != '/' ||
+        strncmp(argv[7], "IZANAGI_SECRET_FILE=/", sizeof("IZANAGI_SECRET_FILE=/") - 1) != 0 ||
+        strncmp(argv[8], "IZANAGI_FIXED_SESSION_DIR=/",
+                sizeof("IZANAGI_FIXED_SESSION_DIR=/") - 1) != 0)
         return 2;
     const char *phase = argv[1];
     int alternate = strcmp(argv[2], "alternate") == 0;
@@ -255,7 +257,7 @@ static int run_vm_relay_entry(int argc, char **argv)
     struct vm_relay_trial vm = {
         .port = alternate ? alternate_port : agent_port,
         .alternate = alternate,
-        .client = {argv[6], argv[5], phase, argv[7]},
+        .client = {argv[6], argv[5], phase, argv[7], argv[8]},
     };
     if (control) {
         int64_t now = monotonic_ns();
