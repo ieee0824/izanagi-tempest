@@ -189,9 +189,10 @@ static void check_fixed_transfer(void)
 
 static void check_fixed_agent_exchange(void)
 {
-    int input[2], output[2];
+    int input[2], output[2], connect_status[2];
     assert(pipe2(input, O_CLOEXEC | O_NONBLOCK) == 0);
     assert(pipe2(output, O_CLOEXEC | O_NONBLOCK) == 0);
+    assert(pipe2(connect_status, O_CLOEXEC | O_NONBLOCK) == 0);
     uint16_t port;
     int listener = open_connect4_listener(&port);
     assert(listener >= 0);
@@ -206,7 +207,12 @@ static void check_fixed_agent_exchange(void)
         close(listener);
         close(input[1]);
         close(output[0]);
+        close(connect_status[0]);
         int socket_fd = open_fixed_relay_connection(port, deadline);
+        int connect_errno = socket_fd < 0 ? errno : 0;
+        if (write_before(connect_status[1], &connect_errno, sizeof(connect_errno), deadline) < 0)
+            _exit(5);
+        close(connect_status[1]);
         if (socket_fd < 0)
             _exit(1);
         if (prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0 ||
@@ -223,6 +229,11 @@ static void check_fixed_agent_exchange(void)
     }
     close(input[0]);
     close(output[1]);
+    close(connect_status[1]);
+    int connect_errno;
+    assert(read_before(connect_status[0], &connect_errno, sizeof(connect_errno), deadline) == 0);
+    assert(connect_errno == 0);
+    close(connect_status[0]);
     struct pollfd ready = {.fd = listener, .events = POLLIN};
     assert(poll_before(&ready, deadline) == 0);
     int peer = accept4(listener, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
