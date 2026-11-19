@@ -12,6 +12,54 @@ const INITIALIZE: &[u8] = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initializ
 const INITIALIZED: &[u8] = b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
 const TOOLS_LIST: &[u8] = b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n";
 
+/// Source-derived expectations for the pinned Izanagi build at 16d0b559.
+pub(super) fn expected_results() -> [serde_json::Value; 2] {
+    use serde_json::json;
+    [
+        json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "izanagi", "version": "0.2.7"}
+        }),
+        json!({"tools": [
+            {
+                "name": "sandbox_status",
+                "description": "Returns the current sandbox status.",
+                "inputSchema": {
+                    "type": "object", "properties": {},
+                    "required": [], "additionalProperties": false
+                }
+            },
+            {
+                "name": "sandbox_exec",
+                "description": "Executes a command inside the sandbox and returns its output.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "The command to execute."},
+                        "args": {
+                            "type": "array", "items": {"type": "string"},
+                            "description": "Arguments to pass to the command."
+                        }
+                    },
+                    "required": ["command"], "additionalProperties": false
+                }
+            },
+            {
+                "name": "sandbox_shell",
+                "description": "Executes a shell command inside the sandbox via /bin/sh -c and returns its output.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "The shell command to execute."}
+                    },
+                    "required": ["command"], "additionalProperties": false
+                }
+            }
+        ]}),
+    ]
+}
+
 /// The caller supplies the reviewed results and releases this code only
 /// after checking the isolated child's executable and pipe ownership.
 pub(crate) fn exchange(

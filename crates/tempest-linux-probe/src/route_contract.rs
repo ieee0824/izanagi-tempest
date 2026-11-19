@@ -309,7 +309,6 @@ fn run_fixed_exchange(
     guard: &super::guard::Guard,
     registry: &mut super::registry::Registry,
     roots: [&std::path::Path; 2],
-    expected: [&Value; 2],
     deadline: Instant,
 ) -> Result<(), super::os::Fault> {
     use super::{contract::Role, identity::Descriptor, os};
@@ -329,10 +328,11 @@ fn run_fixed_exchange(
     let (bootstrap, start) = os::pipe()?;
     let stderr = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
 
+    let expected = mcp_stdio_fixture::expected_results();
     let caller = bind_fresh_child(spawn_fixed_caller(
         caller_root,
         [caller_gate, request_write, response_read, ready_writer],
-        expected,
+        [&expected[0], &expected[1]],
         deadline,
     )?)?;
     let caller_record = track_fresh_child(registry, Role::B, &caller)?;
