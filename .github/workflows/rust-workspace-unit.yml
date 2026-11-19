@@ -1,0 +1,31 @@
+name: Rust workspace unit checks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/rust-workspace-unit.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/tempest/**'
+      - 'crates/tempest-model/**'
+      - 'crates/tempest-guest/**'
+
+permissions:
+  contents: read
+
+jobs:
+  rust-workspace-unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust tools
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: cargo +stable fmt --all -- --check
+      - name: Test local fixtures without a VM or model credentials
+        run: cargo +stable test --workspace --locked
+      - name: Lint workspace
+        run: cargo +stable clippy --workspace --all-targets --locked -- -D warnings

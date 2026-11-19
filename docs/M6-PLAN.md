@@ -289,6 +289,8 @@ hostのcontrol.jsonlには各delivery読取の開始と観測分類を同じ管�
 
 ## 配送競合の実測と修正
 
+大容量証拠の転送順と有限deadlineの現行契約は[Export証拠の有限転送予算](EVIDENCE-TRANSFER.md)を参照する。以下の歴史的run結果はこの変更で再認定しない。
+
 - build003のimage_smoke成功: `/private/tmp/tempest-m6-delivery-race-vm-003/summary.json`。
   実root reader PID1304がmoved_pidsに含まれ、実行失敗→同IDの認証済み応答取得を確認。
   freezeは107209167ns。fixture以外の隔離試験も同じsuiteで実施した。
