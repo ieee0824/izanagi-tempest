@@ -1,0 +1,493 @@
+{
+  "session": 84449,
+  "exit_code": 0,
+  "authorization_message": 16876,
+  "script_sha256": "f603096a1efabc5ff92a50ba51273d13e3839799b404a983aa03851fbf034765",
+  "canonical": "/var/lib/tempest-izanagi-image-smoke-002/inputs/image.qcow2",
+  "replaced_paths": [
+    "/var/lib/tempest-izanagi-image-smoke-001/inputs/image.qcow2",
+    "/var/lib/tempest-izanagi-image-smoke-001-v2/inputs/image.qcow2",
+    "/var/lib/tempest-izanagi-exec-exposure-001/inputs/image.qcow2",
+    "/var/lib/tempest-izanagi-proc-exposure-001/inputs/image.qcow2",
+    "/var/lib/tempest-izanagi-proc-exposure-002/inputs/image.qcow2",
+    "/var/lib/tempest-izanagi-proc-exposure-003/inputs/image.qcow2",
+    "/var/lib/tempest-izanagi-sidecar-001/inputs/image.qcow2"
+  ],
+  "physical_identity_exception": [
+    "canonical nlink/ctime",
+    "seven target inode/nlink/mtime/ctime",
+    "seven parent directory mtime/ctime"
+  ],
+  "before": [
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795010245515644295,
+        "device": 64769,
+        "gid": 988,
+        "inode": 4718599,
+        "mode": 288,
+        "mtime_ns": 1795010242206698245,
+        "nlink": 1,
+        "uid": 0
+      },
+      "parent": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795010242593691942,
+        "device": 64769,
+        "gid": 988,
+        "inode": 4718594,
+        "mode": 488,
+        "mtime_ns": 1795010242593691942,
+        "nlink": 5,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-image-smoke-002/inputs/image.qcow2",
+      "sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795006424637180551,
+        "device": 64769,
+        "gid": 988,
+        "inode": 1835293,
+        "mode": 288,
+        "mtime_ns": 1795006421093146582,
+        "nlink": 1,
+        "uid": 0
+      },
+      "parent": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795006421154147167,
+        "device": 64769,
+        "gid": 988,
+        "inode": 1835288,
+        "mode": 488,
+        "mtime_ns": 1795006421154147167,
+        "nlink": 5,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-image-smoke-001/inputs/image.qcow2",
+      "sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795007259326214672,
+        "device": 64769,
+        "gid": 988,
+        "inode": 2885080,
+        "mode": 288,
+        "mtime_ns": 1795007255983195083,
+        "nlink": 1,
+        "uid": 0
+      },
+      "parent": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795007256041195423,
+        "device": 64769,
+        "gid": 988,
+        "inode": 2883630,
+        "mode": 488,
+        "mtime_ns": 1795007256041195423,
+        "nlink": 5,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-image-smoke-001-v2/inputs/image.qcow2",
+      "sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795017775176053101,
+        "device": 64769,
+        "gid": 988,
+        "inode": 6031056,
+        "mode": 288,
+        "mtime_ns": 1795017763109664401,
+        "nlink": 1,
+        "uid": 0
+      },
+      "parent": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795017772044210385,
+        "device": 64769,
+        "gid": 988,
+        "inode": 6031051,
+        "mode": 488,
+        "mtime_ns": 1795017772044210385,
+        "nlink": 5,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-exec-exposure-001/inputs/image.qcow2",
+      "sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795018995727548100,
+        "device": 64769,
+        "gid": 988,
+        "inode": 6293494,
+        "mode": 288,
+        "mtime_ns": 1795018981365619477,
+        "nlink": 1,
+        "uid": 0
+      },
+      "parent": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795018992757562707,
+        "device": 64769,
+        "gid": 988,
+        "inode": 6293489,
+        "mode": 488,
+        "mtime_ns": 1795018992757562707,
+        "nlink": 5,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-proc-exposure-001/inputs/image.qcow2",
+      "sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795020856140270915,
+        "device": 64769,
+        "gid": 988,
+        "inode": 6555112,
+        "mode": 288,
+        "mtime_ns": 1795020841601140967,
+        "nlink": 1,
+        "uid": 0
+      },
+      "parent": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795020853170244438,
+        "device": 64769,
+        "gid": 988,
+        "inode": 6555107,
+        "mode": 488,
+        "mtime_ns": 1795020853170244438,
+        "nlink": 5,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-proc-exposure-002/inputs/image.qcow2",
+      "sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795021618607076352,
+        "device": 64769,
+        "gid": 988,
+        "inode": 6817237,
+        "mode": 288,
+        "mtime_ns": 1795021604070647693,
+        "nlink": 1,
+        "uid": 0
+      },
+      "parent": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795021615524196187,
+        "device": 64769,
+        "gid": 988,
+        "inode": 6817232,
+        "mode": 488,
+        "mtime_ns": 1795021615524196187,
+        "nlink": 5,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-proc-exposure-003/inputs/image.qcow2",
+      "sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795023549341996485,
+        "device": 64769,
+        "gid": 988,
+        "inode": 7079947,
+        "mode": 288,
+        "mtime_ns": 1795023534974153857,
+        "nlink": 1,
+        "uid": 0
+      },
+      "parent": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795023546372028733,
+        "device": 64769,
+        "gid": 988,
+        "inode": 7079942,
+        "mode": 488,
+        "mtime_ns": 1795023546372028733,
+        "nlink": 5,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-sidecar-001/inputs/image.qcow2",
+      "sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e"
+    }
+  ],
+  "after": [
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795046870759119505,
+        "device": 64769,
+        "gid": 988,
+        "inode": 4718599,
+        "mode": 288,
+        "mtime_ns": 1795010242206698245,
+        "nlink": 8,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-image-smoke-002/inputs/image.qcow2"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795046870759119505,
+        "device": 64769,
+        "gid": 988,
+        "inode": 4718599,
+        "mode": 288,
+        "mtime_ns": 1795010242206698245,
+        "nlink": 8,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-image-smoke-001/inputs/image.qcow2"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795046870759119505,
+        "device": 64769,
+        "gid": 988,
+        "inode": 4718599,
+        "mode": 288,
+        "mtime_ns": 1795010242206698245,
+        "nlink": 8,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-image-smoke-001-v2/inputs/image.qcow2"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795046870759119505,
+        "device": 64769,
+        "gid": 988,
+        "inode": 4718599,
+        "mode": 288,
+        "mtime_ns": 1795010242206698245,
+        "nlink": 8,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-exec-exposure-001/inputs/image.qcow2"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795046870759119505,
+        "device": 64769,
+        "gid": 988,
+        "inode": 4718599,
+        "mode": 288,
+        "mtime_ns": 1795010242206698245,
+        "nlink": 8,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-proc-exposure-001/inputs/image.qcow2"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795046870759119505,
+        "device": 64769,
+        "gid": 988,
+        "inode": 4718599,
+        "mode": 288,
+        "mtime_ns": 1795010242206698245,
+        "nlink": 8,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-proc-exposure-002/inputs/image.qcow2"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795046870759119505,
+        "device": 64769,
+        "gid": 988,
+        "inode": 4718599,
+        "mode": 288,
+        "mtime_ns": 1795010242206698245,
+        "nlink": 8,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-proc-exposure-003/inputs/image.qcow2"
+    },
+    {
+      "file": {
+        "blocks_512": 4189704,
+        "bytes": 2145124352,
+        "ctime_ns": 1795046870759119505,
+        "device": 64769,
+        "gid": 988,
+        "inode": 4718599,
+        "mode": 288,
+        "mtime_ns": 1795010242206698245,
+        "nlink": 8,
+        "uid": 0
+      },
+      "path": "/var/lib/tempest-izanagi-sidecar-001/inputs/image.qcow2"
+    }
+  ],
+  "parent_metadata_after": [
+    {
+      "target": "/var/lib/tempest-izanagi-image-smoke-001/inputs/image.qcow2",
+      "parent_after": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795046870738119951,
+        "device": 64769,
+        "gid": 988,
+        "inode": 1835288,
+        "mode": 488,
+        "mtime_ns": 1795046870738119951,
+        "nlink": 5,
+        "uid": 0
+      }
+    },
+    {
+      "target": "/var/lib/tempest-izanagi-image-smoke-001-v2/inputs/image.qcow2",
+      "parent_after": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795046870742119866,
+        "device": 64769,
+        "gid": 988,
+        "inode": 2883630,
+        "mode": 488,
+        "mtime_ns": 1795046870742119866,
+        "nlink": 5,
+        "uid": 0
+      }
+    },
+    {
+      "target": "/var/lib/tempest-izanagi-exec-exposure-001/inputs/image.qcow2",
+      "parent_after": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795046870746119781,
+        "device": 64769,
+        "gid": 988,
+        "inode": 6031051,
+        "mode": 488,
+        "mtime_ns": 1795046870746119781,
+        "nlink": 5,
+        "uid": 0
+      }
+    },
+    {
+      "target": "/var/lib/tempest-izanagi-proc-exposure-001/inputs/image.qcow2",
+      "parent_after": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795046870749119717,
+        "device": 64769,
+        "gid": 988,
+        "inode": 6293489,
+        "mode": 488,
+        "mtime_ns": 1795046870749119717,
+        "nlink": 5,
+        "uid": 0
+      }
+    },
+    {
+      "target": "/var/lib/tempest-izanagi-proc-exposure-002/inputs/image.qcow2",
+      "parent_after": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795046870752119653,
+        "device": 64769,
+        "gid": 988,
+        "inode": 6555107,
+        "mode": 488,
+        "mtime_ns": 1795046870752119653,
+        "nlink": 5,
+        "uid": 0
+      }
+    },
+    {
+      "target": "/var/lib/tempest-izanagi-proc-exposure-003/inputs/image.qcow2",
+      "parent_after": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795046870756119569,
+        "device": 64769,
+        "gid": 988,
+        "inode": 6817232,
+        "mode": 488,
+        "mtime_ns": 1795046870756119569,
+        "nlink": 5,
+        "uid": 0
+      }
+    },
+    {
+      "target": "/var/lib/tempest-izanagi-sidecar-001/inputs/image.qcow2",
+      "parent_after": {
+        "blocks_512": 8,
+        "bytes": 4096,
+        "ctime_ns": 1795046870759119505,
+        "device": 64769,
+        "gid": 988,
+        "inode": 7079942,
+        "mode": 488,
+        "mtime_ns": 1795046870759119505,
+        "nlink": 5,
+        "uid": 0
+      }
+    }
+  ],
+  "preservation_before": {
+    "public_result_file_hashes_verified": true,
+    "seed_loss_full_tree_unchanged": true,
+    "snapshot_content_owner_mode_verified": true
+  },
+  "preservation_after": {
+    "public_result_file_hashes_verified": true,
+    "seed_loss_full_tree_unchanged": true,
+    "snapshot_content_owner_mode_verified": true
+  },
+  "free_before": 8849870848,
+  "free_after": 23865704448,
+  "free_delta": 15015833600,
+  "image_build_started": false,
+  "old_result_documents_modified": false,
+  "private_journal_sha256": "3c5409448ae54dbd13598cbcb1fd8331fed9722a6228ae51b6e8aaf4ca675cd2",
+  "private_journal_bytes": 12128
+}
