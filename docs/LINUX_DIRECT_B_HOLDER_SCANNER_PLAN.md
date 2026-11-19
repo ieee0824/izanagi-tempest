@@ -56,3 +56,13 @@ room #17020 の範囲で、ソース `7073986` の `tempest-linux-probe` を `ca
 進行カウンタは凍結前に12から14へ増加し、凍結確認後の走査区間では14のまま、解凍後は14から16へ増加した。凍結中に観測した対象pipeのFDは1件で、内部比較で期待したworkerの書込端と一致した。試験終了時に子を停止しwaitpidを呼び、専用cgroupを回収した。実行後に専用パスが残っていないことを管理処理の外から確認した。結果はroom #17021に報告済み。
 
 この試行は固定workerの正対照を扱う。凍結未完了、所属変化、FD漏出の実機負例と、Izanagiの経路への結線は未検証。
+
+### 固定ホストの拒否試験 001
+
+room #17022 の実機指示に従い、ソース `95a6aaa` をビルドし、`fixed_dummy_rejects_extra_pipe_fd`、`fixed_dummy_rejects_wrong_role`、`fixed_dummy_rejects_exited_worker` をそれぞれ前節と同じ `sudo -n` と `--ignored --exact` の条件で、専用プロセスに分けて一回ずつ直列に実行した。バイナリのSHA-256は `5b761841cabc60d01a4a55a3c828bbc396f3b0618b8fb7f98be2b7f03b7f5cbc`。
+
+- 余剰FDは凍結中のカウンタ10→10、対象pipeのFD 2件を観測し、期待集合との比較で拒否。
+- 対象外roleは同じ専用GroupのAに配置したworkerをBとして照合し、走査前に拒否。Group外への移動は未検証。
+- 終了済みworkerは元pidfdで終了を観測した後、走査前に拒否。
+
+各テストは終了0。workerの `waitpid` が元PIDを返し、Groupの回収が成功したことを試験内で確認した。外部からも各試行の前後で専用cgroupの不在を確認した。凍結確認の期限切れは今回未試験。
