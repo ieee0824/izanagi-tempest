@@ -137,3 +137,20 @@ libgcc_s、libm、libc と同 loader の4件で、RPATH/RUNPATH は存在しな�
 4件の依存も同集合内に収まる。`fixed_mcp_libraries` は既存 capsule の
 配置表を再利用し、このホストで採取した各ファイルの SHA-256 に
 sealed snapshot を照合する。実 mount と loader の起動確認は後続とする。
+
+#### stdio 専用 MCP のランタイム境界
+
+固定 source の `src/main.rs` は `#[tokio::main]` を使うため、MCP の
+stdio 処理に入る前に Tokio のランタイムを初期化する。既存 A/B の
+syscall 許可表をそのまま使えるかは未検証である。最初の stdio 試験では
+MCP を独立した空の net namespace に置き、VM 接続を扱う後続 profile より
+先に、ネットワークを使わないランタイム初期化だけを検証する。
+許可する追加 syscall は固定 ELF が起動に必要とするものに限定し、
+MCP からの外部接続、別 namespace への移動、FD 受け渡しは拒否を維持する。
+
+Tokio が複数 TID を作るため、exec 後の FD 照合は leader の 0/1 だけでは
+足りない。凍結中に元 pidfd と starttime を確認し、同じ thread group の
+全 TID で対象 pipe を検査する。共有 FD 表による観測の重複と実際の
+追加 FD を区別したうえで、固定端以外が見つかれば B の送信を解放しない。
+EOF 後は元 pidfd の終了、子の回収、cgroup の空状態まで確認する。
+EOF 単独をスレッドや子孫の終了証拠には使わない。
