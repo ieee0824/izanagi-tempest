@@ -54,3 +54,5 @@ jobs:
         run: |
           gcc -std=c17 -Wall -Wextra -Werror docs/evidence/connect4-fixture-001/recovery_test.c -o "$RUNNER_TEMP/connect4-recovery-test"
           timeout 5s "$RUNNER_TEMP/connect4-recovery-test"
+      - name: Test subreaper adoption and pidfd handoff without root
+        run: timeout 10s python3 docs/evidence/connect4-fixture-001/subreaper_test.py
