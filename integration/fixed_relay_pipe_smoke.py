@@ -67,10 +67,11 @@ def exercise(case):
     peer.close()
     os.close(request_read)
     os.close(response_write)
+    pidfd = None
     with local, os.fdopen(request_write, 'wb', buffering=0) as request, \
-            os.fdopen(response_read, 'rb', buffering=0) as response, os.fdopen(
-                os.pidfd_open(pid), 'rb') as pidfd:
+            os.fdopen(response_read, 'rb', buffering=0) as response:
         try:
+            pidfd = os.pidfd_open(pid)
             if case != 'timeout':
                 request.write(REQUEST[:1] if case == 'short_request' else REQUEST)
                 request.close()
@@ -86,14 +87,20 @@ def exercise(case):
                     wait_ready(response.fileno(), select.POLLIN, time.monotonic() + 2)
                     if response.read(len(RESPONSE) + 1) != RESPONSE:
                         raise RuntimeError('parent did not receive fixed response')
-            wait_ready(pidfd.fileno(), select.POLLIN, time.monotonic() + 2)
+            wait_ready(pidfd, select.POLLIN, time.monotonic() + 2)
         except BaseException:
             try:
-                signal.pidfd_send_signal(pidfd.fileno(), signal.SIGKILL)
+                if pidfd is None:
+                    # This parent is the sole reaper of the direct child.
+                    os.kill(pid, signal.SIGKILL)
+                else:
+                    signal.pidfd_send_signal(pidfd, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             raise
         finally:
+            if pidfd is not None:
+                os.close(pidfd)
             waited, status = os.waitpid(pid, 0)
             if waited != pid:
                 raise RuntimeError('fixed relay child was not reaped')
