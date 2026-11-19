@@ -150,13 +150,15 @@ impl FixedMcpArtifact {
         }
     }
 
-    /// Verify the two-worker route and return only after confirmed thaw.
-    pub(super) fn inspect_before_exchange(
+    /// The request gate is consumed here. On failure the caller receives
+    /// EOF instead of the byte that starts the exchange.
+    pub(super) fn release_exchange_after_inspection(
         &self,
         group: &mut super::cgroup::Group,
         guard: &super::guard::Guard,
         workers: [(super::contract::Role, &super::identity::Process); 2],
         ends: [(&super::identity::Descriptor, u32); 2],
+        caller_gate: OwnedFd,
         deadline: Instant,
     ) -> Result<(), super::os::Fault> {
         use super::{
@@ -211,7 +213,13 @@ impl FixedMcpArtifact {
                 Ok(())
             },
             &(),
-        )
+        )?;
+        if Instant::now() >= deadline {
+            return Err(Fault::Identity);
+        }
+        use std::io::Write;
+        std::fs::File::from(caller_gate).write_all(b"R")?;
+        Ok(())
     }
 
     pub(super) fn verify_stdio(
