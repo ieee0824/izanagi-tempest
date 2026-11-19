@@ -297,3 +297,25 @@ cgroup の identity、適用済み制約を照合してから通信を許可す�
 Linux では各区間の前後に `/proc` の owner PID・starttime・cgroup・FD と
 `ss` の listener inode・owner・endpoint を照合し、閉鎖後も `ss` で不在を確認する。
 macOS 等の計数結果では `linux_identity=null` とし、Linux の所有証跡として使わない。
+
+#### 既存 agent 転送を使う区間の同期案
+
+QEMU の単一 loopback → guest 9001 転送と `restrict=on` を維持する。
+許可側の要求は認証済みの既存 session で固定ゲスト測定コマンドを呼び出し、
+実ゲストの dummy receiver に渡す。ホストの QEMU listener の同一性を各境界で
+再照合する。研究用の拒否側は別の固定ホスト loopback listener とする。
+
+親は被試験子と独立した既存 session の制御で、各区間の開始と終了を囲む。
+制御要求は run nonce、固定区間 ID、開始または終了だけを指定し、計数対象の
+dummy 要求を発行しない。開始確認後に被試験子を進め、当該試行の完了確認後に
+終了境界を記録する。境界の確認が欠ければ、その区間の結果は不合格とする。
+提案する区間 ID は `control_before`、`allow_same_run`、`deny_other`、
+`control_after`。前後の対照区間では両宛先への固定要求を各1回送る。
+
+private export のゲスト記録は、少なくとも schema version、run nonce、boot ID、
+区間 ID、受理・照合それぞれの開始値・終了値・差分、終了状態を持つ。
+ホストは認証済み session の run/boot binding と照合し、順序、重複、欠落、
+計数の連続性と差分を検査する。期待するゲスト差分は区間順に
+1/1、1/1、0/0、1/1（受理/照合）。ホストの拒否側 listener で期待する
+差分は 1/1、0/0、0/0、1/1。認証制御が同じホスト転送を通るため、
+その listener の総接続数は補助観測とし、試験要求の計数と混同しない。
