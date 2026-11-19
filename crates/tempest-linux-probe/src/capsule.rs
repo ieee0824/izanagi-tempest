@@ -239,6 +239,29 @@ pub(super) fn install_libraries(
     Ok(())
 }
 
+// Used only in the bootstrap child, whose inherited descriptors are disposable.
+fn map_descriptors(mappings: &[(RawFd, RawFd)], executable_slot: RawFd) -> Result<(), Fault> {
+    // Duplicate sources away from the fixed destination range before dup2:
+    // descriptor-number collisions must not change the selected objects.
+    let mut copied = Vec::new();
+    for (source, target) in mappings {
+        let fd = unsafe { libc::fcntl(*source, libc::F_DUPFD_CLOEXEC, 64) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        copied.push((fd, *target));
+    }
+    for (source, target) in &copied {
+        os::syscall(unsafe { libc::dup2(*source, *target) })?;
+    }
+    os::syscall(unsafe { libc::fcntl(executable_slot, libc::F_SETFD, libc::FD_CLOEXEC) })?;
+    let keep = mappings
+        .iter()
+        .map(|(_, target)| *target)
+        .collect::<Vec<_>>();
+    os::close_except(&keep)
+}
+
 pub(super) fn enter(
     role: Role,
     scenario: Scenario,
@@ -323,26 +346,8 @@ pub(super) fn enter(
         libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_RDONLY,
         Some("hidepid=2,subset=pid"),
     )?;
-    // Duplicate sources away from the fixed destination range before dup2:
-    // descriptor-number collisions must not change the selected objects.
     *step = 5;
-    let mut copied = Vec::new();
-    for (source, target) in mappings {
-        let fd = unsafe { libc::fcntl(*source, libc::F_DUPFD_CLOEXEC, 64) };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        copied.push((fd, *target));
-    }
-    for (source, target) in &copied {
-        os::syscall(unsafe { libc::dup2(*source, *target) })?;
-    }
-    os::syscall(unsafe { libc::fcntl(6, libc::F_SETFD, libc::FD_CLOEXEC) })?;
-    let keep = mappings
-        .iter()
-        .map(|(_, target)| *target)
-        .collect::<Vec<_>>();
-    os::close_except(&keep)?;
+    map_descriptors(mappings, 6)?;
     *step = 6;
     use std::os::unix::ffi::OsStrExt;
     let root = CString::new(root.as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
