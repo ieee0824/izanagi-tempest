@@ -363,6 +363,20 @@ fn run_fixed_exchange(
     )
 }
 
+/// Stop the group even when a child failed before completing its exchange.
+fn recover_fixed_exchange(
+    group: &mut super::cgroup::Group,
+    registry: &mut super::registry::Registry,
+    counts: &mut super::registry::Counts,
+) -> Result<(), super::os::Fault> {
+    let stop = group.kill();
+    let reap = registry.stop_stdio_fixture_children(counts);
+    let cleanup = group.cleanup();
+    reap?;
+    cleanup?;
+    stop
+}
+
 fn bind_fresh_child(pid: libc::pid_t) -> Result<super::identity::Process, super::os::Fault> {
     super::identity::Process::bind(pid as u32).or_else(|error| {
         stop_untracked_child(pid)?;
