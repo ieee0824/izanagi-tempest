@@ -59,9 +59,14 @@ done:
         close(allowed);
     if (denied >= 0)
         close(denied);
-    if (!retain_cgroup && remove_connect4_fixture_cgroup(state, cgroup) < 0) {
-        perror("fixture cgroup cleanup");
-        result = -1;
+    if (!retain_cgroup) {
+        if (remove_connect4_fixture_cgroup(state, cgroup) < 0) {
+            perror("fixture cgroup cleanup");
+            result = -1;
+        } else if (retire_connect4_fixture_state(state) < 0) {
+            perror("fixture state retirement");
+            result = -1;
+        }
     }
     close(cgroup);
     close(state);

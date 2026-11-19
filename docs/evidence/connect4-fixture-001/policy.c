@@ -1476,6 +1476,13 @@ int create_connect4_fixture_state(int *state_fd, int *cgroup_fd)
     }
     if (errno != ENOENT)
         goto done;
+    if (fstatat(state_parent, CONNECT4_TRIAL_NAME ".retired", &existing,
+                AT_SYMLINK_NOFOLLOW) == 0) {
+        errno = EEXIST;
+        goto done;
+    }
+    if (errno != ENOENT)
+        goto done;
     state = create_connect4_trial_directory(state_parent, CONNECT4_TRIAL_NAME);
     if (state < 0)
         goto done;
@@ -1533,6 +1540,35 @@ int remove_connect4_fixture_cgroup(int state_fd, int cgroup_fd)
             errno = ESTALE;
         else
             result = unlinkat(parent, CONNECT4_TRIAL_NAME, AT_REMOVEDIR);
+    }
+    int error = errno;
+    if (parent >= 0)
+        close(parent);
+    close(lease);
+    if (result < 0)
+        errno = error;
+    return result;
+}
+
+/* Called by the fixture after verified cgroup removal. Preserve the ledger
+ * and lock inode together, using a single non-replacing rename. */
+int retire_connect4_fixture_state(int state_fd)
+{
+    int lease = acquire_connect4_lease(state_fd);
+    if (lease < 0)
+        return -1;
+    int parent = open_connect4_parent("/var/lib", 0);
+    int result = -1;
+    struct stat opened, entry;
+    if (parent >= 0 &&
+        fstat(state_fd, &opened) == 0 &&
+        fstatat(parent, CONNECT4_TRIAL_NAME, &entry, AT_SYMLINK_NOFOLLOW) == 0) {
+        if (opened.st_dev != entry.st_dev || opened.st_ino != entry.st_ino) {
+            errno = ESTALE;
+        } else if (renameat2(parent, CONNECT4_TRIAL_NAME, parent,
+                             CONNECT4_TRIAL_NAME ".retired", RENAME_NOREPLACE) == 0) {
+            result = fsync(parent);
+        }
     }
     int error = errno;
     if (parent >= 0)
