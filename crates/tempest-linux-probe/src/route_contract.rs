@@ -69,8 +69,8 @@ impl FixedMcpArtifact {
         unsafe { libc::_exit(127) };
     }
 
-    pub(super) fn install_libraries(&self, root: &std::path::Path) -> Result<(), super::os::Fault> {
-        super::capsule::install_libraries(root, &self.libraries, None)
+    pub(super) fn prepare_root(&self, root: &std::path::Path) -> Result<(), super::os::Fault> {
+        super::capsule::prepare_mcp_root(root, &self.libraries)
     }
 
     pub(super) fn verify_stdio(

@@ -301,6 +301,39 @@ fn drop_privileges(uid: u32) -> Result<(), Fault> {
     Ok(())
 }
 
+fn make_mounts_private() -> Result<(), Fault> {
+    os::mount(
+        None,
+        Path::new("/"),
+        None,
+        libc::MS_REC | libc::MS_PRIVATE,
+        None,
+    )
+}
+
+fn mount_root(root: &Path) -> Result<(), Fault> {
+    os::mount(
+        Some(Path::new("tmpfs")),
+        root,
+        Some("tmpfs"),
+        libc::MS_NOSUID | libc::MS_NODEV,
+        Some("size=16777216,nr_inodes=128,mode=0755"),
+    )
+}
+
+// The fixture child must already be in its own mount namespace.
+pub(super) fn prepare_mcp_root(root: &Path, libraries: &[Snapshot]) -> Result<(), Fault> {
+    make_mounts_private()?;
+    mount_root(root)?;
+    for directory in ["lib", "lib/x86_64-linux-gnu", "lib64", "work"] {
+        fs::DirBuilder::new()
+            .mode(0o755)
+            .create(root.join(directory))?;
+    }
+    install_libraries(root, libraries, None)?;
+    enter_root(root)
+}
+
 pub(super) fn enter(
     role: Role,
     scenario: Scenario,
@@ -312,21 +345,9 @@ pub(super) fn enter(
     // Clone already supplied independent mount/PID/network namespaces. No
     // device or interface is added to the network namespace.
     *step = 1;
-    os::mount(
-        None,
-        Path::new("/"),
-        None,
-        libc::MS_REC | libc::MS_PRIVATE,
-        None,
-    )?;
+    make_mounts_private()?;
     *step = 2;
-    os::mount(
-        Some(Path::new("tmpfs")),
-        root,
-        Some("tmpfs"),
-        libc::MS_NOSUID | libc::MS_NODEV,
-        Some("size=16777216,nr_inodes=128,mode=0755"),
-    )?;
+    mount_root(root)?;
     unsafe {
         libc::umask(0o022);
     }
