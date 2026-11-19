@@ -900,17 +900,17 @@ mod tests {
         use crate::guard::Guard;
         use crate::holder_scan::{Budget, ManagerPipe, TaskPipeFd, task_pipe_fds};
         use crate::identity::Process;
-        use std::os::unix::fs::MetadataExt;
+        use crate::route_contract::ParentPipe;
 
         let guard = Guard::acquire().unwrap();
         let mut group = Group::create().unwrap();
-        let (read_a, write_a) = io::pipe().unwrap();
-        let (read_b, write_b) = io::pipe().unwrap();
-        let pipe_id = |fd| {
-            let m = fs::metadata(format!("/proc/self/fd/{fd}")).unwrap();
-            (m.dev(), m.ino())
-        };
-        let ids = [pipe_id(read_a.as_raw_fd()), pipe_id(read_b.as_raw_fd())];
+        let (read, write) = crate::os::pipe().unwrap();
+        let pipe_a = ParentPipe::new(read, write).unwrap();
+        let (read, write) = crate::os::pipe().unwrap();
+        let pipe_b = ParentPipe::new(read, write).unwrap();
+        let ids = [pipe_a.identity(), pipe_b.identity()];
+        let (read_a, write_a) = pipe_a.into_ends();
+        let (read_b, write_b) = pipe_b.into_ends();
         let ends = [
             [read_a.as_raw_fd(), write_b.as_raw_fd()],
             [read_b.as_raw_fd(), write_a.as_raw_fd()],

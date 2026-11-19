@@ -133,9 +133,12 @@ impl ParentPipe {
     pub fn new(read: OwnedFd, write: OwnedFd) -> Result<Self, Rejection> {
         fn inspect(fd: &OwnedFd, access: i32) -> Result<(u64, u64), Rejection> {
             let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
             if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0
                 || st.st_mode & libc::S_IFMT != libc::S_IFIFO
-                || unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) } & libc::O_ACCMODE != access
+                || flags < 0
+                || flags & libc::O_PATH != 0
+                || flags & libc::O_ACCMODE != access
             {
                 return Err(Rejection::Pipe);
             }
@@ -151,6 +154,14 @@ impl ParentPipe {
             identity,
         })
     }
+    pub(super) fn into_ends(self) -> (OwnedFd, OwnedFd) {
+        (self.read, self.write)
+    }
+
+    pub(super) fn identity(&self) -> (u64, u64) {
+        self.identity
+    }
+
     pub fn verify_parent_ends(&self) -> Result<(), Rejection> {
         let copy_read = self.read.try_clone().map_err(|_| Rejection::Pipe)?;
         let copy_write = self.write.try_clone().map_err(|_| Rejection::Pipe)?;
