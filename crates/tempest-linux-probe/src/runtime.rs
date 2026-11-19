@@ -359,7 +359,21 @@ fn reap(
     record: super::registry::RecordId,
     registry: &mut super::registry::Registry,
 ) -> Result<(), Fault> {
-    let until = Instant::now() + Duration::from_secs(3);
+    reap_status(
+        process,
+        record,
+        registry,
+        Instant::now() + Duration::from_secs(3),
+    )
+    .map(|_| ())
+}
+
+pub(super) fn reap_status(
+    process: &Process,
+    record: super::registry::RecordId,
+    registry: &mut super::registry::Registry,
+    until: Instant,
+) -> Result<i32, Fault> {
     loop {
         super::lease::pulse()?;
         let mut status = 0;
@@ -369,7 +383,7 @@ fn reap(
                 return Err(Fault::Identity);
             }
             registry.reaped(record)?;
-            return Ok(());
+            return Ok(status);
         }
         if value < 0 {
             return Err(io::Error::last_os_error().into());

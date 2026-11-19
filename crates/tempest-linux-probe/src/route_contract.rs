@@ -347,6 +347,24 @@ fn exchange_after_release(
     Ok(())
 }
 
+/// Reap both tracked direct children before accepting a completed exchange.
+fn reap_fixed_exchange(
+    children: [(&super::identity::Process, super::registry::RecordId); 2],
+    registry: &mut super::registry::Registry,
+    deadline: Instant,
+) -> Result<(), super::os::Fault> {
+    use super::os::Fault;
+
+    let [caller, mcp] = children
+        .map(|(process, record)| super::runtime::reap_status(process, record, registry, deadline));
+    for status in [caller?, mcp?] {
+        if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+            return Err(Fault::Identity);
+        }
+    }
+    Ok(())
+}
+
 /// Verify the loader and recursively required libraries for the fixed ELF.
 fn fixed_mcp_libraries() -> Result<Vec<super::os::Snapshot>, super::os::Fault> {
     use super::os::{Fault, Snapshot};
