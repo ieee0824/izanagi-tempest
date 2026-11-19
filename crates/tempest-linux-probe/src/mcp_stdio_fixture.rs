@@ -48,6 +48,22 @@ fn expect_stdout_eof(responses: &mut File, deadline: Instant) -> io::Result<()> 
     Ok(())
 }
 
+pub(super) fn expect_control_byte(
+    reader: OwnedFd,
+    expected: u8,
+    deadline: Instant,
+) -> io::Result<()> {
+    let mut reader = File::from(reader);
+    let mut byte = [0];
+    if read(&mut reader, &mut byte, deadline)? != 1 || byte != [expected] {
+        return Err(invalid("missing fixture control byte"));
+    }
+    if read(&mut reader, &mut byte, deadline)? != 0 {
+        return Err(invalid("unexpected data after fixture control byte"));
+    }
+    Ok(())
+}
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }

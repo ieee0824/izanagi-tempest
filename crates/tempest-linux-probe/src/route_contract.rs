@@ -371,12 +371,8 @@ fn exchange_after_release(
     expected: [&Value; 2],
     deadline: Instant,
 ) -> Result<(), super::os::Fault> {
-    let mut byte = 0_u8;
-    let released = unsafe { libc::read(gate.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) };
-    if released != 1 || byte != b'R' || Instant::now() >= deadline {
-        return Err(super::os::Fault::Identity);
-    }
-    drop(gate);
+    mcp_stdio_fixture::expect_control_byte(gate, b'R', deadline)
+        .map_err(|_| super::os::Fault::Identity)?;
     let [initialize, catalog] = expected;
     mcp_stdio_fixture::exchange(requests, responses, initialize, catalog, deadline)?;
     Ok(())
