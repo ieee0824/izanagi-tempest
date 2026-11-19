@@ -2456,6 +2456,8 @@ int create_connect4_fixture_state(int *state_fd, int *cgroup_fd)
         goto done;
     if (fstatat(state_parent, CONNECT4_TRIAL_NAME ".retired", &existing,
                 AT_SYMLINK_NOFOLLOW) == 0) {
+        fputs("fixture setup: retired trial ledger already exists: "
+              CONNECT4_TRIAL_NAME ".retired\n", stderr);
         errno = EEXIST;
         goto done;
     }
