@@ -239,6 +239,16 @@ impl Process {
         Ok([number()?, number()?, number()?])
     }
 
+    pub(super) fn thread_count(&self) -> Result<u32, Fault> {
+        let value = fs::read_to_string(format!("/proc/{}/status", self.pid))?;
+        value
+            .lines()
+            .find_map(|line| line.strip_prefix("Threads:"))
+            .and_then(|count| count.trim().parse().ok())
+            .filter(|count| *count > 0)
+            .ok_or(Fault::Identity)
+    }
+
     pub(super) fn security_state(&self) -> Result<State, Fault> {
         let identity = self.identity()?;
         let value = fs::read_to_string(format!("/proc/{}/status", self.pid))?;

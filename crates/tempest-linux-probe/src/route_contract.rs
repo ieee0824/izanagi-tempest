@@ -91,6 +91,32 @@ impl FixedMcpArtifact {
         unsafe { libc::_exit(127) };
     }
 
+    /// Wait for the fixed image and a runtime thread before requesting
+    /// the freeze. The frozen observation remains the release condition.
+    pub(super) fn wait_for_runtime(
+        &self,
+        child: &super::identity::Process,
+        deadline: Instant,
+    ) -> Result<(), super::os::Fault> {
+        use super::os::Fault;
+
+        let executable = self.executable.identity()?;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Fault::Identity);
+            }
+            let identity = child.identity()?;
+            if identity.code == executable && child.thread_count()? >= 2 {
+                if child.identity()? != identity || Instant::now() >= deadline {
+                    return Err(Fault::Identity);
+                }
+                return Ok(());
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(2)));
+        }
+    }
+
     pub(super) fn verify_stdio(
         &self,
         child: &super::identity::Process,
