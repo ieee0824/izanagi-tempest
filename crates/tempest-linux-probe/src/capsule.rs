@@ -240,7 +240,10 @@ pub(super) fn install_libraries(
 }
 
 // Used only in the bootstrap child, whose inherited descriptors are disposable.
-fn map_descriptors(mappings: &[(RawFd, RawFd)], executable_slot: RawFd) -> Result<(), Fault> {
+pub(super) fn map_descriptors(
+    mappings: &[(RawFd, RawFd)],
+    executable_slot: RawFd,
+) -> Result<(), Fault> {
     // Duplicate sources away from the fixed destination range before dup2:
     // descriptor-number collisions must not change the selected objects.
     let mut copied = Vec::new();

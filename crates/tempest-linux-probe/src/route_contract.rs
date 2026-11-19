@@ -2,7 +2,7 @@
 use serde_json::Value;
 use std::{
     collections::BTreeSet,
-    os::fd::{AsRawFd, OwnedFd},
+    os::fd::{AsRawFd, BorrowedFd, OwnedFd},
     time::{Duration, Instant},
 };
 
@@ -34,23 +34,39 @@ impl FixedMcpArtifact {
     ///
     /// # Safety
     /// The caller must be the fixture child, with the verified loader and
-    /// libraries installed, isolation active, and only the intended stdio
-    /// and close-on-exec bootstrap descriptors open.
-    pub(super) unsafe fn exec_mcp(&self) -> super::os::Fault {
+    /// libraries installed and isolation active. Descriptor remapping
+    /// consumes the child's inherited FD table and must precede its exit.
+    pub(super) unsafe fn exec_mcp(
+        &self,
+        stdin: BorrowedFd<'_>,
+        stdout: BorrowedFd<'_>,
+        stderr: BorrowedFd<'_>,
+    ) -> ! {
+        const EXEC_FD: libc::c_int = 6;
+        let mappings = [
+            (stdin.as_raw_fd(), libc::STDIN_FILENO),
+            (stdout.as_raw_fd(), libc::STDOUT_FILENO),
+            (stderr.as_raw_fd(), libc::STDERR_FILENO),
+            (self.executable.fd(), EXEC_FD),
+        ];
+        if super::capsule::map_descriptors(&mappings, EXEC_FD).is_err() {
+            // The FD table may be partly remapped. Exit without unwinding.
+            unsafe { libc::_exit(126) };
+        }
         let argv = [c"/izanagi".as_ptr(), c"mcp".as_ptr(), std::ptr::null()];
         let env = [c"LANG=C".as_ptr(), c"LC_ALL=C".as_ptr(), std::ptr::null()];
-        // SAFETY: These arrays are NUL terminated and the snapshot owns the FD.
+        // SAFETY: The arrays are NUL terminated and EXEC_FD now names the snapshot.
         unsafe {
             libc::syscall(
                 libc::SYS_execveat,
-                self.executable.fd(),
+                EXEC_FD,
                 c"".as_ptr(),
                 argv.as_ptr(),
                 env.as_ptr(),
                 libc::AT_EMPTY_PATH,
             )
         };
-        std::io::Error::last_os_error().into()
+        unsafe { libc::_exit(127) };
     }
 
     pub(super) fn install_libraries(&self, root: &std::path::Path) -> Result<(), super::os::Fault> {
