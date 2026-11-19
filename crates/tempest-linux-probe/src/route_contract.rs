@@ -317,6 +317,7 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
     let mut trial_errno = None;
     let mut trial_child_exit = None;
     let mut trial_child_signal = None;
+    let mut mcp_stderr = None;
     let mut phase = "preflight";
     let mut recovery_reason = None;
     let mut root_cleanup_reason = None;
@@ -351,7 +352,7 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
                 &mut registry,
                 [&roots[0], &roots[1]],
                 Instant::now() + Duration::from_secs(10),
-                &mut phase,
+                (&mut phase, &mut mcp_stderr),
             );
             if let Err(Fault::UntrackedChildCleanup(errno)) = result {
                 untracked_errno = Some(errno);
@@ -393,6 +394,7 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
             "trial_errno": trial_errno,
             "trial_child_exit": trial_child_exit,
             "trial_child_signal": trial_child_signal,
+            "mcp_stderr": mcp_stderr,
             "recovery_reason": recovery_reason,
             "root_cleanup_reason": root_cleanup_reason,
             "untracked_cleanup_errno": untracked_errno,
@@ -415,11 +417,12 @@ fn run_fixed_exchange(
     registry: &mut super::registry::Registry,
     roots: [&std::path::Path; 2],
     deadline: Instant,
-    phase: &mut &'static str,
+    diagnostics: (&mut &'static str, &mut Option<String>),
 ) -> Result<(), super::os::Fault> {
     use super::{contract::Role, identity::Descriptor, os};
     use std::os::fd::AsFd;
 
+    let (phase, mcp_stderr) = diagnostics;
     *phase = "pipes";
     let [caller_root, mcp_root] = roots;
     let (request_read, request_write) = os::pipe()?;
@@ -433,7 +436,8 @@ fn run_fixed_exchange(
     let (caller_gate, release) = os::pipe()?;
     let (ready, ready_writer) = os::pipe()?;
     let (bootstrap, start) = os::pipe()?;
-    let stderr = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
+    let (stderr_read, stderr) = os::pipe()?;
+    os::syscall(unsafe { libc::fcntl(stderr_read.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) })?;
 
     let expected = mcp_stdio_fixture::expected_results();
     *phase = "caller_spawn";
@@ -461,7 +465,17 @@ fn run_fixed_exchange(
     *phase = "mcp_attach";
     let mcp_record = FixedMcpArtifact::attach_and_start(group, registry, Role::A, &mcp, start)?;
     *phase = "mcp_runtime_wait";
-    artifact.wait_for_runtime(&mcp, deadline)?;
+    let runtime = artifact.wait_for_runtime(&mcp, deadline);
+    if runtime.is_err() {
+        use std::io::Read;
+        let mut buffer = [0; 2048];
+        if let Ok(size) = std::fs::File::from(stderr_read).read(&mut buffer) {
+            if size != 0 {
+                *mcp_stderr = Some(String::from_utf8_lossy(&buffer[..size]).into_owned());
+            }
+        }
+        return runtime;
+    }
     *phase = "mcp_frozen_inspection";
     artifact.inspect_before_exchange(
         group,
