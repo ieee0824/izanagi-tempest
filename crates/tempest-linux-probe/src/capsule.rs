@@ -217,6 +217,28 @@ fn bind(
     Ok(identity)
 }
 
+/// Populate the capsule from the caller's verified snapshots.
+pub(super) fn install_libraries(
+    root: &Path,
+    libraries: &[Snapshot],
+    library_fault: Option<Scenario>,
+) -> Result<(), Fault> {
+    if libraries.len() != LIBRARIES.len() {
+        return Err(Fault::Identity);
+    }
+    let mut installed = Vec::new();
+    for (snapshot, (_, relative)) in libraries.iter().zip(LIBRARIES) {
+        let fault = library_fault.filter(|_| installed.is_empty());
+        installed.push(bind(snapshot, root, relative, fault)?);
+    }
+    for ((snapshot, (_, relative)), expected) in libraries.iter().zip(LIBRARIES).zip(installed) {
+        if verify_library(snapshot, &root.join(relative))? != expected {
+            return Err(Fault::Identity);
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn enter(
     role: Role,
     scenario: Scenario,
@@ -291,17 +313,8 @@ pub(super) fn enter(
         chown(&path, role.uid())?;
     }
     *step = 3;
-    let mut installed = Vec::new();
-    for (snapshot, (_, relative)) in libraries.iter().zip(LIBRARIES) {
-        let fault = (role == Role::A && installed.is_empty() && scenario.library_fault())
-            .then_some(scenario);
-        installed.push(bind(snapshot, root, relative, fault)?);
-    }
-    for ((snapshot, (_, relative)), expected) in libraries.iter().zip(LIBRARIES).zip(installed) {
-        if verify_library(snapshot, &root.join(relative))? != expected {
-            return Err(Fault::Identity);
-        }
-    }
+    let library_fault = (role == Role::A && scenario.library_fault()).then_some(scenario);
+    install_libraries(root, libraries, library_fault)?;
     *step = 4;
     os::mount(
         Some(Path::new("proc")),
