@@ -65,3 +65,11 @@ timeout 5s "$test_dir/recovery-test"
 ```
 
 非特権回帰では `controller_killed=ECANCELED` と `live=EBUSY unknown=ESTALE exited=reaped` を得た。正常な実機試験の受入には、前・中・後の受理件数が順に `(1,1)`、`(1,0)`、`(1,1)` であること、workerの正常終了、固定pinと専用cgroupの不在、元台帳の不在と退役済み台帳の存在を個別に確認する。起動許可の前後で制御側を停止する負例には、停止を各段階へ同期させるテスト用の入口が別途必要である。
+
+## 固定ホストの正常系試行 001
+
+room #16989 の範囲で、`b98090c` の `fixture.c` と `policy.c` を `git show` で別ディレクトリへ取り出してビルドし、引数なしで `sudo -n` から一度実行した。バイナリのSHA-256は `6609070fdaf3e4ddc13c40a592ec89e0b355e2e1d7d79573cb23f9916e3a29a1`。起動前に固定名のcgroup、pin、現行台帳、退役台帳の不在を確認した。
+
+終了コードは1。前対照の受理件数は許可側1件、拒否側1件。試験本体は `Operation not permitted` で終了し、workerの接続結果と後対照の受理件数は未観測。ログは拒否された操作を特定できる粒度を持たないため、正常系の受入は未達である。
+
+終了後に `/sys/fs/cgroup/tempest-connect4-fixture-001`、`/sys/fs/bpf/tempest-connect4-fixture-001`、`/var/lib/tempest-connect4-fixture-001` の不在と、`/var/lib/tempest-connect4-fixture-001.retired` がroot所有・0700のディレクトリであることを確認した。固定名での再実行は行わず、退役台帳を保全する。結果は room #16990 に投稿した。
