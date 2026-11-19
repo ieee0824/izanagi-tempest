@@ -969,8 +969,10 @@ int connect4_worker_wait(void)
     return await_connect4_release(3);
 }
 
-static int try_connect4_loopback(uint16_t port)
+/* A successful connection remains owned by the worker. */
+static int connect4_loopback(uint16_t port, int *connected_fd)
 {
+    *connected_fd = -1;
     const struct sockaddr_in address = {
         .sin_family = AF_INET,
         .sin_port = htons(port),
@@ -979,10 +981,22 @@ static int try_connect4_loopback(uint16_t port)
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
     if (fd < 0)
         return -1;
-    int result = connect(fd, (const struct sockaddr *)&address, sizeof(address));
-    int error = result < 0 ? errno : 0;
-    close(fd);
-    return error;
+    if (connect(fd, (const struct sockaddr *)&address, sizeof(address)) < 0) {
+        int error = errno;
+        close(fd);
+        return error;
+    }
+    *connected_fd = fd;
+    return 0;
+}
+
+static int try_connect4_loopback(uint16_t port)
+{
+    int fd;
+    int result = connect4_loopback(port, &fd);
+    if (fd >= 0)
+        close(fd);
+    return result;
 }
 
 /* Call in the dedicated child. The manager observes the actual exit status
