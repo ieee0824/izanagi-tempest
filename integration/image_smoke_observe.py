@@ -15,6 +15,8 @@ UNIT = 'tempest-izanagi-image-smoke-001.service'
 ROOT = '/var/lib/tempest-izanagi-image-smoke-001-v2'
 ATTEMPTS = {
     '001': (UNIT, ROOT),
+    'fixed-receiver-001': ('tempest-fixed-vm-receiver-preflight-001.service',
+                           '/var/lib/tempest-fixed-vm-receiver-preflight-001'),
     '002': ('tempest-izanagi-image-smoke-002.service', '/var/lib/tempest-izanagi-image-smoke-002'),
     'exec-exposure-001': ('tempest-izanagi-exec-exposure-001.service', '/var/lib/tempest-izanagi-exec-exposure-001'),
     'proc-exposure-001': ('tempest-izanagi-proc-exposure-001.service', '/var/lib/tempest-izanagi-proc-exposure-001'),
