@@ -445,6 +445,39 @@ impl Group {
         }
     }
 
+    /// Keep ownership of the dedicated group through observation and consumption.
+    /// The observer's result stays local and no frozen proof survives thaw.
+    #[allow(dead_code)]
+    pub(super) fn inspect_while_frozen<T>(
+        &mut self,
+        until: Instant,
+        observe: impl FnOnce(&Self) -> Result<T, Fault>,
+        consume: impl FnOnce(T) -> Result<(), Fault>,
+    ) -> Result<(), Fault> {
+        if !self.armed || Instant::now() >= until {
+            return Err(Fault::Identity);
+        }
+        let result = (|| {
+            self.request_frozen(true)?;
+            self.wait_frozen(true, until)?;
+            let observation = observe(self)?;
+            if Instant::now() >= until || !self.frozen()? || Instant::now() >= until {
+                return Err(Fault::Identity);
+            }
+            consume(observation)?;
+            if Instant::now() >= until || !self.frozen()? || Instant::now() >= until {
+                return Err(Fault::Identity);
+            }
+            self.request_frozen(false)?;
+            self.wait_frozen(false, until)
+        })();
+        if result.is_err() {
+            // Preserve the armed group's recovery path if stop fails.
+            self.kill()?;
+        }
+        result
+    }
+
     /// Separate from requesting a freeze: observe the kernel state to EOF.
     #[allow(dead_code)]
     pub(super) fn frozen(&self) -> Result<bool, Fault> {
