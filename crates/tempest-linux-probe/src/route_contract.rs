@@ -364,7 +364,10 @@ fn run_fixed_exchange(
 }
 
 fn bind_fresh_child(pid: libc::pid_t) -> Result<super::identity::Process, super::os::Fault> {
-    super::identity::Process::bind(pid as u32).inspect_err(|_| stop_untracked_child(pid))
+    super::identity::Process::bind(pid as u32).or_else(|error| {
+        stop_untracked_child(pid)?;
+        Err(error)
+    })
 }
 
 fn track_fresh_child(
@@ -372,24 +375,37 @@ fn track_fresh_child(
     role: super::contract::Role,
     child: &super::identity::Process,
 ) -> Result<super::registry::RecordId, super::os::Fault> {
-    registry
-        .track(role, child, true)
-        .inspect_err(|_| stop_untracked_child(child.pid as libc::pid_t))
+    registry.track(role, child, true).or_else(|error| {
+        stop_untracked_child(child.pid as libc::pid_t)?;
+        Err(error)
+    })
 }
 
-fn stop_untracked_child(pid: libc::pid_t) {
+fn stop_untracked_child(pid: libc::pid_t) -> Result<(), super::os::Fault> {
+    use super::os::Fault;
+    let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+
     // This PID is our direct child and has never been reaped.
-    unsafe { libc::kill(pid, libc::SIGKILL) };
+    let signal = unsafe { libc::kill(pid, libc::SIGKILL) };
+    let signal_error = (signal < 0).then(errno).filter(|code| *code != libc::ESRCH);
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        match unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) } {
+        let mut status = 0;
+        match unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } {
+            result if result == pid && (libc::WIFEXITED(status) || libc::WIFSIGNALED(status)) => {
+                return signal_error.map_or(Ok(()), |code| Err(Fault::UntrackedChildCleanup(code)));
+            }
             0 => std::thread::sleep(Duration::from_millis(2)),
-            result
-                if result < 0
-                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) => {}
-            _ => break,
+            result if result < 0 => {
+                let code = errno();
+                if code != libc::EINTR {
+                    return Err(Fault::UntrackedChildCleanup(code));
+                }
+            }
+            _ => return Err(Fault::UntrackedChildCleanup(libc::EIO)),
         }
     }
+    Err(Fault::UntrackedChildCleanup(libc::ETIMEDOUT))
 }
 
 /// Start the fixed caller with inherited pipes. The ready byte tells the
