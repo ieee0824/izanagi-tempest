@@ -28,6 +28,9 @@ impl Descriptor {
         if flags < 0 {
             return Err(io::Error::last_os_error().into());
         }
+        if flags & libc::O_PATH != 0 {
+            return Err(Fault::Identity);
+        }
         Ok(Self {
             dev: metadata.dev(),
             ino: metadata.ino(),
@@ -44,7 +47,8 @@ impl Descriptor {
             .find_map(|line| line.strip_prefix("flags:"))
             .ok_or(Fault::Identity)?;
         let flags = i32::from_str_radix(flags.trim(), 8).map_err(|_| Fault::Identity)?;
-        Ok(self.dev == metadata.dev()
+        Ok(flags & libc::O_PATH == 0
+            && self.dev == metadata.dev()
             && self.ino == metadata.ino()
             && self.mode == metadata.mode()
             && self.access == flags & libc::O_ACCMODE)
@@ -415,6 +419,28 @@ mod tests {
                 .unwrap()
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn descriptor_binding_rejects_path_only_pipe_alias() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let (read, _write) = crate::os::pipe().unwrap();
+        let alias = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH)
+            .open(format!("/proc/self/fd/{}", read.as_raw_fd()))
+            .unwrap();
+        let bound = Descriptor::bind(read.as_raw_fd()).unwrap();
+        assert!(matches!(
+            Descriptor::bind(alias.as_raw_fd()),
+            Err(Fault::Identity)
+        ));
+        assert!(
+            !bound
+                .matches(std::process::id(), alias.as_raw_fd())
+                .unwrap()
+        );
     }
 
     #[test]
