@@ -189,10 +189,12 @@ static void check_fixed_transfer(void)
 
 static void check_fixed_agent_exchange(void)
 {
-    int input[2], output[2], connect_status[2];
+    int input[2], output[2], connect_status[2], gate[2], readiness[2];
     assert(pipe2(input, O_CLOEXEC | O_NONBLOCK) == 0);
     assert(pipe2(output, O_CLOEXEC | O_NONBLOCK) == 0);
     assert(pipe2(connect_status, O_CLOEXEC | O_NONBLOCK) == 0);
+    assert(pipe2(gate, O_CLOEXEC) == 0);
+    assert(pipe2(readiness, O_CLOEXEC) == 0);
     uint16_t port;
     int listener = open_connect4_listener(&port);
     assert(listener >= 0);
@@ -204,36 +206,63 @@ static void check_fixed_agent_exchange(void)
     pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {
-        close(listener);
-        close(input[1]);
-        close(output[0]);
-        close(connect_status[0]);
+        const int inherited[] = {gate[0], readiness[1], input[0], output[1], connect_status[1]};
+        int temporary[sizeof(inherited) / sizeof(inherited[0])];
+        for (size_t i = 0; i < sizeof(temporary) / sizeof(temporary[0]); ++i) {
+            temporary[i] = fcntl(inherited[i], F_DUPFD_CLOEXEC, 8);
+            if (temporary[i] < 0)
+                _exit(7);
+        }
+        for (size_t i = 0; i < sizeof(temporary) / sizeof(temporary[0]); ++i) {
+            if (dup3(temporary[i], 3 + (int)i, O_CLOEXEC) < 0)
+                _exit(7);
+        }
+        if (syscall(SYS_close_range, 0U, 2U, 0U) < 0 ||
+            syscall(SYS_close_range, 8U, ~0U, 0U) < 0)
+            _exit(7);
         if (prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0 ||
             restrict_fixed_relay_setup() < 0 ||
             socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0) != -1 ||
             errno != EPERM)
             _exit(6);
+        if (write(4, "Y", 1) != 1 || close(4) < 0 || await_connect4_release(3) < 0)
+            _exit(7);
+        close(3);
         int socket_fd = open_fixed_relay_connection(port, deadline);
         int connect_errno = socket_fd < 0 ? errno : 0;
-        if (write(connect_status[1], &connect_errno, sizeof(connect_errno)) != sizeof(connect_errno))
+        if (write(7, &connect_errno, sizeof(connect_errno)) != sizeof(connect_errno))
             _exit(5);
-        close(connect_status[1]);
+        close(7);
         if (socket_fd < 0)
             _exit(1);
-        if (restrict_fixed_relay_io(input[0], output[1], socket_fd) < 0)
+        if (restrict_fixed_relay_io(5, 6, socket_fd) < 0)
             _exit(3);
         if (write(STDERR_FILENO, "", 0) != -1 || errno != EPERM ||
             socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP) != -1 ||
             errno != EPERM)
             _exit(4);
-        if (relay_fixed_agent_request(input[0], output[1], socket_fd, deadline) < 0)
+        if (relay_fixed_agent_request(5, 6, socket_fd, deadline) < 0)
             _exit(2);
-        _exit(relay_fixed_agent_request(input[0], output[1], socket_fd, deadline) == 0 ||
+        _exit(relay_fixed_agent_request(5, 6, socket_fd, deadline) == 0 ||
               errno != EPROTO);
     }
     close(input[0]);
     close(output[1]);
     close(connect_status[1]);
+    close(gate[0]);
+    close(readiness[1]);
+    const struct worker_pipe pipes[] = {
+        {3, O_RDONLY, gate[1], O_WRONLY},
+        {5, O_RDONLY, input[1], O_WRONLY},
+        {6, O_WRONLY, output[0], O_RDONLY},
+        {7, O_WRONLY, connect_status[0], O_RDONLY},
+    };
+    assert(confirm_connect4_ready(readiness[0]) == 0);
+    close(readiness[0]);
+    assert(check_worker_pipes(child, pipes, sizeof(pipes) / sizeof(pipes[0])) == 0);
+    assert(count_connect4_accepts(listener) == 0);
+    assert(write(gate[1], "R", 1) == 1);
+    close(gate[1]);
     int connect_errno;
     assert(read_before(connect_status[0], &connect_errno, sizeof(connect_errno), deadline) == 0);
     assert(connect_errno == 0);
