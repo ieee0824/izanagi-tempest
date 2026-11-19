@@ -319,15 +319,32 @@ fn run_fixed_caller(
     if os::close_except(&keep).is_err() {
         unsafe { libc::_exit(125) };
     }
+    let result = exchange_after_release(gate, requests, responses, expected, deadline);
+    unsafe {
+        libc::_exit(match result {
+            Ok(()) => 0,
+            Err(super::os::Fault::Identity) => 125,
+            Err(_) => 126,
+        })
+    }
+}
+
+fn exchange_after_release(
+    gate: OwnedFd,
+    requests: OwnedFd,
+    responses: OwnedFd,
+    expected: [&Value; 2],
+    deadline: Instant,
+) -> Result<(), super::os::Fault> {
     let mut byte = 0_u8;
     let released = unsafe { libc::read(gate.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) };
     if released != 1 || byte != b'R' || Instant::now() >= deadline {
-        unsafe { libc::_exit(125) };
+        return Err(super::os::Fault::Identity);
     }
     drop(gate);
     let [initialize, catalog] = expected;
-    let result = mcp_stdio_fixture::exchange(requests, responses, initialize, catalog, deadline);
-    unsafe { libc::_exit(if result.is_ok() { 0 } else { 126 }) }
+    mcp_stdio_fixture::exchange(requests, responses, initialize, catalog, deadline)?;
+    Ok(())
 }
 
 /// Verify the loader and recursively required libraries for the fixed ELF.
@@ -859,6 +876,27 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::os::fd::FromRawFd;
+
+    #[test]
+    fn caller_gate_eof_sends_no_initialize() {
+        use std::io::Read;
+
+        let (gate, release) = pipe();
+        let (request_read, requests) = pipe();
+        let (responses, _response_write) = pipe();
+        drop(release);
+        assert_eq!(
+            exchange_after_release(
+                gate,
+                requests,
+                responses,
+                [&Value::Null; 2],
+                Instant::now() + Duration::from_secs(1),
+            ),
+            Err(crate::os::Fault::Identity),
+        );
+        assert_eq!(std::fs::File::from(request_read).read(&mut [0]).unwrap(), 0);
+    }
 
     fn process() -> Process {
         Process {
