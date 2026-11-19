@@ -38,7 +38,11 @@ pub(crate) fn exchange(
     receive(&mut responses, 2, catalog_result, deadline)?;
     drop(requests);
 
-    if read(&mut responses, &mut [0], deadline)? != 0 {
+    expect_stdout_eof(&mut responses, deadline)
+}
+
+fn expect_stdout_eof(responses: &mut File, deadline: Instant) -> io::Result<()> {
+    if read(responses, &mut [0], deadline)? != 0 {
         return Err(invalid("unexpected bytes before stdout EOF"));
     }
     Ok(())
@@ -181,6 +185,17 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert_eq!(File::from(read_request).read(&mut [0]).unwrap(), 0);
+    }
+
+    #[test]
+    fn open_stdout_writer_times_out_while_waiting_for_eof() {
+        let (read_response, write_response) = crate::os::pipe().unwrap();
+        let mut responses = File::from(read_response);
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let error = expect_stdout_eof(&mut responses, deadline).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(Instant::now() >= deadline);
+        drop(write_response);
     }
 
     #[test]
