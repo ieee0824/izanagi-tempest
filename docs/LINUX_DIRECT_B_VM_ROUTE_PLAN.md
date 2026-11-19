@@ -389,3 +389,25 @@ raw 内の ext4 を offset 1048576、長さ 3683647488 に限定して扱い、
 空き容量は開始時 11,181,912,064、変換後 6,929,645,568、scratch 回収後
 9,024,589,824 bytes。raw と loop は事後不在。結果を room #17223 に共有した。
 VM 起動は未実施。
+
+#### 専用 VM の起動確認001
+
+room #17228 の承認で `60a623b` の固定 preflight を1回実行した。
+専用 UID 999、GID 988 と KVM を使用し、固定イメージ・Izanagi CLI・定義002の
+SHA-256 を照合した。`60a623b` では実行前の `python -I -B` 確認で判明した
+モジュール探索パスを修正した。
+
+既存の認証済み guest exec で、専用フラグと実 `tempest-guest` ELF の SHA-256、
+空の記録ディレクトリ（UID/GID 1000:1000、0700）、boot ID
+`68b35a80-783a-4dcc-a3b7-cde2563074ce` を同じ起動から取得した。
+`up` と `down` はともに exit 0。
+
+独立 observer の35点のうち18点で同一 QEMU
+（PID 395191、starttime 41302873）を確認した。転送は
+`127.0.0.1:34765 → guest:9001` の1件で、`restrict=on`、
+`snapshot=on`、mapped-xattr の読み取り専用共有を確認した。
+observer に異常サンプルはなかったが、unit が消滅する前に終了時属性を取得できず
+observer 自体は exit 1。PID 1・UID 0 の journal に保存された同一 Invocation
+`9ec3d9e15ba54459bfbbcac68fbbfe07` の正常終了と、事後の PID・ポート・
+cgroup・UID 999 のプロセス・一時 HMAC の不在を別途確認した。
+入力 qcow2 の SHA-256 は不変。結果は room #17229。接続制約の試験は未実施。
