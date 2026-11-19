@@ -61,6 +61,29 @@ pub(super) fn task_pipe_fds(
     pipe_identity: (u64, u64),
     budget: &mut Budget,
 ) -> Result<Vec<TaskPipeFd>, Unknown> {
+    scan_task_pipe_fds(proc_root, pid, pipe_identity, None, budget)
+}
+
+/// Require one exact endpoint in every enumerated task, including tasks
+/// that would otherwise produce no rows for the pipe.
+pub(super) fn required_task_pipe_fds(
+    proc_root: &Path,
+    pid: u32,
+    pipe_identity: (u64, u64),
+    fd: u32,
+    writes: bool,
+    budget: &mut Budget,
+) -> Result<Vec<TaskPipeFd>, Unknown> {
+    scan_task_pipe_fds(proc_root, pid, pipe_identity, Some((fd, writes)), budget)
+}
+
+fn scan_task_pipe_fds(
+    proc_root: &Path,
+    pid: u32,
+    pipe_identity: (u64, u64),
+    required: Option<(u32, bool)>,
+    budget: &mut Budget,
+) -> Result<Vec<TaskPipeFd>, Unknown> {
     let tasks = proc_root.join(pid.to_string()).join("task");
     let tids = budget.ids(&tasks)?;
     if tids.is_empty() {
@@ -68,6 +91,7 @@ pub(super) fn task_pipe_fds(
     }
     let mut result = Vec::new();
     for tid in &tids {
+        let first_row = result.len();
         let task = tasks.join(tid.to_string());
         let before = start_ticks(&budget.read(&task.join("stat"), 65536)?, *tid)?;
         let fds = budget.ids(&task.join("fd"))?;
@@ -93,6 +117,17 @@ pub(super) fn task_pipe_fds(
                 fd: *fd,
                 writes: access == libc::O_WRONLY,
             });
+        }
+        if let Some((fd, writes)) = required
+            && result[first_row..]
+                != [TaskPipeFd {
+                    tid: *tid,
+                    start_ticks: before,
+                    fd,
+                    writes,
+                }]
+        {
+            return Err(Unknown::Format);
         }
         // Compare all descriptor identities, including nonmatching objects.
         // This detects observed changes, but cannot establish stationarity.
