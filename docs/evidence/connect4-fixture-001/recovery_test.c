@@ -207,18 +207,7 @@ static void check_fixed_agent_exchange(void)
     assert(child >= 0);
     if (child == 0) {
         const int inherited[] = {gate[0], readiness[1], input[0], output[1], connect_status[1]};
-        int temporary[sizeof(inherited) / sizeof(inherited[0])];
-        for (size_t i = 0; i < sizeof(temporary) / sizeof(temporary[0]); ++i) {
-            temporary[i] = fcntl(inherited[i], F_DUPFD_CLOEXEC, 8);
-            if (temporary[i] < 0)
-                _exit(7);
-        }
-        for (size_t i = 0; i < sizeof(temporary) / sizeof(temporary[0]); ++i) {
-            if (dup3(temporary[i], 3 + (int)i, O_CLOEXEC) < 0)
-                _exit(7);
-        }
-        if (syscall(SYS_close_range, 0U, 2U, 0U) < 0 ||
-            syscall(SYS_close_range, 8U, ~0U, 0U) < 0)
+        if (map_worker_pipes(inherited, sizeof(inherited) / sizeof(inherited[0])) < 0)
             _exit(7);
         if (prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0 ||
             restrict_fixed_relay_setup() < 0 ||

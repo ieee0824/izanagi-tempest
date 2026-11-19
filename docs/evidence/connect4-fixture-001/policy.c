@@ -1033,6 +1033,31 @@ int await_connect4_release(int gate_fd)
     return 0;
 }
 
+/* Used only immediately after fork. Any failure requires child exit. */
+static int map_worker_pipes(const int *inherited, size_t count)
+{
+    enum { FIRST_FD = 3, MAX_PIPES = 5 };
+    int temporary[MAX_PIPES];
+    if (count == 0 || count > MAX_PIPES) {
+        errno = EINVAL;
+        return -1;
+    }
+    unsigned first_unused = FIRST_FD + (unsigned)count;
+    for (size_t i = 0; i < count; ++i) {
+        temporary[i] = fcntl(inherited[i], F_DUPFD_CLOEXEC, first_unused);
+        if (temporary[i] < 0)
+            return -1;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (dup3(temporary[i], FIRST_FD + (int)i, O_CLOEXEC) < 0)
+            return -1;
+    }
+    if (syscall(SYS_close_range, 0U, FIRST_FD - 1U, 0U) < 0 ||
+        syscall(SYS_close_range, first_unused, ~0U, 0U) < 0)
+        return -1;
+    return 0;
+}
+
 /* Run only in the dedicated fork child, before the manager takes the lease.
  * On failure the child caller must exit without proceeding to the gate. */
 int prepare_connect4_worker(int gate_read_fd, int ready_write_fd)
@@ -1482,26 +1507,10 @@ int spawn_connect4_worker(uint16_t allowed, uint16_t denied,
     }
     pid_t child = fork();
     if (child == 0) {
-        int gate_read = fcntl(gate[0], F_DUPFD_CLOEXEC, 5);
-        int ready_write = fcntl(ready[1], F_DUPFD_CLOEXEC, 5);
-        if (gate_read < 0 || ready_write < 0)
+        const int inherited[] = {gate[0], ready[1]};
+        if (map_worker_pipes(inherited, sizeof(inherited) / sizeof(inherited[0])) < 0)
             _exit(69);
-        int gate_target = dup3(gate_read, 3, O_CLOEXEC);
-        if (gate_target < 0)
-            _exit(69);
-        int ready_target = dup3(ready_write, 4, O_CLOEXEC);
-        if (ready_target < 0) {
-            close(gate_target);
-            _exit(69);
-        }
-        close(gate_read);
-        close(ready_write);
-        int status = run_connect4_worker(allowed, denied, release_seen);
-        close(gate_target);
-        /* The worker closes the readiness end after its notification.
-         * On a setup failure it may still be open. */
-        close(ready_target);
-        _exit(status);
+        _exit(run_connect4_worker(allowed, denied, release_seen));
     }
 
     int error = errno;
