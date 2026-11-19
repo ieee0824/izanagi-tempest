@@ -167,6 +167,28 @@ mod tests {
     };
 
     #[test]
+    fn control_byte_requires_eof_before_the_deadline() {
+        let (reader, writer) = crate::os::pipe().unwrap();
+        let mut writer = File::from(writer);
+        writer.write_all(b"R").unwrap();
+        let error = expect_control_byte(reader, b'R', Instant::now() + Duration::from_millis(20))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        drop(writer);
+
+        for frame in [&b"R"[..], &b"RR"[..]] {
+            let (reader, writer) = crate::os::pipe().unwrap();
+            File::from(writer).write_all(frame).unwrap();
+            let result = expect_control_byte(reader, b'R', Instant::now() + Duration::from_secs(2));
+            if frame.len() == 1 {
+                result.unwrap();
+            } else {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+            }
+        }
+    }
+
+    #[test]
     fn rejects_mcp_responses_with_invalid_framing_or_identity() {
         for frame in [
             &b"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n"[..],
