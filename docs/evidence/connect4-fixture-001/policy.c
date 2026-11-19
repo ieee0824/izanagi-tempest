@@ -1197,6 +1197,8 @@ struct connect4_pending_recovery {
 int retry_connect4_recovery(const struct connect4_trial *trial,
                             struct connect4_pending_recovery *pending);
 
+static int record_connect4_trial(const struct connect4_trial *trial);
+
 int run_connect4_trial(const struct connect4_trial *trial,
                        int allowed_listener, uint16_t allowed_port,
                        int denied_listener, uint16_t denied_port,
@@ -1208,6 +1210,9 @@ int run_connect4_trial(const struct connect4_trial *trial,
         phases[i] = (struct connect4_phase){-1, -1, -1, -1};
     if (measure_connect4_control(allowed_listener, allowed_port, denied_listener,
                                  denied_port, &phases[0]) < 0)
+        return -1;
+
+    if (record_connect4_trial(trial) < 0)
         return -1;
 
     struct connect4_worker worker;
@@ -1341,4 +1346,51 @@ int prepare_connect4_trial(int state_fd, int cgroup_fd, const char *pin_path,
     }
     *trial = candidate;
     return 0;
+}
+
+/* The manager records the attachment before it creates or releases a child.
+ * The per-trial directory already identifies the dedicated cgroup and pin
+ * names. A partial record deliberately prevents admission until inspected. */
+static int record_connect4_trial(const struct connect4_trial *trial)
+{
+    int lease = acquire_connect4_lease(trial->state_fd);
+    if (lease < 0)
+        return -1;
+
+    int result = -1;
+    if (check_connect4_link(trial->link_fd, trial->link_id, trial->program_id,
+                            trial->cgroup_id) < 0)
+        goto done;
+    char record[256];
+    int length = snprintf(record, sizeof(record),
+                          "version=1\ndevice=%ju\ncgroup=%ju\nlink=%u\nprogram=%u\n",
+                          (uintmax_t)trial->device, (uintmax_t)trial->cgroup_id,
+                          trial->link_id, trial->program_id);
+    if (length <= 0 || (size_t)length >= sizeof(record)) {
+        errno = EOVERFLOW;
+        goto done;
+    }
+    int fd = openat(trial->state_fd, "trial-identity",
+                    O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0)
+        goto done;
+    ssize_t written = write(fd, record, (size_t)length);
+    if (written != length) {
+        if (written >= 0)
+            errno = EIO;
+    } else if (fsync(fd) == 0 && fsync(trial->state_fd) == 0) {
+        result = 0;
+    }
+    int write_error = errno;
+    if (close(fd) < 0 && result == 0)
+        result = -1;
+    else
+        errno = write_error;
+
+done:;
+    int error = errno;
+    close(lease);
+    if (result < 0)
+        errno = error;
+    return result;
 }
