@@ -411,3 +411,23 @@ observer 自体は exit 1。PID 1・UID 0 の journal に保存された同一 I
 `9ec3d9e15ba54459bfbbcac68fbbfe07` の正常終了と、事後の PID・ポート・
 cgroup・UID 999 のプロセス・一時 HMAC の不在を別途確認した。
 入力 qcow2 の SHA-256 は不変。結果は room #17229。接続制約の試験は未実施。
+
+#### 固定4区間で制約を適用する対象
+
+親の private session は preflight、区間の start/end、最終 report を担当し、
+被試験子の接続試験から独立させる。被試験子は固定 Izanagi CLI と固定 argv、
+同じ UID・環境・FD 制約を用いる。許可区間は既存の agent 接続を経由して
+`request` を1回実行する。拒否区間は同じ子側の TCP 接続処理で、当該試験の
+別 loopback listener への接続拒否を記録する。拒否側へセッションの認証情報を
+渡さない。対照でも同じ固定宛先ごとに同じ子側の経路を使う。
+
+connect4 の許可 port は当該 QEMU の唯一の agent 転送から決める。
+親は転送 listener と QEMU の PID/starttime/cgroup を検査し、対象の子を
+起動ゲートで停止させたまま pidfd、配置先 cgroup、IPv4 connect link と
+許可 port を照合する。既存 connect4 fixture の policy・attach・回収の検査を
+再利用する。別 family と FD 継承の制約は各区間で同じにする。
+対照と制約ありの差は当該 connect4 制約の有無に限定する。
+
+host 側の計数と guest の区間 ACK は被試験子の通信を囲んで採取する。
+`f7fcc13` の計数検証に加え、同じ run に属する QEMU、別 listener、
+被試験子、link の生存・同一性を境界ごとに確認し、拒否を timeout と区別する。
