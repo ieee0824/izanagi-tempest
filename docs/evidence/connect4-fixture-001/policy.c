@@ -11,11 +11,13 @@
 #include <sys/syscall.h>
 #include <sys/stat.h>
 #include <sys/vfs.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdio.h>
 #include <sys/wait.h>
 
 enum { CONNECT4_INSTRUCTION_COUNT = 8 };
@@ -422,9 +424,222 @@ int recover_connect4_pin(int state_fd, const char *path, int worker_pidfd,
     return result;
 }
 
+/* Use the PID captured alongside the original pidfd by the manager.
+ * The caller checks that the worker is live before and after this observation
+ * and holds the lease that controls cgroup movement. */
+static int check_connect4_worker_membership(int cgroup_fd, pid_t child)
+{
+    if (child <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    int fd = openat(cgroup_fd, "cgroup.procs", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return -1;
+    FILE *members = fdopen(fd, "r");
+    if (!members) {
+        int error = errno;
+        close(fd);
+        errno = error;
+        return -1;
+    }
+    char expected[32];
+    int length = snprintf(expected, sizeof(expected), "%ld\n", (long)child);
+    char line[32];
+    int error = ENOENT;
+    unsigned matches = 0;
+    for (unsigned n = 0; n < 256; ++n) {
+        if (!fgets(line, sizeof(line), members)) {
+            if (ferror(members))
+                error = EIO;
+            else if (matches == 1)
+                error = 0;
+            break;
+        }
+        if (!strchr(line, '\n')) {
+            error = EPROTO;
+            break;
+        }
+        if (length > 0 && strcmp(line, expected) == 0) {
+            if (++matches > 1) {
+                error = EPROTO;
+                break;
+            }
+        }
+        error = EOVERFLOW;
+    }
+    fclose(members);
+    if (error != 0) {
+        errno = error;
+        return -1;
+    }
+    return 0;
+}
+
+/* Both PID views come from the manager's host procfs. */
+static int check_connect4_pidfd_pid(int pidfd, pid_t child)
+{
+    char path[64], expected[32], line[128];
+    if (pidfd < 0 || child <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", pidfd);
+    snprintf(expected, sizeof(expected), "Pid:\t%ld\n", (long)child);
+    FILE *info = fopen(path, "re");
+    if (!info)
+        return -1;
+    unsigned matches = 0;
+    int valid = 0;
+    for (unsigned n = 0; n < 32; ++n) {
+        if (!fgets(line, sizeof(line), info)) {
+            valid = feof(info) && !ferror(info) && matches == 1;
+            break;
+        }
+        if (!strchr(line, '\n'))
+            break;
+        if (strncmp(line, "Pid:", 4) == 0) {
+            if (strcmp(line, expected) != 0 || ++matches != 1)
+                break;
+        }
+    }
+    fclose(info);
+    if (!valid) {
+        errno = ESTALE;
+        return -1;
+    }
+    return 0;
+}
+
+static int check_connect4_worker_privileges(pid_t child)
+{
+    static const char *const required[] = {
+        "Uid:\t62004\t62004\t62004\t62004\n",
+        "Gid:\t62004\t62004\t62004\t62004\n",
+        "Groups:\t\n",
+        "CapInh:\t0000000000000000\n",
+        "CapPrm:\t0000000000000000\n",
+        "CapEff:\t0000000000000000\n",
+        "CapBnd:\t0000000000000000\n",
+        "CapAmb:\t0000000000000000\n",
+        "NoNewPrivs:\t1\n",
+        "Seccomp:\t2\n",
+        "Threads:\t1\n",
+    };
+    char path[64], line[1024];
+    snprintf(path, sizeof(path), "/proc/%ld/status", (long)child);
+    FILE *status = fopen(path, "re");
+    if (!status)
+        return -1;
+    unsigned seen = 0;
+    int accepted = 0;
+    const unsigned fields = sizeof(required) / sizeof(required[0]);
+    for (unsigned n = 0; n < 128; ++n) {
+        if (!fgets(line, sizeof(line), status)) {
+            accepted = feof(status) && !ferror(status) &&
+                seen == (1U << fields) - 1U;
+            break;
+        }
+        if (!strchr(line, '\n'))
+            break;
+        for (unsigned field = 0; field < fields; ++field) {
+            size_t key = strcspn(required[field], ":") + 1;
+            if (strncmp(line, required[field], key) != 0)
+                continue;
+            if ((seen & (1U << field)) || strcmp(line, required[field]) != 0)
+                goto done;
+            seen |= 1U << field;
+            break;
+        }
+    }
+done:
+    fclose(status);
+    if (!accepted) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+static int worker_gate_is_read_end(pid_t child)
+{
+    char path[64], line[128];
+    snprintf(path, sizeof(path), "/proc/%ld/fdinfo/3", (long)child);
+    FILE *info = fopen(path, "re");
+    if (!info)
+        return -1;
+    int found = 0;
+    int valid = 0;
+    for (unsigned n = 0; n < 32; ++n) {
+        if (!fgets(line, sizeof(line), info)) {
+            valid = feof(info) && !ferror(info) && found;
+            break;
+        }
+        if (!strchr(line, '\n'))
+            break;
+        if (strncmp(line, "flags:", 6) == 0) {
+            unsigned flags;
+            int consumed;
+            if (found || sscanf(line + 6, "%o%n", &flags, &consumed) != 1 ||
+                strcmp(line + 6 + consumed, "\n") != 0 ||
+                (flags & (O_PATH | O_ACCMODE)) != O_RDONLY)
+                break;
+            found = 1;
+        }
+    }
+    fclose(info);
+    if (!valid) {
+        errno = ESTALE;
+        return -1;
+    }
+    return 0;
+}
+
+/* The fixed worker retains only gate read end 3 at this stage. */
+static int check_connect4_worker_fds(pid_t child, int gate_fd)
+{
+    struct stat writer, reader;
+    int flags = fcntl(gate_fd, F_GETFL);
+    if (flags < 0 || fstat(gate_fd, &writer) < 0)
+        return -1;
+    if ((flags & (O_PATH | O_ACCMODE)) != O_WRONLY || !S_ISFIFO(writer.st_mode)) {
+        errno = ESTALE;
+        return -1;
+    }
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%ld/fd", (long)child);
+    DIR *table = opendir(path);
+    if (!table)
+        return -1;
+    int found = 0;
+    int verified = 0;
+    for (unsigned i = 0; i < 8; ++i) {
+        errno = 0;
+        struct dirent *entry = readdir(table);
+        if (!entry) {
+            verified = errno == 0 && found;
+            break;
+        }
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+        if (found || strcmp(entry->d_name, "3") != 0 ||
+            fstatat(dirfd(table), "3", &reader, 0) < 0 ||
+            !S_ISFIFO(reader.st_mode) || reader.st_dev != writer.st_dev ||
+            reader.st_ino != writer.st_ino)
+            break;
+        found = 1;
+    }
+    closedir(table);
+    if (!verified) {
+        errno = ESTALE;
+        return -1;
+    }
+    return worker_gate_is_read_end(child);
+}
+
 /* The manager owns the worker and holds its original pidfd. Gate FD is
  * a private pipe write end that only the manager can use. */
-int release_connect4_worker(int state_fd, int gate_fd, int worker_pidfd,
+int release_connect4_worker(int state_fd, int gate_fd, pid_t child, int worker_pidfd,
                             int link_fd,
                             const char *path, int cgroup_fd, dev_t device,
                             uint64_t cgroup_id, uint32_t link_id,
@@ -442,13 +657,25 @@ int release_connect4_worker(int state_fd, int gate_fd, int worker_pidfd,
                       WEXITED | WNOHANG | WNOWAIT) == 0) {
         if (status.si_pid != 0)
             errno = ESRCH;
-        else
+        else if (check_connect4_pidfd_pid(worker_pidfd, child) == 0 &&
+                 check_connect4_worker_membership(cgroup_fd, child) == 0)
             verified = pin_and_verify_connect4_link(link_fd, path, cgroup_fd,
                                                      device, cgroup_id, link_id,
                                                      program_id);
     }
     int result = -1;
-    if (verified >= 0 && record_release_intent(state_fd) == 0) {
+    if (verified >= 0 &&
+        check_connect4_worker_privileges(child) == 0 &&
+        check_connect4_worker_fds(child, gate_fd) == 0 &&
+        check_connect4_worker_membership(cgroup_fd, child) == 0 &&
+        waitid(P_PIDFD, (id_t)worker_pidfd, &status,
+               WEXITED | WNOHANG | WNOWAIT) == 0) {
+        if (status.si_pid != 0) {
+            errno = ESRCH;
+            goto done;
+        }
+        if (record_release_intent(state_fd) < 0)
+            goto done;
         const char token = 'R';
         ssize_t sent = write(gate_fd, &token, sizeof(token));
         if (sent == 1)
@@ -456,6 +683,7 @@ int release_connect4_worker(int state_fd, int gate_fd, int worker_pidfd,
         else if (sent == 0)
             errno = EIO;
     }
+done:;
     int error = errno;
     if (verified >= 0)
         close(verified);
@@ -486,4 +714,31 @@ int retain_connect4_worker(pid_t child)
     close(fd);
     errno = error;
     return -1;
+}
+
+/* The worker calls this after closing inherited management descriptors.
+ * EOF on manager failure and expiry both leave the worker unauthorized. */
+int await_connect4_release(int gate_fd)
+{
+    struct pollfd gate = { .fd = gate_fd, .events = POLLIN };
+    int ready = poll(&gate, 1, 5000);
+    if (ready < 0)
+        return -1;
+    if (ready == 0) {
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    if (!(gate.revents & POLLIN) || (gate.revents & (POLLERR | POLLNVAL))) {
+        errno = EPIPE;
+        return -1;
+    }
+    char token;
+    ssize_t count = read(gate_fd, &token, sizeof(token));
+    if (count < 0)
+        return -1;
+    if (count != 1 || token != 'R') {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
 }
