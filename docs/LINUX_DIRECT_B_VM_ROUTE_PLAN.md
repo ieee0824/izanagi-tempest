@@ -288,3 +288,8 @@ cgroup の identity、適用済み制約を照合してから通信を許可す�
 
 この案の判定範囲は当該 run と固定した別 dummy 宛先。具体的な receiver の配置と
 制約の適用点は実装前にレビューし、実行は固定成果物と試験条件を確定してから承認を得る。
+
+最初のローカル計数試験は `python3 integration/fixed_loopback_receiver_smoke.py` で実行する。
+親が確保する loopback listener 2つに順番に固定要求を送り、各区間の開始値・
+終了値・差分と、閉鎖後に両宛先で接続が拒否されたことを JSON に出力する。
+この段階の結果が示すのは、ローカルの制約なし対照での計数と listener 回収まで。
