@@ -228,6 +228,14 @@ fn wait_for_freezer_state(
     }
 }
 
+fn after_freezer_confirmation<T>(
+    confirm: impl FnOnce() -> Result<(), Fault>,
+    inspect: impl FnOnce() -> Result<T, Fault>,
+) -> Result<T, Fault> {
+    confirm()?;
+    inspect()
+}
+
 fn mkdir(directory: &fs::File, name: &str) -> Result<(), Fault> {
     let name = component(name)?;
     super::os::syscall(unsafe { libc::mkdirat(directory.as_raw_fd(), name.as_ptr(), 0o755) })
@@ -518,23 +526,28 @@ impl Group {
         check_worker()?;
         let result = (|| {
             self.request_frozen(true)?;
-            self.wait_frozen(true, until)?;
-            check_worker()?;
-            let observation = observe(self)?;
-            check_worker()?;
-            if Instant::now() >= until || !self.frozen()? || Instant::now() >= until {
-                return Err(Fault::Identity);
-            }
-            // This comparison is the only consumption of the observation.
-            // No callback can publish an admission before thaw succeeds.
-            if &observation != expected {
-                return Err(Fault::Identity);
-            }
-            drop(observation);
-            check_worker()?;
-            if Instant::now() >= until || !self.frozen()? || Instant::now() >= until {
-                return Err(Fault::Identity);
-            }
+            after_freezer_confirmation(
+                || self.wait_frozen(true, until),
+                || {
+                    check_worker()?;
+                    let observation = observe(self)?;
+                    check_worker()?;
+                    if Instant::now() >= until || !self.frozen()? || Instant::now() >= until {
+                        return Err(Fault::Identity);
+                    }
+                    // This comparison is the only consumption of the observation.
+                    // No callback can publish an admission before thaw succeeds.
+                    if &observation != expected {
+                        return Err(Fault::Identity);
+                    }
+                    drop(observation);
+                    check_worker()?;
+                    if Instant::now() >= until || !self.frozen()? || Instant::now() >= until {
+                        return Err(Fault::Identity);
+                    }
+                    Ok(())
+                },
+            )?;
             self.request_frozen(false)?;
             self.wait_frozen(false, until)
         })();
@@ -824,6 +837,16 @@ mod tests {
             }
             Ok(true)
         });
+        assert!(matches!(result, Err(Fault::Identity)));
+    }
+
+    #[test]
+    fn expired_freeze_confirmation_never_enters_observation_or_comparison() {
+        let expired = Instant::now() - Duration::from_millis(1);
+        let result = after_freezer_confirmation(
+            || wait_for_freezer_state(true, expired, || panic!("expired read")),
+            || -> Result<(), Fault> { panic!("expired inspection") },
+        );
         assert!(matches!(result, Err(Fault::Identity)));
     }
 
