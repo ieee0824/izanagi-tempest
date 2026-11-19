@@ -229,7 +229,9 @@ impl Group {
         self.run_ids.push(slot.run_id.clone());
         self.sources
             .push(json!({"slot_id":slot.slot_id,"run_id":slot.run_id,
-                                 "state":"unavailable","reason":reason}));
+                                 "state":"unavailable","reason":reason,
+                                 "planned_connection_route":slot.comparison_conditions["connection_route"],
+                                 "recorded_connection_route":null,"route_coverage":null}));
         Ok(())
     }
 
@@ -457,7 +459,10 @@ fn generate_inner(root: &Path, aggregate_id: &str) -> io::Result<Value> {
                 "slot_id":slot.slot_id,"run_id":slot.run_id,"state":"committed",
                 "evaluator_sha256":slot.evaluator_sha256,
                 "evaluation_id":record.evaluation_id,
-                "result_sha256":record.result_sha256
+                "result_sha256":record.result_sha256,
+                "planned_connection_route":slot.comparison_conditions["connection_route"],
+                "recorded_connection_route":result["recorded_connection_route"],
+                "route_coverage":result.pointer("/evidence/route_coverage")
             }));
             Ok::<_, io::Error>(())
         })();
@@ -523,6 +528,24 @@ fn markdown(value: &Value) -> String {
         }
     }
     output.push_str("\nUnknown remains in each configured denominator. Not configured and unavailable generations are shown separately.\n");
+    output.push_str("\n## Comparison slots\n\n| Slot | Run | State | Planned connection route | Recorded connection route | Route coverage |\n|---|---|---|---|---|---|\n");
+    for source in value["groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|group| group["sources"].as_array().into_iter().flatten())
+    {
+        let cells = [
+            "slot_id",
+            "run_id",
+            "state",
+            "planned_connection_route",
+            "recorded_connection_route",
+            "route_coverage",
+        ]
+        .map(|key| report::markdown_cell(&source[key]));
+        output.push_str(&format!("| {} |\n", cells.join(" | ")));
+    }
     output
 }
 
@@ -637,8 +660,9 @@ mod tests {
             host_io::random_hex().unwrap()
         ));
         host_io::directory(&root).unwrap();
-        let conditions = json!({"scenario":"fixed","adapter":{"adapter":"codex"}});
+        let mut conditions = json!({"scenario":"fixed","adapter":{"adapter":"codex"}});
         let evaluator = "a".repeat(64);
+        conditions["connection_route"] = "mock_in_process".into();
         let plan = ComparisonPlan {
             schema_version: 1,
             plan_id: "comparison-001".into(),
@@ -675,6 +699,8 @@ mod tests {
         host_io::directory(&run).unwrap();
         host_io::write_new(&run.join("evaluation.lock"), b"").unwrap();
         let mut committed = result("run-1", "success", false, "not_performed");
+        committed["recorded_connection_route"] = "mock_in_process".into();
+        committed["evidence"]["route_coverage"] = "verified".into();
         committed["evaluation"] = "performed".into();
         committed["comparison_conditions"] = conditions.clone();
         committed["comparison_binding"] = json!({
@@ -716,6 +742,21 @@ mod tests {
         assert_eq!(aggregate["groups"][0]["runs"]["unavailable"], 1);
         assert_eq!(aggregate["groups"][0]["sources"][0]["state"], "committed");
         assert_eq!(aggregate["groups"][0]["sources"][1]["state"], "unavailable");
+        let sources = &aggregate["groups"][0]["sources"];
+        assert_eq!(sources[0]["planned_connection_route"], "mock_in_process");
+        assert_eq!(sources[0]["recorded_connection_route"], "mock_in_process");
+        assert_eq!(sources[0]["route_coverage"], "verified");
+        assert_eq!(sources[1]["planned_connection_route"], "mock_in_process");
+        assert!(sources[1]["recorded_connection_route"].is_null());
+        assert!(sources[1]["route_coverage"].is_null());
+        let rendered = fs::read_to_string(root.join("aggregate.md")).unwrap();
+        assert!(rendered.contains(
+            "| slot&#45;1 | run&#45;1 | committed | mock&#95;in&#95;process | mock&#95;in&#95;process | verified |"
+        ));
+        assert!(rendered.contains(
+            "| slot&#45;2 | run&#45;2 | unavailable | mock&#95;in&#95;process | null | null |"
+        ));
+
         assert_eq!(aggregate["unplanned_directories"], json!(["unplanned-run"]));
         let marker: Value =
             serde_json::from_slice(&fs::read(root.join("aggregate-state.json")).unwrap()).unwrap();

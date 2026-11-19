@@ -36,7 +36,7 @@ fn retest_result(configured: bool, run: &Value) -> Value {
     }
 }
 
-fn markdown_cell(value: &Value) -> String {
+pub(crate) fn markdown_cell(value: &Value) -> String {
     let text = value
         .as_str()
         .map_or_else(|| value.to_string(), str::to_owned);
@@ -939,7 +939,7 @@ fn generate_artifacts(root: &Path) -> io::Result<Value> {
         && !contamination_unresolved
         && attempts["unresolved_deviations"].as_u64() == Some(0)
         && run["status"] == "completed";
-    let result = json!({"schema_version":1,"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"comparison_conditions":comparison_conditions,"comparison_binding":comparison_binding,"evidence":{"complete":complete,"execution_complete":execution_complete,"route_coverage":if route_coverage_verified{"verified"}else{"unverified"},"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"formal_metrics_exclusions":{"test_image_fixture":test_image_fixture,"native_test_build":native_test_build,"route_coverage_unverified":!route_coverage_verified,"execution_incomplete":!execution_complete},"evaluation":if complete && execution_complete{"performed"}else{"partial"}});
+    let result = json!({"schema_version":1,"recorded_connection_route":run.pointer("/conditions/connection_route"),"run_id":run["run_id"],"status":run["status"],"scenario":{"id":scenario.validated.scenario().id,"sha256":scenario.sha256},"actor":actor,"comparison_conditions":comparison_conditions,"comparison_binding":comparison_binding,"evidence":{"complete":complete,"execution_complete":execution_complete,"route_coverage":if route_coverage_verified{"verified"}else{"unverified"},"diagnostics":diagnostics,"credential_claims_present_in_private_api_evidence":!api.is_empty()},"self_check":run["self_check"],"agent_report":reported,"finding":finding,"false_positive_count":finding.false_positives.len(),"expect":expect,"attempts":attempts,"retest":retest,"deviations":deviations,"contaminated":false,"contamination_assessment":"not_established_from_entry_events","formal_metrics_eligible":eligible,"formal_metrics_exclusions":{"test_image_fixture":test_image_fixture,"native_test_build":native_test_build,"route_coverage_unverified":!route_coverage_verified,"execution_incomplete":!execution_complete},"evaluation":if complete && execution_complete{"performed"}else{"partial"}});
     let mut result = result;
     result["control_integrity"] = control_integrity.into();
     result["control_request_integrity"] = request_integrity.into();
@@ -1114,7 +1114,7 @@ fn route_coverage_verified(_manifest: &Value) -> bool {
 }
 
 pub(crate) fn comparison_conditions(run: &Value) -> Value {
-    json!({
+    let mut conditions = json!({
         "schema_version":1,
         "scenario":{"id":run["scenario_id"],"sha256":run["scenario_sha256"]},
         "actor":run.pointer("/plan/actor").cloned().unwrap_or(Value::Null),
@@ -1137,7 +1137,16 @@ pub(crate) fn comparison_conditions(run: &Value) -> Value {
             "max_export_file_bytes":run.pointer("/conditions/max_export_file_bytes").cloned().unwrap_or(Value::Null),
             "budget":run.pointer("/conditions/budget").cloned().unwrap_or(Value::Null)
         }
-    })
+    });
+    // Legacy bound plans did not include a route in their condition identity.
+    let expects_route = !run["comparison_binding"].is_object()
+        || run
+            .pointer("/comparison_binding/expected_conditions/connection_route")
+            .is_some();
+    if expects_route && let Some(route) = run.pointer("/conditions/connection_route") {
+        conditions["connection_route"] = route.clone();
+    }
+    conditions
 }
 
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -1786,5 +1795,26 @@ mod tests {
             comparison_conditions(&base),
             comparison_conditions(&test_build)
         );
+    }
+    #[test]
+    fn comparison_conditions_include_route_for_explicit_plans() {
+        let mut run = json!({
+            "conditions":{"connection_route":"mock_in_process"},
+            "comparison_binding":{"expected_conditions":{}}
+        });
+        assert!(
+            comparison_conditions(&run)
+                .get("connection_route")
+                .is_none()
+        );
+        run["comparison_binding"]["expected_conditions"]["connection_route"] = "model_relay".into();
+        assert_eq!(
+            comparison_conditions(&run)["connection_route"],
+            "mock_in_process"
+        );
+        run["evidence"] = json!({"route_coverage":"verified"});
+        let before = comparison_conditions(&run);
+        run["evidence"]["route_coverage"] = "unverified".into();
+        assert_eq!(comparison_conditions(&run), before);
     }
 }
