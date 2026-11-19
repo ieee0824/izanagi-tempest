@@ -461,7 +461,21 @@ impl Group {
             return Err(Fault::Identity);
         }
         self.verify()?;
-        if worker.pid == std::process::id()
+        let membership = fs::read_to_string("/proc/self/cgroup")?;
+        let mut unified = membership
+            .lines()
+            .filter_map(|line| line.strip_prefix("0::"));
+        let manager_group = unified.next().ok_or(Fault::Identity)?;
+        let trial_group = Path::new(ROOT)
+            .strip_prefix("/sys/fs/cgroup")
+            .map_err(|_| Fault::Identity)?;
+        if unified.next().is_some()
+            || !manager_group.starts_with('/')
+            || Path::new(manager_group)
+                .strip_prefix("/")
+                .map_err(|_| Fault::Identity)?
+                .starts_with(trial_group)
+            || worker.pid == std::process::id()
             || !read(&self.directory, "cgroup.procs")?.trim().is_empty()
         {
             return Err(Fault::Identity);
@@ -471,31 +485,32 @@ impl Group {
                 return Err(Fault::Identity);
             }
         }
+        let check_worker = || {
+            use super::holder_scan::{Budget, start_ticks};
+            let mut budget = Budget {
+                deadline: until,
+                bytes_left: 65536,
+                entries_left: 0,
+            };
+            let path = std::path::PathBuf::from(format!("/proc/{}/stat", worker.pid));
+            if !worker.alive()?
+                || self.members(role)? != [worker.pid]
+                || !self.bound(role, worker.pid)?
+                || budget
+                    .read(&path, 65536)
+                    .and_then(|data| start_ticks(&data, worker.pid))
+                    .map_err(|_| Fault::Identity)?
+                    != worker.birth
+                || !worker.alive()?
+            {
+                return Err(Fault::Identity);
+            }
+            Ok(())
+        };
+        check_worker()?;
         let result = (|| {
             self.request_frozen(true)?;
             self.wait_frozen(true, until)?;
-            let check_worker = || {
-                use super::holder_scan::{Budget, start_ticks};
-                let mut budget = Budget {
-                    deadline: until,
-                    bytes_left: 65536,
-                    entries_left: 0,
-                };
-                let path = std::path::PathBuf::from(format!("/proc/{}/stat", worker.pid));
-                if !worker.alive()?
-                    || self.members(role)? != [worker.pid]
-                    || !self.bound(role, worker.pid)?
-                    || budget
-                        .read(&path, 65536)
-                        .and_then(|data| start_ticks(&data, worker.pid))
-                        .map_err(|_| Fault::Identity)?
-                        != worker.birth
-                    || !worker.alive()?
-                {
-                    return Err(Fault::Identity);
-                }
-                Ok(())
-            };
             check_worker()?;
             let observation = observe(self)?;
             check_worker()?;
@@ -589,6 +604,123 @@ impl Drop for Group {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "fixed Linux host with root cgroup access; run in an isolated test process"]
+    fn fixed_dummy_frozen_holder_and_progress() {
+        use super::*;
+        use crate::{
+            guard::Guard,
+            holder_scan::{Budget, TaskPipeFd, task_pipe_fds},
+            identity::Process,
+        };
+        use std::{
+            os::unix::fs::MetadataExt,
+            sync::atomic::{AtomicU64, Ordering},
+        };
+        let guard = Guard::acquire().unwrap();
+        let mut group = Group::create().unwrap();
+        let bytes = std::mem::size_of::<AtomicU64>();
+        let shared = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                bytes,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(shared, libc::MAP_FAILED);
+        let counter = shared.cast::<AtomicU64>();
+        unsafe { counter.write(AtomicU64::new(0)) };
+        let mut descriptors = [-1; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        let read_end = unsafe { fs::File::from_raw_fd(descriptors[0]) };
+        let write_end = unsafe { fs::File::from_raw_fd(descriptors[1]) };
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            unsafe {
+                libc::close(guard.fd());
+                libc::close(descriptors[0]);
+                let interval = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 1_000_000,
+                };
+                loop {
+                    (*counter).fetch_add(1, Ordering::Relaxed);
+                    libc::nanosleep(&interval, std::ptr::null_mut());
+                }
+            }
+        }
+        drop(write_end);
+        let sample = || unsafe { (*counter).load(Ordering::Relaxed) };
+        let result = (|| -> Result<(), Fault> {
+            let worker = Process::bind(child as u32)?;
+            group.attach(Role::B, worker.pid)?;
+            let initial = sample();
+            let progress = |baseline| {
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while sample() <= baseline {
+                    if Instant::now() >= deadline {
+                        return Err(Fault::Identity);
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Ok(())
+            };
+            progress(initial)?;
+            let metadata = read_end.metadata()?;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let expected = vec![TaskPipeFd {
+                tid: worker.pid,
+                start_ticks: worker.birth,
+                fd: descriptors[1] as u32,
+                writes: true,
+            }];
+            let mut frozen = 0;
+            group.inspect_while_frozen(
+                &guard,
+                deadline,
+                Role::B,
+                &worker,
+                |_| {
+                    frozen = sample();
+                    let actual = task_pipe_fds(
+                        Path::new("/proc"),
+                        worker.pid,
+                        (metadata.dev(), metadata.ino()),
+                        &mut Budget {
+                            deadline,
+                            bytes_left: 262144,
+                            entries_left: 8192,
+                        },
+                    )
+                    .map_err(|_| Fault::Identity)?;
+                    thread::sleep(Duration::from_millis(10));
+                    if sample() != frozen {
+                        return Err(Fault::Identity);
+                    }
+                    Ok(actual)
+                },
+                &expected,
+            )?;
+            progress(frozen)
+        })();
+        unsafe {
+            libc::kill(child, libc::SIGKILL);
+            while libc::waitpid(child, std::ptr::null_mut(), 0) < 0
+                && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+            {}
+            libc::munmap(shared, bytes);
+        }
+        group.cleanup().unwrap();
+        result.unwrap();
+    }
+
     #[test]
     fn frozen_event_requires_a_unique_complete_value() {
         assert!(matches!(
