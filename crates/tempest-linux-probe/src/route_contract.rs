@@ -308,6 +308,9 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
 
     let mut counts = super::registry::Counts::default();
     let mut untracked_errno = None;
+    let mut trial_reason = None;
+    let mut recovery_reason = None;
+    let mut root_cleanup_reason = None;
     let result: Result<(), Fault> = (|| {
         if unsafe { libc::geteuid() } != 0 || fs::read_dir("/proc/self/task")?.count() != 1 {
             return Err(Fault::Identity);
@@ -342,7 +345,10 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
             if let Err(Fault::UntrackedChildCleanup(errno)) = result {
                 untracked_errno = Some(errno);
             }
-            recover_fixed_exchange(&mut group, &mut registry, &mut counts)?;
+            trial_reason = result.as_ref().err().map(Fault::reason);
+            let recovery = recover_fixed_exchange(&mut group, &mut registry, &mut counts);
+            recovery_reason = recovery.as_ref().err().map(Fault::reason);
+            recovery?;
             result
         })();
         let mut cleanup = Ok(());
@@ -351,7 +357,9 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
                 cleanup = Err(error);
             }
         }
-        os::remove_owned_empty_directory(base, &base_fd)?;
+        let base_cleanup = os::remove_owned_empty_directory(base, &base_fd);
+        let cleanup = cleanup.and(base_cleanup);
+        root_cleanup_reason = cleanup.as_ref().err().map(Fault::reason);
         cleanup?;
         exchange
     })();

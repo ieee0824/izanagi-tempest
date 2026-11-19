@@ -1410,7 +1410,9 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         return super::route_contract::fixed_stdio_trial();
     }
     if args == [std::ffi::OsString::from("--help")] {
-        println!("Usage: tempest linux-isolation-probe (fixed dummy-only root probe; no options)");
+        println!(
+            "Usage: tempest linux-isolation-probe [--fixed-mcp-stdio-fixture] (fixed dummy-only root probes)"
+        );
         return std::process::ExitCode::SUCCESS;
     }
     if !args.is_empty() || unsafe { libc::geteuid() } != 0 {
