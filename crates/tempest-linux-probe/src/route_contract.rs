@@ -12,7 +12,10 @@ use std::{
 const IZANAGI_MCP_ARTIFACT: &str = "/usr/local/libexec/tempest/izanagi-mcp-fixture";
 const IZANAGI_MCP_SHA256: &str = "088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8";
 
-pub(super) struct FixedMcpArtifact(super::os::Snapshot);
+pub(super) struct FixedMcpArtifact {
+    executable: super::os::Snapshot,
+    libraries: Vec<super::os::Snapshot>,
+}
 
 impl FixedMcpArtifact {
     pub(super) fn open() -> Result<Self, super::os::Fault> {
@@ -20,11 +23,18 @@ impl FixedMcpArtifact {
         if snapshot.sha256 != IZANAGI_MCP_SHA256 {
             return Err(super::os::Fault::Identity);
         }
-        Ok(Self(snapshot))
+        Ok(Self {
+            executable: snapshot,
+            libraries: fixed_mcp_libraries()?,
+        })
     }
 
     pub(super) fn executable_fd(&self) -> std::os::fd::RawFd {
-        self.0.fd()
+        self.executable.fd()
+    }
+
+    pub(super) fn install_libraries(&self, root: &std::path::Path) -> Result<(), super::os::Fault> {
+        super::capsule::install_libraries(root, &self.libraries, None)
     }
 
     pub(super) fn verify_stdio(
@@ -33,12 +43,12 @@ impl FixedMcpArtifact {
         stdin: &super::identity::Descriptor,
         stdout: &super::identity::Descriptor,
     ) -> Result<(), super::os::Fault> {
-        verify_mcp_stdio(child, self.0.identity()?, stdin, stdout)
+        verify_mcp_stdio(child, self.executable.identity()?, stdin, stdout)
     }
 }
 
 /// Verify the loader and recursively required libraries for the fixed ELF.
-pub(super) fn fixed_mcp_libraries() -> Result<Vec<super::os::Snapshot>, super::os::Fault> {
+fn fixed_mcp_libraries() -> Result<Vec<super::os::Snapshot>, super::os::Fault> {
     use super::os::{Fault, Snapshot};
     use std::path::Path;
 
