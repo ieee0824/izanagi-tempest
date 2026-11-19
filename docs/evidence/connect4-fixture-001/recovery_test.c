@@ -208,6 +208,11 @@ static void check_fixed_agent_exchange(void)
         close(input[1]);
         close(output[0]);
         close(connect_status[0]);
+        if (prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0 ||
+            restrict_fixed_relay_setup() < 0 ||
+            socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0) != -1 ||
+            errno != EPERM)
+            _exit(6);
         int socket_fd = open_fixed_relay_connection(port, deadline);
         int connect_errno = socket_fd < 0 ? errno : 0;
         if (write(connect_status[1], &connect_errno, sizeof(connect_errno)) != sizeof(connect_errno))
@@ -215,8 +220,7 @@ static void check_fixed_agent_exchange(void)
         close(connect_status[1]);
         if (socket_fd < 0)
             _exit(1);
-        if (prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0 ||
-            restrict_fixed_relay_io(input[0], output[1], socket_fd) < 0)
+        if (restrict_fixed_relay_io(input[0], output[1], socket_fd) < 0)
             _exit(3);
         if (write(STDERR_FILENO, "", 0) != -1 || errno != EPERM ||
             socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP) != -1 ||

@@ -1068,6 +1068,43 @@ int prepare_connect4_worker(int gate_read_fd, int ready_write_fd)
     BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[index]))
 #define FILTER_DENY BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM)
 
+/* The cgroup policy constrains the destination. This filter constrains the
+ * socket kind and prevents execution or file opens during connect setup. */
+int restrict_fixed_relay_setup(void)
+{
+    struct sock_filter code[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        GUARD_SYSCALL(SYS_read),
+        GUARD_SYSCALL(SYS_write),
+        GUARD_SYSCALL(SYS_poll),
+        GUARD_SYSCALL(SYS_clock_gettime),
+        GUARD_SYSCALL(SYS_connect),
+        GUARD_SYSCALL(SYS_getsockopt),
+        GUARD_SYSCALL(SYS_close),
+        GUARD_SYSCALL(SYS_seccomp),
+        GUARD_SYSCALL(SYS_exit),
+        GUARD_SYSCALL(SYS_exit_group),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_socket, 1, 0),
+        FILTER_DENY,
+        FILTER_ARG(0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_INET, 0, 5),
+        FILTER_ARG(1),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, 3),
+        FILTER_ARG(2),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, IPPROTO_TCP, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        FILTER_DENY,
+    };
+    const struct sock_fprog program = {
+        .len = sizeof(code) / sizeof(code[0]),
+        .filter = code,
+    };
+    return (int)syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &program);
+}
+
 /* Install after connecting. Socket creation and further connects are denied. */
 int restrict_fixed_relay_io(int request_fd, int response_fd, int socket_fd)
 {
