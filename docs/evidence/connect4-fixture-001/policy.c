@@ -115,12 +115,12 @@ int pin_connect4_link(int link_fd, const char *path)
     return bpf_call(BPF_OBJ_PIN, &attr);
 }
 
-/* Use the recorded IDs both before releasing the worker and during recovery.
- * The caller must additionally bind the open cgroup directory to its ledger. */
-int check_connect4_link(int fd, uint32_t link_id, uint32_t program_id,
-                        uint64_t cgroup_id)
+/* Capture the link ID from the original attach FD, after checking it
+ * against the program and cgroup identities supplied by the manager. */
+int read_connect4_link_id(int fd, uint32_t program_id, uint64_t cgroup_id,
+                          uint32_t *link_id)
 {
-    if (fd < 0 || link_id == 0 || program_id == 0 || cgroup_id == 0) {
+    if (fd < 0 || program_id == 0 || cgroup_id == 0 || link_id == NULL) {
         errno = EINVAL;
         return -1;
     }
@@ -134,13 +134,26 @@ int check_connect4_link(int fd, uint32_t link_id, uint32_t program_id,
     };
     if (bpf_call(BPF_OBJ_GET_INFO_BY_FD, &attr) != 0)
         return -1;
-
     if (attr.info.info_len <
             offsetof(struct bpf_link_info, cgroup.attach_type) +
                 sizeof(info.cgroup.attach_type) ||
-        info.type != BPF_LINK_TYPE_CGROUP || info.id != link_id ||
+        info.type != BPF_LINK_TYPE_CGROUP || info.id == 0 ||
         info.prog_id != program_id || info.cgroup.cgroup_id != cgroup_id ||
         info.cgroup.attach_type != BPF_CGROUP_INET4_CONNECT) {
+        errno = ESTALE;
+        return -1;
+    }
+    *link_id = info.id;
+    return 0;
+}
+
+int check_connect4_link(int fd, uint32_t link_id, uint32_t program_id,
+                        uint64_t cgroup_id)
+{
+    uint32_t actual_id;
+    if (read_connect4_link_id(fd, program_id, cgroup_id, &actual_id) < 0)
+        return -1;
+    if (actual_id != link_id) {
         errno = ESTALE;
         return -1;
     }
