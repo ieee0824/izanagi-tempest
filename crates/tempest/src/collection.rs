@@ -1,7 +1,39 @@
 //! Per-file collection failures never imply absence of findings.
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{fmt, io};
+use std::{
+    fmt, io,
+    time::{Duration, Instant},
+};
+
+// Keep the v1 mailbox chunk and fixed-size encrypted reply contract unchanged.
+pub(crate) const CHUNK_BYTES: u64 = 32768;
+pub(crate) const EXPORT_TRANSFER_LIMIT: Duration = Duration::from_secs(600);
+pub(crate) const COLLECTION_ORDER: [&str; 3] = ["manifest.json", "api.jsonl", "capture.pcap"];
+
+pub(crate) struct TransferBudget {
+    deadline: Instant,
+}
+impl TransferBudget {
+    pub(crate) fn new(started: Instant) -> Self {
+        Self {
+            deadline: started + EXPORT_TRANSFER_LIMIT,
+        }
+    }
+    pub(crate) fn file_deadline(&self, started: Instant, bytes: u64) -> Instant {
+        self.deadline.min(started + transfer_allowance(bytes))
+    }
+}
+
+/// Absolute per-file allowance: startup margin plus four v1 chunks per second.
+/// The export-wide deadline additionally bounds the sum of all file transfers.
+pub(crate) fn transfer_allowance(bytes: u64) -> Duration {
+    Duration::from_millis(
+        30_000u64
+            .saturating_add(bytes.div_ceil(CHUNK_BYTES).saturating_mul(250))
+            .min(600_000),
+    )
+}
 
 #[derive(Debug)]
 pub(crate) struct Failure(pub &'static str);
@@ -78,6 +110,45 @@ pub(crate) fn chunk(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn large_file_allowance_covers_observed_v1_transfer_with_finite_margin() {
+        // large001 delivered only 55,607,296 of 59,299,901 bytes in 300 seconds.
+        assert_eq!(
+            transfer_allowance(59_299_901),
+            Duration::from_millis(482_500)
+        );
+        assert_eq!(
+            transfer_allowance(64 * 1024 * 1024),
+            Duration::from_secs(542)
+        );
+        assert!(transfer_allowance(59_299_901) > Duration::from_secs(300));
+        assert!(transfer_allowance(u64::MAX) <= EXPORT_TRANSFER_LIMIT);
+        assert_eq!(transfer_allowance(0), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn slow_transfer_and_later_files_share_one_absolute_export_limit() {
+        let start = Instant::now();
+        let budget = TransferBudget::new(start);
+        let first = budget.file_deadline(start, 59_299_901);
+        // PCAP completed 1697 chunks (plus one separate API chunk); replay
+        // all 1810 PCAP chunks, including the remaining 113,
+        // with a slower 250ms per chunk. The old fixed 300s budget fails this.
+        let completion = start + Duration::from_millis(1810 * 250);
+        assert!(completion > start + Duration::from_secs(300));
+        assert!(completion < first);
+        let late_start = start + Duration::from_secs(590);
+        assert_eq!(
+            budget.file_deadline(late_start, 64 * 1024 * 1024),
+            start + EXPORT_TRANSFER_LIMIT
+        );
+        // A completed prior file cannot grant a fresh 600 seconds to the next.
+        assert!(
+            budget.file_deadline(start + Duration::from_secs(601), 1)
+                < start + Duration::from_secs(601)
+        );
+    }
+
     fn fixture() -> Value {
         json!({"export_id":"current-export","file":"api.jsonl","offset":0,"next_offset":3,"total_bytes":3,"sha256":format!("{:x}",Sha256::digest(b"abc")),"chunk_sha256":format!("{:x}",Sha256::digest(b"abc")),"data_hex":"616263"})
     }
