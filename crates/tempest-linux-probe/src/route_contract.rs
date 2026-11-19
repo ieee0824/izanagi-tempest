@@ -200,6 +200,7 @@ impl FixedMcpArtifact {
         workers: [(super::contract::Role, &super::identity::Process); 2],
         ends: [(&super::identity::Descriptor, u32); 2],
         deadline: Instant,
+        caller_pipe_mismatch: &mut bool,
     ) -> Result<(), super::os::Fault> {
         use super::{
             contract::Role,
@@ -246,6 +247,7 @@ impl FixedMcpArtifact {
                             writes,
                         }]
                     {
+                        *caller_pipe_mismatch = true;
                         return Err(Fault::Identity);
                     }
                 }
@@ -311,10 +313,12 @@ struct ExchangeDiagnostics {
     mcp_stderr: Option<String>,
     caller_wait_status: Option<i32>,
     mcp_wait_status: Option<i32>,
+    caller_released: bool,
+    caller_pipe_mismatch: bool,
 }
 
 /// Explicit fixed-host investigation entry, limited to the local handshake.
-pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
+pub(super) fn fixed_stdio_trial(reject_pipe: bool) -> std::process::ExitCode {
     use super::{cgroup::Group, contract::Role, guard::Guard, os, os::Fault, registry::Registry};
     use std::{fs, path::Path, process::ExitCode};
 
@@ -359,7 +363,7 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
                 &mut registry,
                 [&roots[0], &roots[1]],
                 Instant::now() + Duration::from_secs(10),
-                (&mut phase, &mut diagnostics),
+                (&mut phase, &mut diagnostics, reject_pipe),
             );
             if let Err(Fault::UntrackedChildCleanup(errno)) = result {
                 untracked_errno = Some(errno);
@@ -389,11 +393,28 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
         exchange
     })();
     let reason = result.as_ref().err().map(Fault::reason);
+    let expected_rejection = reject_pipe
+        && reason == Some("identity")
+        && phase == "mcp_frozen_inspection"
+        && diagnostics.caller_pipe_mismatch
+        && !diagnostics.caller_released
+        && counts.reaped == 2
+        && counts.reap_unconfirmed == 0
+        && recovery_reason.is_none()
+        && root_cleanup_reason.is_none();
+    let passed = if reject_pipe {
+        expected_rejection
+    } else {
+        result.is_ok()
+    };
     println!(
         "{}",
         serde_json::json!({
             "scope": "fixed_mcp_stdio_fixture",
-            "passed": result.is_ok(),
+            "passed": passed,
+            "negative_pipe_fixture": reject_pipe,
+            "caller_released": diagnostics.caller_released,
+            "caller_pipe_mismatch": diagnostics.caller_pipe_mismatch,
             "production_authorized": false,
             "reason": reason,
             "trial_reason": trial_reason,
@@ -410,7 +431,7 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
             "recovery": counts,
         })
     );
-    if result.is_ok() {
+    if passed {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -426,12 +447,12 @@ fn run_fixed_exchange(
     registry: &mut super::registry::Registry,
     roots: [&std::path::Path; 2],
     deadline: Instant,
-    diagnostics: (&mut &'static str, &mut ExchangeDiagnostics),
+    diagnostics: (&mut &'static str, &mut ExchangeDiagnostics, bool),
 ) -> Result<(), super::os::Fault> {
     use super::{contract::Role, identity::Descriptor, os};
     use std::os::fd::AsFd;
 
-    let (phase, diagnostics) = diagnostics;
+    let (phase, diagnostics, reject_pipe) = diagnostics;
     *phase = "pipes";
     let [caller_root, mcp_root] = roots;
     let (request_read, request_write) = os::pipe()?;
@@ -485,8 +506,19 @@ fn run_fixed_exchange(
         group,
         guard,
         [(Role::B, &caller), (Role::A, &mcp)],
-        [(&stdin, caller_ends[0]), (&stdout, caller_ends[1])],
+        [
+            (
+                &stdin,
+                if reject_pipe {
+                    u32::MAX
+                } else {
+                    caller_ends[0]
+                },
+            ),
+            (&stdout, caller_ends[1]),
+        ],
         deadline,
+        &mut diagnostics.caller_pipe_mismatch,
     )?;
     *phase = "caller_release";
     if Instant::now() >= deadline {
@@ -494,6 +526,7 @@ fn run_fixed_exchange(
     }
     use std::io::Write;
     std::fs::File::from(release).write_all(b"R")?;
+    diagnostics.caller_released = true;
     *phase = "exchange_exit";
     let result = reap_fixed_exchange(
         [(&caller, caller_record), (&mcp, mcp_record)],
