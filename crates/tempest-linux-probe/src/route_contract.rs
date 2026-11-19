@@ -31,6 +31,39 @@ impl FixedMcpArtifact {
         })
     }
 
+    /// Return the original child PID while it waits for attachment.
+    /// The caller owns reaping and must send the gate byte only after tracking
+    /// the original pidfd and verifying placement in the intended cgroup.
+    pub(super) fn spawn_waiting(
+        &self,
+        root: &std::path::Path,
+        stdio: [BorrowedFd<'_>; 3],
+        gate: [BorrowedFd<'_>; 2],
+    ) -> Result<libc::pid_t, super::os::Fault> {
+        let parent = super::identity::Process::bind(std::process::id())?;
+        let pid = super::os::clone_isolated()?;
+        if pid != 0 {
+            return Ok(pid);
+        }
+        super::lease::clear();
+        unsafe { libc::close(gate[1].as_raw_fd()) };
+        if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) } != 0
+            || !parent.alive().unwrap_or(false)
+        {
+            unsafe { libc::_exit(125) };
+        }
+        let mut byte = 0_u8;
+        if unsafe { libc::read(gate[0].as_raw_fd(), (&mut byte as *mut u8).cast(), 1) } != 1
+            || byte != b'I'
+        {
+            unsafe { libc::_exit(125) };
+        }
+        let [stdin, stdout, stderr] = stdio;
+        // SAFETY: clone_isolated created the required namespaces and only the
+        // supervisor can open the gate after registering and attaching us.
+        unsafe { self.exec_mcp(root, stdin, stdout, stderr) }
+    }
+
     /// Execute the pinned ELF with the fixed MCP arguments and a minimal
     /// environment. No pathname is resolved for the executable itself.
     ///
@@ -40,18 +73,17 @@ impl FixedMcpArtifact {
     /// to its cgroup.
     /// Its root directory must be freshly created for this trial.
     /// This function consumes the child's inherited descriptor table.
-    pub(super) unsafe fn exec_mcp(
+    unsafe fn exec_mcp(
         &self,
         root: &std::path::Path,
         stdin: BorrowedFd<'_>,
         stdout: BorrowedFd<'_>,
         stderr: BorrowedFd<'_>,
     ) -> ! {
-        use super::{capsule, os};
+        use super::capsule;
 
         const EXEC_FD: libc::c_int = 6;
         let setup = || {
-            os::syscall(unsafe { libc::unshare(libc::CLONE_NEWNS | libc::CLONE_NEWNET) })?;
             capsule::prepare_mcp_root(root, &self.libraries)?;
             capsule::drop_privileges(MCP_UID)
         };

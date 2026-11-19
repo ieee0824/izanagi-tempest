@@ -225,6 +225,27 @@ impl Snapshot {
     }
 }
 
+/// Fork-style clone with independent mount, PID and network namespaces.
+pub(super) fn clone_isolated() -> Result<libc::pid_t, Fault> {
+    if !cfg!(target_arch = "x86_64") || fs::read_dir("/proc/self/task")?.count() != 1 {
+        return Err(Fault::Identity);
+    }
+    let pid = unsafe {
+        libc::syscall(
+            libc::SYS_clone,
+            libc::CLONE_NEWNS | libc::CLONE_NEWPID | libc::CLONE_NEWNET | libc::SIGCHLD,
+            0,
+            0,
+            0,
+            0,
+        )
+    };
+    if pid < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(pid as libc::pid_t)
+}
+
 pub(super) fn pipe() -> Result<(OwnedFd, OwnedFd), Fault> {
     let mut fds = [-1; 2];
     syscall(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) })?;
