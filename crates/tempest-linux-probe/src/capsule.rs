@@ -325,6 +325,9 @@ fn mount_root(root: &Path) -> Result<(), Fault> {
 pub(super) fn prepare_mcp_root(root: &Path, libraries: &[Snapshot]) -> Result<(), Fault> {
     make_mounts_private()?;
     mount_root(root)?;
+    unsafe {
+        libc::umask(0o022);
+    }
     for directory in ["lib", "lib/x86_64-linux-gnu", "lib64", "work"] {
         fs::DirBuilder::new()
             .mode(0o755)
