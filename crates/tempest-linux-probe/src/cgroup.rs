@@ -464,16 +464,25 @@ impl Group {
     /// Keep ownership of the dedicated group through observation and consumption.
     /// The observer's result stays local and no frozen proof survives thaw.
     #[allow(dead_code)]
-    pub(super) fn inspect_while_frozen<T: PartialEq>(
+    pub(super) fn inspect_while_frozen<T: PartialEq, const N: usize>(
         &mut self,
         _guard: &super::guard::Guard,
         until: Instant,
-        role: Role,
-        worker: &super::identity::Process,
+        workers: [(Role, &super::identity::Process); N],
+        manager_pipes: &[super::holder_scan::ManagerPipe<'_>],
         observe: impl FnOnce(&Self) -> Result<T, Fault>,
         expected: &T,
     ) -> Result<(), Fault> {
-        if !self.armed || worker.pid == 0 || Instant::now() >= until {
+        if !self.armed
+            || !matches!(N, 1 | 2)
+            || manager_pipes.len() != N
+            || (N == 2 && manager_pipes[0].identity == manager_pipes[1].identity)
+            || Instant::now() >= until
+            || workers
+                .iter()
+                .any(|(_, worker)| worker.pid == 0 || worker.pid == std::process::id())
+            || (N == 2 && (workers[0].0 == workers[1].0 || workers[0].1.pid == workers[1].1.pid))
+        {
             return Err(Fault::Identity);
         }
         self.verify()?;
@@ -491,47 +500,69 @@ impl Group {
                 .strip_prefix("/")
                 .map_err(|_| Fault::Identity)?
                 .starts_with(trial_group)
-            || worker.pid == std::process::id()
             || !read(&self.directory, "cgroup.procs")?.trim().is_empty()
         {
             return Err(Fault::Identity);
         }
-        for other in Role::ALL {
-            if other != role && !self.members(other)?.is_empty() {
+        let check_workers = || {
+            if !read(&self.directory, "cgroup.procs")?.trim().is_empty() {
                 return Err(Fault::Identity);
             }
-        }
-        let check_worker = || {
-            use super::holder_scan::{Budget, start_ticks};
-            let mut budget = Budget {
+            for role in Role::ALL {
+                let expected = workers.iter().find(|(placed, _)| *placed == role);
+                let members = self.members(role)?;
+                if let Some((_, worker)) = expected {
+                    if members != [worker.pid] {
+                        return Err(Fault::Identity);
+                    }
+                } else if !members.is_empty() {
+                    return Err(Fault::Identity);
+                }
+            }
+            for (role, worker) in workers {
+                use super::holder_scan::{Budget, start_ticks};
+                let mut budget = Budget {
+                    deadline: until,
+                    bytes_left: 65536,
+                    entries_left: 0,
+                };
+                let path = std::path::PathBuf::from(format!("/proc/{}/stat", worker.pid));
+                if !worker.alive()?
+                    || !self.bound(role, worker.pid)?
+                    || budget
+                        .read(&path, 65536)
+                        .and_then(|data| start_ticks(&data, worker.pid))
+                        .map_err(|_| Fault::Identity)?
+                        != worker.birth
+                    || !worker.alive()?
+                {
+                    return Err(Fault::Identity);
+                }
+            }
+            let mut budget = super::holder_scan::Budget {
                 deadline: until,
-                bytes_left: 65536,
-                entries_left: 0,
+                bytes_left: 0,
+                entries_left: 8192,
             };
-            let path = std::path::PathBuf::from(format!("/proc/{}/stat", worker.pid));
-            if !worker.alive()?
-                || self.members(role)? != [worker.pid]
-                || !self.bound(role, worker.pid)?
-                || budget
-                    .read(&path, 65536)
-                    .and_then(|data| start_ticks(&data, worker.pid))
+            for pipe in manager_pipes {
+                if super::holder_scan::manager_pipe_fds(pipe.identity, &mut budget)
                     .map_err(|_| Fault::Identity)?
-                    != worker.birth
-                || !worker.alive()?
-            {
-                return Err(Fault::Identity);
+                    != pipe.expected
+                {
+                    return Err(Fault::Identity);
+                }
             }
             Ok(())
         };
-        check_worker()?;
+        check_workers()?;
         let result = (|| {
             self.request_frozen(true)?;
             after_freezer_confirmation(
                 || self.wait_frozen(true, until),
                 || {
-                    check_worker()?;
+                    check_workers()?;
                     let observation = observe(self)?;
-                    check_worker()?;
+                    check_workers()?;
                     if Instant::now() >= until || !self.frozen()? || Instant::now() >= until {
                         return Err(Fault::Identity);
                     }
@@ -541,7 +572,7 @@ impl Group {
                         return Err(Fault::Identity);
                     }
                     drop(observation);
-                    check_worker()?;
+                    check_workers()?;
                     if Instant::now() >= until || !self.frozen()? || Instant::now() >= until {
                         return Err(Fault::Identity);
                     }
@@ -757,8 +788,11 @@ mod tests {
             let inspection = group.inspect_while_frozen(
                 &guard,
                 deadline,
-                Role::B,
-                &worker,
+                [(Role::B, &worker)],
+                &[crate::holder_scan::ManagerPipe {
+                    identity: (metadata.dev(), metadata.ino()),
+                    expected: &[(descriptors[0] as u32, false)],
+                }],
                 |_| {
                     frozen = sample();
                     let actual = task_pipe_fds(
@@ -848,6 +882,132 @@ mod tests {
             || -> Result<(), Fault> { panic!("expired inspection") },
         );
         assert!(matches!(result, Err(Fault::Identity)));
+    }
+
+    #[test]
+    #[ignore = "fixed Linux host with root cgroup access"]
+    fn fixed_dummy_two_workers_hold_only_crossed_pipe_ends() {
+        use crate::guard::Guard;
+        use crate::holder_scan::{Budget, ManagerPipe, TaskPipeFd, task_pipe_fds};
+        use crate::identity::Process;
+        use std::os::unix::fs::MetadataExt;
+
+        let guard = Guard::acquire().unwrap();
+        let mut group = Group::create().unwrap();
+        let (read_a, write_a) = io::pipe().unwrap();
+        let (read_b, write_b) = io::pipe().unwrap();
+        let pipe_id = |fd| {
+            let m = fs::metadata(format!("/proc/self/fd/{fd}")).unwrap();
+            (m.dev(), m.ino())
+        };
+        let ids = [pipe_id(read_a.as_raw_fd()), pipe_id(read_b.as_raw_fd())];
+        let ends = [
+            [read_a.as_raw_fd(), write_b.as_raw_fd()],
+            [read_b.as_raw_fd(), write_a.as_raw_fd()],
+        ];
+        let mut children = Vec::new();
+        let result = (|| -> Result<(), Fault> {
+            for excluded in [ends[1], ends[0]] {
+                use io::Read;
+                let (mut ready_read, ready_write) = io::pipe()?;
+                let pid = unsafe { libc::fork() };
+                if pid < 0 {
+                    return Err(io::Error::last_os_error().into());
+                }
+                if pid == 0 {
+                    unsafe {
+                        libc::close(guard.fd());
+                        for fd in excluded {
+                            libc::close(fd);
+                        }
+                        libc::close(ready_read.as_raw_fd());
+                        if libc::write(ready_write.as_raw_fd(), b"Y".as_ptr().cast(), 1) != 1 {
+                            libc::_exit(1);
+                        }
+                        libc::close(ready_write.as_raw_fd());
+                        loop {
+                            libc::pause();
+                        }
+                    }
+                }
+                children.push(pid);
+                drop(ready_write);
+                let mut ready = libc::pollfd {
+                    fd: ready_read.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                if unsafe { libc::poll(&mut ready, 1, 1000) } != 1 {
+                    return Err(Fault::Identity);
+                }
+                let mut byte = [0];
+                ready_read.read_exact(&mut byte)?;
+                if byte != *b"Y" {
+                    return Err(Fault::Identity);
+                }
+            }
+            drop((read_a, write_a, read_b, write_b));
+            let a = Process::bind(children[0] as u32)?;
+            let b = Process::bind(children[1] as u32)?;
+            group.attach(Role::A, a.pid)?;
+            group.attach(Role::B, b.pid)?;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let manager = ids.map(|identity| ManagerPipe {
+                identity,
+                expected: &[],
+            });
+            let observations = [(&a, 0, 0), (&a, 1, 1), (&b, 0, 1), (&b, 1, 0)];
+            let expected = observations
+                .iter()
+                .map(|(child, direction, _pipe)| {
+                    let child_index = usize::from(child.pid == b.pid);
+                    vec![TaskPipeFd {
+                        tid: child.pid,
+                        start_ticks: child.birth,
+                        fd: ends[child_index][*direction] as u32,
+                        writes: *direction == 1,
+                    }]
+                })
+                .collect::<Vec<_>>();
+            group.inspect_while_frozen(
+                &guard,
+                deadline,
+                [(Role::A, &a), (Role::B, &b)],
+                &manager,
+                |_| {
+                    let mut budget = Budget {
+                        deadline,
+                        bytes_left: 262144,
+                        entries_left: 8192,
+                    };
+                    observations
+                        .iter()
+                        .map(|(child, _, pipe)| {
+                            task_pipe_fds(Path::new("/proc"), child.pid, ids[*pipe], &mut budget)
+                                .map_err(|_| Fault::Identity)
+                        })
+                        .collect()
+                },
+                &expected,
+            )
+        })();
+        let mut all_reaped = true;
+        for pid in children {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                let reaped = loop {
+                    let reaped = libc::waitpid(pid, std::ptr::null_mut(), 0);
+                    if reaped >= 0 || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+                    {
+                        break reaped;
+                    }
+                };
+                all_reaped &= reaped == pid;
+            }
+        }
+        group.cleanup().unwrap();
+        assert!(all_reaped);
+        result.unwrap();
     }
 
     #[test]

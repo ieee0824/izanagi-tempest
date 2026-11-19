@@ -10,6 +10,49 @@ pub(super) struct TaskPipeFd {
     pub writes: bool,
 }
 
+pub(super) struct ManagerPipe<'a> {
+    pub identity: (u64, u64),
+    pub expected: &'a [(u32, bool)],
+}
+
+/// The single-threaded manager holds its directory iterator open while
+/// checking entries. Its enumeration FD therefore cannot vanish mid-scan.
+pub(super) fn manager_pipe_fds(
+    pipe: (u64, u64),
+    budget: &mut Budget,
+) -> Result<Vec<(u32, bool)>, Unknown> {
+    let mut observed = Vec::new();
+    budget.check()?;
+    for entry in std::fs::read_dir("/proc/self/fd").map_err(|_| Unknown::Io)? {
+        budget.check()?;
+        budget.entries_left = budget.entries_left.checked_sub(1).ok_or(Unknown::Limit)?;
+        let entry = entry.map_err(|_| Unknown::Io)?;
+        let fd: i32 = entry
+            .file_name()
+            .to_str()
+            .ok_or(Unknown::Format)?
+            .parse()
+            .map_err(|_| Unknown::Format)?;
+        let actual = std::fs::metadata(entry.path()).map_err(|_| Unknown::Io)?;
+        if actual.mode() & libc::S_IFMT != libc::S_IFIFO || (actual.dev(), actual.ino()) != pipe {
+            continue;
+        }
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(Unknown::Io);
+        }
+        let writes = match flags & (libc::O_PATH | libc::O_ACCMODE) {
+            libc::O_RDONLY => false,
+            libc::O_WRONLY => true,
+            _ => return Err(Unknown::Format),
+        };
+        observed.push((fd as u32, writes));
+    }
+    observed.sort_unstable();
+    budget.check()?;
+    Ok(observed)
+}
+
 /// Observation only: neither cgroup identity nor a stationary barrier is proven.
 /// Shared tables are deliberately represented once per task, never deduplicated.
 pub(super) fn task_pipe_fds(
