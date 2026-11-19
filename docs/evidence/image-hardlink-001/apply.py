@@ -92,7 +92,7 @@ def main():
         record({'phase': 'preservation_check_started', 'paths': [str(p) for p in PATHS],
                 'authorization_message': args.authorization_message,
                 'script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                'physical_identity_exception': ['canonical nlink/ctime', 'seven target inode/nlink/ctime',
+                'physical_identity_exception': ['canonical nlink/ctime', 'seven target inode/nlink/mtime/ctime',
                                                 'seven parent directory mtime/ctime'],
                 'authorization_scope': 'Reference must be verified before invocation; recording a reference alone grants no authority.'})
         preserved = verify_preserved()
