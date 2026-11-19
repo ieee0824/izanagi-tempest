@@ -1179,13 +1179,21 @@ static int confirm_unpinned_connect4_trial(const struct connect4_trial *trial)
 
 /* The manager supplies a fresh, registered trial and retains ownership of
  * its cgroup and original link FD, including on recovery failure. */
+/* Preserve the last observed pin phase across a return to the live manager.
+ * Recovery after loss of that manager must reconstruct state independently. */
+struct connect4_pending_recovery {
+    pid_t pid;
+    int pidfd;
+    int pinned;
+};
+
 int run_connect4_trial(const struct connect4_trial *trial,
                        int allowed_listener, uint16_t allowed_port,
                        int denied_listener, uint16_t denied_port,
                        struct connect4_phase phases[static 3],
-                       struct connect4_worker *pending)
+                       struct connect4_pending_recovery *pending)
 {
-    *pending = (struct connect4_worker){-1, -1, -1, -1};
+    *pending = (struct connect4_pending_recovery){-1, -1, 0};
     for (unsigned i = 0; i < 3; ++i)
         phases[i] = (struct connect4_phase){-1, -1, -1, -1};
     if (measure_connect4_control(allowed_listener, allowed_port, denied_listener,
@@ -1223,16 +1231,16 @@ int run_connect4_trial(const struct connect4_trial *trial,
                                  trial->link_id, trial->program_id)
             : confirm_unpinned_connect4_trial(trial);
         if (recovered < 0) {
-            *pending = (struct connect4_worker){worker.pid, worker.pidfd, -1, -1};
+            *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd, pinned};
             return -1;
         }
         if (waitpid(worker.pid, NULL, WNOHANG) != worker.pid) {
-            *pending = (struct connect4_worker){worker.pid, worker.pidfd, -1, -1};
+            *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd, pinned};
             errno = ECHILD;
             return -1;
         }
     } else {
-        *pending = (struct connect4_worker){worker.pid, worker.pidfd, -1, -1};
+        *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd, pinned};
         errno = ETIMEDOUT;
         return -1;
     }
