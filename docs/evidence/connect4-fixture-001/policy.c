@@ -1551,6 +1551,8 @@ done:;
 #define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-after-001"
 #elif CONNECT4_CASE == 3
 #define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-diagnostic-001"
+#elif CONNECT4_CASE == 4
+#define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-normal-002"
 #else
 #error "unknown connect4 fixture case"
 #endif
