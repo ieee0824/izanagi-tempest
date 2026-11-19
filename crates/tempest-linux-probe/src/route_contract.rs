@@ -295,6 +295,35 @@ impl FixedMcpArtifact {
     }
 }
 
+/// Run the local fixture caller after the supervisor's thaw confirmation.
+fn run_fixed_caller(
+    gate: OwnedFd,
+    requests: OwnedFd,
+    responses: OwnedFd,
+    expected: [&Value; 2],
+    deadline: Instant,
+) -> ! {
+    use super::os;
+
+    let keep = [
+        gate.as_raw_fd(),
+        requests.as_raw_fd(),
+        responses.as_raw_fd(),
+    ];
+    if os::close_except(&keep).is_err() {
+        unsafe { libc::_exit(125) };
+    }
+    let mut byte = 0_u8;
+    let released = unsafe { libc::read(gate.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) };
+    if released != 1 || byte != b'R' || Instant::now() >= deadline {
+        unsafe { libc::_exit(125) };
+    }
+    drop(gate);
+    let [initialize, catalog] = expected;
+    let result = mcp_stdio_fixture::exchange(requests, responses, initialize, catalog, deadline);
+    unsafe { libc::_exit(if result.is_ok() { 0 } else { 126 }) }
+}
+
 /// Verify the loader and recursively required libraries for the fixed ELF.
 fn fixed_mcp_libraries() -> Result<Vec<super::os::Snapshot>, super::os::Fault> {
     use super::os::{Fault, Snapshot};
