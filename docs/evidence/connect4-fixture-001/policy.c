@@ -1827,6 +1827,78 @@ int release_fixed_relay_control(const struct connect4_worker *worker,
     return send_connect4_release(worker->gate);
 }
 
+struct fixed_relay_result {
+    int connect_errno;
+    int relay_exit;
+};
+
+typedef int (*fixed_relay_exchange)(const struct fixed_relay_pipes *, int64_t, void *);
+
+static int observe_fixed_relay(const struct connect4_worker *worker,
+                              const struct fixed_relay_pipes *relay,
+                              int64_t deadline, fixed_relay_exchange exchange,
+                              void *context, struct fixed_relay_result *observed)
+{
+    if (read_fixed_relay_connect_errno(relay, deadline, &observed->connect_errno) < 0)
+        return -1;
+    int error = 0;
+    if (observed->connect_errno == 0) {
+        errno = 0;
+        if (exchange == NULL || exchange(relay, deadline, context) < 0)
+            error = errno != 0 ? errno : EPROTO;
+    }
+    if (observe_fixed_relay_exit(worker, deadline, &observed->relay_exit) < 0)
+        return -1;
+    if (error != 0) {
+        errno = error;
+        return -1;
+    }
+    return 0;
+}
+
+int run_fixed_relay_control(uint16_t port, int alternate, int controller_pidfd,
+                            int64_t deadline, fixed_relay_exchange exchange,
+                            void *context, struct fixed_relay_result *observed)
+{
+    *observed = (struct fixed_relay_result){-1, -1};
+    struct connect4_worker worker;
+    struct fixed_relay_pipes relay;
+    int spawned = alternate ? spawn_fixed_alternate_worker(port, deadline, &worker, &relay)
+                            : spawn_fixed_relay_worker(port, deadline, &worker, &relay);
+    if (spawned < 0)
+        return -1;
+
+    int result = release_fixed_relay_control(&worker, &relay, controller_pidfd);
+    int error = result < 0 ? errno : 0;
+    close(worker.gate);
+    close(worker.ready);
+    if (result == 0) {
+        result = observe_fixed_relay(&worker, &relay, deadline, exchange, context, observed);
+        error = result < 0 ? errno : 0;
+    }
+    close(relay.request);
+    close(relay.response);
+    close(relay.status);
+
+    /* Sole reaper, holding the original pidfd until the child is reaped. */
+    if (observed->relay_exit < 0 &&
+        syscall(SYS_pidfd_send_signal, worker.pidfd, SIGKILL, NULL, 0) < 0 && errno != ESRCH)
+        error = errno;
+    siginfo_t status = {0};
+    int reaped;
+    do {
+        reaped = waitid(P_PIDFD, (id_t)worker.pidfd, &status, WEXITED);
+    } while (reaped < 0 && errno == EINTR);
+    if (reaped < 0)
+        error = errno;
+    close(worker.pidfd);
+    if (error != 0) {
+        errno = error;
+        return -1;
+    }
+    return result;
+}
+
 /* The caller retains the pidfd and must finish or recover the worker on
  * failure as well as on success. The upper owner must already know its PID. */
 int place_and_release_fixed_relay(const struct connect4_trial *trial,
