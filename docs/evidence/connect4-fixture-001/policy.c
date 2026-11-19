@@ -228,14 +228,28 @@ int check_connect4_cgroup_empty(int cgroup_fd, dev_t device, uint64_t id)
         return -1;
 
     char data[256];
-    ssize_t count = read(events, data, sizeof(data));
-    int error = errno;
+    size_t count = 0;
+    unsigned interruptions = 0;
+    while (count < sizeof(data)) {
+        ssize_t received = read(events, data + count, sizeof(data) - count);
+        if (received == 0)
+            break;
+        if (received < 0) {
+            if (errno == EINTR && interruptions++ < 8)
+                continue;
+            int error = errno;
+            close(events);
+            errno = error;
+            return -1;
+        }
+        count += (size_t)received;
+    }
     close(events);
-    if (count < 0) {
-        errno = error;
+    if (count == sizeof(data)) {
+        errno = EOVERFLOW;
         return -1;
     }
-    if (count == 0 || count == sizeof(data) || data[count - 1] != '\n') {
+    if (count == 0 || data[count - 1] != '\n') {
         errno = EPROTO;
         return -1;
     }
