@@ -22,3 +22,13 @@ room #16934 のレビュー用。既存の特権管理経路から専用の子cg
 | /usr/lib/x86_64-linux-gnu/libbpf.so.1 | 0e9998e17e38d78e5ce953f89a5e6a7c8b457d3e1bfe71e3ec5a1cfb05bbd1c3 |
 
 libbpfのruntime共有ライブラリはあるが、標準include位置に開発ヘッダがなく、PATH上にclang/llcはない。bpftoolの実体は既存metadataに記録済み。
+
+## 管理プロセス異常終了時の回収
+
+link FDをcontrollerだけが持つ構成では、異常終了でworkerの終了より先にポリシーが消える。専用cgroupへのlinkをrootだけが触れる既存bpffs配下に試行専用名でpinし、controllerと独立した回収処理に引き継ぐ案とする。利用可能なbpffs、既存管理経路による回収、試行台帳とpinによる照合が確認できなければworkerを解放しない。専用の永続mountを追加する前提にはしない。
+
+1. 試行IDとcgroupのdev/inodeを捕捉し、管理側で回収対象として登録する。attachとpinの途中で異常終了しても、workerはまだ接続試行を開始していない。
+2. pinのlink IDとattach対象を照合してから、権限を落としたworkerを解放する。workerはlink FD、bpffsの操作権限、別cgroupへの書き込み権限を持たない。
+3. 正常時も異常時も、管理側は同じcgroupを照合してから残存workerを終了させ、pidfdの終了確認とcgroupの `populated 0` を確認する。その後でのみpinを解除する。回収結果が不明ならpinを保持し、再実行で上書きしない。
+
+接続前、worker試行中、worker回収後の対照を別区間として記録する。各区間では親が両listenerのaccept増分を独立集計する。worker区間の合格条件は許可側1、許可外側0、および許可外TCP接続で期待する拒否errnoの一致。前後対照は両listenerに各1件を要求し、各区間の遅延接続を次区間の成功に数えない。
