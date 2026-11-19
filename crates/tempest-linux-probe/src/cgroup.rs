@@ -901,7 +901,10 @@ mod tests {
         use crate::holder_scan::{Budget, ManagerPipe, TaskPipeFd, task_pipe_fds};
         use crate::identity::Process;
         use crate::route_contract::ParentPipe;
+        use std::os::unix::fs::MetadataExt;
 
+        let executable = fs::metadata("/proc/self/exe").unwrap();
+        let expected_code = (executable.dev(), executable.ino());
         let guard = Guard::acquire().unwrap();
         let mut group = Group::create().unwrap();
         let (read, write) = crate::os::pipe().unwrap();
@@ -1007,6 +1010,9 @@ mod tests {
                 [(Role::A, &a), (Role::B, &b)],
                 &manager,
                 |_| {
+                    if a.identity()?.code != expected_code || b.identity()?.code != expected_code {
+                        return Err(Fault::Identity);
+                    }
                     let mut budget = Budget {
                         deadline,
                         bytes_left: 262144,
@@ -1024,6 +1030,9 @@ mod tests {
             )?;
             if exchange {
                 use io::Write;
+                if a.identity()?.code != expected_code || b.identity()?.code != expected_code {
+                    return Err(Fault::Identity);
+                }
                 for gate in &mut gates {
                     gate.write_all(b"R")?;
                 }
