@@ -77,6 +77,10 @@ def update(binding, operation, phase, request):
             "phases": [],
             "complete": False,
         }
+    if operation == "report":
+        if not report["complete"]:
+            raise ValueError("receiver report is incomplete")
+        return report
     matched = True
     if operation == "start":
         start_phase(report, phase)
@@ -106,14 +110,18 @@ def main():
     if len(sys.argv) not in (4, 5):
         return 2
     operation, nonce, phase, *payload = sys.argv[1:]
-    if operation not in ("start", "request", "end") or len(payload) != int(operation == "request"):
+    if operation not in ("start", "request", "end", "report") or len(payload) != int(
+        operation == "request"
+    ):
+        return 2
+    if operation == "report" and phase != PHASES[-1]:
         return 2
     try:
         result = process(operation, nonce, phase, payload[0] if payload else None)
     except (ValueError, OSError):
         return 2
     print(json.dumps(result, sort_keys=True))
-    return 0 if result["matched"] else 1
+    return 0 if result.get("matched", True) else 1
 
 
 if __name__ == "__main__":
