@@ -7,7 +7,7 @@ import runpy
 import sys
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +16,8 @@ from fixed_vm_receive_observe import (
     PHASES,
     TrialBoundaries,
     collect_trial,
+    observe_guest,
+    receiver_argv,
     session_binding,
     validate_guest_export,
     validate_trial_counts,
@@ -32,6 +34,20 @@ def phase_transport(phase, refused=errno.EPERM):
 
 
 class FixedVmReceiveTests(unittest.TestCase):
+    def test_request_requires_trial_connection(self):
+        execute = Mock()
+        nonce = 'a' * 32
+        boot_id = '3d6aa964-65a7-4c14-9444-70ecc42b55f8'
+        with self.assertRaisesRegex(ValueError, 'request requires the trial connection'):
+            observe_guest(execute, run_nonce=nonce, boot_id=boot_id,
+                          phase='allow_same_run', operation='request')
+        execute.assert_not_called()
+        argv = receiver_argv(run_nonce=nonce, phase='allow_same_run', operation='request')
+        self.assertEqual(argv[-4:], ['request', nonce, 'allow_same_run',
+                                    f'tempest-dummy-v1:{nonce}:allow_same_run'])
+        with self.assertRaises(ValueError):
+            receiver_argv(run_nonce=nonce, phase='deny_other', operation='request')
+
     def test_denied_guest_receipt_cannot_be_hidden_by_closing_phase(self):
         process = runpy.run_path(str(ROOT / 'image/fixed_vm_receive.py'))['process']
         nonce = 'a' * 32
