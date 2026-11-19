@@ -304,6 +304,7 @@ impl FixedMcpArtifact {
 /// Start the fixed caller with inherited pipes. The ready byte tells the
 /// supervisor that the child has closed its copies of the other endpoints.
 fn spawn_fixed_caller(
+    root: &std::path::Path,
     pipes: [OwnedFd; 4],
     expected: [&Value; 2],
     deadline: Instant,
@@ -316,6 +317,11 @@ fn spawn_fixed_caller(
         return Ok(pid);
     }
     super::lease::clear();
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) } != 0
+        || !parent.alive().unwrap_or(false)
+    {
+        unsafe { libc::_exit(125) };
+    }
     let [gate, requests, responses, ready] = pipes;
     let keep = [
         gate.as_raw_fd(),
@@ -325,6 +331,7 @@ fn spawn_fixed_caller(
         parent.fd(),
     ];
     if os::close_except(&keep).is_err()
+        || capsule::prepare_mcp_caller_root(root).is_err()
         || capsule::drop_privileges(Role::B.uid()).is_err()
         || !parent.alive().unwrap_or(false)
         || seccomp::install(Role::B, false).is_err()

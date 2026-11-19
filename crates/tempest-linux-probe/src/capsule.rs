@@ -337,6 +337,19 @@ pub(super) fn prepare_mcp_root(root: &Path, libraries: &[Snapshot]) -> Result<()
     enter_root(root)
 }
 
+// The already-loaded caller only needs an empty work directory.
+pub(super) fn prepare_mcp_caller_root(root: &Path) -> Result<(), Fault> {
+    make_mounts_private()?;
+    mount_root(root)?;
+    unsafe {
+        libc::umask(0o022);
+    }
+    fs::DirBuilder::new()
+        .mode(0o755)
+        .create(root.join("work"))?;
+    enter_root(root)
+}
+
 pub(super) fn enter(
     role: Role,
     scenario: Scenario,
