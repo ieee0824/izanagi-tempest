@@ -12,6 +12,8 @@ use std::{
 const IZANAGI_MCP_ARTIFACT: &str = "/usr/local/libexec/tempest/izanagi-mcp-fixture";
 const IZANAGI_MCP_SHA256: &str = "088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8";
 
+const MCP_UID: u32 = 62004;
+
 pub(super) struct FixedMcpArtifact {
     executable: super::os::Snapshot,
     libraries: Vec<super::os::Snapshot>,
@@ -47,7 +49,6 @@ impl FixedMcpArtifact {
         use super::{capsule, os};
 
         const EXEC_FD: libc::c_int = 6;
-        const MCP_UID: u32 = 62004;
         let setup = || {
             os::syscall(unsafe { libc::unshare(libc::CLONE_NEWNS | libc::CLONE_NEWNET) })?;
             capsule::prepare_mcp_root(root, &self.libraries)?;
@@ -100,6 +101,20 @@ impl FixedMcpArtifact {
         use super::{holder_scan::required_task_pipe_fds, os::Fault};
 
         let executable = self.executable.identity()?;
+        let state = child.security_state()?;
+        let supervisor = super::identity::namespace_ids(std::process::id())?;
+        if state.identity.code != executable
+            || state.identity.namespaces[0] == supervisor[0]
+            || state.identity.namespaces[2] == supervisor[2]
+            || state.uid != [MCP_UID; 4]
+            || state.gid != [MCP_UID; 4]
+            || !state.groups.is_empty()
+            || state.capabilities != [0; 5]
+            || !state.no_new_privs
+            || state.seccomp != 2
+        {
+            return Err(Fault::Identity);
+        }
         verify_mcp_stdio(child, executable, stdin, stdout)?;
         let proc_root = std::path::Path::new("/proc");
         let request_pipe = stdin.pipe_identity(libc::O_RDONLY)?;
@@ -111,10 +126,11 @@ impl FixedMcpArtifact {
             .map_err(|_| Fault::Identity)?;
         let writers = required_task_pipe_fds(proc_root, child.pid, response_pipe, 1, true, budget)
             .map_err(|_| Fault::Identity)?;
-        if !readers
-            .iter()
-            .map(|row| (row.tid, row.start_ticks))
-            .eq(writers.iter().map(|row| (row.tid, row.start_ticks)))
+        if readers.len() < 2
+            || !readers
+                .iter()
+                .map(|row| (row.tid, row.start_ticks))
+                .eq(writers.iter().map(|row| (row.tid, row.start_ticks)))
         {
             return Err(Fault::Identity);
         }

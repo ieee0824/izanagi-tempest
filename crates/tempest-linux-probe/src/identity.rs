@@ -239,15 +239,19 @@ impl Process {
         Ok([number()?, number()?, number()?])
     }
 
+    pub(super) fn security_state(&self) -> Result<State, Fault> {
+        let identity = self.identity()?;
+        let value = fs::read_to_string(format!("/proc/{}/status", self.pid))?;
+        status(&value, identity)
+    }
+
     pub(super) fn observe(
         &self,
         group: &Group,
         role: Role,
         descriptors: &BTreeMap<i32, Descriptor>,
     ) -> Result<State, Fault> {
-        let identity = self.identity()?;
-        let value = fs::read_to_string(format!("/proc/{}/status", self.pid))?;
-        let mut state = status(&value, identity)?;
+        let mut state = self.security_state()?;
         let expected: BTreeSet<i32> = descriptors.keys().copied().collect();
         let actual = fs::read_dir(format!("/proc/{}/fd", self.pid))?
             .map(|entry| {
