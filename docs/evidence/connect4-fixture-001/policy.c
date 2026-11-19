@@ -706,13 +706,6 @@ static int check_worker_pipes(pid_t child, const struct worker_pipe *pipes, size
     return result;
 }
 
-/* The fixed worker retains only gate read end 3 at this stage. */
-static int check_connect4_worker_fds(pid_t child, int gate_fd)
-{
-    const struct worker_pipe gate = {3, O_RDONLY, gate_fd, O_WRONLY};
-    return check_worker_pipes(child, &gate, 1);
-}
-
 static int64_t monotonic_ns(void)
 {
     struct timespec now;
@@ -814,7 +807,8 @@ static int stop_test_controller(int controller_pidfd)
     return -1;
 }
 
-int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
+static int release_connect4_worker(int state_fd, int ready_fd,
+                            const struct worker_pipe *pipes, size_t pipe_count,
                             int controller_pidfd,
                             pid_t child, int worker_pidfd,
                             int link_fd,
@@ -823,6 +817,14 @@ int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
                             uint32_t program_id, int *pinned,
                             int stop_before_release)
 {
+    /* FD 3 is the only channel that can release the worker. */
+    if (pipe_count == 0 || pipes[0].child_fd != 3 ||
+        pipes[0].child_direction != O_RDONLY || pipes[0].parent_direction != O_WRONLY) {
+        errno = EINVAL;
+        return -1;
+    }
+    int gate_fd = pipes[0].parent_fd;
+
     int lease = acquire_connect4_lease(state_fd);
     if (lease < 0)
         return -1;
@@ -857,7 +859,7 @@ int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
     if (check_connect4_worker_privileges(child) < 0)
         goto done;
     stage = "worker-descriptors";
-    if (check_connect4_worker_fds(child, gate_fd) < 0)
+    if (check_worker_pipes(child, pipes, pipe_count) < 0)
         goto done;
     stage = "membership-recheck";
     if (check_connect4_worker_membership(cgroup_fd, child) < 0)
@@ -1436,8 +1438,9 @@ int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
     }
     if (result == 0) {
         failure_stage = "prepare-or-release";
-        result = release_connect4_worker(trial->state_fd, worker.gate,
-                                            worker.ready, controller_pidfd,
+        const struct worker_pipe gate = {3, O_RDONLY, worker.gate, O_WRONLY};
+        result = release_connect4_worker(trial->state_fd, worker.ready, &gate, 1,
+                                            controller_pidfd,
                                             worker.pid, worker.pidfd,
                                             trial->link_fd, trial->pin_path,
                                             trial->cgroup_fd, trial->device,
