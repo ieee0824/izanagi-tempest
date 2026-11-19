@@ -82,3 +82,7 @@ room #17028 に従い、`7e7f47c` のテストバイナリを `sudo -n` で起�
 2本のpipeそれぞれについて、凍結中の走査で読み書き計4端が期待する2子のFD番号と方向に一致した。親に残る対象pipe端はゼロ。元pidfd、開始tick、roleの完全一致も検査した。両方の子のwaitpidが元PIDを返し、専用cgroupの回収も成功した。専用cgroupの不在は試行前後に管理処理の外から確認した。結果はroom #17029に報告済み。
 
 この試験中、子は所定のFDを閉じて準備完了を通知した後に待機する。解凍後のメッセージ交換、FD状態の変更拒否、実Izanagiへの結線は後続の検証とする。
+
+### 解凍後の固定バイト往復
+
+room #17032 に従い、`ff4899d` のテストバイナリ（SHA-256 `5e17d0238a8b5b799c1eab251037d22b9a1e19a3ac1ed991d4c4dd583be10fb3`）を固定ホストで `sudo -n` から起動し、`--ignored --exact cgroup::tests::fixed_dummy_exchanges_bytes_after_thaw --nocapture --test-threads=1` を一回実行した。終了0。管理側が解凍完了を確認してから既存の待機用pipeに開始トークンを送り、2子は事前配置済みの2本で `Q` と `A` を各1バイト確認し、それぞれEOFまで読んで終了した。試験は2秒の交換期限、2子の正常終了とwaitpid、専用cgroupの回収を検査する。専用cgroup不在も前後に独立確認した。Izanagi本体との通信はこの試験の対象外。
