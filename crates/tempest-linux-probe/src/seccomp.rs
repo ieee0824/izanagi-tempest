@@ -223,3 +223,41 @@ fn install_filter(role: Option<Role>, bootstrap_exec: bool) -> Result<(), Fault>
     // and copied by the kernel before this function returns.
     syscall(unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &descriptor) })
 }
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_stdio_allows_runtime_threads_and_denies_network() {
+        const CHILD: &str = "TEMPEST_MCP_SECCOMP_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "seccomp::tests::mcp_stdio_allows_runtime_threads_and_denies_network",
+                    "--test-threads=1",
+                ])
+                .env_clear()
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "{status}");
+            return;
+        }
+        install_mcp_stdio().unwrap();
+        let denied = |result| {
+            assert_eq!(result, -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EPERM)
+            );
+        };
+        let thread = std::thread::spawn(move || {
+            denied(unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) });
+            denied(unsafe { libc::connect(-1, std::ptr::null(), 0) });
+        });
+        thread.join().unwrap();
+        denied(unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) });
+    }
+}
