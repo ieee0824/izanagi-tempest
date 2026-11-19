@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import runpy
 import sys
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
@@ -153,6 +154,39 @@ class FixedVmReceiveTests(unittest.TestCase):
                 trial.observe(phase, edge, guest_ack=ack, forward=forward,
                               session_fingerprint=fingerprint)
         trial.require_complete()
+
+    def test_collects_all_intervals_using_the_guest_receiver(self):
+        process = runpy.run_path(str(ROOT / 'image/fixed_vm_receive.py'))['process']
+        nonce = 'a' * 32
+        boot_id = '3d6aa964-65a7-4c14-9444-70ecc42b55f8'
+        forward = {'pid': 42, 'starttime': 100, 'port': 34765}
+        host_counts = {'accepted': 0, 'matched': 0}
+
+        def execute(*argv, timeout):
+            operation, run_nonce, phase = argv[-3:]
+            self.assertIn(operation, ('start', 'end', 'report'))
+            record = process(operation, run_nonce, phase, None)
+            return SimpleNamespace(returncode=0, stdout=json.dumps(record) + '\n')
+
+        def run_phase(phase):
+            if phase != 'deny_other':
+                argv = receiver_argv(run_nonce=nonce, phase=phase, operation='request')
+                process(*argv[-4:])
+            if phase in ('control_before', 'control_after'):
+                host_counts['accepted'] += 1
+                host_counts['matched'] += 1
+            return phase_transport(phase)
+
+        with TemporaryDirectory() as directory, patch('pathlib.Path.read_text', return_value=boot_id):
+            process.__globals__['RECORD_DIR'] = Path(directory)
+            result = collect_trial(
+                execute, lambda: (forward, b'a' * 32), lambda: host_counts,
+                run_phase, run_nonce=nonce, boot_id=boot_id,
+            )
+
+        self.assertEqual([row['delta']['received'] for row in result['guest']['phases']], [1, 1, 0, 1])
+        self.assertEqual([row['delta']['accepted'] for row in result['host_phases']], [1, 0, 0, 1])
+        self.assertEqual(result['phase_transport']['deny_other'], phase_transport('deny_other'))
 
     def test_trial_rejects_forward_change_during_final_report(self):
         nonce = 'b' * 32
