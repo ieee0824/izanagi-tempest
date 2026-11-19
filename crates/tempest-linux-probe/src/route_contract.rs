@@ -61,7 +61,28 @@ impl FixedMcpArtifact {
         let [stdin, stdout, stderr] = stdio;
         // SAFETY: clone_isolated created the required namespaces and only the
         // supervisor can open the gate after registering and attaching us.
-        unsafe { self.exec_mcp(root, stdin, stdout, stderr) }
+        unsafe { self.exec_mcp(&parent, root, stdin, stdout, stderr) }
+    }
+
+    /// Track and attach the original child before releasing its bootstrap.
+    /// The supervisor still owns direct-child reaping on every error path.
+    pub(super) fn attach_and_start(
+        group: &super::cgroup::Group,
+        registry: &mut super::registry::Registry,
+        role: super::contract::Role,
+        process: &super::identity::Process,
+        gate: OwnedFd,
+    ) -> Result<super::registry::RecordId, super::os::Fault> {
+        use std::io::Write;
+
+        let record = registry.track(role, process, true)?;
+        group.attach(role, process.pid)?;
+        registry.attached(record)?;
+        if !process.alive()? || !group.bound(role, process.pid)? {
+            return Err(super::os::Fault::Identity);
+        }
+        std::fs::File::from(gate).write_all(b"I")?;
+        Ok(record)
     }
 
     /// Execute the pinned ELF with the fixed MCP arguments and a minimal
@@ -75,6 +96,7 @@ impl FixedMcpArtifact {
     /// This function consumes the child's inherited descriptor table.
     unsafe fn exec_mcp(
         &self,
+        parent: &super::identity::Process,
         root: &std::path::Path,
         stdin: BorrowedFd<'_>,
         stdout: BorrowedFd<'_>,
@@ -87,7 +109,7 @@ impl FixedMcpArtifact {
             capsule::prepare_mcp_root(root, &self.libraries)?;
             capsule::drop_privileges(MCP_UID)
         };
-        if setup().is_err() {
+        if setup().is_err() || !parent.alive().unwrap_or(false) {
             unsafe { libc::_exit(125) };
         }
         let mappings = [
