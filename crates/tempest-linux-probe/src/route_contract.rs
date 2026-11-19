@@ -37,6 +37,31 @@ impl FixedMcpArtifact {
     }
 }
 
+/// Verify the loader and recursively required libraries for the fixed ELF.
+pub(super) fn fixed_mcp_libraries() -> Result<Vec<super::os::Snapshot>, super::os::Fault> {
+    use super::os::{Fault, Snapshot};
+    use std::path::Path;
+
+    // This order matches capsule::LIBRARIES and its capsule destinations.
+    let expected = [
+        "d93224d2b0dab4247598be683adca02f5cf00586f99c187579cd7e92058fb7cb",
+        "5dcc4d25466e29ca390ed6fabb371c69b65dff6fa4e91c34561057a020d6994a",
+        "755a371e86cc9f564ab54f66140747700fb0a103f698f659f2060f707897e09a",
+        "5fc0940888e9d2e1a00e66d6b1a559c36364ee867683652e1074fa576952cc3f",
+    ];
+    super::capsule::LIBRARIES
+        .into_iter()
+        .zip(expected)
+        .map(|((source, _), sha256)| {
+            let snapshot = Snapshot::trusted(Path::new(source))?;
+            if snapshot.sha256 != sha256 {
+                return Err(Fault::Identity);
+            }
+            Ok(snapshot)
+        })
+        .collect()
+}
+
 /// A caller holds the original pidfd and keeps the worker frozen while
 /// observing both standard streams. Release also requires the group-level
 /// membership and pipe-holder checks.

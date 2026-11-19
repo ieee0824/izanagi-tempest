@@ -130,3 +130,10 @@ device/inode は、同じ sealed snapshot から取得する。レビュー対�
 `/usr/local/libexec/tempest/izanagi-mcp-fixture` を予定する。
 このパスは staging 先の契約であり、配置と loader/library closure の確認は
 実行前に行う。artifact 検査からプロセスを起動する入口はまだない。
+
+固定 ELF を起動せず `readelf -lW` と `readelf -dW` で確認した。
+PT_INTERP は `/lib64/ld-linux-x86-64.so.2`、DT_NEEDED は
+libgcc_s、libm、libc と同 loader の4件で、RPATH/RUNPATH は存在しない。
+4件の依存も同集合内に収まる。`fixed_mcp_libraries` は既存 capsule の
+配置表を再利用し、このホストで採取した各ファイルの SHA-256 に
+sealed snapshot を照合する。実 mount と loader の起動確認は後続とする。
