@@ -17,7 +17,8 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 | 異常時回収と再加入 | 実装・実測済（dummy限定） | `651fd36`のprimary faultと`37b1075`のsnapshot race。後者はルーム#16180、Issue comment 6903490736。probeの保守的残留後にfixture限定回収した結果であり、自動回復ではない |
 | 固定CLIのcredential保存先・必要access | 部分実測 | Claude Code 2.1.325の既存loginで非秘密auth statusとmetadata不変を確認（Issue comment 6877497099）。fresh専用configの保存挙動は未測定 |
 | 通常HOME・既存設定・既存MCPの非到達 | dummy checkpoint実測済・本番未達 | `71ab7a4`でsynthetic HOME 9分類の各run前後正読取、A/B/G負例とprivate HOME正例を実測。実HOME/Claude探索は未検証。[範囲とhash](LINUX_STATE_ISOLATION.md) |
-| owner-private configの生成、login、検査、run、cleanup | ログイン前のダミー設定検査済 | PR #81（`102a81c`）で所有者、ディレクトリ0700、ファイル0600、空の設定と負例を Linux で確認。専用設定の生成とログイン後の設定・保存・回収は未検証。fresh loginと本番callは段階承認#15836/#15839の範囲外 |
+| owner-private configの生成、login、検査、run、cleanup | ログイン前の生成・検査済 | PR #81（`102a81c`）で所有者、ディレクトリ0700、ファイル0600、空の設定と負例を Linux で確認。PR #83（`17f0655`）で空設定の生成と監査を追加し、独立 Linux worktree で回帰テスト2件に成功（cc-sakura 投稿 17347）。ログイン後の設定・保存・回収は未検証。fresh loginと本番callは段階承認#15836/#15839の範囲外 |
+| 専用 UID での固定 CLI の起動 | オフラインの版確認済 | 専用 Linux x86_64 で実効 UID/GID 999:988、バイナリ所有 root:988・0750、`--version` は `2.1.325 (Claude Code)`、終了コード0。SHA-256 は元実体と一致し実行前後で不変。空の設定の監査は前後で一致し、IPv4/IPv6 のソケット作成を拒否した。[Issue #36 の実測記録](https://github.com/ieee0824/izanagi-tempest/issues/36#issuecomment-7009980793) |
 | run間のstate独立性 | dummy checkpoint実測済・本番未達 | `c5e26e0`でdigest/mount再照合込み両run各21check true。最終独立driver `d598243`もcapture2/read18/各21check・guardian回収・ROOT/RUN不在を実測しルーム#16256へ報告。Claude session保存停止は未検証 |
 | subscription通信境界 | 未実装 | 法務制約によりOAuth tokenのTempest介在を禁止。Claude親direct egress allowlistとMCP子の外部network拒否を別に実装する。既存API-key/mock relayを根拠にしない |
 | direct profile・report schema | 純粋型・負例実装/レビュー済 | `b27e88d`で独立profile/report型・semantic validator・7test。request catalog/schema/header/count/retry/budget強制はUnobserved必須、既存relay契約へ変換不可。実artifact生成・正式比較受入は未完。[schema](DIRECT_PROFILE_SCHEMA.md) |
