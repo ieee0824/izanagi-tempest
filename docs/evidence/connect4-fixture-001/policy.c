@@ -1262,3 +1262,43 @@ int run_connect4_trial(const struct connect4_trial *trial,
     return measure_connect4_control(allowed_listener, allowed_port, denied_listener,
                                       denied_port, &phases[2]);
 }
+
+/* The same manager keeps the original trial and remains the sole reaper. */
+int retry_connect4_recovery(const struct connect4_trial *trial,
+                            struct connect4_pending_recovery *pending)
+{
+    if (pending->pid <= 0 || pending->pidfd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    switch (pending->phase) {
+    case CONNECT4_PIN_UNKNOWN:
+        errno = ESTALE;
+        return -1;
+    case CONNECT4_PIN_HELD:
+        if (recover_connect4_pin(trial->state_fd, trial->pin_path, pending->pidfd,
+                                 trial->cgroup_fd, trial->device, trial->cgroup_id,
+                                 trial->link_id, trial->program_id) < 0)
+            return -1;
+        pending->phase = CONNECT4_PIN_REMOVED;
+        break;
+    case CONNECT4_PIN_REMOVED:
+    case CONNECT4_PIN_ABSENT:
+        break;
+    default:
+        errno = EINVAL;
+        return -1;
+    }
+    if (confirm_worker_exit(pending->pidfd) < 0)
+        return -1;
+    siginfo_t status = {0};
+    if (waitid(P_PIDFD, (id_t)pending->pidfd, &status, WEXITED | WNOHANG) < 0)
+        return -1;
+    if (status.si_pid != pending->pid) {
+        errno = ESTALE;
+        return -1;
+    }
+    close(pending->pidfd);
+    *pending = (struct connect4_pending_recovery){-1, -1, CONNECT4_PIN_UNKNOWN};
+    return 0;
+}
