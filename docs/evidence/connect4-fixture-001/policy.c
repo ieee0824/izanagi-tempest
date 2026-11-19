@@ -3,11 +3,14 @@
 #include <arpa/inet.h>
 #include <linux/bpf.h>
 #include <linux/filter.h>
+#include <linux/magic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <sys/stat.h>
+#include <sys/vfs.h>
 #include <errno.h>
 
 enum { CONNECT4_INSTRUCTION_COUNT = 8 };
@@ -180,5 +183,29 @@ int read_connect4_program_id(int program_fd, uint32_t *program_id)
         return -1;
     }
     *program_id = info.id;
+    return 0;
+}
+
+/* On the fixed Linux/x86_64 host the cgroup v2 kernfs inode provides the
+ * cgroup ID. Keep the directory FD open and retain the device for recovery. */
+int read_connect4_cgroup_identity(int cgroup_fd, dev_t *device, uint64_t *id)
+{
+    if (cgroup_fd < 0 || device == NULL || id == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct stat metadata;
+    struct statfs filesystem;
+    if (fstat(cgroup_fd, &metadata) < 0 || fstatfs(cgroup_fd, &filesystem) < 0)
+        return -1;
+    if (!S_ISDIR(metadata.st_mode) ||
+        filesystem.f_type != CGROUP2_SUPER_MAGIC ||
+        metadata.st_uid != 0 || (metadata.st_mode & 0022) != 0 ||
+        metadata.st_ino == 0) {
+        errno = ESTALE;
+        return -1;
+    }
+    *device = metadata.st_dev;
+    *id = metadata.st_ino;
     return 0;
 }
