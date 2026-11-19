@@ -11,7 +11,13 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'integration'))
-from fixed_vm_receive_observe import PHASES, session_binding, validate_guest_export, validate_trial_counts
+from fixed_vm_receive_observe import (
+    PHASES,
+    TrialBoundaries,
+    session_binding,
+    validate_guest_export,
+    validate_trial_counts,
+)
 
 
 class FixedVmReceiveTests(unittest.TestCase):
@@ -92,3 +98,31 @@ class FixedVmReceiveTests(unittest.TestCase):
             path.symlink_to(moved)
             with self.assertRaises(OSError):
                 session_binding(workspace, home, **expected)
+
+    def test_trial_boundaries_require_one_identity_through_all_phases(self):
+        nonce = 'b' * 32
+        boot_id = '3d6aa964-65a7-4c14-9444-70ecc42b55f8'
+        forward = {'pid': 42, 'starttime': 100, 'port': 34765}
+        fingerprint = b'a' * 32
+        identity = dict(run_nonce=nonce, boot_id=boot_id, forward=forward,
+                        session_fingerprint=fingerprint)
+        trial = TrialBoundaries(**identity)
+        for phase in PHASES:
+            for edge in ('start', 'end'):
+                ack = {'run_nonce': nonce, 'boot_id': boot_id, 'phase': phase, 'operation': edge}
+                with self.assertRaisesRegex(ValueError, 'incomplete trial boundary'):
+                    trial.require_complete()
+                if (phase, edge) == ('deny_other', 'end'):
+                    changes = (
+                        {'guest_ack': ack | {'boot_id': 'c6ce3b14-fb73-46dc-8e4b-b10c673a19a4'}},
+                        {'forward': forward | {'pid': 43}},
+                        {'session_fingerprint': b'b' * 32},
+                    )
+                    observed = dict(guest_ack=ack, forward=forward, session_fingerprint=fingerprint)
+                    for change in changes:
+                        with self.subTest(change=change):
+                            with self.assertRaisesRegex(ValueError, 'identity changed'):
+                                trial.observe(phase, edge, **(observed | change))
+                trial.observe(phase, edge, guest_ack=ack, forward=forward,
+                              session_fingerprint=fingerprint)
+        trial.require_complete()
