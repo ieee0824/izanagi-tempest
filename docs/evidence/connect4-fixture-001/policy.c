@@ -131,3 +131,27 @@ int check_connect4_link(int fd, uint32_t link_id, uint32_t program_id,
     }
     return 0;
 }
+
+/* Recovery takes ownership of the returned FD only after matching the ledger.
+ * The private directory and serialization are the caller's responsibility. */
+int reopen_connect4_link(const char *path, uint32_t link_id,
+                         uint32_t program_id, uint64_t cgroup_id)
+{
+    if (path == NULL || *path != '/') {
+        errno = EINVAL;
+        return -1;
+    }
+    union bpf_attr attr = {
+        .pathname = (uintptr_t)path,
+    };
+    int fd = bpf_call(BPF_OBJ_GET, &attr);
+    if (fd < 0)
+        return -1;
+    if (check_connect4_link(fd, link_id, program_id, cgroup_id) == 0)
+        return fd;
+
+    int error = errno;
+    close(fd);
+    errno = error;
+    return -1;
+}
