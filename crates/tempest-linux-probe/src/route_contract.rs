@@ -33,23 +33,36 @@ impl FixedMcpArtifact {
     /// environment. No pathname is resolved for the executable itself.
     ///
     /// # Safety
-    /// The caller must be the fixture child, with the verified loader and
-    /// libraries installed and isolation active. Descriptor remapping
-    /// consumes the child's inherited FD table and must precede its exit.
+    /// The caller must be the dedicated, single-threaded fixture child,
+    /// already tracked by the supervisor and attached to its cgroup.
+    /// Its root directory must be freshly created for this trial.
+    /// This function consumes the child's inherited descriptor table.
     pub(super) unsafe fn exec_mcp(
         &self,
+        root: &std::path::Path,
         stdin: BorrowedFd<'_>,
         stdout: BorrowedFd<'_>,
         stderr: BorrowedFd<'_>,
     ) -> ! {
+        use super::{capsule, os};
+
         const EXEC_FD: libc::c_int = 6;
+        const MCP_UID: u32 = 62004;
+        let setup = || {
+            os::syscall(unsafe { libc::unshare(libc::CLONE_NEWNS | libc::CLONE_NEWNET) })?;
+            capsule::prepare_mcp_root(root, &self.libraries)?;
+            capsule::drop_privileges(MCP_UID)
+        };
+        if setup().is_err() {
+            unsafe { libc::_exit(125) };
+        }
         let mappings = [
             (stdin.as_raw_fd(), libc::STDIN_FILENO),
             (stdout.as_raw_fd(), libc::STDOUT_FILENO),
             (stderr.as_raw_fd(), libc::STDERR_FILENO),
             (self.executable.fd(), EXEC_FD),
         ];
-        if super::capsule::map_descriptors(&mappings, EXEC_FD).is_err() {
+        if capsule::map_descriptors(&mappings, EXEC_FD).is_err() {
             // The FD table may be partly remapped. Exit without unwinding.
             unsafe { libc::_exit(126) };
         }
@@ -57,7 +70,12 @@ impl FixedMcpArtifact {
             unsafe { libc::_exit(126) };
         }
         let argv = [c"/izanagi".as_ptr(), c"mcp".as_ptr(), std::ptr::null()];
-        let env = [c"LANG=C".as_ptr(), c"LC_ALL=C".as_ptr(), std::ptr::null()];
+        let env = [
+            c"LANG=C".as_ptr(),
+            c"LC_ALL=C".as_ptr(),
+            c"TOKIO_WORKER_THREADS=1".as_ptr(),
+            std::ptr::null(),
+        ];
         // SAFETY: The arrays are NUL terminated and EXEC_FD now names the snapshot.
         unsafe {
             libc::syscall(
@@ -70,10 +88,6 @@ impl FixedMcpArtifact {
             )
         };
         unsafe { libc::_exit(127) };
-    }
-
-    pub(super) fn prepare_root(&self, root: &std::path::Path) -> Result<(), super::os::Fault> {
-        super::capsule::prepare_mcp_root(root, &self.libraries)
     }
 
     pub(super) fn verify_stdio(

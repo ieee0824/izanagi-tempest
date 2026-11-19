@@ -274,7 +274,7 @@ fn enter_root(root: &Path) -> Result<(), Fault> {
     Ok(())
 }
 
-fn drop_privileges(uid: u32) -> Result<(), Fault> {
+pub(super) fn drop_privileges(uid: u32) -> Result<(), Fault> {
     for cap in 0..=40 {
         os::syscall(unsafe { libc::prctl(libc::PR_CAPBSET_DROP, cap, 0, 0, 0) })?;
     }
