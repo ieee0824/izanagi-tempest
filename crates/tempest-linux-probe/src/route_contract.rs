@@ -29,8 +29,28 @@ impl FixedMcpArtifact {
         })
     }
 
-    pub(super) fn executable_fd(&self) -> std::os::fd::RawFd {
-        self.executable.fd()
+    /// Execute the pinned ELF with the fixed MCP arguments and a minimal
+    /// environment. No pathname is resolved for the executable itself.
+    ///
+    /// # Safety
+    /// The caller must be the fixture child, with the verified loader and
+    /// libraries installed, isolation active, and only the intended stdio
+    /// and close-on-exec bootstrap descriptors open.
+    pub(super) unsafe fn exec_mcp(&self) -> super::os::Fault {
+        let argv = [c"/izanagi".as_ptr(), c"mcp".as_ptr(), std::ptr::null()];
+        let env = [c"LANG=C".as_ptr(), c"LC_ALL=C".as_ptr(), std::ptr::null()];
+        // SAFETY: These arrays are NUL terminated and the snapshot owns the FD.
+        unsafe {
+            libc::syscall(
+                libc::SYS_execveat,
+                self.executable.fd(),
+                c"".as_ptr(),
+                argv.as_ptr(),
+                env.as_ptr(),
+                libc::AT_EMPTY_PATH,
+            )
+        };
+        std::io::Error::last_os_error().into()
     }
 
     pub(super) fn install_libraries(&self, root: &std::path::Path) -> Result<(), super::os::Fault> {
