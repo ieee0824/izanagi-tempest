@@ -1058,17 +1058,9 @@ static int map_worker_pipes(const int *inherited, size_t count)
     return 0;
 }
 
-/* Run only in the dedicated fork child, before the manager takes the lease.
- * On failure the child caller must exit without proceeding to the gate. */
-int prepare_connect4_worker(int gate_read_fd, int ready_write_fd)
+/* Apply the same fixed privilege drop to probe and relay children. */
+static int drop_connect4_worker_privileges(void)
 {
-    if (gate_read_fd != 3 || ready_write_fd != 4) {
-        errno = EINVAL;
-        return -1;
-    }
-    if (syscall(SYS_close_range, 0U, 2U, 0U) < 0 ||
-        syscall(SYS_close_range, 5U, ~0U, 0U) < 0)
-        return -1;
     for (unsigned cap = 0; cap <= CAP_LAST_CAP; ++cap) {
         if (prctl(PR_CAPBSET_DROP, (unsigned long)cap, 0UL, 0UL, 0UL) < 0)
             return -1;
@@ -1084,6 +1076,20 @@ int prepare_connect4_worker(int gate_read_fd, int ready_write_fd)
         prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0)
         return -1;
     return 0;
+}
+
+/* Run only in the dedicated fork child, before the manager takes the lease.
+ * On failure the child caller must exit without proceeding to the gate. */
+int prepare_connect4_worker(int gate_read_fd, int ready_write_fd)
+{
+    if (gate_read_fd != 3 || ready_write_fd != 4) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (syscall(SYS_close_range, 0U, 2U, 0U) < 0 ||
+        syscall(SYS_close_range, 5U, ~0U, 0U) < 0)
+        return -1;
+    return drop_connect4_worker_privileges();
 }
 
 #define GUARD_SYSCALL(number) \
