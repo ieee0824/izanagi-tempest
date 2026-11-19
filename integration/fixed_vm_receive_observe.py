@@ -93,10 +93,9 @@ def validate_guest_export(raw, *, run_nonce, boot_id):
     return report
 
 
-def observe_guest(execute, *, run_nonce, boot_id, phase, operation):
-    """Invoke the fixed receiver through the harness's private session executor."""
-    if re.fullmatch(r'[0-9a-f]{32}', run_nonce) is None or str(uuid.UUID(boot_id)) != boot_id:
-        raise ValueError('invalid expected guest binding')
+def receiver_argv(*, run_nonce, phase, operation):
+    if re.fullmatch(r'[0-9a-f]{32}', run_nonce) is None:
+        raise ValueError('invalid run nonce')
     if phase not in PHASES or operation not in ('start', 'request', 'end', 'report'):
         raise ValueError('invalid expected guest operation')
     if (operation == 'report' and phase != PHASES[-1]) or (operation == 'request' and phase == 'deny_other'):
@@ -105,6 +104,16 @@ def observe_guest(execute, *, run_nonce, boot_id, phase, operation):
             operation, run_nonce, phase]
     if operation == 'request':
         argv.append(f'tempest-dummy-v1:{run_nonce}:{phase}')
+    return argv
+
+
+def observe_guest(execute, *, run_nonce, boot_id, phase, operation):
+    """Invoke a boundary or report through the private management session."""
+    if str(uuid.UUID(boot_id)) != boot_id:
+        raise ValueError('invalid expected guest binding')
+    if operation == 'request':
+        raise ValueError('request requires the trial connection')
+    argv = receiver_argv(run_nonce=run_nonce, phase=phase, operation=operation)
     result = execute(*argv, timeout=10)
     if result.returncode != 0:
         raise RuntimeError('fixed guest receiver failed')
