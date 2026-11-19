@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <sys/vfs.h>
 #include <errno.h>
+#include <fcntl.h>
 
 enum { CONNECT4_INSTRUCTION_COUNT = 8 };
 
@@ -207,5 +208,53 @@ int read_connect4_cgroup_identity(int cgroup_fd, dev_t *device, uint64_t *id)
     }
     *device = metadata.st_dev;
     *id = metadata.st_ino;
+    return 0;
+}
+
+/* The recovery caller holds the lease preventing further worker admission. */
+int check_connect4_cgroup_empty(int cgroup_fd, dev_t device, uint64_t id)
+{
+    dev_t current_device;
+    uint64_t current_id;
+    if (read_connect4_cgroup_identity(cgroup_fd, &current_device, &current_id) < 0)
+        return -1;
+    if (current_device != device || current_id != id) {
+        errno = ESTALE;
+        return -1;
+    }
+    int events = openat(cgroup_fd, "cgroup.events", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (events < 0)
+        return -1;
+
+    char data[256];
+    ssize_t count = read(events, data, sizeof(data));
+    int error = errno;
+    close(events);
+    if (count < 0) {
+        errno = error;
+        return -1;
+    }
+    if (count == 0 || count == sizeof(data) || data[count - 1] != '\n') {
+        errno = EPROTO;
+        return -1;
+    }
+
+    int populated = -1;
+    for (const char *line = data; line < data + count;) {
+        const char *end = memchr(line, '\n', (size_t)(data + count - line));
+        if (end - line >= 10 && memcmp(line, "populated ", 10) == 0) {
+            if (populated != -1 || end - line != 11 ||
+                (line[10] != '0' && line[10] != '1')) {
+                errno = EPROTO;
+                return -1;
+            }
+            populated = line[10] - '0';
+        }
+        line = end + 1;
+    }
+    if (populated != 0) {
+        errno = populated < 0 ? EPROTO : EBUSY;
+        return -1;
+    }
     return 0;
 }
