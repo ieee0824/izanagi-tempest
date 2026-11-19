@@ -200,3 +200,27 @@ sudo -n sh -c 'umask 077 && exec "$1" linux-isolation-probe --fixed-mcp-stdio-fi
 MCP 子の root 準備失敗は 120、権限降格は 121、seccomp は 122、
 親不在または bootstrap gate 失敗は 125、FD 再配置は 126、
 execveat が戻った場合は 127 として区別する。
+
+#### 固定ホストの診断と正例結果
+
+各行は同じ固定ホストと親 umask 077 で、Izanagi と loader/library の
+SHA-256 を照合して1回実行した別個の試験である。
+
+| CLI source | CLI SHA-256 | 結果 |
+| --- | --- | --- |
+| `f25f5ff` | `794967a7f70afc8adc4c3e1d3ab91ef584ac9df36ff8ee8ceb7843bc1cc8a153` | exit 1、元 pidfd の非消費観測で MCP 子 exit 101、凍結前に停止（room #17128） |
+| `8999732` | `dd9029327d1be3ae00466b63c32b1b32d6a5c6c75e299aa6389c430e106dcc9f` | exit 1、Tokio signal 初期化の UnixStream pair が EPERM（#17131） |
+| `caf2c68` | `366184e72d555cb974df5aec3c84f0d250b2ddc7dc35b8accf49995ee83955b6` | exit 1、起動・凍結照合・解凍・解放を通過し、終了判定で失敗（#17136） |
+| `3c579fd` | `e9b1c964095ecfa97d4754cc26f76f21df57454c188f052bfb8ac8b24fac52a5` | exit 1、B は解放ゲートの処理で exit 125、MCP は stdin EOF で exit 0（#17140） |
+| `0a56b2c` | `b973a97fbfa3775503778341a46c708a562e491f992de2bc18c28ce4b6c6e9ba` | exit 1、B は最初のゲート読み取り経路で EPERM を受け exit 142、MCP exit 0（#17145） |
+| `406a291` | `9c64841cacf91ae1e6fc9678b373e542410c6dcf4bf13972d0a90e3972b05735` | exit 1、B の最初の待機 `poll` が EPERM で exit 144、MCP exit 0（#17149） |
+| `1c05b83` | `c093ef66154270364c64b12bfb003bcee5d8297768261ee455e7347fd0a0edb5` | exit 0、`passed=true`、両子の wait status 0（#17155） |
+
+成功例では固定 `initialize` と `tools/list` の応答を照合し、stdout EOF
+と両子の回収を確認した。JSON の回収・root 削除の理由は null、事後の
+専用 run ディレクトリ、cgroup、UID 62002/62004 のプロセスは不在。
+通常回収済みの子は registry から削除されるため、異常回収用のカウンタは0だった。
+`ppoll` へ変更した試験は成功した。以前の EPERM のカーネル内部原因は未測定。
+この試験は `production_authorized=false` の固定ローカル stdio であり、
+VM agent 接続と凍結中の照合失敗を扱う実機負例は未検証である。
+EOF と wait status から両子の終了順序は判定しない。
