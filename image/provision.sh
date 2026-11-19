@@ -29,6 +29,13 @@ config={'state_dir':'/run/tempest-control','data_dir':'/var/lib/lws','evidence_d
         'capture_interface':'lo','service_uid':uid,'service_gid':gid,'development':False,'timeout_seconds':30}
 p=Path('/etc/tempest/guest.json');p.write_text(json.dumps(config,indent=2)+'\n');p.chmod(0o644)
 metadata=json.loads(Path(sys.argv[1]).read_text())
+if metadata.get('fixed_vm_receiver_fixture') is True:
+    from pwd import getpwnam
+    receiver = getpwnam('izanagi')
+    path=Path('/etc/tmpfiles.d/tempest-fixed-vm-receiver.conf')
+    with path.open('x') as stream:
+        stream.write(f'd /run/tempest-fixed-vm-receiver 0700 {receiver.pw_uid} {receiver.pw_gid} -\n')
+    path.chmod(0o644)
 metadata['service_uid']=uid;metadata['service_gid']=gid
 metadata['packages']={name:subprocess.check_output(['dpkg-query','-W','-f=${Version}',name],text=True).strip()
                       for name in ['awscli','tcpdump','iptables','opendoas','python3','python3-cryptography']}

@@ -319,3 +319,9 @@ private export のゲスト記録は、少なくとも schema version、run nonc
 1/1、1/1、0/0、1/1（受理/照合）。ホストの拒否側 listener で期待する
 差分は 1/1、0/0、0/0、1/1。認証制御が同じホスト転送を通るため、
 その listener の総接続数は補助観測とし、試験要求の計数と混同しない。
+
+固定試験用イメージは通常の `image/prepare.py` の引数に
+`--fixed-vm-receiver-fixture` を追加して生成する。ゲストの起動時に
+systemd-tmpfiles が `/run/tempest-fixed-vm-receiver` を izanagi の実 UID/GID
+と mode 0700 で作成する。新規 VM の初回試験でのみ使い、最初の区間を
+開始する前に記録が存在しないことを確認する。
