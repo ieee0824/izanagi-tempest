@@ -325,3 +325,23 @@ private export のゲスト記録は、少なくとも schema version、run nonc
 systemd-tmpfiles が `/run/tempest-fixed-vm-receiver` を izanagi の実 UID/GID
 と mode 0700 で作成する。新規 VM の初回試験でのみ使い、最初の区間を
 開始する前に記録が存在しないことを確認する。
+
+#### 専用イメージ定義002の guest 出自照合
+
+#73 の対応として `21feae9487891e3f9dafa4a35390d1cc4bfecb98` の clean detached
+worktree で `cargo build --offline --release --locked --target x86_64-unknown-linux-gnu --jobs 2 -p tempest-guest`
+を新規 target directory に実行した。little-endian ELF64 machine=62 を確認し、
+同じ worktree の `prepare.py --architecture x86_64 --fixed-vm-receiver-fixture` で
+`/tmp/tempest-fixed-vm-receiver-definition-002` を生成した。
+
+| 照合対象 | 値 |
+|---|---|
+| 生成 ELF の実 SHA-256 と両 JSON の `input_sha256.guest` | `3bc9fd0a15aa2f1e0e14f8a33731d0051242ae48ca991e937ad8506ae30d4284` |
+| checkout と両 JSON の guest source commit | `21feae9487891e3f9dafa4a35390d1cc4bfecb98` |
+| 再計算と両 JSON の guest source tree SHA-256 | `f7594342148f16fe9778db62c76f309db6a67672f5163d9534cf8bda225e0fdd` |
+| `inputs.json` の実 SHA-256 | `0e75f885f5b3b7a300a9128f3041d6fd583b43b2933cee92fa2cd634fe80867c` |
+| `packer/image.json` の実 SHA-256 | `540183a6d1d72c4b8c79fd1addea164541b2d8a338052043b310ea24b2d1b213` |
+
+両 JSON で source dirty は false、専用フラグは true。ISO と guest 以外の
+入力 SHA は定義001と一致。これは定義と guest ELF の照合結果であり、
+#74 の容量確認中は Packer build と VM 起動を保留する。
