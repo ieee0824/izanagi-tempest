@@ -37,3 +37,23 @@ snapshot容量は旧large001と同じcopy前10GiB/後8GiBを仮条件とし、im
 - management_stoppedを含むcleanup receiptと実UID/cgroup/port回収を別記する。falseを実資源回収からtrueへ読み替えない。inventory complete/key不在、旧証拠のcontent/owner-mode、hardlink追補で許可された物理identity例外を確認する。
 
 この草案時点では新image SHA未確定、new snapshot/observer/runtime VM/collector実行はすべて未開始。image build後のoffline照合結果と本案sourceをレビューしてから進む。
+
+## image監査後の具体source（まだ未実行）
+
+room16895で新imageとoffline結果の監査を受け、実image SHAを `b46a44433488b067db24940e4a7231604628f35403517856a3c84f01939c65df` に固定した。前段の「未確定」は草案時点の履歴である。
+
+[prepare](evidence/capture-large-001/prepare_snapshot.py)は新host002-v2、新capture image/build/offline/native、新guestbuild、旧失敗RESULT、hardlink追補を入力へcopyする。旧RAW削除例外は旧delivery-race-build001の正確pathのまま保持する。旧証拠・seed-loss全treeは従来verifier prefixで検査し、hardlink8pathの許可済みinode/nlink8も確認。image10GiB/8GiB条件はfresh測定する。
+
+[専用observer](../integration/capture_large_observe.py)は元runtime validatorの専用コピーで、新 `capture-large` profileだけが新root/unit/1stageを指す。既存runtime observerは変更していない。元14テストを新moduleへ適用して全成功し、新profileのstage pathも確認した。
+
+```sh
+sudo -n /usr/bin/python3 -I -B docs/evidence/capture-large-001/prepare_snapshot.py
+sudo -n /usr/sbin/runuser -u tempest-kvm -- /usr/bin/python3 -I -B - < docs/evidence/capture-large-001/check_preparation.py
+# snapshot/UID結果と直前検査の監査後だけ、以下を実行する。
+sudo -n /usr/bin/python3 -I -B /var/lib/tempest-izanagi-capture-large-001/inputs/repo/integration/capture_large_observe.py --trial capture-large --output /tmp/tempest-capture-large-observation-001.jsonl
+python3 -I -B docs/evidence/capture-large-001/run_once.py
+```
+
+[UID検査](evidence/capture-large-001/check_preparation.py)は全hash/owner-mode/read可write不可/Python crypto AES/runtime help/xattr/offline native binding/newhost SHAを確認する。[collector](evidence/capture-large-001/collect_result.py)は保存証拠だけを読み、実測Invocation・caller/observer handleと終了コードを引数で受ける。completed未達時には成功投影を保存せず、元runを失敗証拠として保持する。observer0の同Invocation終端とobserver1のGC欠測を区別する。3receipt/実PCAP読取、2CPU4G/29curl/1MiB/1call/無retest、manifest drop0と16384KiB要求、intent/transitionとexport回復、cleanup receiptと実資源回収、trusted journalを照合する。
+
+source集合と実SHAは [source catalog](LINUX_X86_CAPTURE_LARGE_SOURCE_001.json) に固定した。各sourceはPython構文確認済みだが、snapshot/UID検査/collectorの本番実行は未実施。review後にsnapshot準備のみへ進む。
