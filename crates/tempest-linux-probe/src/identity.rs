@@ -39,7 +39,7 @@ impl Descriptor {
         })
     }
 
-    fn matches(&self, pid: u32, fd: i32) -> Result<bool, Fault> {
+    pub(super) fn matches(&self, pid: u32, fd: i32) -> Result<bool, Fault> {
         let metadata = fs::metadata(format!("/proc/{pid}/fd/{fd}"))?;
         let info = fs::read_to_string(format!("/proc/{pid}/fdinfo/{fd}"))?;
         let flags = info

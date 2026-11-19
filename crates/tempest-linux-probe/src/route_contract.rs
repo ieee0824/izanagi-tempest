@@ -20,6 +20,28 @@ pub(super) fn fixed_mcp_snapshot() -> Result<super::os::Snapshot, super::os::Fau
     Ok(snapshot)
 }
 
+/// A caller holds the original pidfd and keeps the worker frozen while
+/// observing both standard streams. Release also requires the group-level
+/// membership and pipe-holder checks.
+pub(super) fn verify_mcp_stdio(
+    child: &super::identity::Process,
+    executable: (u64, u64),
+    stdin: &super::identity::Descriptor,
+    stdout: &super::identity::Descriptor,
+) -> Result<(), super::os::Fault> {
+    use super::os::Fault;
+
+    let identity = child.identity()?;
+    if identity.code != executable
+        || !stdin.matches(child.pid, libc::STDIN_FILENO)?
+        || !stdout.matches(child.pid, libc::STDOUT_FILENO)?
+        || child.identity()? != identity
+    {
+        return Err(Fault::Identity);
+    }
+    Ok(())
+}
+
 struct UniqueValue(serde_json::Value);
 
 impl<'de> serde::Deserialize<'de> for UniqueValue {
@@ -574,6 +596,39 @@ mod tests {
             Err(Rejection::OsIsolationUnavailable)
         );
     }
+    #[test]
+    fn stdio_observation_checks_exec_and_pipe_direction() {
+        use crate::identity::{Descriptor, Process};
+        use std::os::unix::fs::MetadataExt;
+        use std::process::{Command, Stdio};
+
+        let (request_read, request_write) = crate::os::pipe().unwrap();
+        let (response_read, response_write) = crate::os::pipe().unwrap();
+        let stdin = Descriptor::bind(request_read.as_raw_fd()).unwrap();
+        let stdout = Descriptor::bind(response_write.as_raw_fd()).unwrap();
+        let wrong_stdin = Descriptor::bind(request_write.as_raw_fd()).unwrap();
+        let code = std::fs::metadata("/bin/cat").unwrap();
+        let mut child = Command::new("/bin/cat")
+            .env_clear()
+            .stdin(Stdio::from(request_read))
+            .stdout(Stdio::from(response_write))
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let observed = (|| {
+            let process = Process::bind(child.id())?;
+            let executable = (code.dev(), code.ino());
+            Ok::<_, crate::os::Fault>([
+                verify_mcp_stdio(&process, executable, &stdin, &stdout).is_ok(),
+                verify_mcp_stdio(&process, (0, 0), &stdin, &stdout).is_err(),
+                verify_mcp_stdio(&process, executable, &wrong_stdin, &stdout).is_err(),
+            ])
+        })();
+        drop((request_write, response_read));
+        assert!(child.wait().unwrap().success());
+        assert_eq!(observed.unwrap(), [true; 3]);
+    }
+
     #[test]
     fn path_only_alias_is_not_a_read_endpoint() {
         use std::os::unix::fs::OpenOptionsExt;
