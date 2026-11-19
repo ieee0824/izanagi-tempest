@@ -279,6 +279,82 @@ static void check_fixed_agent_exchange(int early_exec, int close_gate)
     close(output[0]);
 }
 
+static void check_adopted_relay(void)
+{
+    assert(prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0);
+    uint16_t port;
+    int listener = open_connect4_listener(&port);
+    int channel[2], gate[2], ready[2], input[2], output[2], connect_status[2];
+    assert(listener >= 0);
+    assert(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, channel) == 0);
+    assert(pipe2(gate, O_CLOEXEC) == 0);
+    assert(pipe2(ready, O_CLOEXEC) == 0);
+    assert(pipe2(input, O_CLOEXEC | O_NONBLOCK) == 0);
+    assert(pipe2(output, O_CLOEXEC | O_NONBLOCK) == 0);
+    assert(pipe2(connect_status, O_CLOEXEC | O_NONBLOCK) == 0);
+    int64_t now = monotonic_ns();
+    assert(now >= 0);
+    int64_t deadline = now + 3000000000;
+    pid_t supervisor = fork();
+    assert(supervisor >= 0);
+    if (supervisor == 0) {
+        close(channel[0]);
+        pid_t worker = fork();
+        if (worker == 0) {
+            const int inherited[] = {gate[0], ready[1], input[0], output[1], connect_status[1]};
+            if (map_worker_pipes(inherited, 5) < 0 ||
+                prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0)
+                _exit(9);
+            _exit(run_fixed_relay_worker(port, deadline));
+        }
+        close(ready[1]);
+        int worker_fd = retain_connect4_worker(worker);
+        if (worker_fd < 0 || confirm_connect4_ready(ready[0]) < 0 ||
+            handoff_connect4_worker_fd(channel[1], worker, worker_fd) < 0 ||
+            write(gate[1], "R", 1) != 1)
+            _exit(10);
+        pause();
+        _exit(11);
+    }
+
+    close(channel[1]);
+    close(gate[0]);
+    close(gate[1]);
+    close(ready[0]);
+    close(ready[1]);
+    close(input[0]);
+    close(output[1]);
+    close(connect_status[1]);
+
+    int supervisor_fd = retain_connect4_worker(supervisor);
+    assert(supervisor_fd >= 0);
+    struct pollfd handoff = {.fd = channel[0], .events = POLLIN};
+    assert(poll_before(&handoff, deadline) == 0);
+    pid_t worker;
+    int worker_fd = receive_connect4_worker_fd(channel[0], &worker);
+    assert(worker_fd >= 0 && send(channel[0], "A", 1, MSG_NOSIGNAL) == 1);
+    int connect_errno;
+    assert(read_before(connect_status[0], &connect_errno, sizeof(connect_errno), deadline) == 0);
+    assert(connect_errno == 0 && count_connect4_accepts(listener) == 1);
+
+    assert(syscall(SYS_pidfd_send_signal, supervisor_fd, SIGKILL, NULL, 0) == 0);
+    siginfo_t status = {0};
+    assert(waitid(P_PIDFD, supervisor_fd, &status, WEXITED | WNOWAIT) == 0);
+    assert(status.si_pid == supervisor && status.si_code == CLD_KILLED);
+    assert(stop_adopted_connect4_worker(supervisor_fd, worker, worker_fd) == 0);
+    assert(waitid(P_PIDFD, worker_fd, &status, WEXITED) == 0);
+    assert(status.si_pid == worker && status.si_code == CLD_KILLED && status.si_status == SIGKILL);
+    assert(waitid(P_PIDFD, supervisor_fd, &status, WEXITED) == 0);
+    close(worker_fd);
+    close(supervisor_fd);
+    close(channel[0]);
+    close(listener);
+    close(input[1]);
+    close(output[0]);
+    close(connect_status[0]);
+    puts("connected relay adopted and reaped after supervisor SIGKILL");
+}
+
 int main(void)
 {
     assert(empty_supplementary_groups("\t \n"));
@@ -292,6 +368,7 @@ int main(void)
     check_fixed_agent_exchange(0, 0);
     check_fixed_agent_exchange(1, 0);
     check_fixed_agent_exchange(0, 1);
+    check_adopted_relay();
     int gate[2];
     assert(pipe(gate) == 0);
     pid_t child = fork();
