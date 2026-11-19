@@ -42,8 +42,8 @@ pub(super) fn fixed_mcp_libraries() -> Result<Vec<super::os::Snapshot>, super::o
     use super::os::{Fault, Snapshot};
     use std::path::Path;
 
-    // This order matches capsule::LIBRARIES and its capsule destinations.
-    let expected = [
+    // Require a pinned hash for every capsule destination at compile time.
+    const EXPECTED: [&str; super::capsule::LIBRARIES.len()] = [
         "d93224d2b0dab4247598be683adca02f5cf00586f99c187579cd7e92058fb7cb",
         "5dcc4d25466e29ca390ed6fabb371c69b65dff6fa4e91c34561057a020d6994a",
         "755a371e86cc9f564ab54f66140747700fb0a103f698f659f2060f707897e09a",
@@ -51,7 +51,7 @@ pub(super) fn fixed_mcp_libraries() -> Result<Vec<super::os::Snapshot>, super::o
     ];
     super::capsule::LIBRARIES
         .into_iter()
-        .zip(expected)
+        .zip(EXPECTED)
         .map(|((source, _), sha256)| {
             let snapshot = Snapshot::trusted(Path::new(source))?;
             if snapshot.sha256 != sha256 {
