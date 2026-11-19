@@ -1406,15 +1406,20 @@ fn handoff_selftest(guard: &super::guard::Guard) -> Result<super::watchdog::Stat
 }
 
 pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
+    use super::route_contract::{StdioTrial, fixed_stdio_trial};
+
     if args.len() == 1 && args[0] == "--fixed-mcp-stdio-fixture" {
-        return super::route_contract::fixed_stdio_trial(false);
+        return fixed_stdio_trial(StdioTrial::Exchange);
     }
     if args.len() == 1 && args[0] == "--fixed-mcp-stdio-reject-pipe-fixture" {
-        return super::route_contract::fixed_stdio_trial(true);
+        return fixed_stdio_trial(StdioTrial::CloseGate);
+    }
+    if args.len() == 1 && args[0] == "--fixed-mcp-stdio-kill-on-mismatch-fixture" {
+        return fixed_stdio_trial(StdioTrial::KillOnMismatch);
     }
     if args == [std::ffi::OsString::from("--help")] {
         println!(
-            "Usage: tempest linux-isolation-probe [--fixed-mcp-stdio-fixture | --fixed-mcp-stdio-reject-pipe-fixture] (fixed dummy-only root probes)"
+            "Usage: tempest linux-isolation-probe [--fixed-mcp-stdio-fixture | --fixed-mcp-stdio-reject-pipe-fixture | --fixed-mcp-stdio-kill-on-mismatch-fixture] (fixed dummy-only root probes)"
         );
         return std::process::ExitCode::SUCCESS;
     }

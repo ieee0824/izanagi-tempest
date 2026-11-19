@@ -200,7 +200,7 @@ impl FixedMcpArtifact {
         workers: [(super::contract::Role, &super::identity::Process); 2],
         ends: [(&super::identity::Descriptor, u32); 2],
         deadline: Instant,
-        duplicate_request_fd: Option<u32>,
+        rejection: (Option<u32>, StdioTrial, &mut bool),
     ) -> Result<(), super::os::Fault> {
         use super::{
             contract::Role,
@@ -208,6 +208,7 @@ impl FixedMcpArtifact {
             os::Fault,
         };
 
+        let (duplicate_request_fd, case, caller_pipe_mismatch) = rejection;
         let [(role, caller), (_, mcp)] = workers;
         if role != Role::B {
             return Err(Fault::Identity);
@@ -251,6 +252,12 @@ impl FixedMcpArtifact {
                             ..expected[0]
                         });
                         expected.sort_unstable_by_key(|row| row.fd);
+                        if observed == expected {
+                            *caller_pipe_mismatch = true;
+                            if case == StdioTrial::KillOnMismatch {
+                                return Err(Fault::Identity);
+                            }
+                        }
                     }
                     if observed != expected {
                         return Err(Fault::Identity);
@@ -313,6 +320,13 @@ impl FixedMcpArtifact {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum StdioTrial {
+    Exchange,
+    CloseGate,
+    KillOnMismatch,
+}
+
 #[derive(Default)]
 struct ExchangeDiagnostics {
     mcp_stderr: Option<String>,
@@ -323,7 +337,7 @@ struct ExchangeDiagnostics {
 }
 
 /// Explicit fixed-host investigation entry, limited to the local handshake.
-pub(super) fn fixed_stdio_trial(reject_pipe: bool) -> std::process::ExitCode {
+pub(super) fn fixed_stdio_trial(case: StdioTrial) -> std::process::ExitCode {
     use super::{cgroup::Group, contract::Role, guard::Guard, os, os::Fault, registry::Registry};
     use std::{fs, path::Path, process::ExitCode};
 
@@ -368,7 +382,7 @@ pub(super) fn fixed_stdio_trial(reject_pipe: bool) -> std::process::ExitCode {
                 &mut registry,
                 [&roots[0], &roots[1]],
                 Instant::now() + Duration::from_secs(10),
-                (&mut phase, &mut diagnostics, reject_pipe),
+                (&mut phase, &mut diagnostics, case),
             );
             if let Err(Fault::UntrackedChildCleanup(errno)) = result {
                 untracked_errno = Some(errno);
@@ -398,14 +412,31 @@ pub(super) fn fixed_stdio_trial(reject_pipe: bool) -> std::process::ExitCode {
         exchange
     })();
     let reason = result.as_ref().err().map(Fault::reason);
-    let passed = result.is_ok()
-        && (!reject_pipe || (diagnostics.caller_pipe_mismatch && !diagnostics.caller_released));
+    let passed = match case {
+        StdioTrial::Exchange => result.is_ok(),
+        StdioTrial::CloseGate => {
+            result.is_ok() && diagnostics.caller_pipe_mismatch && !diagnostics.caller_released
+        }
+        StdioTrial::KillOnMismatch => {
+            reason == Some("identity")
+                && phase == "mcp_frozen_inspection"
+                && diagnostics.caller_pipe_mismatch
+                && !diagnostics.caller_released
+                && counts.direct == 2
+                && counts.dead_pidfds == 2
+                && counts.reaped == 2
+                && counts.reap_unconfirmed == 0
+                && recovery_reason.is_none()
+                && root_cleanup_reason.is_none()
+        }
+    };
     println!(
         "{}",
         serde_json::json!({
             "scope": "fixed_mcp_stdio_fixture",
             "passed": passed,
-            "negative_pipe_fixture": reject_pipe,
+            "negative_pipe_fixture": case != StdioTrial::Exchange,
+            "kill_on_mismatch_fixture": case == StdioTrial::KillOnMismatch,
             "caller_released": diagnostics.caller_released,
             "caller_pipe_mismatch": diagnostics.caller_pipe_mismatch,
             "production_authorized": false,
@@ -440,12 +471,13 @@ fn run_fixed_exchange(
     registry: &mut super::registry::Registry,
     roots: [&std::path::Path; 2],
     deadline: Instant,
-    diagnostics: (&mut &'static str, &mut ExchangeDiagnostics, bool),
+    diagnostics: (&mut &'static str, &mut ExchangeDiagnostics, StdioTrial),
 ) -> Result<(), super::os::Fault> {
     use super::{contract::Role, identity::Descriptor, os};
     use std::os::fd::AsFd;
 
-    let (phase, diagnostics, reject_pipe) = diagnostics;
+    let (phase, diagnostics, case) = diagnostics;
+    let reject_pipe = case != StdioTrial::Exchange;
     *phase = "pipes";
     let [caller_root, mcp_root] = roots;
     let (request_read, request_write) = os::pipe()?;
@@ -504,10 +536,9 @@ fn run_fixed_exchange(
         [(Role::B, &caller), (Role::A, &mcp)],
         [(&stdin, caller_ends[0]), (&stdout, caller_ends[1])],
         deadline,
-        extra_fd,
+        (extra_fd, case, &mut diagnostics.caller_pipe_mismatch),
     )?;
     if reject_pipe {
-        diagnostics.caller_pipe_mismatch = true;
         *phase = "caller_reject";
         // The exact extra holder was observed while frozen. Never send R.
         drop(release);
