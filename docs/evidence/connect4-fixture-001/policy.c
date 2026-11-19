@@ -1043,7 +1043,8 @@ int await_connect4_release(int gate_fd)
 }
 
 /* Used only immediately after fork. Any failure requires child exit. */
-static int map_worker_pipes(const int *inherited, size_t count)
+static int map_fixed_pipes(const int *inherited, size_t count,
+                           int preserve_stdio, int descriptor_flags)
 {
     enum { FIRST_FD = 3, MAX_PIPES = 5 };
     int temporary[MAX_PIPES];
@@ -1058,13 +1059,18 @@ static int map_worker_pipes(const int *inherited, size_t count)
             return -1;
     }
     for (size_t i = 0; i < count; ++i) {
-        if (dup3(temporary[i], FIRST_FD + (int)i, O_CLOEXEC) < 0)
+        if (dup3(temporary[i], FIRST_FD + (int)i, descriptor_flags) < 0)
             return -1;
     }
-    if (syscall(SYS_close_range, 0U, FIRST_FD - 1U, 0U) < 0 ||
+    if ((!preserve_stdio && syscall(SYS_close_range, 0U, FIRST_FD - 1U, 0U) < 0) ||
         syscall(SYS_close_range, first_unused, ~0U, 0U) < 0)
         return -1;
     return 0;
+}
+
+static int map_worker_pipes(const int *inherited, size_t count)
+{
+    return map_fixed_pipes(inherited, count, 0, O_CLOEXEC);
 }
 
 /* Apply the same fixed privilege drop to probe and relay children. */
@@ -1573,6 +1579,14 @@ struct fixed_relay_pipes {
     int response;
     int status;
 };
+
+/* Call in the trusted client child immediately before exec. Stdio belongs
+ * to the harness; only its two data pipes pass through as extra descriptors. */
+int map_fixed_relay_client_pipes(const struct fixed_relay_pipes *relay)
+{
+    const int inherited[] = {relay->request, relay->response};
+    return map_fixed_pipes(inherited, sizeof(inherited) / sizeof(inherited[0]), 1, 0);
+}
 
 enum { FIXED_RELAY_PIPE_COUNT = 4 };
 
