@@ -183,9 +183,115 @@ static int execute_relay_denial(const struct connect4_trial *trial, int controll
         alternate_accepts == 0 && agent_accepts == 0 ? 0 : 1;
 }
 
+struct vm_relay_trial {
+    uint16_t port;
+    int alternate;
+    struct fixed_relay_client client;
+};
+
+static int report_vm_relay(const struct fixed_relay_result *result, int denied)
+{
+    fprintf(stderr, "fixed_relay connect_errno=%d relay_exit=%d\n",
+            result->connect_errno, result->relay_exit);
+    return result->connect_errno == (denied ? EPERM : 0) &&
+        result->relay_exit == denied ? 0 : 1;
+}
+
+static int execute_vm_relay(const struct connect4_trial *trial, int controller,
+                            int channel, atomic_int *known_worker,
+                            atomic_int *release_seen, void *context)
+{
+    (void)release_seen;
+    struct vm_relay_trial *vm = context;
+    int64_t now = monotonic_ns();
+    if (now < 0)
+        return 1;
+    struct fixed_relay_result observed;
+    struct connect4_pending_recovery pending;
+    int result = run_restricted_fixed_relay(trial, vm->port, vm->alternate,
+        controller, channel, known_worker, now + 12000000000LL,
+        vm->alternate ? NULL : exchange_fixed_relay_client, &vm->client, &observed, &pending);
+    int status = report_vm_relay(&observed, vm->alternate);
+    return pending.pidfd >= 0 ? 2 : result < 0 ? 1 : status;
+}
+
+static uint16_t parse_relay_port(const char *value)
+{
+    unsigned port = 0;
+    for (; *value; ++value) {
+        if (*value < '0' || *value > '9')
+            return 0;
+        port = port * 10 + (unsigned)(*value - '0');
+        if (port > UINT16_MAX)
+            return 0;
+    }
+    return (uint16_t)port;
+}
+
+/* This root-only entry consumes ports and private paths from the trusted
+ * VM controller. Run identity and listener ownership are checked by it. */
+static int run_vm_relay_entry(int argc, char **argv)
+{
+    if (argc != 8 || geteuid() != 0 || argv[6][0] != '/' ||
+        strncmp(argv[7], "IZANAGI_SECRET_FILE=/", sizeof("IZANAGI_SECRET_FILE=/") - 1) != 0)
+        return 2;
+    const char *phase = argv[1];
+    int alternate = strcmp(argv[2], "alternate") == 0;
+    int control = strcmp(phase, "control_before") == 0 || strcmp(phase, "control_after") == 0;
+    int allow = CONNECT4_CASE == 9 && !alternate && strcmp(phase, "allow_same_run") == 0;
+    int deny = CONNECT4_CASE == 10 && alternate && strcmp(phase, "deny_other") == 0;
+    uint16_t agent_port = parse_relay_port(argv[3]);
+    uint16_t alternate_port = parse_relay_port(argv[4]);
+    if ((!alternate && strcmp(argv[2], "agent") != 0) || (!control && !allow && !deny) ||
+        agent_port == 0 || alternate_port == 0 || agent_port == alternate_port ||
+        strlen(argv[5]) != 32 || strspn(argv[5], "0123456789abcdef") != 32)
+        return 2;
+    umask(0077);
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
+        return 1;
+    int controller = (int)syscall(SYS_pidfd_open, getpid(), 0);
+    if (controller < 0)
+        return 1;
+    struct vm_relay_trial vm = {
+        .port = alternate ? alternate_port : agent_port,
+        .alternate = alternate,
+        .client = {argv[6], argv[5], phase, argv[7]},
+    };
+    if (control) {
+        int64_t now = monotonic_ns();
+        struct fixed_relay_result observed;
+        int result = now < 0 ? -1 : run_fixed_relay_control(vm.port, alternate, controller,
+            now + 12000000000LL, alternate ? exchange_fixed_alternate : exchange_fixed_relay_client,
+            &vm.client, &observed);
+        close(controller);
+        return result < 0 ? 1 : report_vm_relay(&observed, 0);
+    }
+
+    int state, cgroup;
+    if (create_connect4_fixture_state(&state, &cgroup) < 0) {
+        perror("fixed VM relay state");
+        close(controller);
+        return 1;
+    }
+    struct connect4_trial trial = {.link_fd = -1};
+    int result = prepare_connect4_trial(state, cgroup, CONNECT4_PIN_PATH, agent_port, &trial);
+    if (result == 0)
+        result = supervise_trial(&trial, controller, 1, execute_vm_relay, &vm);
+    if (trial.link_fd >= 0)
+        close(trial.link_fd);
+    if (remove_connect4_fixture_cgroup(state, cgroup) < 0 ||
+        retire_connect4_fixture_state(state) < 0)
+        result = -1;
+    close(cgroup);
+    close(state);
+    close(controller);
+    return result == 0 ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
-    (void)argv;
+    if (CONNECT4_CASE >= 9)
+        return run_vm_relay_entry(argc, argv);
     if (argc != 1 || geteuid() != 0) {
         fputs("requires root and no arguments\n", stderr);
         return 2;
