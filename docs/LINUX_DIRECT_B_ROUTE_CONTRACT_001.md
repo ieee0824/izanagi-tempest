@@ -18,4 +18,4 @@ cargo fmt --all -- --check
 
 入力拒否は理由を問わずrouteを閉鎖し、後続の正常requestや既存pending responseで再開しない。JSONは既存capability proofと同じ再帰Visitor方式で全階層の重複keyを拒否する。診断へkeyの実値は含めない。schemaのmaxLengthとvalidatorはUnicode文字数で一致させ、別のframe_bytes上限でUTF-8全体のbyte量を制限する。
 
-既存の独立した負例にはそれぞれfresh gateを使い、正常な連続request、拒否後の再開不可、escaped/nested重複key、Unicode上限を別々に検査する。変更後のLinux CI結果は未確認。先の55件成功は変更前の結果として保持する。fixture接続は引き続き拒否し、OS backend/VMの受入は未達である。
+既存の独立した負例にはそれぞれfresh gateを使い、正常な連続request、拒否後の再開不可、escaped/nested重複key、Unicode上限を別々に検査する。変更後の[Linux CI](https://github.com/ieee0824/izanagi-tempest/actions/runs/44436361506/job/135266138185)で直列58 unit/3 compile-fail doctest、4 threadsの並列58 unit、fmt/clippy成功を実logで確認した。先の55件成功は変更前の結果として保持する。fixture接続は引き続き拒否し、OS backend/VMの受入は未達である。
