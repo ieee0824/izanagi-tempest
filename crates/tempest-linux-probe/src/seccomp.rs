@@ -23,6 +23,14 @@ fn jump(value: u32, yes: u8, no: u8) -> libc::sock_filter {
 }
 
 pub(super) fn install(role: Role, bootstrap_exec: bool) -> Result<(), Fault> {
+    install_filter(Some(role), bootstrap_exec)
+}
+
+pub(super) fn install_mcp_stdio() -> Result<(), Fault> {
+    install_filter(None, true)
+}
+
+fn install_filter(role: Option<Role>, bootstrap_exec: bool) -> Result<(), Fault> {
     if !cfg!(target_arch = "x86_64") {
         return Err(Fault::Kernel(libc::ENOTSUP));
     }
@@ -84,8 +92,6 @@ pub(super) fn install(role: Role, bootstrap_exec: bool) -> Result<(), Fault> {
         libc::SYS_ppoll,
         libc::SYS_wait4,
         libc::SYS_waitid,
-        libc::SYS_fork,
-        libc::SYS_vfork,
         libc::SYS_setsid,
         libc::SYS_uname,
         libc::SYS_prlimit64,
@@ -98,7 +104,33 @@ pub(super) fn install(role: Role, bootstrap_exec: bool) -> Result<(), Fault> {
     }
     // Only the guard receives ancillary data. A/B cannot receive a late fd
     // behind its back. No role may create a new socket, connect, mount or trace.
-    if role == Role::Guard {
+    if role.is_some() {
+        for number in [libc::SYS_fork, libc::SYS_vfork] {
+            program.push(jump(number as u32, 0, 1));
+            program.push(statement(ret, libc::SECCOMP_RET_ALLOW));
+        }
+    } else {
+        for number in [
+            libc::SYS_epoll_create1,
+            libc::SYS_epoll_ctl,
+            libc::SYS_epoll_wait,
+            libc::SYS_epoll_pwait,
+            libc::SYS_eventfd2,
+            libc::SYS_sched_getaffinity,
+            libc::SYS_sched_yield,
+            libc::SYS_getcpu,
+            libc::SYS_pipe2,
+        ] {
+            program.push(jump(number as u32, 0, 1));
+            program.push(statement(ret, libc::SECCOMP_RET_ALLOW));
+        }
+        // Let glibc fall back to the inspectable clone flags.
+        program.extend([
+            jump(libc::SYS_clone3 as u32, 0, 1),
+            statement(ret, libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32),
+        ]);
+    }
+    if role == Some(Role::Guard) {
         program.push(jump(libc::SYS_recvmsg as u32, 0, 1));
         program.push(statement(ret, libc::SECCOMP_RET_ALLOW));
     }
@@ -114,6 +146,26 @@ pub(super) fn install(role: Role, bootstrap_exec: bool) -> Result<(), Fault> {
         statement(ret, deny),
         statement(load, 0),
     ]);
+    if role.is_none() {
+        const THREAD_FLAGS: u32 = (libc::CLONE_VM
+            | libc::CLONE_FS
+            | libc::CLONE_FILES
+            | libc::CLONE_SIGHAND
+            | libc::CLONE_THREAD
+            | libc::CLONE_SYSVSEM
+            | libc::CLONE_SETTLS
+            | libc::CLONE_PARENT_SETTID
+            | libc::CLONE_CHILD_CLEARTID) as u32;
+        program.extend([
+            jump(libc::SYS_clone as u32, 0, 6),
+            statement(load, 20),
+            jump(0, 0, 3),
+            statement(load, 16),
+            jump(THREAD_FLAGS, 0, 1),
+            statement(ret, libc::SECCOMP_RET_ALLOW),
+            statement(ret, deny),
+        ]);
+    }
     program.extend([
         jump(libc::SYS_clone as u32, 0, 4),
         statement(load, 16), // args[0]: clone flags

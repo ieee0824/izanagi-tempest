@@ -53,6 +53,9 @@ impl FixedMcpArtifact {
             // The FD table may be partly remapped. Exit without unwinding.
             unsafe { libc::_exit(126) };
         }
+        if super::seccomp::install_mcp_stdio().is_err() {
+            unsafe { libc::_exit(126) };
+        }
         let argv = [c"/izanagi".as_ptr(), c"mcp".as_ptr(), std::ptr::null()];
         let env = [c"LANG=C".as_ptr(), c"LC_ALL=C".as_ptr(), std::ptr::null()];
         // SAFETY: The arrays are NUL terminated and EXEC_FD now names the snapshot.
