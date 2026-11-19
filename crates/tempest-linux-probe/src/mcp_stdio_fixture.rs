@@ -147,6 +147,43 @@ mod tests {
     };
 
     #[test]
+    fn rejects_mcp_responses_with_invalid_framing_or_identity() {
+        for frame in [
+            &b"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n"[..],
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"id\":1,\"result\":{}}\n",
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\nextra",
+        ] {
+            let (read_end, write_end) = crate::os::pipe().unwrap();
+            File::from(write_end).write_all(frame).unwrap();
+            let error = receive(
+                &mut File::from(read_end),
+                1,
+                &serde_json::json!({}),
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
+    }
+
+    #[test]
+    fn elapsed_deadline_sends_no_requests_and_closes_the_request_pipe() {
+        let (read_request, write_request) = crate::os::pipe().unwrap();
+        let (read_response, _write_response) = crate::os::pipe().unwrap();
+        let expected = serde_json::json!({});
+        let error = exchange(
+            write_request,
+            read_response,
+            &expected,
+            &expected,
+            Instant::now(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(File::from(read_request).read(&mut [0]).unwrap(), 0);
+    }
+
+    #[test]
     fn exchanges_only_fixed_frames_and_closes_request_pipe_before_eof() {
         let (read_request, write_request) = crate::os::pipe().unwrap();
         let (read_response, write_response) = crate::os::pipe().unwrap();
