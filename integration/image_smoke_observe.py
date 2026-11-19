@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import time
 
 SPEC = importlib.util.spec_from_file_location(
@@ -38,6 +39,36 @@ def validate_runtime(row, root=ROOT):
         return False
     BOOTSTRAP.validate_qemu_policy(qemu[0], root + '/inputs/image.qcow2', root + '/work/output/workspace')
     return True
+
+
+def agent_forward_identity(row, root):
+    """Bind a live, restricted QEMU forward to one service invocation."""
+    if not validate_runtime(row, root):
+        raise ValueError('QEMU forward observation missing')
+    vm = row['qemu_network'][0]
+    pid = vm.get('pid')
+    starttime = vm.get('starttime_ticks')
+    unit = row['unit']
+    invocation = unit.get('InvocationID', '')
+    cgroup = unit.get('ControlGroup', '')
+    if (
+        any(type(value) is not int or value <= 0 for value in (pid, starttime))
+        or pid not in row['cgroup_pids']
+        or re.fullmatch(r'[0-9a-f]{32}', invocation) is None
+        or not cgroup.startswith('/system.slice/') or cgroup.count('/') != 2
+    ):
+        raise ValueError('invalid QEMU forward owner identity')
+    netdev, = [value for key, value in vm['network_args'] if key == '-netdev']
+    forward, = [item for item in netdev.split(',') if item.startswith('hostfwd=')]
+    port = int(forward.removeprefix('hostfwd=tcp:127.0.0.1:').removesuffix('-:9001'))
+    if not 0 < port <= 65535:
+        raise ValueError('invalid QEMU agent port')
+    endpoint = f'127.0.0.1:{port}'
+    listeners = [listener for listener in row['listeners'] if listener['local'] == endpoint]
+    if listeners != [{'local': endpoint, 'loopback': True, 'pids': [pid]}]:
+        raise ValueError('observed agent forward is not owned by QEMU')
+    return {'pid': pid, 'starttime_ticks': starttime, 'invocation_id': invocation,
+            'cgroup': cgroup, 'port': port}
 
 
 class VmLifetime:
