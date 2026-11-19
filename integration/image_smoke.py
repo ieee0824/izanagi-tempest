@@ -18,6 +18,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'image'))
+sys.path.insert(0, str(ROOT / 'integration'))
 from transport import Mailbox
 from trace_evidence import trace_probe_evidence
 from artifact_evidence import PATHS as ARTIFACT_PATHS, validate_offline, validate_actor
