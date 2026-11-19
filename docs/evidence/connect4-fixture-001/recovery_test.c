@@ -79,6 +79,35 @@ static void check_invalid_handoff(void)
     puts("extra_or_truncated_fds=rejected-and-closed ack=absent");
 }
 
+static void check_worker_owned_connection(void)
+{
+    uint16_t port;
+    int listener = open_connect4_listener(&port);
+    assert(listener >= 0);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        close(listener);
+        int connected;
+        if (connect4_loopback(port, &connected) != 0)
+            _exit(1);
+        const char marker = 'T';
+        _exit(write(connected, &marker, sizeof(marker)) != sizeof(marker));
+    }
+    struct pollfd ready = {.fd = listener, .events = POLLIN};
+    int event = poll(&ready, 1, 2000);
+    int peer = event == 1 ? accept4(listener, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK) : -1;
+    close(listener);
+    if (peer < 0)
+        kill(child, SIGKILL);
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    assert(peer >= 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    char marker;
+    assert(read(peer, &marker, sizeof(marker)) == sizeof(marker) && marker == 'T');
+    close(peer);
+}
+
 int main(void)
 {
     assert(empty_supplementary_groups("\t \n"));
@@ -86,6 +115,7 @@ int main(void)
     assert(!empty_supplementary_groups("\t "));
     check_controller_death();
     check_invalid_handoff();
+    check_worker_owned_connection();
     int gate[2];
     assert(pipe(gate) == 0);
     pid_t child = fork();
