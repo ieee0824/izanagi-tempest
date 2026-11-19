@@ -154,3 +154,10 @@ Tokio が複数 TID を作るため、exec 後の FD 照合は leader の 0/1 �
 追加 FD を区別したうえで、固定端以外が見つかれば B の送信を解放しない。
 EOF 後は元 pidfd の終了、子の回収、cgroup の空状態まで確認する。
 EOF 単独をスレッドや子孫の終了証拠には使わない。
+
+初回の固定ホスト stdio 試験では、監督を `umask 077` の状態で開始する。
+子の tmpfs 作成後に `umask(022)` を適用し、固定 UID/GID に降格した
+Izanagi が固定 `initialize` と `tools/list` に応答して stdout を閉じることを
+確認する。同じ試験で、親の umask を継承した場合に起こる loader と
+`/work` の参照不可を回帰として検出する。結果には試験コミット、ELF
+の SHA-256、元 pidfd による終了確認と cgroup 回収を保存する。
