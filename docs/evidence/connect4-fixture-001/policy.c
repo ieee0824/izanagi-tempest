@@ -1194,6 +1194,9 @@ struct connect4_pending_recovery {
     enum connect4_pin_phase phase;
 };
 
+int retry_connect4_recovery(const struct connect4_trial *trial,
+                            struct connect4_pending_recovery *pending);
+
 int run_connect4_trial(const struct connect4_trial *trial,
                        int allowed_listener, uint16_t allowed_port,
                        int denied_listener, uint16_t denied_port,
@@ -1242,19 +1245,16 @@ int run_connect4_trial(const struct connect4_trial *trial,
                 CONNECT4_PIN_UNKNOWN};
             return -1;
         }
-        if (waitpid(worker.pid, NULL, WNOHANG) != worker.pid) {
-            *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd,
-                pinned ? CONNECT4_PIN_REMOVED : CONNECT4_PIN_ABSENT};
-            errno = ECHILD;
+        *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd,
+            pinned ? CONNECT4_PIN_REMOVED : CONNECT4_PIN_ABSENT};
+        if (retry_connect4_recovery(trial, pending) < 0)
             return -1;
-        }
     } else {
         *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd,
             pinned ? CONNECT4_PIN_HELD : CONNECT4_PIN_UNKNOWN};
         errno = ETIMEDOUT;
         return -1;
     }
-    close(worker.pidfd);
     if (saved != 0) {
         errno = saved;
         return -1;
