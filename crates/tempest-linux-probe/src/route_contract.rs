@@ -6,6 +6,70 @@ use std::{
     time::{Duration, Instant},
 };
 
+struct UniqueValue(serde_json::Value);
+
+impl<'de> serde::Deserialize<'de> for UniqueValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = UniqueValue;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("JSON without duplicate object keys")
+            }
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                serde_json::Number::from_f64(value)
+                    .map(serde_json::Value::Number)
+                    .map(UniqueValue)
+                    .ok_or_else(|| E::custom("non-finite JSON number"))
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(UniqueValue(serde_json::Value::Null))
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(UniqueValue(serde_json::Value::Null))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(value) = sequence.next_element::<UniqueValue>()? {
+                    values.push(value.0);
+                }
+                Ok(UniqueValue(values.into()))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut object: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some((name, value)) = object.next_entry::<String, UniqueValue>()? {
+                    if values.insert(name.clone(), value.0).is_some() {
+                        return Err(serde::de::Error::custom("duplicate JSON key"));
+                    }
+                }
+                Ok(UniqueValue(values.into()))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Process {
     pub pid: u32,
@@ -130,11 +194,11 @@ pub(super) fn verify_holders(
 #[derive(Clone, Debug)]
 pub(super) enum Schema {
     String {
-        max_bytes: usize,
+        max_chars: usize,
     },
     Strings {
         max_items: usize,
-        max_item_bytes: usize,
+        max_item_chars: usize,
     },
     Object(Vec<(String, Schema)>),
 }
@@ -144,11 +208,11 @@ impl Schema {
             return false;
         }
         match self {
-            Self::String { max_bytes } => (1..=4096).contains(max_bytes),
+            Self::String { max_chars } => (1..=4096).contains(max_chars),
             Self::Strings {
                 max_items,
-                max_item_bytes,
-            } => (1..=64).contains(max_items) && (1..=4096).contains(max_item_bytes),
+                max_item_chars,
+            } => (1..=64).contains(max_items) && (1..=4096).contains(max_item_chars),
             Self::Object(fields) => {
                 fields.len() <= 16
                     && fields.iter().map(|(k, _)| k).collect::<BTreeSet<_>>().len() == fields.len()
@@ -161,12 +225,12 @@ impl Schema {
     fn catalog_schema(&self) -> Value {
         use serde_json::json;
         match self {
-            Self::String { max_bytes } => json!({"type":"string","maxLength":max_bytes}),
+            Self::String { max_chars } => json!({"type":"string","maxLength":max_chars}),
             Self::Strings {
                 max_items,
-                max_item_bytes,
+                max_item_chars,
             } => {
-                json!({"type":"array","maxItems":max_items,"items":{"type":"string","maxLength":max_item_bytes}})
+                json!({"type":"array","maxItems":max_items,"items":{"type":"string","maxLength":max_item_chars}})
             }
             Self::Object(fields) => {
                 let properties: serde_json::Map<String, Value> = fields
@@ -179,14 +243,18 @@ impl Schema {
     }
     fn accepts(&self, value: &Value) -> bool {
         match self {
-            Self::String { max_bytes } => value.as_str().is_some_and(|s| s.len() <= *max_bytes),
+            Self::String { max_chars } => value
+                .as_str()
+                .is_some_and(|s| s.chars().count() <= *max_chars),
             Self::Strings {
                 max_items,
-                max_item_bytes,
+                max_item_chars,
             } => value.as_array().is_some_and(|a| {
                 a.len() <= *max_items
-                    && a.iter()
-                        .all(|v| v.as_str().is_some_and(|s| s.len() <= *max_item_bytes))
+                    && a.iter().all(|v| {
+                        v.as_str()
+                            .is_some_and(|s| s.chars().count() <= *max_item_chars)
+                    })
             }),
             Self::Object(fields) => value.as_object().is_some_and(|o| {
                 o.len() == fields.len()
@@ -289,11 +357,27 @@ impl Gate {
         frame: &[u8],
         now: Instant,
     ) -> Result<Value, Rejection> {
+        let result = self.admit_checked(binding, frame, now);
+        if result.is_err() {
+            self.closed = true;
+        }
+        result
+    }
+    // Every rejected request closes this prototype route. Rejected requests
+    // never dispatch, and an earlier pending response cannot reopen it.
+    fn admit_checked(
+        &mut self,
+        binding: &Binding,
+        frame: &[u8],
+        now: Instant,
+    ) -> Result<Value, Rejection> {
         self.current(binding, now)?;
         if frame.len() > self.limits.frame_bytes {
             return Err(Rejection::Frame);
         }
-        let value: Value = serde_json::from_slice(frame).map_err(|_| Rejection::Frame)?;
+        let value = serde_json::from_slice::<UniqueValue>(frame)
+            .map_err(|_| Rejection::Frame)?
+            .0;
         let object = value.as_object().ok_or(Rejection::Frame)?;
         if object.len() != 4 || value["jsonrpc"] != "2.0" || value["method"] != "tools/call" {
             return Err(Rejection::Schema);
@@ -340,7 +424,9 @@ impl Gate {
         if frame.len() > self.limits.frame_bytes {
             return Err(Rejection::Frame);
         }
-        let v: Value = serde_json::from_slice(frame).map_err(|_| Rejection::Frame)?;
+        let v = serde_json::from_slice::<UniqueValue>(frame)
+            .map_err(|_| Rejection::Frame)?
+            .0;
         if v["jsonrpc"] != "2.0"
             || self.pending.is_none()
             || v["id"].as_u64() != self.pending
@@ -393,12 +479,12 @@ mod tests {
     fn fixture() -> (Binding, Vec<Tool>, Vec<Value>) {
         use sha2::{Digest, Sha256};
         let schema = Schema::Object(vec![
-            ("command".into(), Schema::String { max_bytes: 32 }),
+            ("command".into(), Schema::String { max_chars: 32 }),
             (
                 "args".into(),
                 Schema::Strings {
                     max_items: 4,
-                    max_item_bytes: 32,
+                    max_item_chars: 32,
                 },
             ),
         ]);
@@ -511,10 +597,11 @@ mod tests {
     }
     #[test]
     fn foreign_run_vm_session_binary_and_process_are_rejected_before_dispatch() {
-        let (binding, tools, catalog) = fixture();
+        let (binding, _, _) = fixture();
         let now = Instant::now();
-        let mut gate = Gate::new(binding.clone(), tools, &catalog, limits(), now).unwrap();
         for field in 0..6 {
+            let (_, tools, catalog) = fixture();
+            let mut gate = Gate::new(binding.clone(), tools, &catalog, limits(), now).unwrap();
             let mut foreign = binding.clone();
             match field {
                 0 => foreign.run_nonce = "0".repeat(32),
@@ -529,7 +616,6 @@ mod tests {
                 Err(Rejection::Binding)
             );
         }
-        assert_eq!(gate.used, 0);
     }
     #[test]
     fn arbitrary_upstream_management_tool_and_extra_arguments_are_rejected() {
@@ -537,6 +623,8 @@ mod tests {
         let now = Instant::now();
         let mut gate = Gate::new(binding.clone(), tools, &catalog, limits(), now).unwrap();
         for method in ["sandbox_up", "exec", "initialize"] {
+            let (_, tools, catalog) = fixture();
+            let mut gate = Gate::new(binding.clone(), tools, &catalog, limits(), now).unwrap();
             let mut value: Value = serde_json::from_slice(&request(1)).unwrap();
             value["method"] = method.into();
             assert_eq!(
@@ -545,6 +633,8 @@ mod tests {
             );
         }
         for name in ["export", "claim", "other_run", "upstream_command"] {
+            let (_, tools, catalog) = fixture();
+            let mut gate = Gate::new(binding.clone(), tools, &catalog, limits(), now).unwrap();
             let mut value: Value = serde_json::from_slice(&request(1)).unwrap();
             value["params"]["name"] = name.into();
             assert_eq!(
@@ -566,10 +656,8 @@ mod tests {
         let now = Instant::now();
         let mut gate = Gate::new(binding.clone(), tools, &catalog, limits(), now).unwrap();
         gate.admit(&binding, &request(1), now).unwrap();
-        assert_eq!(gate.admit(&binding, &request(2), now), Err(Rejection::Id));
         gate.complete(&binding, br#"{"jsonrpc":"2.0","id":1,"result":{}}"#, now)
             .unwrap();
-        assert_eq!(gate.admit(&binding, &request(1), now), Err(Rejection::Id));
         gate.admit(&binding, &request(2), now).unwrap();
         gate.complete(&binding, br#"{"jsonrpc":"2.0","id":2,"result":{}}"#, now)
             .unwrap();
@@ -577,6 +665,8 @@ mod tests {
             gate.admit(&binding, &request(3), now),
             Err(Rejection::Budget)
         );
+        let (binding, tools, catalog) = fixture();
+        let mut gate = Gate::new(binding.clone(), tools, &catalog, limits(), now).unwrap();
         assert_eq!(
             gate.admit(&binding, &request(4), now + Duration::from_secs(5)),
             Err(Rejection::Deadline)
@@ -607,6 +697,8 @@ mod tests {
         let now = Instant::now();
         let mut gate = Gate::new(binding.clone(), tools, &catalog, limits(), now).unwrap();
         assert_eq!(gate.admit(&binding, b"{", now), Err(Rejection::Frame));
+        let (binding, tools, catalog) = fixture();
+        let mut gate = Gate::new(binding.clone(), tools, &catalog, limits(), now).unwrap();
         assert_eq!(
             gate.admit(&binding, &vec![b' '; 1025], now),
             Err(Rejection::Frame)
@@ -633,5 +725,87 @@ mod tests {
             gate.admit(&binding, &request(2), now),
             Err(Rejection::Response)
         );
+    }
+
+    #[test]
+    fn rejected_requests_cannot_be_followed_by_valid_dispatch() {
+        let now = Instant::now();
+        for failure in 0..5 {
+            let (binding, tools, catalog) = fixture();
+            let mut gate = Gate::new(binding.clone(), tools, &catalog, limits(), now).unwrap();
+            let result = match failure {
+                0 => gate.admit(&binding, b"{", now),
+                1 => {
+                    let mut foreign = binding.clone();
+                    foreign.vm_nonce = "0".repeat(32);
+                    gate.admit(&foreign, &request(1), now)
+                }
+                2 => gate.admit(&binding, &request(1), now + Duration::from_secs(5)),
+                3 => {
+                    gate.admit(&binding, &request(1), now).unwrap();
+                    gate.admit(&binding, &request(2), now)
+                }
+                _ => {
+                    gate.admit(&binding, &request(1), now).unwrap();
+                    gate.complete(&binding, br#"{"jsonrpc":"2.0","id":1,"result":{}}"#, now)
+                        .unwrap();
+                    gate.admit(&binding, &request(1), now)
+                }
+            };
+            assert!(result.is_err());
+            assert_eq!(
+                gate.admit(&binding, &request(3), now),
+                Err(Rejection::Response)
+            );
+            assert_eq!(
+                gate.complete(&binding, br#"{"jsonrpc":"2.0","id":1,"result":{}}"#, now),
+                Err(Rejection::Response)
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_keys_at_any_depth_close_requests_and_responses() {
+        let now = Instant::now();
+        for frame in [
+            br#"{"jsonrpc":"2.0","id":9,"id":1,"method":"tools/call","params":{"name":"dummy_exec","arguments":{"command":"dummy","args":[]}}}"#.as_slice(),
+            br#"{"jsonrpc":"2.0","id":9,"\u0069d":1,"method":"tools/call","params":{"name":"dummy_exec","arguments":{"command":"dummy","args":[]}}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"other","method":"tools/call","params":{"name":"dummy_exec","arguments":{"command":"dummy","args":[]}}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{},"params":{"name":"dummy_exec","arguments":{"command":"dummy","args":[]}}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dummy_exec","arguments":{"command":"other","command":"dummy","args":[]}}}"#,
+        ] {
+            let (binding, tools, catalog) = fixture();
+            let mut gate = Gate::new(binding.clone(), tools, &catalog, limits(), now).unwrap();
+            assert_eq!(gate.admit(&binding, frame, now), Err(Rejection::Frame));
+            assert_eq!(gate.used, 0);
+            assert_eq!(gate.admit(&binding, &request(2), now), Err(Rejection::Response));
+        }
+        for frame in [
+            br#"{"jsonrpc":"2.0","id":2,"id":1,"result":{}}"#.as_slice(),
+            br#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"a","text":"b"}]}}"#,
+        ] {
+            let (binding, tools, catalog) = fixture();
+            let mut gate = Gate::new(binding.clone(), tools, &catalog, limits(), now).unwrap();
+            gate.admit(&binding, &request(1), now).unwrap();
+            assert_eq!(gate.complete(&binding, frame, now), Err(Rejection::Frame));
+            assert_eq!(
+                gate.admit(&binding, &request(2), now),
+                Err(Rejection::Response)
+            );
+        }
+    }
+
+    #[test]
+    fn schema_lengths_count_unicode_characters_while_frames_bound_bytes() {
+        let schema = Schema::String { max_chars: 1 };
+        assert_eq!(schema.catalog_schema()["maxLength"], 1);
+        assert!(schema.accepts(&json!("あ")));
+        assert!(!schema.accepts(&json!("あい")));
+        let array = Schema::Strings {
+            max_items: 1,
+            max_item_chars: 1,
+        };
+        assert!(array.accepts(&json!(["あ"])));
+        assert!(!array.accepts(&json!(["あい"])));
     }
 }
