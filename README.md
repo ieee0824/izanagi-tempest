@@ -564,3 +564,14 @@ cargo test --locked -p tempest-kvm-probe --lib -- --test-threads=4
 
 固定ホストでの検証範囲は[FD走査の記録](docs/LINUX_DIRECT_B_HOLDER_SCANNER_PLAN.md)と
 [loopback試験の記録](docs/LINUX_DIRECT_B_CONNECT4_FIXTURE_PLAN.md)にあります。
+
+### Claude Code のログイン前ダミー設定検査
+
+固定ダミー試験では、専用ユーザー所有のモード `0700` のディレクトリと、
+同じユーザー所有のモード `0600` の `settings.json`（内容は `{}`）を用意します。
+検査は設定ファイルだけを読み、Claude Code の起動やログインを行いません。
+
+```sh
+python3 integration/check_claude_dummy_config.py CONFIG_DIRECTORY --owner-uid FIXTURE_UID
+python3 -m unittest discover -s tests -p test_claude_dummy_config.py -v
+```
