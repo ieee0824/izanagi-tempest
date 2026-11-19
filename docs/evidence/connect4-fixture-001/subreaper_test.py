@@ -25,12 +25,12 @@ def run_case(handoff, released=False):
             lower.close()
             os.close(gate_write)
             os.close(receipt_read)
-            token = os.read(gate_read, 1)
-            if released and token == b"R":
+            gate_byte = os.read(gate_read, 1)
+            if released and gate_byte == b"R":
                 os.write(receipt_write, b"R")
                 signal.pause()
                 os._exit(4)
-            os._exit(0 if token == b"" else 1)
+            os._exit(0 if gate_byte == b"" else 1)
         os.close(gate_read)
         os.close(receipt_write)
         if handoff:
