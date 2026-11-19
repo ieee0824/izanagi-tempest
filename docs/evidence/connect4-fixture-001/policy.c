@@ -84,3 +84,50 @@ int attach_connect4_policy(int program_fd, int cgroup_fd)
     };
     return bpf_call(BPF_LINK_CREATE, &attr);
 }
+
+/* BPF_OBJ_PIN fails with EEXIST on an occupied path. The controller must
+ * resolve the path under its private bpffs directory before calling this. */
+int pin_connect4_link(int link_fd, const char *path)
+{
+    if (link_fd < 0 || path == NULL || *path != '/') {
+        errno = EINVAL;
+        return -1;
+    }
+    union bpf_attr attr = {
+        .pathname = (uintptr_t)path,
+        .bpf_fd = (uint32_t)link_fd,
+    };
+    return bpf_call(BPF_OBJ_PIN, &attr);
+}
+
+/* Use the recorded IDs both before releasing the worker and during recovery.
+ * The caller must additionally bind the open cgroup directory to its ledger. */
+int check_connect4_link(int fd, uint32_t link_id, uint32_t program_id,
+                        uint64_t cgroup_id)
+{
+    if (fd < 0 || link_id == 0 || program_id == 0 || cgroup_id == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct bpf_link_info info = {0};
+    union bpf_attr attr = {
+        .info = {
+            .bpf_fd = (uint32_t)fd,
+            .info_len = sizeof(info),
+            .info = (uintptr_t)&info,
+        },
+    };
+    if (bpf_call(BPF_OBJ_GET_INFO_BY_FD, &attr) != 0)
+        return -1;
+
+    if (attr.info.info_len <
+            offsetof(struct bpf_link_info, cgroup.attach_type) +
+                sizeof(info.cgroup.attach_type) ||
+        info.type != BPF_LINK_TYPE_CGROUP || info.id != link_id ||
+        info.prog_id != program_id || info.cgroup.cgroup_id != cgroup_id ||
+        info.cgroup.attach_type != BPF_CGROUP_INET4_CONNECT) {
+        errno = ESTALE;
+        return -1;
+    }
+    return 0;
+}
