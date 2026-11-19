@@ -1068,6 +1068,43 @@ int prepare_connect4_worker(int gate_read_fd, int ready_write_fd)
     BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[index]))
 #define FILTER_DENY BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM)
 
+/* Install after connecting. Socket creation and further connects are denied. */
+int restrict_fixed_relay_io(int request_fd, int response_fd, int socket_fd)
+{
+    struct sock_filter code[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        GUARD_SYSCALL(SYS_poll),
+        GUARD_SYSCALL(SYS_exit),
+        GUARD_SYSCALL(SYS_exit_group),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_clock_gettime, 0, 4),
+        FILTER_ARG(0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, CLOCK_MONOTONIC, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        FILTER_DENY,
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_read, 0, 5),
+        FILTER_ARG(0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, request_fd, 1, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, socket_fd, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        FILTER_DENY,
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_write, 0, 5),
+        FILTER_ARG(0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, response_fd, 1, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, socket_fd, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        FILTER_DENY,
+        FILTER_DENY,
+    };
+    const struct sock_fprog program = {
+        .len = sizeof(code) / sizeof(code[0]),
+        .filter = code,
+    };
+    return (int)syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &program);
+}
+
 int restrict_connect4_worker(void)
 {
     struct sock_filter code[] = {

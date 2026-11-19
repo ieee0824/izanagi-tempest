@@ -210,6 +210,13 @@ static void check_fixed_agent_exchange(void)
         if (connect4_loopback(port, &socket_fd) != 0 ||
             fcntl(socket_fd, F_SETFL, O_NONBLOCK) < 0)
             _exit(1);
+        if (prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0 ||
+            restrict_fixed_relay_io(input[0], output[1], socket_fd) < 0)
+            _exit(3);
+        if (write(STDERR_FILENO, "", 0) != -1 || errno != EPERM ||
+            socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP) != -1 ||
+            errno != EPERM)
+            _exit(4);
         if (relay_fixed_agent_request(input[0], output[1], socket_fd, deadline) < 0)
             _exit(2);
         _exit(relay_fixed_agent_request(input[0], output[1], socket_fd, deadline) == 0 ||
