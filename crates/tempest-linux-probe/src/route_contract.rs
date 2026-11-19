@@ -81,7 +81,7 @@ impl FixedMcpArtifact {
     ) -> Result<super::registry::RecordId, super::os::Fault> {
         use std::io::Write;
 
-        let record = registry.track(role, process, true)?;
+        let record = track_fresh_child(registry, role, process)?;
         group.attach(role, process.pid)?;
         registry.attached(record)?;
         if !process.alive()? || !group.bound(role, process.pid)? {
@@ -298,6 +298,97 @@ impl FixedMcpArtifact {
             return Err(Fault::Identity);
         }
         verify_mcp_stdio(child, executable, stdin, stdout)
+    }
+}
+
+/// Run the two children in an armed fixture group. The caller supplies
+/// fresh roots and retains group recovery ownership on every return path.
+fn run_fixed_exchange(
+    artifact: &FixedMcpArtifact,
+    group: &mut super::cgroup::Group,
+    guard: &super::guard::Guard,
+    registry: &mut super::registry::Registry,
+    roots: [&std::path::Path; 2],
+    expected: [&Value; 2],
+    deadline: Instant,
+) -> Result<(), super::os::Fault> {
+    use super::{contract::Role, identity::Descriptor, os};
+    use std::os::fd::AsFd;
+
+    let [caller_root, mcp_root] = roots;
+    let (request_read, request_write) = os::pipe()?;
+    let (response_read, response_write) = os::pipe()?;
+    let stdin = Descriptor::bind(request_read.as_raw_fd())?;
+    let stdout = Descriptor::bind(response_write.as_raw_fd())?;
+    let caller_ends = [
+        request_write.as_raw_fd() as u32,
+        response_read.as_raw_fd() as u32,
+    ];
+    let (caller_gate, release) = os::pipe()?;
+    let (ready, ready_writer) = os::pipe()?;
+    let (bootstrap, start) = os::pipe()?;
+    let stderr = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
+
+    let caller = bind_fresh_child(spawn_fixed_caller(
+        caller_root,
+        [caller_gate, request_write, response_read, ready_writer],
+        expected,
+        deadline,
+    )?)?;
+    let caller_record = track_fresh_child(registry, Role::B, &caller)?;
+    group.attach(Role::B, caller.pid)?;
+    registry.attached(caller_record)?;
+    mcp_stdio_fixture::expect_control_byte(ready, b'Y', deadline)?;
+
+    let mcp = bind_fresh_child(artifact.spawn_waiting(
+        mcp_root,
+        [request_read.as_fd(), response_write.as_fd(), stderr.as_fd()],
+        [bootstrap.as_fd(), start.as_fd()],
+        release.as_fd(),
+    )?)?;
+    drop((request_read, response_write, bootstrap, stderr));
+    let mcp_record = FixedMcpArtifact::attach_and_start(group, registry, Role::A, &mcp, start)?;
+    artifact.release_exchange_after_inspection(
+        group,
+        guard,
+        [(Role::B, &caller), (Role::A, &mcp)],
+        [(&stdin, caller_ends[0]), (&stdout, caller_ends[1])],
+        release,
+        deadline,
+    )?;
+    reap_fixed_exchange(
+        [(&caller, caller_record), (&mcp, mcp_record)],
+        registry,
+        deadline,
+    )
+}
+
+fn bind_fresh_child(pid: libc::pid_t) -> Result<super::identity::Process, super::os::Fault> {
+    super::identity::Process::bind(pid as u32).inspect_err(|_| stop_untracked_child(pid))
+}
+
+fn track_fresh_child(
+    registry: &mut super::registry::Registry,
+    role: super::contract::Role,
+    child: &super::identity::Process,
+) -> Result<super::registry::RecordId, super::os::Fault> {
+    registry
+        .track(role, child, true)
+        .inspect_err(|_| stop_untracked_child(child.pid as libc::pid_t))
+}
+
+fn stop_untracked_child(pid: libc::pid_t) {
+    // This PID is our direct child and has never been reaped.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        match unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) } {
+            0 => std::thread::sleep(Duration::from_millis(2)),
+            result
+                if result < 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) => {}
+            _ => break,
+        }
     }
 }
 
