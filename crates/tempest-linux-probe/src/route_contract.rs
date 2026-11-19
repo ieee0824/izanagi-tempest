@@ -306,6 +306,13 @@ impl FixedMcpArtifact {
     }
 }
 
+#[derive(Default)]
+struct ExchangeDiagnostics {
+    mcp_stderr: Option<String>,
+    caller_wait_status: Option<i32>,
+    mcp_wait_status: Option<i32>,
+}
+
 /// Explicit fixed-host investigation entry, limited to the local handshake.
 pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
     use super::{cgroup::Group, contract::Role, guard::Guard, os, os::Fault, registry::Registry};
@@ -317,7 +324,7 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
     let mut trial_errno = None;
     let mut trial_child_exit = None;
     let mut trial_child_signal = None;
-    let mut mcp_stderr = None;
+    let mut diagnostics = ExchangeDiagnostics::default();
     let mut phase = "preflight";
     let mut recovery_reason = None;
     let mut root_cleanup_reason = None;
@@ -352,7 +359,7 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
                 &mut registry,
                 [&roots[0], &roots[1]],
                 Instant::now() + Duration::from_secs(10),
-                (&mut phase, &mut mcp_stderr),
+                (&mut phase, &mut diagnostics),
             );
             if let Err(Fault::UntrackedChildCleanup(errno)) = result {
                 untracked_errno = Some(errno);
@@ -394,7 +401,9 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
             "trial_errno": trial_errno,
             "trial_child_exit": trial_child_exit,
             "trial_child_signal": trial_child_signal,
-            "mcp_stderr": mcp_stderr,
+            "mcp_stderr": diagnostics.mcp_stderr,
+            "caller_wait_status": diagnostics.caller_wait_status,
+            "mcp_wait_status": diagnostics.mcp_wait_status,
             "recovery_reason": recovery_reason,
             "root_cleanup_reason": root_cleanup_reason,
             "untracked_cleanup_errno": untracked_errno,
@@ -417,12 +426,12 @@ fn run_fixed_exchange(
     registry: &mut super::registry::Registry,
     roots: [&std::path::Path; 2],
     deadline: Instant,
-    diagnostics: (&mut &'static str, &mut Option<String>),
+    diagnostics: (&mut &'static str, &mut ExchangeDiagnostics),
 ) -> Result<(), super::os::Fault> {
     use super::{contract::Role, identity::Descriptor, os};
     use std::os::fd::AsFd;
 
-    let (phase, mcp_stderr) = diagnostics;
+    let (phase, diagnostics) = diagnostics;
     *phase = "pipes";
     let [caller_root, mcp_root] = roots;
     let (request_read, request_write) = os::pipe()?;
@@ -467,13 +476,7 @@ fn run_fixed_exchange(
     *phase = "mcp_runtime_wait";
     let runtime = artifact.wait_for_runtime(&mcp, deadline);
     if runtime.is_err() {
-        use std::io::Read;
-        let mut buffer = [0; 2048];
-        if let Ok(size) = std::fs::File::from(stderr_read).read(&mut buffer) {
-            if size != 0 {
-                *mcp_stderr = Some(String::from_utf8_lossy(&buffer[..size]).into_owned());
-            }
-        }
+        diagnostics.mcp_stderr = read_mcp_stderr(stderr_read);
         return runtime;
     }
     *phase = "mcp_frozen_inspection";
@@ -491,11 +494,24 @@ fn run_fixed_exchange(
     use std::io::Write;
     std::fs::File::from(release).write_all(b"R")?;
     *phase = "exchange_exit";
-    reap_fixed_exchange(
+    let result = reap_fixed_exchange(
         [(&caller, caller_record), (&mcp, mcp_record)],
         registry,
         deadline,
-    )
+        diagnostics,
+    );
+    if result.is_err() {
+        diagnostics.mcp_stderr = read_mcp_stderr(stderr_read);
+    }
+    result
+}
+
+fn read_mcp_stderr(reader: OwnedFd) -> Option<String> {
+    use std::io::Read;
+
+    let mut buffer = [0; 2048];
+    let size = std::fs::File::from(reader).read(&mut buffer).ok()?;
+    (size != 0).then(|| String::from_utf8_lossy(&buffer[..size]).into_owned())
 }
 
 /// Stop the group even when a child failed before completing its exchange.
@@ -639,11 +655,14 @@ fn reap_fixed_exchange(
     children: [(&super::identity::Process, super::registry::RecordId); 2],
     registry: &mut super::registry::Registry,
     deadline: Instant,
+    diagnostics: &mut ExchangeDiagnostics,
 ) -> Result<(), super::os::Fault> {
     use super::os::Fault;
 
     let [caller, mcp] = children
         .map(|(process, record)| super::runtime::reap_status(process, record, registry, deadline));
+    diagnostics.caller_wait_status = caller.as_ref().ok().copied();
+    diagnostics.mcp_wait_status = mcp.as_ref().ok().copied();
     for status in [caller?, mcp?] {
         if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
             return Err(Fault::Identity);
