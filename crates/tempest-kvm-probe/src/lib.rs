@@ -7,6 +7,9 @@ pub mod identity;
 mod runtime;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod supervisor;
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+static TEST_CHILD_LAUNCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub const GUEST: [u8; 5] = [0xb0, 0x2a, 0xe6, 0xe9, 0xf4];
 pub const RAM_BYTES: usize = 2 * 1024 * 1024;
 
