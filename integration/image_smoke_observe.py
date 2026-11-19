@@ -29,7 +29,7 @@ ATTEMPTS = {
 }
 
 
-def validate_runtime(row, root=ROOT):
+def validate_runtime(row, root=ROOT, *, image=None, workspace=None):
     if row['external_listener_observed']:
         raise RuntimeError('non-loopback listener in smoke unit')
     qemu = row['qemu_network']
@@ -37,13 +37,14 @@ def validate_runtime(row, root=ROOT):
         raise RuntimeError('multiple QEMU processes in smoke unit')
     if not qemu:
         return False
-    BOOTSTRAP.validate_qemu_policy(qemu[0], root + '/inputs/image.qcow2', root + '/work/output/workspace')
+    BOOTSTRAP.validate_qemu_policy(qemu[0], image or root + '/inputs/image.qcow2',
+                                  workspace or root + '/work/output/workspace')
     return True
 
 
-def agent_forward_identity(row, root):
+def agent_forward_identity(row, root=ROOT, *, image=None, workspace=None):
     """Bind a live, restricted QEMU forward to one service invocation."""
-    if not validate_runtime(row, root):
+    if not validate_runtime(row, root, image=image, workspace=workspace):
         raise ValueError('QEMU forward observation missing')
     vm = row['qemu_network'][0]
     pid = vm.get('pid')

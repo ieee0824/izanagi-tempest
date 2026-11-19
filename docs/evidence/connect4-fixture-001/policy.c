@@ -2330,6 +2330,9 @@ done:;
 #ifndef CONNECT4_CASE
 #define CONNECT4_CASE 0
 #endif
+#ifndef FIXED_VM_TRIAL_SUFFIX
+#define FIXED_VM_TRIAL_SUFFIX "001"
+#endif
 #if CONNECT4_CASE == 0
 #define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-001"
 #elif CONNECT4_CASE == 1
@@ -2349,9 +2352,9 @@ done:;
 #elif CONNECT4_CASE == 8
 #define CONNECT4_TRIAL_NAME "tempest-fixed-relay-denial-001"
 #elif CONNECT4_CASE == 9
-#define CONNECT4_TRIAL_NAME "tempest-fixed-vm-relay-allow-001"
+#define CONNECT4_TRIAL_NAME "tempest-fixed-vm-relay-allow-" FIXED_VM_TRIAL_SUFFIX
 #elif CONNECT4_CASE == 10
-#define CONNECT4_TRIAL_NAME "tempest-fixed-vm-relay-deny-001"
+#define CONNECT4_TRIAL_NAME "tempest-fixed-vm-relay-deny-" FIXED_VM_TRIAL_SUFFIX
 #else
 #error "unknown connect4 fixture case"
 #endif

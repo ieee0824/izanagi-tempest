@@ -510,3 +510,38 @@ Exec の HMAC を検証し、正しいキーでは固定の `allow_same_run` 要
 署名した Hello では、listener が Exec を受け取らずに EOF を観測し、
 クライアント exit 1、中継子 exit 2 を確認した。実 VM と cgroup 制約を
 組み合わせた4区間試験は引き続き検証対象とする。
+
+#### 専用 VM での4区間の実測
+
+固定イメージと固定 Izanagi で専用 VM を起動し、サービス
+`tempest-fixed-vm-trial-dkemSi.service` 内で4区間を完走した。
+ホストの監督・観測処理は root、Izanagi と認証クライアントは専用
+UID 999 / GID 988 で実行した。各区間の前後で同一 QEMU の PID、
+starttime、サービス cgroup、loopback 転送の所有者、同一セッションの
+指紋、およびゲストの boot ID を照合した。
+
+| 区間 | ゲスト要求増分 | 別 listener の受理増分 | TCP の結果 |
+| --- | ---: | ---: | --- |
+| `control_before` | 1 | 1 | agent・別 listener とも成功 |
+| `allow_same_run` | 1 | 0 | agent に接続し、認証済み応答を確認 |
+| `deny_other` | 0 | 0 | 別 listener への接続は `EPERM`、中継未開始 |
+| `control_after` | 1 | 1 | agent・別 listener とも成功 |
+
+`up` と `down` はともに exit 0。一時 HMAC ファイル、両区間の BPF
+ピンと専用 cgroup の不在、および入力 qcow2 の SHA-256 が不変であることを
+確認した。接続後の監督強制終了は前掲のホスト試験で観測した。
+今回の4区間では正常回収を観測した。
+
+初回はホストの事前試験で退役済みだった拒否側の台帳名と衝突した。
+再試行は別の台帳名を使い、成功した。ビルド時に `CONNECT4_CASE=9`
+と `10` を指定して許可側と拒否側の `fixture.c` を生成し、両方に
+試験専用の文字列 `FIXED_VM_TRIAL_SUFFIX` を指定する。
+認証クライアントは次のコマンドでビルドする。
+
+```sh
+cargo build --locked --manifest-path integration/izanagi-bootstrap/Cargo.toml --bin fixed-vm-receive-request
+```
+
+固定イメージ・Izanagi・入力定義を指定する preflight の引数に加え、
+専用 systemd unit 内で root から `integration/image_smoke.py` に
+`--fixed-vm-relay-trial UNIT CLIENT ALLOW_ENTRY DENY_ENTRY` を渡す。

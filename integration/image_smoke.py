@@ -54,7 +54,14 @@ def main():
     parser.add_argument('--delivery-race-fixture', action='store_true', help='Require forced root deliver PID in quiesce kill evidence')
     parser.add_argument('--fixed-vm-receiver-preflight', action='store_true',
                         help='boot only the fixed receiver image and verify initial guest state')
+    parser.add_argument('--fixed-vm-relay-trial', nargs=4,
+                        metavar=('UNIT', 'CLIENT', 'ALLOW_ENTRY', 'DENY_ENTRY'),
+                        help='run the four fixed relay phases after receiver preflight')
     args = parser.parse_args()
+    if args.fixed_vm_relay_trial and (
+        not args.fixed_vm_receiver_preflight or os.geteuid() != 0
+    ):
+        parser.error('fixed relay trial requires root and --fixed-vm-receiver-preflight')
     fixed_image_sha = None
     if args.fixed_vm_receiver_preflight:
         if (sys.platform != 'linux' or not args.exec_evidence or args.offline_artifacts
@@ -146,13 +153,26 @@ def main():
         report['checks']['offline_artifacts'] = {'passed': True, 'report_sha256': sha(args.offline_artifacts),
                                                    'scope': 'offline image bytes; runtime identity checked separately'}
     exec_evidence = ExecEvidence(output / 'exec-evidence') if args.exec_evidence else None
+    vm_identity = {}
+    if args.fixed_vm_relay_trial:
+        import grp
+        unit, *relay_binaries = args.fixed_vm_relay_trial
+        relay_client, allow_entry, deny_entry = (Path(path).resolve(strict=True) for path in relay_binaries)
+        home = output / 'vm-home'
+        tmp = output / 'vm-tmp'
+        home.mkdir(mode=0o700)
+        tmp.mkdir(mode=0o700)
+        environment.update(HOME=str(home), TMPDIR=str(tmp))
+        for path in [*output.rglob('*'), output]:
+            os.chown(path, 999, 988, follow_symlinks=False)
+        vm_identity = {'user': 999, 'group': 988, 'extra_groups': [grp.getgrnam('kvm').gr_gid]}
     def save():
         (output / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
     def execute(*command, timeout=30, evidence_context=None):
         def invoke():
             return subprocess.run(base + ['exec', '--', *command], cwd=box.workspace,
                                   capture_output=True, text=True, errors='surrogateescape',
-                                  timeout=timeout, env=environment)
+                                  timeout=timeout, env=environment, **vm_identity)
         if exec_evidence is None:
             return invoke()
         try:
@@ -291,7 +311,7 @@ def main():
         save()
     try:
         with (output / 'up.stdout').open('w') as stdout, (output / 'up.stderr').open('w') as stderr:
-            process = subprocess.Popen(base + ['up'], cwd=box.workspace, stdout=stdout, stderr=stderr, start_new_session=True, env=environment)
+            process = subprocess.Popen(base + ['up'], cwd=box.workspace, stdout=stdout, stderr=stderr, start_new_session=True, env=environment, **vm_identity)
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline and process.poll() is None:
             if 'サンドボックスを起動しました' in (output / 'up.stdout').read_text():
@@ -304,6 +324,32 @@ def main():
         if args.fixed_vm_receiver_preflight:
             report['checks']['fixed_vm_receiver'] = fixed_vm_receive_observe.preflight_guest(execute, build_inputs)
             report['status'] = 'fixed_receiver_preflight_collected'
+            if args.fixed_vm_relay_trial:
+                import image_smoke_observe
+                session = home / '.izanagi/instances' / hashlib.sha256(
+                    os.fsencode(box.workspace)).hexdigest()
+
+                def observe_route():
+                    forward = image_smoke_observe.agent_forward_identity(
+                        image_smoke_observe.BOOTSTRAP.sample(unit),
+                        image=str(args.image.resolve()), workspace=str(box.workspace))
+                    fingerprint = fixed_vm_receive_observe.session_binding(
+                        box.workspace, home, owner_uid=999, supervisor_pid=process.pid,
+                        forward=forward)
+                    return forward, fingerprint
+
+                def launch(phase, route, agent_port, alternate_port, nonce):
+                    entry = deny_entry if phase == 'deny_other' else allow_entry
+                    return subprocess.run([
+                        entry, phase, route, str(agent_port), str(alternate_port), nonce,
+                        relay_client, 'IZANAGI_SECRET_FILE=' + str(hmac_path),
+                        'IZANAGI_FIXED_SESSION_DIR=' + str(session),
+                    ], capture_output=True, env={})
+
+                report['checks']['fixed_vm_relay'] = fixed_vm_receive_observe.collect_relay_trial(
+                    execute, observe_route, launch, run_nonce=secrets.token_hex(16),
+                    boot_id=report['checks']['fixed_vm_receiver']['boot_id'])
+                report['status'] = 'fixed_relay_trial_collected'
             save()
             return
         proc_probe('before_claim')
@@ -626,6 +672,8 @@ def main():
         report['status'] = 'collected_requires_review'
         save()
     except Exception as error:
+        if args.fixed_vm_relay_trial:
+            report['status'] = 'fixed_relay_trial_failed'
         report['failure'] = str(error)
         save()
         raise
@@ -640,7 +688,7 @@ def main():
                     child.wait(timeout=5)
         if process is not None:
             try:
-                down_result = subprocess.run(base + ['down'], cwd=box.workspace, capture_output=True, timeout=30, env=environment)
+                down_result = subprocess.run(base + ['down'], cwd=box.workspace, capture_output=True, timeout=30, env=environment, **vm_identity)
                 if args.fixed_vm_receiver_preflight:
                     report['fixed_receiver_down_exit'] = down_result.returncode
                     if down_result.returncode != 0:
