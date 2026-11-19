@@ -22,6 +22,9 @@
 #include <sys/file.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdatomic.h>
+#include <sys/mman.h>
+#include <time.h>
 #include <stdio.h>
 #include <sys/wait.h>
 
@@ -566,8 +569,12 @@ static int check_connect4_worker_privileges(pid_t child)
             size_t key = strcspn(required[field], ":") + 1;
             if (strncmp(line, required[field], key) != 0)
                 continue;
-            if ((seen & (1U << field)) || strcmp(line, required[field]) != 0)
+            if ((seen & (1U << field)) || strcmp(line, required[field]) != 0) {
+                fprintf(stderr, "worker status field=%.*s reason=%s\n",
+                        (int)(key - 1), required[field],
+                        (seen & (1U << field)) ? "duplicate" : "mismatch");
                 goto done;
+            }
             seen |= 1U << field;
             break;
         }
@@ -642,9 +649,15 @@ static int check_connect4_worker_fds(pid_t child, int gate_fd)
         }
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
-        if (found || strcmp(entry->d_name, "3") != 0 ||
-            fstatat(dirfd(table), "3", &reader, 0) < 0 ||
-            !S_ISFIFO(reader.st_mode) || reader.st_dev != writer.st_dev ||
+        if (found || strcmp(entry->d_name, "3") != 0)
+            break;
+        if (fstatat(dirfd(table), "3", &reader, 0) < 0) {
+            int error = errno;
+            closedir(table);
+            errno = error;
+            return -1;
+        }
+        if (!S_ISFIFO(reader.st_mode) || reader.st_dev != writer.st_dev ||
             reader.st_ino != writer.st_ino)
             break;
         found = 1;
@@ -707,13 +720,28 @@ static int controller_is_live(int controller_pidfd)
 
 /* The manager owns the worker and holds its original pidfd. Gate FD is
  * a private pipe write end that only the manager can use. */
+static int stop_test_controller(int controller_pidfd)
+{
+    if (controller_is_live(controller_pidfd) < 0 ||
+        syscall(SYS_pidfd_send_signal, controller_pidfd, SIGKILL, NULL, 0) < 0)
+        return -1;
+    struct pollfd exit_event = { .fd = controller_pidfd, .events = POLLIN };
+    int result = poll(&exit_event, 1, 1000);
+    if (result == 1 && (exit_event.revents & POLLIN))
+        return 0;
+    if (result >= 0)
+        errno = result == 0 ? ETIMEDOUT : EIO;
+    return -1;
+}
+
 int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
                             int controller_pidfd,
                             pid_t child, int worker_pidfd,
                             int link_fd,
                             const char *path, int cgroup_fd, dev_t device,
                             uint64_t cgroup_id, uint32_t link_id,
-                            uint32_t program_id, int *pinned)
+                            uint32_t program_id, int *pinned,
+                            int stop_before_release)
 {
     int lease = acquire_connect4_lease(state_fd);
     if (lease < 0)
@@ -721,43 +749,69 @@ int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
 
     siginfo_t status = {0};
     int verified = -1;
-    if (worker_pidfd < 0) {
-        errno = EBADF;
-    } else if (confirm_connect4_ready(ready_fd) == 0 &&
-               waitid(P_PIDFD, (id_t)worker_pidfd, &status,
-                      WEXITED | WNOHANG | WNOWAIT) == 0) {
-        if (status.si_pid != 0)
-            errno = ESRCH;
-        else if (check_connect4_pidfd_pid(worker_pidfd, child) == 0 &&
-                 check_connect4_worker_membership(cgroup_fd, child) == 0)
-            verified = pin_and_verify_connect4_link(link_fd, path, cgroup_fd,
-                                                     device, cgroup_id, link_id,
-                                                     program_id, pinned);
-    }
     int result = -1;
-    if (verified >= 0 &&
-        check_connect4_worker_privileges(child) == 0 &&
-        check_connect4_worker_fds(child, gate_fd) == 0 &&
-        check_connect4_worker_membership(cgroup_fd, child) == 0 &&
-        waitid(P_PIDFD, (id_t)worker_pidfd, &status,
-               WEXITED | WNOHANG | WNOWAIT) == 0) {
-        if (status.si_pid != 0) {
-            errno = ESRCH;
-            goto done;
-        }
-        if (controller_is_live(controller_pidfd) < 0 ||
-            record_release_intent(state_fd) < 0 ||
-            controller_is_live(controller_pidfd) < 0)
-            goto done;
-        const char token = 'R';
-        ssize_t sent = write(gate_fd, &token, sizeof(token));
-        if (sent == 1)
-            result = 0;
-        else if (sent == 0)
-            errno = EIO;
+    const char *stage = "ready";
+    if (confirm_connect4_ready(ready_fd) < 0)
+        goto done;
+    stage = "child";
+    if (waitid(P_PIDFD, (id_t)worker_pidfd, &status,
+               WEXITED | WNOHANG | WNOWAIT) < 0)
+        goto done;
+    if (status.si_pid != 0) {
+        errno = ESRCH;
+        goto done;
     }
+    stage = "pidfd-identity";
+    if (check_connect4_pidfd_pid(worker_pidfd, child) < 0)
+        goto done;
+    stage = "membership";
+    if (check_connect4_worker_membership(cgroup_fd, child) < 0)
+        goto done;
+    stage = "pin-and-reopen";
+    verified = pin_and_verify_connect4_link(link_fd, path, cgroup_fd,
+                                            device, cgroup_id, link_id,
+                                            program_id, pinned);
+    if (verified < 0)
+        goto done;
+    stage = "worker-privileges";
+    if (check_connect4_worker_privileges(child) < 0)
+        goto done;
+    stage = "worker-descriptors";
+    if (check_connect4_worker_fds(child, gate_fd) < 0)
+        goto done;
+    stage = "membership-recheck";
+    if (check_connect4_worker_membership(cgroup_fd, child) < 0)
+        goto done;
+    stage = "child-recheck";
+    if (waitid(P_PIDFD, (id_t)worker_pidfd, &status,
+               WEXITED | WNOHANG | WNOWAIT) < 0)
+        goto done;
+    if (status.si_pid != 0) {
+        errno = ESRCH;
+        goto done;
+    }
+    stage = "controller";
+    if ((stop_before_release && stop_test_controller(controller_pidfd) < 0) ||
+        controller_is_live(controller_pidfd) < 0)
+        goto done;
+    stage = "release-intent";
+    if (record_release_intent(state_fd) < 0)
+        goto done;
+    stage = "controller-recheck";
+    if (controller_is_live(controller_pidfd) < 0)
+        goto done;
+    stage = "release-token";
+    const char token = 'R';
+    ssize_t sent = write(gate_fd, &token, sizeof(token));
+    if (sent == 1)
+        result = 0;
+    else if (sent == 0)
+        errno = EIO;
+
 done:;
     int error = errno;
+    if (result < 0)
+        fprintf(stderr, "connect4 release stage=%s errno=%d\n", stage, error);
     if (verified >= 0)
         close(verified);
     close(lease);
@@ -918,11 +972,18 @@ static int try_connect4_loopback(uint16_t port)
 
 /* Call in the dedicated child. The manager observes the actual exit status
  * and separately counts accepted connections on both listeners. */
-static int run_connect4_worker(uint16_t allowed, uint16_t denied)
+static int run_connect4_worker(uint16_t allowed, uint16_t denied,
+                               atomic_int *release_seen)
 {
     if (allowed == 0 || denied == 0 || allowed == denied ||
         connect4_worker_wait() < 0)
         return 70;
+    if (release_seen != NULL) {
+        atomic_store_explicit(release_seen, 1, memory_order_release);
+        /* The fault case holds here until the manager closes the gate. */
+        (void)await_connect4_release(3);
+        return 74;
+    }
     if (try_connect4_loopback(allowed) != 0)
         return 71;
     int refused = try_connect4_loopback(denied);
@@ -1103,7 +1164,7 @@ struct connect4_worker {
 /* The manager calls this before taking the lease. Forked child remaps the
  * pipe ends from temporary numbers to avoid collisions with FD 3 or 4. */
 int spawn_connect4_worker(uint16_t allowed, uint16_t denied,
-                           struct connect4_worker *worker)
+                           struct connect4_worker *worker, atomic_int *release_seen)
 {
     int gate[2], ready[2];
     *worker = (struct connect4_worker){-1, -1, -1, -1};
@@ -1132,7 +1193,7 @@ int spawn_connect4_worker(uint16_t allowed, uint16_t denied,
         }
         close(gate_read);
         close(ready_write);
-        int status = run_connect4_worker(allowed, denied);
+        int status = run_connect4_worker(allowed, denied, release_seen);
         close(gate_target);
         /* The worker closes the readiness end after its notification.
          * On a setup failure it may still be open. */
@@ -1222,6 +1283,7 @@ int retry_connect4_recovery(const struct connect4_trial *trial,
 static int record_connect4_trial(const struct connect4_trial *trial);
 
 int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
+                       int stop_before_release, atomic_int *release_seen,
                        int allowed_listener, uint16_t allowed_port,
                        int denied_listener, uint16_t denied_port,
                        struct connect4_phase phases[static 3],
@@ -1239,20 +1301,48 @@ int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
         return -1;
 
     struct connect4_worker worker;
-    if (spawn_connect4_worker(allowed_port, denied_port, &worker) < 0)
+    if (spawn_connect4_worker(allowed_port, denied_port, &worker, release_seen) < 0)
         return -1;
     int pinned = 0;
     int result = place_connect4_worker(trial->state_fd, trial->cgroup_fd,
                                          trial->device, trial->cgroup_id,
                                          worker.pid, worker.pidfd);
-    if (result == 0)
+    const char *failure_stage = "place";
+    if (result == 0) {
+        failure_stage = "prepare-or-release";
         result = release_connect4_worker(trial->state_fd, worker.gate,
                                             worker.ready, controller_pidfd,
                                             worker.pid, worker.pidfd,
                                             trial->link_fd, trial->pin_path,
                                             trial->cgroup_fd, trial->device,
                                             trial->cgroup_id, trial->link_id,
-                                            trial->program_id, &pinned);
+                                            trial->program_id, &pinned, stop_before_release);
+    }
+    if (result < 0) {
+        int error = errno;
+        fprintf(stderr, "connect4 stage=%s errno=%d pin_created=%d\n",
+                failure_stage, error, pinned);
+        errno = error;
+    }
+    if (result == 0 && release_seen != NULL) {
+        const struct timespec interval = { .tv_nsec = 10000000 };
+        unsigned checks = 0;
+        while (!atomic_load_explicit(release_seen, memory_order_acquire) &&
+               checks++ < 100)
+            nanosleep(&interval, NULL);
+        if (!atomic_load_explicit(release_seen, memory_order_acquire)) {
+            errno = ETIMEDOUT;
+            result = -1;
+        } else if (stop_test_controller(controller_pidfd) < 0) {
+            result = -1;
+        } else {
+            struct pollfd child = { .fd = worker.pidfd, .events = POLLIN };
+            int ready = poll(&child, 1, 0);
+            if (ready >= 0)
+                errno = ready == 0 ? ECANCELED : EPROTO;
+            result = -1;
+        }
+    }
     close(worker.gate);
     close(worker.ready);
     if (result == 0)
@@ -1441,7 +1531,20 @@ done:;
     return result;
 }
 
+#ifndef CONNECT4_CASE
+#define CONNECT4_CASE 0
+#endif
+#if CONNECT4_CASE == 0
 #define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-001"
+#elif CONNECT4_CASE == 1
+#define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-before-001"
+#elif CONNECT4_CASE == 2
+#define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-after-001"
+#elif CONNECT4_CASE == 3
+#define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-diagnostic-001"
+#else
+#error "unknown connect4 fixture case"
+#endif
 #define CONNECT4_PIN_PATH "/sys/fs/bpf/" CONNECT4_TRIAL_NAME
 
 /* Keep failed setup directories for inspection. A second invocation must

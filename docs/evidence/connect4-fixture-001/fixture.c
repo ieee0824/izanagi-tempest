@@ -59,10 +59,23 @@ int main(int argc, char **argv)
     }
     struct connect4_pending_recovery pending;
     struct connect4_phase phases[3];
-    result = run_connect4_trial(&trial, controller_pidfd, allowed, allowed_port,
+    atomic_int *release_seen = NULL;
+    if (CONNECT4_CASE == 2) {
+        release_seen = mmap(NULL, sizeof(*release_seen), PROT_READ | PROT_WRITE,
+                            MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        if (release_seen == MAP_FAILED) {
+            perror("release synchronization");
+            goto done;
+        }
+        atomic_init(release_seen, 0);
+    }
+    result = run_connect4_trial(&trial, controller_pidfd, CONNECT4_CASE == 1,
+                                release_seen, allowed, allowed_port,
                                     denied, denied_port, phases, &pending);
     if (result < 0)
         perror("connect4 trial");
+    if (release_seen != NULL)
+        munmap(release_seen, sizeof(*release_seen));
     if (pending.pidfd >= 0) {
         result = -1;
         while (retry_connect4_recovery(&trial, &pending) < 0) {
