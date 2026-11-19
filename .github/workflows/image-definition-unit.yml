@@ -8,6 +8,10 @@ on:
       - '.github/workflows/image-definition-unit.yml'
       - 'image/prepare.py'
       - 'image/x86_template.py'
+      - 'image/provision.sh'
+      - 'image/fixed_vm_receive.py'
+      - 'integration/fixed_vm_receive_observe.py'
+      - 'tests/test_fixed_vm_receive.py'
       - 'tests/test_image_x86.py'
       - 'tests/fixtures/izanagi-16d-debian.pkr.hcl'
   pull_request:
@@ -15,6 +19,10 @@ on:
       - '.github/workflows/image-definition-unit.yml'
       - 'image/prepare.py'
       - 'image/x86_template.py'
+      - 'image/provision.sh'
+      - 'image/fixed_vm_receive.py'
+      - 'integration/fixed_vm_receive_observe.py'
+      - 'tests/test_fixed_vm_receive.py'
       - 'tests/test_image_x86.py'
       - 'tests/fixtures/izanagi-16d-debian.pkr.hcl'
 
@@ -31,5 +39,7 @@ jobs:
           persist-credentials: false
       - name: Test fixed image derivation without building an image
         run: python3 -m unittest discover -s tests -p test_image_x86.py -v
+      - name: Test fixed guest receiver without starting a VM
+        run: python3 -m unittest discover -s tests -p test_fixed_vm_receive.py -v
       - name: Check syntax
         run: python3 -m py_compile image/prepare.py image/x86_template.py
