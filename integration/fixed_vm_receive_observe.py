@@ -72,3 +72,26 @@ def validate_guest_export(raw, *, run_nonce, boot_id):
         require_counts(row['end'], total)
     require_counts(report['counts'], total)
     return report
+
+
+def observe_guest(execute, *, run_nonce, boot_id, phase, operation):
+    """Invoke the fixed receiver through the harness's private session executor."""
+    if re.fullmatch(r'[0-9a-f]{32}', run_nonce) is None or str(uuid.UUID(boot_id)) != boot_id:
+        raise ValueError('invalid expected guest binding')
+    if phase not in PHASES or operation not in ('start', 'request', 'end', 'report'):
+        raise ValueError('invalid expected guest operation')
+    if (operation == 'report' and phase != PHASES[-1]) or (operation == 'request' and phase == 'deny_other'):
+        raise ValueError('invalid operation for guest phase')
+    argv = ['/usr/bin/python3', '-I', '-B', '/workspace/readonly-check/fixed-vm-receive.py',
+            operation, run_nonce, phase]
+    if operation == 'request':
+        argv.append(f'tempest-dummy-v1:{run_nonce}:{phase}')
+    result = execute(*argv, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError('fixed guest receiver failed')
+    stdout = result.stdout.encode('utf-8', 'surrogateescape')
+    if operation == 'report':
+        if stdout.count(b'\n') != 1 or not stdout.endswith(b'\n'):
+            raise ValueError('invalid guest report framing')
+        return validate_guest_export(stdout[:-1], run_nonce=run_nonce, boot_id=boot_id)
+    return validate_guest_ack(stdout, run_nonce=run_nonce, boot_id=boot_id, phase=phase, operation=operation)
