@@ -2330,8 +2330,10 @@ done:;
 #ifndef CONNECT4_CASE
 #define CONNECT4_CASE 0
 #endif
+#if CONNECT4_CASE == 9 || CONNECT4_CASE == 10
 #ifndef FIXED_VM_TRIAL_SUFFIX
-#define FIXED_VM_TRIAL_SUFFIX "001"
+#error "set FIXED_VM_TRIAL_SUFFIX to this trial's unique suffix"
+#endif
 #endif
 #if CONNECT4_CASE == 0
 #define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-001"
