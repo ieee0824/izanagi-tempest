@@ -28,5 +28,7 @@ jobs:
         run: cargo +stable fmt --all -- --check
       - name: Test fixed dummy backends without KVM device access
         run: cargo +stable test --locked -p tempest-kvm-probe -- --test-threads=1
+      - name: Check resource lifetime fixtures under parallel libtest
+        run: cargo +stable test --locked -p tempest-kvm-probe --lib -- --test-threads=4
       - name: Lint KVM probe
         run: cargo +stable clippy --locked -p tempest-kvm-probe --all-targets -- -D warnings

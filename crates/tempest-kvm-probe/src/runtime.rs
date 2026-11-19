@@ -327,6 +327,23 @@ fn execute_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn isolated_resource_test(name: &str) -> bool {
+        const CHILD: &str = "TEMPEST_KVM_RESOURCE_TEST_CHILD";
+        if std::env::var(CHILD).as_deref() == Ok(name) {
+            return false;
+        }
+        // An unmapped address or closed FD can immediately be reused by an
+        // unrelated libtest thread. Observe resource lifetime in its own
+        // address space, while retaining the real munmap/close assertions.
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--test-threads=1"])
+            .env_clear()
+            .env(CHILD, name)
+            .status()
+            .unwrap();
+        assert!(status.success(), "isolated resource test failed: {name}");
+        true
+    }
     #[derive(Default)]
     struct Fake {
         fail: &'static str,
@@ -429,6 +446,11 @@ mod tests {
     }
     #[test]
     fn every_initialization_stage_converges_on_real_resource_cleanup() {
+        if isolated_resource_test(
+            "runtime::tests::every_initialization_stage_converges_on_real_resource_cleanup",
+        ) {
+            return;
+        }
         for stage in [
             "",
             "api",
@@ -512,6 +534,11 @@ mod tests {
     }
     #[test]
     fn early_failure_closes_registered_fd_and_unmaps_memory() {
+        if isolated_resource_test(
+            "runtime::tests::early_failure_closes_registered_fd_and_unmaps_memory",
+        ) {
+            return;
+        }
         let sink = Rc::new(Cell::new(None));
         let mut observed_fd = -1;
         let mut address = std::ptr::null_mut();
