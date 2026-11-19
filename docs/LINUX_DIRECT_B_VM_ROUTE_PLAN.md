@@ -431,3 +431,17 @@ connect4 の許可 port は当該 QEMU の唯一の agent 転送から決める�
 host 側の計数と guest の区間 ACK は被試験子の通信を囲んで採取する。
 `f7fcc13` の計数検証に加え、同じ run に属する QEMU、別 listener、
 被試験子、link の生存・同一性を境界ごとに確認し、拒否を timeout と区別する。
+
+既存の connect4 worker は `execve` を拒否する。固定 VM 試験ではこの拒否を
+維持し、Izanagi CLI の起動を worker に追加しない。候補は、制約下の固定子が
+TCP ソケットを作成・接続・保持し、親の専用 pipe とソケットの間で有限量を
+中継する構成。親の固定コントローラーでは、固定上流の
+`ProtocolClient<R, W>` の認証と Ready を、TCP 直結の代わりにその pipe 上で
+使う。許可区間の固定 `request` はこの経路のみから発行する。
+親の独立した管理用 exec は start/end/report に限定する。
+
+別 listener の前後対照と拒否も同じ worker バイナリと TCP 接続処理に通す。
+前後対照では同じ pipe 経由で固定 dummy 要求を送り、拒否時は実 `connect` の
+errno を制御 pipe で戻す。親は TCP FD を受け取らず、別 listener へ認証
+フレームを送らない。中継用 seccomp の追加 syscall と FD の固定、
+双方向 I/O の上限・絶対期限、子の回収を実装レビューで照合する。
