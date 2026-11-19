@@ -39,6 +39,7 @@ impl FixedMcpArtifact {
         root: &std::path::Path,
         stdio: [BorrowedFd<'_>; 3],
         gate: [BorrowedFd<'_>; 2],
+        caller_gate_writer: BorrowedFd<'_>,
     ) -> Result<libc::pid_t, super::os::Fault> {
         let parent = super::identity::Process::bind(std::process::id())?;
         let pid = super::os::clone_isolated()?;
@@ -46,7 +47,12 @@ impl FixedMcpArtifact {
             return Ok(pid);
         }
         super::lease::clear();
-        unsafe { libc::close(gate[1].as_raw_fd()) };
+        // Neither write end belongs to the MCP child. Close both before
+        // waiting so failure can reach the corresponding reader as EOF.
+        unsafe {
+            libc::close(gate[1].as_raw_fd());
+            libc::close(caller_gate_writer.as_raw_fd());
+        }
         if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) } != 0
             || !parent.alive().unwrap_or(false)
         {
