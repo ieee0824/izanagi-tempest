@@ -81,3 +81,14 @@ room #16989 の範囲で、`b98090c` の `fixture.c` と `policy.c` を `git sho
 同ホストで補助グループが空の別プロセスを観測すると、`getgroups()` は空で、`Groups:` の後ろにタブと空白があった。`4c53105` で空白だけの値を空集合として扱い、補助GIDや打切りは拒否するよう修正した。
 
 `a1b3180` を `-DCONNECT4_CASE=4` でビルドし、固定名 `tempest-connect4-fixture-normal-002` の4パスが未使用と確認して一度実行した。バイナリSHA-256は `a5f1f08d62cab54486d2b74b3cd6b600614b1433410ec68eb8e2d0d43e74a3b9`。終了0、前 `(1,1)`、試験中 `(1,0)`、後 `(1,1)`。workerは `CLD_EXITED`、status 0。workerのstatus 0は許可先への接続成功と拒否先への `EPERM` の両方を要する。終了後に固定pin、専用cgroup、現行台帳の不在とroot所有・0700の退役台帳を確認した。元2件の台帳の `trial-identity` SHA-256は一致した。room #16997 に報告済み。起動許可前後の強制終了は未実行。
+
+## 起動許可前後の制御側強制終了試験
+
+room #16998 の範囲で、固定ホストにて `63b0442` を `-DCONNECT4_CASE=1` または `-DCONNECT4_CASE=2` でビルドし、各固定名のcgroup、pin、現行台帳、退役台帳が未使用であることを確認した。既存の管理経路 `sudo -n` から各一回実行した。
+
+| 同期点 | 固定名 | バイナリのSHA-256 | 観測 |
+| --- | --- | --- | --- |
+| 起動許可直前 | `tempest-connect4-fixture-before-001` | `cfc426b72abe9be778860eb58ef719d9d2d97d3da932a4a45f5cefd51c8a20b8` | 制御側終了を観測。許可段階でerrno 125、pin作成済み、退役台帳にrelease-intentなし。 |
+| 起動許可受信直後 | `tempest-connect4-fixture-after-001` | `111fff8b0df3898e95a4c27f7e42e741c72fc6195d229ef33fd0b43f617b5a78` | workerの許可受信を確認。制御側終了を観測した時点でworkerは生存。退役台帳にrelease-intentあり。 |
+
+両ケースで想定どおり `ECANCELED`、終了1。ログで監督が元pidfdを使ってworkerの終了を確認し、reapしたことを確認した。前対照はいずれも `(1,1)`。試験中と後対照のaccept数は未観測。事後は各固定名のpin、cgroup、現行台帳が不在で、退役台帳はroot所有・0700だった。結果はroom #16999に報告した。監督自身の強制終了は試験対象外。
