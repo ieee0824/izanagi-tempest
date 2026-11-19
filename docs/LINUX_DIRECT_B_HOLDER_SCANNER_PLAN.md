@@ -74,3 +74,11 @@ room #17025 に従い、初回は固定dummyデータだけを使い、BとMCP c
 起動停止点と凍結の間は、監督が所属変更とFD引き渡しを止め、両子に他processへのFD授受や別cgroup移動を許可しない。元pidfdと開始tickに束縛した各taskのFDを凍結中に走査し、既知の親FDも含めて期待集合と比較する。解凍後は子の初期化コードが所定の端の閉鎖だけを行う。新しいdup、継承、FD授受を許す構成は別途設計と再検証を要する。最初の試行で未確認の子や余剰FDがあれば起動を取り消す。
 
 MCP childの世代、固定binaryとcatalog、VM session、固定loopbackだけを許すOS制約を別々に照合する。既存の固定loopback試験と単一workerの凍結試験は、それぞれの部品の実証として扱う。両子への結線では、凍結中の内部比較、解凍完了、閉じたdummy経路上の正例・拒否・回収を改めて実測する。
+
+### 2者の固定ホスト試験
+
+room #17028 に従い、`7e7f47c` のテストバイナリを `sudo -n` で起動し、`--ignored --exact cgroup::tests::fixed_dummy_two_workers_hold_only_crossed_pipe_ends --nocapture --test-threads=1` の1件だけを一度実行した。バイナリSHA-256は `c12fd5689583a16779eeba32eda16065493f1002244e2f5c6ca32635d48f68d1`。終了0。
+
+2本のpipeそれぞれについて、凍結中の走査で読み書き計4端が期待する2子のFD番号と方向に一致した。親に残る対象pipe端はゼロ。元pidfd、開始tick、roleの完全一致も検査した。両方の子のwaitpidが元PIDを返し、専用cgroupの回収も成功した。専用cgroupの不在は試行前後に管理処理の外から確認した。結果はroom #17029に報告済み。
+
+この試験中、子は所定のFDを閉じて準備完了を通知した後に待機する。解凍後のメッセージ交換、FD状態の変更拒否、実Izanagiへの結線は後続の検証とする。
