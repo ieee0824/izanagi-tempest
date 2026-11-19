@@ -51,6 +51,7 @@ impl Descriptor {
             && self.dev == metadata.dev()
             && self.ino == metadata.ino()
             && self.mode == metadata.mode()
+            && flags & libc::O_PATH == 0
             && self.access == flags & libc::O_ACCMODE)
     }
 }
@@ -392,6 +393,8 @@ mod tests {
 
     #[test]
     fn descriptor_binding_checks_object_and_access_not_only_fd_count() {
+        use std::os::unix::fs::OpenOptionsExt;
+
         let root = std::env::temp_dir().join(format!(
             "tempest-fd-binding-{}",
             crate::private_io::random_hex().unwrap()
@@ -406,7 +409,21 @@ mod tests {
             .open(root.join("one"))
             .unwrap();
         let other = fs::File::open(root.join("two")).unwrap();
+        let path_only = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH)
+            .open(root.join("one"))
+            .unwrap();
         let bound = Descriptor::bind(read.as_raw_fd()).unwrap();
+        assert!(matches!(
+            Descriptor::bind(path_only.as_raw_fd()),
+            Err(Fault::Identity)
+        ));
+        assert!(
+            !bound
+                .matches(std::process::id(), path_only.as_raw_fd())
+                .unwrap()
+        );
         assert!(bound.matches(std::process::id(), read.as_raw_fd()).unwrap());
         assert!(
             !bound
