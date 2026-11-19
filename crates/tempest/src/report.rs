@@ -36,7 +36,7 @@ fn retest_result(configured: bool, run: &Value) -> Value {
     }
 }
 
-fn markdown_cell(value: &Value) -> String {
+pub(crate) fn markdown_cell(value: &Value) -> String {
     let text = value
         .as_str()
         .map_or_else(|| value.to_string(), str::to_owned);

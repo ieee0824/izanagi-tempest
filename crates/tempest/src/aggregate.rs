@@ -527,6 +527,23 @@ fn markdown(value: &Value) -> String {
         }
     }
     output.push_str("\nUnknown remains in each configured denominator. Not configured and unavailable generations are shown separately.\n");
+    output.push_str("\n## Comparison slots\n\n| Slot | Run | State | Planned connection route | Route coverage |\n|---|---|---|---|---|\n");
+    for source in value["groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|group| group["sources"].as_array().into_iter().flatten())
+    {
+        let cells = [
+            "slot_id",
+            "run_id",
+            "state",
+            "planned_connection_route",
+            "route_coverage",
+        ]
+        .map(|key| report::markdown_cell(&source[key]));
+        output.push_str(&format!("| {} |\n", cells.join(" | ")));
+    }
     output
 }
 
@@ -727,6 +744,16 @@ mod tests {
         assert_eq!(sources[0]["route_coverage"], "verified");
         assert_eq!(sources[1]["planned_connection_route"], "mock_in_process");
         assert!(sources[1]["route_coverage"].is_null());
+        let rendered = fs::read_to_string(root.join("aggregate.md")).unwrap();
+        assert!(rendered.contains(
+            "| slot&#45;1 | run&#45;1 | committed | mock&#95;in&#95;process | verified |"
+        ));
+        assert!(
+            rendered.contains(
+                "| slot&#45;2 | run&#45;2 | unavailable | mock&#95;in&#95;process | null |"
+            )
+        );
+
         assert_eq!(aggregate["unplanned_directories"], json!(["unplanned-run"]));
         let marker: Value =
             serde_json::from_slice(&fs::read(root.join("aggregate-state.json")).unwrap()).unwrap();
