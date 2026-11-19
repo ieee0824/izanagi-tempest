@@ -258,3 +258,25 @@ int check_connect4_cgroup_empty(int cgroup_fd, dev_t device, uint64_t id)
     }
     return 0;
 }
+
+/* The controller holds the admission gate closed and has recorded the
+ * recovery identities before calling this. Failure after pin keeps the pin
+ * for recovery. Success returns a second, independently opened link FD. */
+int pin_and_verify_connect4_link(int link_fd, const char *path, int cgroup_fd,
+                                 dev_t device, uint64_t cgroup_id,
+                                 uint32_t link_id, uint32_t program_id)
+{
+    dev_t actual_device;
+    uint64_t actual_cgroup_id;
+    if (read_connect4_cgroup_identity(cgroup_fd, &actual_device,
+                                     &actual_cgroup_id) < 0)
+        return -1;
+    if (actual_device != device || actual_cgroup_id != cgroup_id) {
+        errno = ESTALE;
+        return -1;
+    }
+    if (check_connect4_link(link_fd, link_id, program_id, cgroup_id) < 0 ||
+        pin_connect4_link(link_fd, path) < 0)
+        return -1;
+    return reopen_connect4_link(path, link_id, program_id, cgroup_id);
+}
