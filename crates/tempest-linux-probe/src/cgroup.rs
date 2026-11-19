@@ -186,6 +186,27 @@ fn read(directory: &fs::File, name: &str) -> Result<String, Fault> {
     Ok(value)
 }
 
+fn parse_frozen(events: &str) -> Result<bool, Fault> {
+    if !events.ends_with('\n') {
+        return Err(Fault::Identity);
+    }
+    let mut frozen = None;
+    for line in events.lines() {
+        if line.split_ascii_whitespace().next() != Some("frozen") {
+            continue;
+        }
+        if frozen.is_some() {
+            return Err(Fault::Identity);
+        }
+        frozen = Some(match line {
+            "frozen 0" => false,
+            "frozen 1" => true,
+            _ => return Err(Fault::Identity),
+        });
+    }
+    frozen.ok_or(Fault::Identity)
+}
+
 fn mkdir(directory: &fs::File, name: &str) -> Result<(), Fault> {
     let name = component(name)?;
     super::os::syscall(unsafe { libc::mkdirat(directory.as_raw_fd(), name.as_ptr(), 0o755) })
@@ -396,6 +417,50 @@ impl Group {
         Ok([counter("max ")?, counter("oom ")?, counter("oom_kill ")?])
     }
 
+    #[allow(dead_code)]
+    pub(super) fn request_frozen(&self, frozen: bool) -> Result<(), Fault> {
+        self.verify()?;
+        write(
+            &self.directory,
+            "cgroup.freeze",
+            if frozen { "1" } else { "0" },
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn wait_frozen(&self, expected: bool, until: Instant) -> Result<(), Fault> {
+        loop {
+            if Instant::now() >= until {
+                return Err(Fault::Identity);
+            }
+            let frozen = self.frozen()?;
+            let remaining = until.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Fault::Identity);
+            }
+            if frozen == expected {
+                return Ok(());
+            }
+            thread::sleep(remaining.min(Duration::from_millis(5)));
+        }
+    }
+
+    /// Separate from requesting a freeze: observe the kernel state to EOF.
+    #[allow(dead_code)]
+    pub(super) fn frozen(&self) -> Result<bool, Fault> {
+        use std::io::Read;
+        self.verify()?;
+        let mut events = String::new();
+        open_at(&self.directory, "cgroup.events", libc::O_RDONLY)?
+            .take(4097)
+            .read_to_string(&mut events)?;
+        if events.len() > 4096 {
+            return Err(Fault::Identity);
+        }
+        self.verify()?;
+        parse_frozen(&events)
+    }
+
     pub(super) fn kill(&self) -> Result<(), Fault> {
         self.verify()?;
         write(&self.directory, "cgroup.kill", "1")
@@ -447,6 +512,25 @@ impl Drop for Group {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn frozen_event_requires_a_unique_complete_value() {
+        assert!(matches!(
+            super::parse_frozen("populated 1\nfrozen 1\n"),
+            Ok(true)
+        ));
+        assert!(matches!(super::parse_frozen("frozen 0\n"), Ok(false)));
+        for invalid in [
+            "",
+            "populated 1\n",
+            "frozen 1",
+            "frozen 2\n",
+            "frozen 1\nfrozen 1\n",
+            "frozen\nfrozen 1\n",
+        ] {
+            assert!(super::parse_frozen(invalid).is_err());
+        }
+    }
+
     use super::*;
 
     #[test]
