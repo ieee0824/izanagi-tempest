@@ -345,3 +345,23 @@ worktree で `cargo build --offline --release --locked --target x86_64-unknown-l
 両 JSON で source dirty は false、専用フラグは true。ISO と guest 以外の
 入力 SHA は定義001と一致。これは定義と guest ELF の照合結果であり、
 #74 の容量確認中は Packer build と VM 起動を保留する。
+
+#### full003 から独立 qcow2 を派生する案
+
+room #17217 の使い捨て試験で、1 MiB ファイルに offset 65536、
+sizelimit 131072 の loop を割り当て、block device の実サイズ 131072 を確認した。
+この版の util-linux では `losetup --detach /dev/loopN` で解除し、
+関連付け、sysfs の backing_file、一時ファイルの不在を確認した（room #17218）。
+
+派生の実行前に full003 の実 SHA-256、定義002の両 JSON と guest ELF の SHA-256、
+空き容量、新規出力先の不在を確認する。raw 作業コピーと独立 qcow2 の最大割当の
+合計見積もりは 8,590,852,096 bytes。別の partition ファイルは作らない。
+raw のパーティション表と ext4 署名を再読し、既存の選択記録と一致する場合に限って
+当該範囲を loop デバイスに割り当てる。作業コピーとの関連付けと実サイズは
+書き込み前に再照合する。
+
+変更対象は guest ELF、固定 tmpfiles 定義、ゲスト内 `/etc/tempest/image.json`。
+後者は guest の入力・インストール済み SHA、出自、専用フラグを定義002と一致させ、
+親由来の実インストール情報を保持する。回収後に独立 qcow2 を検査し、backing 不在、
+3ファイルの実バイト・所有者・モード、親イメージの SHA 不変と loop 不在を記録する。
+VM 起動は別の検証とする。
