@@ -108,3 +108,15 @@ room #17000 の設計案。最上位の回収プロセスは、監督を生成�
 引き渡し前に監督が終了する場合、許可パイプの書き込み端は監督だけが保持する。workerはEOFで接続を開始せず終了する。上位側は監督終了後に既知の子PIDに限定してwait/reapする。このケースには元pidfdを使った回収の証拠がない。
 
 リポジトリrootで `timeout 5s python3 -B docs/evidence/connect4-fixture-001/subreaper_test.py` を実行すると、引き渡し前、引き渡し済みで許可前、許可受信後の3ケースを検証できる。前2ケースはworkerがEOFで終了する。許可受信後のケースでは、監督の強制終了後もworkerが生存し、上位が元pidfdで子としてwait可能であることを確認してから停止・reapする。固定ホストで3件とも終了0のテストに含まれた。BPFとcgroupを使う上位回収経路はこの試験の対象外。
+
+### 固定ホストの上位回収試験
+
+room #17011 に従い、`5d805cf` の `fixture.c` と `policy.c` を別ディレクトリへ取り出し、GCC C17の警告エラー化と静的解析を有効にしてビルドした。各ケースで専用cgroup、pin、現行台帳、退役台帳が未使用であることを確認し、既存管理経路 `sudo -n` から引数なしで各一回実行した。
+
+| ビルド | 固定名 | バイナリSHA-256 | 結果 |
+| --- | --- | --- | --- |
+| `CONNECT4_CASE=5` | `tempest-connect4-fixture-subreaper-001` | `0c7c8a650447cbbb4045a75423432453e2a3c35029e33e8c8dc368bced4e4dba` | 終了0。前・中・後のacceptは `(1,1)`、`(1,0)`、`(1,1)`。workerは通常終了し元pidfdでreap。 |
+| `CONNECT4_CASE=6` | `tempest-connect4-fixture-supervisor-before-001` | `0146ea3f1be2b446eb0b4f52884b9011528024b5fc4e8949719bd88352911e16` | 準備完了を確認して引き渡し前に監督を停止。上位が既知PIDのworkerをreapし、ゲートEOFによる未許可終了を確認。終了1、`ECANCELED`。退役台帳にrelease-intentなし。 |
+| `CONNECT4_CASE=7` | `tempest-connect4-fixture-supervisor-after-001` | `f2126641b11750f0f435e86597a9c8a041dbb420ea67b1df6e112d4495106f52` | workerの許可受信確認後に監督を停止。上位が監督終了を確認し、再親化されたworkerを元pidfdでreapしてからpinを解除。終了1、`ECANCELED`。退役台帳にrelease-intentあり。 |
+
+全ケースで専用のpin、cgroup、現行台帳の不在と、root所有・0700の退役台帳の存在を確認した。負例のaccept数と上位回収プロセス自体の喪失は未検証。結果は room #17012 に報告した。
