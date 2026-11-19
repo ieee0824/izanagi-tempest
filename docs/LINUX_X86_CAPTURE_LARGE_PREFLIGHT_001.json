@@ -1,0 +1,12 @@
+{
+  "input_items": 1316,
+  "source_files": 26,
+  "fixed_inputs_sources_external_unchanged": true,
+  "uid999_empty": true,
+  "unit_unused": true,
+  "outputs_logs_absent": true,
+  "kvm_verified": true,
+  "free_bytes": 12810997760,
+  "run_once_sha256": "b57546bd4dbf45a6bdfb9ef30ceb59d4cc098bd8ddb7f8489ed24d0d6e735b4a",
+  "runtime_started": false
+}

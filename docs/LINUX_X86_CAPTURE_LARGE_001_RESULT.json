@@ -1,0 +1,213 @@
+{
+  "status": "completed_capture_and_transfer_verified",
+  "handles": {
+    "invocation": "128179119c474e5aa8219a421f91bd03",
+    "caller_session": 40205,
+    "caller_exit": 0,
+    "observer_session": 43947,
+    "observer_exit": 1
+  },
+  "unit": "tempest-izanagi-capture-large-001.service",
+  "boot_id": "30389abc903c40ae89a5c6268ec1c432",
+  "observed_sessions": [
+    {
+      "workspace": "/var/lib/tempest-izanagi-capture-large-001/work/runs/forced-delivery-race/sandbox",
+      "pid": 329504,
+      "starttime_ticks": 39144499,
+      "binding": {
+        "boot_nonce": "56636c27e33756348450473f343c284f",
+        "supervisor_pid": 329499,
+        "session_fingerprint": "1ac578ff6d2449bdc54560dbae3b57a04a4d31a2ca3cef21716c7610c4bb3c5b"
+      }
+    }
+  ],
+  "samples": 365,
+  "observer_terminal": "unknown after unit GC; independent trusted termination checked separately",
+  "trusted_lifecycle": [
+    {
+      "MESSAGE_ID": "7d4958e842da4a758f6c1cdc7b36dcc5",
+      "UNIT": "tempest-izanagi-capture-large-001.service",
+      "INVOCATION_ID": "128179119c474e5aa8219a421f91bd03",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795048886966967"
+    },
+    {
+      "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
+      "UNIT": "tempest-izanagi-capture-large-001.service",
+      "INVOCATION_ID": "128179119c474e5aa8219a421f91bd03",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795048886970710"
+    },
+    {
+      "MESSAGE_ID": "7ad2d189f7e94e70a38c781354912448",
+      "UNIT": "tempest-izanagi-capture-large-001.service",
+      "INVOCATION_ID": "128179119c474e5aa8219a421f91bd03",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795049251533654"
+    },
+    {
+      "MESSAGE_ID": "ae8f7b866b0347b9af31fe1c80b127c0",
+      "UNIT": "tempest-izanagi-capture-large-001.service",
+      "INVOCATION_ID": "128179119c474e5aa8219a421f91bd03",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795049251535581"
+    }
+  ],
+  "cleanup_receipt": {
+    "companion_stopped": true,
+    "down_succeeded": true,
+    "forced_group_stop": false,
+    "management_stopped": true,
+    "missing_logs": [],
+    "partial_files_removed": [],
+    "up_exited_successfully": true
+  },
+  "actual_resources_reclaimed": true,
+  "runtime_status": "completed",
+  "formal_metrics_eligible": false,
+  "control_integrity": "matched",
+  "collection": {
+    "complete": true,
+    "export_id": "65a61b49ae54889f58bf66f7fd851db0",
+    "files": {
+      "api.jsonl": {
+        "expected_bytes": 16492,
+        "expected_sha256": "3dd38be4e8556f1c1c1cddde54b0ad9760dd357c66002004c31782df390be435",
+        "observed_sha256": "3dd38be4e8556f1c1c1cddde54b0ad9760dd357c66002004c31782df390be435",
+        "received_bytes": 16492,
+        "verified": true
+      },
+      "capture.pcap": {
+        "expected_bytes": 61014773,
+        "expected_sha256": "5877e2ba6b54b1bcfab1a4d462205805e30fabe230b775fe50d88933aadaeec6",
+        "observed_sha256": "5877e2ba6b54b1bcfab1a4d462205805e30fabe230b775fe50d88933aadaeec6",
+        "received_bytes": 61014773,
+        "verified": true
+      },
+      "manifest.json": {
+        "expected_bytes": 1580,
+        "expected_sha256": "e894ce9afd3195ca9cbb89e2de2a7917b55f30befd2b06df30b571337e22c1d4",
+        "observed_sha256": "e894ce9afd3195ca9cbb89e2de2a7917b55f30befd2b06df30b571337e22c1d4",
+        "received_bytes": 1580,
+        "verified": true
+      }
+    }
+  },
+  "manifest_capture_statistics": {
+    "captured": 1991,
+    "dropped": 0,
+    "read_failed": false
+  },
+  "recorder_statistics": {
+    "accepted_connections": 29,
+    "admission_rejected": 0,
+    "connection_errors": 0,
+    "http_parse_errors": 0,
+    "task_errors": 0
+  },
+  "buffer_kib_requested": 16384,
+  "quiesce": {
+    "forced_reader_pid": 1068,
+    "moved_pids": [
+      1065,
+      1066,
+      1068
+    ],
+    "frozen_duration_ns": 252892547,
+    "descendants_empty": true,
+    "service_frozen": true
+  },
+  "host_control_id": "2626e42a0a859bbe1674cce070bb8035",
+  "native_export_id": "65a61b49ae54889f58bf66f7fd851db0",
+  "export_read_categories": [
+    "reply_unavailable",
+    "execution_error",
+    "ciphertext_received"
+  ],
+  "file_mtimes_support_only": {
+    "api.jsonl": 1795048917346738023,
+    "capture.pcap": 1795049249001621307,
+    "manifest.json": 1795048917075731998
+  },
+  "collection_order_scope": "Pinned host source dictates manifest/API/PCAP order; audit without file IDs does not directly prove fetch order.",
+  "fetch_state_counts": {
+    "started": 1865,
+    "delivery_read_started": 2823,
+    "delivery_read_observed": 2823,
+    "completed": 1865
+  },
+  "fetch_timestamp_span_ns": 331996586683,
+  "per_file_allowance_ms": {
+    "api.jsonl": 30250,
+    "capture.pcap": 495750,
+    "manifest.json": 30250
+  },
+  "export_collection_budget_seconds": 600,
+  "pcap_parse_exit": 0,
+  "files": {
+    "/var/lib/tempest-izanagi-capture-large-001/work/runs/forced-delivery-race/run.json": {
+      "sha256": "8c6da4162e63f3281bddb3362151918e4e3a9216c95e5663056aaebefb216619",
+      "bytes": 11121
+    },
+    "/var/lib/tempest-izanagi-capture-large-001/work/runs/forced-delivery-race/result.json": {
+      "sha256": "282aca4387d302843b5a2373db34b77bab893a64f20f10a04fa3f417ca8213a3",
+      "bytes": 10605
+    },
+    "/var/lib/tempest-izanagi-capture-large-001/work/runs/forced-delivery-race/scenario.yaml": {
+      "sha256": "bf3ba99f1766e141c73b9451b407045b2a6dabcd51a728eeee69adccc46523c5",
+      "bytes": 1049138
+    },
+    "/var/lib/tempest-izanagi-capture-large-001/work/runs/forced-delivery-race/mock-script.json": {
+      "sha256": "8380ecce53694b93a7a2ea0a53350aedf3b12113a701a0b6042852e42ed79ff7",
+      "bytes": 436
+    },
+    "/var/lib/tempest-izanagi-capture-large-001/work/runs/forced-delivery-race/artifact-inventory.json": {
+      "sha256": "f5d0b549c0bbd920e6c1d4b5a20ab1caf4d6917cddce0cb395cfd93dcb6658db",
+      "bytes": 1090
+    },
+    "/var/lib/tempest-izanagi-capture-large-001/work/runs/forced-delivery-race/evidence/control.jsonl": {
+      "sha256": "79ddaaa9b585ca6f7ef602d31bd1ba1c3b09512703a98987386b9fd7843ad7df",
+      "bytes": 1352285
+    },
+    "/var/lib/tempest-izanagi-capture-large-001/work/runs/forced-delivery-race/evidence/export-index.json": {
+      "sha256": "332165a5f57c89468a6a2a8f8cc27db5e26cd3857185cc6a6b2e020ac42bab3f",
+      "bytes": 2818
+    },
+    "/var/lib/tempest-izanagi-capture-large-001/work/runs/forced-delivery-race/evidence/collection.json": {
+      "sha256": "d0b6f6cddf32ba19c48e4a1e8658903f691cd363ed34d7663f9b17b9ad07849a",
+      "bytes": 992
+    },
+    "/var/lib/tempest-izanagi-capture-large-001/work/runs/forced-delivery-race/evidence/manifest.json": {
+      "sha256": "e894ce9afd3195ca9cbb89e2de2a7917b55f30befd2b06df30b571337e22c1d4",
+      "bytes": 1580
+    },
+    "/var/lib/tempest-izanagi-capture-large-001/work/runs/forced-delivery-race/evidence/api.jsonl": {
+      "sha256": "3dd38be4e8556f1c1c1cddde54b0ad9760dd357c66002004c31782df390be435",
+      "bytes": 16492
+    },
+    "/var/lib/tempest-izanagi-capture-large-001/work/runs/forced-delivery-race/evidence/capture.pcap": {
+      "sha256": "5877e2ba6b54b1bcfab1a4d462205805e30fabe230b775fe50d88933aadaeec6",
+      "bytes": 61014773
+    },
+    "/tmp/tempest-capture-large-observation-001.jsonl": {
+      "sha256": "d34227c4b2b06fdc6fc972e9326a38fa0bc84f44288f89d3b137ad8c0b59187c",
+      "bytes": 472794
+    },
+    "/var/lib/tempest-izanagi-capture-large-001/work/evidence/exit-status.json": {
+      "sha256": "a9fbc8135f1dfe74e3e1ba9f868ede30dcc31da37791601a1aba2e79e616d07d",
+      "bytes": 522
+    },
+    "/tmp/tempest-capture-large-001.log": {
+      "sha256": "55b0fb68230e17287c2ce147ca6322e02606a87c9f28143d1f64490d6e12852b",
+      "bytes": 480
+    }
+  }
+}
