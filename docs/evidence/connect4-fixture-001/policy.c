@@ -1268,6 +1268,25 @@ int run_connect4_trial(const struct connect4_trial *trial,
                                       denied_port, &phases[2]);
 }
 
+/* Resolve unknown state only from the verified pin or the existing
+ * pre-release absence checks. A missing pin after release stays unknown. */
+static int resolve_connect4_pin_phase(const struct connect4_trial *trial,
+                                      struct connect4_pending_recovery *pending)
+{
+    int link = reopen_connect4_link(trial->pin_path, trial->link_id,
+                                     trial->program_id, trial->cgroup_id);
+    if (link >= 0) {
+        close(link);
+        pending->phase = CONNECT4_PIN_HELD;
+        return 0;
+    }
+    if (errno != ENOENT || confirm_worker_exit(pending->pidfd) < 0 ||
+        confirm_unpinned_connect4_trial(trial) < 0)
+        return -1;
+    pending->phase = CONNECT4_PIN_ABSENT;
+    return 0;
+}
+
 /* The same manager keeps the original trial and remains the sole reaper. */
 int retry_connect4_recovery(const struct connect4_trial *trial,
                             struct connect4_pending_recovery *pending)
@@ -1276,6 +1295,9 @@ int retry_connect4_recovery(const struct connect4_trial *trial,
         errno = EINVAL;
         return -1;
     }
+    if (pending->phase == CONNECT4_PIN_UNKNOWN && trial != NULL &&
+        resolve_connect4_pin_phase(trial, pending) < 0)
+        return -1;
     switch (pending->phase) {
     case CONNECT4_PIN_UNKNOWN:
         errno = ESTALE;
@@ -1457,6 +1479,8 @@ static int open_connect4_parent(const char *path, long magic)
     return fd;
 }
 
+int retire_connect4_fixture_state(int state_fd);
+
 int create_connect4_fixture_state(int *state_fd, int *cgroup_fd)
 {
     *state_fd = -1;
@@ -1493,8 +1517,15 @@ int create_connect4_fixture_state(int *state_fd, int *cgroup_fd)
     if (close(lock) < 0 || fsync(state) < 0 || fsync(state_parent) < 0)
         goto done;
     cgroup = create_connect4_trial_directory(cgroup_parent, CONNECT4_TRIAL_NAME);
-    if (cgroup < 0)
+    if (cgroup < 0) {
+        int setup_error = errno;
+        /* We own the fresh ledger, but did not obtain a verified cgroup
+         * handle. Do not delete or modify any cgroup at the fixed path. */
+        if (retire_connect4_fixture_state(state) < 0)
+            perror("retire failed fixture initialization");
+        errno = setup_error;
         goto done;
+    }
     *state_fd = state;
     *cgroup_fd = cgroup;
     result = 0;
