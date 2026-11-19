@@ -161,3 +161,21 @@ Izanagi が固定 `initialize` と `tools/list` に応答して stdout を閉じ
 確認する。同じ試験で、親の umask を継承した場合に起こる loader と
 `/work` の参照不可を回帰として検出する。結果には試験コミット、ELF
 の SHA-256、元 pidfd による終了確認と cgroup 回収を保存する。
+
+#### 固定ホスト試験の入口
+
+`cargo build --locked -p tempest --bin tempest` で作成した CLI の SHA-256 を
+記録する。固定 Izanagi と loader/library の SHA-256 はコード上の期待値と
+照合する。Izanagi の staging 先は root 所有・書込制限のある祖先の下に
+作成し、既存の配置を上書きしない。UID 62002/62004 が未使用であり、
+`/run/tempest-fixed-mcp-stdio` と
+`/sys/fs/cgroup/tempest-linux-isolation-probe` が存在しない状態から始める。
+
+```bash
+sudo -n sh -c 'umask 077 && exec "$1" linux-isolation-probe --fixed-mcp-stdio-fixture' \
+  sh /absolute/path/to/tempest
+```
+
+終了コード、JSON の `trial_reason`、`recovery_reason`、
+`root_cleanup_reason`、`untracked_cleanup_errno` と、終了後に両専用パスが
+存在しないことを保存する。結果のスコープはローカルの固定 stdio と回収である。
