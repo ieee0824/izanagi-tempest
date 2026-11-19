@@ -1,5 +1,7 @@
 """Validate fixed guest acknowledgements and private export on the host."""
+import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import stat
@@ -180,3 +182,36 @@ def validate_trial_counts(guest_export, host_phases, *, run_nonce, boot_id):
                 raise ValueError('unexpected alternate host listener count')
         total += delta
     return guest
+
+def session_binding(workspace, home, *, owner_uid, supervisor_pid, forward):
+    """Check the private QEMU session against the parent and the observed forward."""
+    instance = hashlib.sha256(os.fsencode(workspace)).hexdigest()
+    path = home / '.izanagi' / 'instances' / instance / 'session.json'
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != owner_uid or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_nlink != 1 or not 0 < before.st_size <= 4096
+        ):
+            raise ValueError('invalid private session file')
+        data = stream.read(4097)
+        after = os.fstat(stream.fileno())
+        current = path.lstat()
+    identity = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+    if len(data) != before.st_size or any(
+        getattr(before, key) != getattr(item, key) for item in (after, current) for key in identity
+    ):
+        raise ValueError('private session file changed during observation')
+    session = json.loads(data, object_pairs_hook=unique_object)
+    if not isinstance(session, dict) or set(session) != {'backend', 'pid', 'started_at'}:
+        raise ValueError('invalid QEMU session schema')
+    backend = session['backend']
+    if (
+        not isinstance(backend, dict) or backend.get('type') != 'qemu'
+        or type(backend.get('host_port')) is not int or backend['host_port'] != forward['port']
+        or type(session['pid']) is not int or session['pid'] != supervisor_pid
+        or type(session['started_at']) is not int or session['started_at'] <= 0
+    ):
+        raise ValueError('private QEMU session does not match observed forward')
+    return hashlib.sha256(data).digest()
