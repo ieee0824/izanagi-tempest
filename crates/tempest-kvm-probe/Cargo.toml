@@ -1,0 +1,7 @@
+[package]
+name = "tempest-kvm-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+[dependencies]
+libc = "0.2"

@@ -1,0 +1,81 @@
+{
+  "scope": "read-only metadata; no BPF probe/load/attach, policy mutation, VM or credentials",
+  "kernel_release": "6.8.0-147-generic",
+  "architecture": "x86_64",
+  "cgroup_filesystem": "cgroup2fs",
+  "cgroup.controllers": {
+    "exists": true,
+    "value": "cpuset cpu io memory hugetlb pids rdma misc"
+  },
+  "cgroup.subtree_control": {
+    "exists": true,
+    "value": "cpu memory pids"
+  },
+  "cgroup.type": {
+    "exists": false,
+    "value": null
+  },
+  "cgroup.freeze": {
+    "exists": false,
+    "value": null
+  },
+  "unprivileged_bpf_disabled": "2",
+  "btf_vmlinux_present": true,
+  "kernel_config_paths_present": [
+    "/boot/config-6.8.0-147-generic"
+  ],
+  "kernel_config_selected": {
+    "CONFIG_BPF": "y",
+    "CONFIG_BPF_SYSCALL": "y",
+    "CONFIG_BPF_JIT": "y",
+    "CONFIG_CGROUPS": "y",
+    "CONFIG_CGROUP_FREEZER": "y",
+    "CONFIG_CGROUP_BPF": "y",
+    "CONFIG_NET_CLS_BPF": "m",
+    "CONFIG_NET_ACT_BPF": "m",
+    "CONFIG_DEBUG_INFO_BTF": "y"
+  },
+  "tools": {
+    "bpftool": {
+      "path": "/usr/sbin/bpftool",
+      "sha256": "2d0953085bf720a25efbe24f853e97d27b1f12f18a398255ff82cbafde254dad"
+    },
+    "clang": {
+      "path": null
+    },
+    "llc": {
+      "path": null
+    },
+    "pkg-config": {
+      "path": "/usr/bin/pkg-config",
+      "sha256": "7e8152db1b0c7e49d47b4b82a70dc9997b557951c5d4d938b0e7f208ce9eb10b"
+    },
+    "readelf": {
+      "path": "/usr/bin/readelf",
+      "sha256": "64c58e15274bbbb5153f31078e455e9e77ee5f51489e709bba5bb788ce9df2b0"
+    },
+    "ldd": {
+      "path": "/usr/bin/ldd",
+      "sha256": "e47db1b5348bb415b14b43217d2843d87e92798bb191efab2159c3f959174e83"
+    },
+    "ip": {
+      "path": "/usr/sbin/ip",
+      "sha256": "ea200fcc3a7bf723a8e0e2a21ceb3805324812fef36f6ba0552362a9a9e65f92"
+    },
+    "nft": {
+      "path": "/usr/sbin/nft",
+      "sha256": "3f1c21553e62716ef1abfcf31f51ff94eb73ff4234a6653bac754a42f936d1c7"
+    }
+  },
+  "izanagi_binary_sha256": "088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8",
+  "actual_bpf_connect4_attach_supported": "unobserved; metadata only, no program loaded",
+  "policy_changed": false,
+  "vm_started": false,
+  "izanagi_ldd_library_roles": [
+    "ld-linux-x86-64.so.2",
+    "libgcc_s.so.1",
+    "libm.so.6",
+    "libc.so.6"
+  ],
+  "observation_scope": "Fixed host read-only metadata at 2026-11-19; kernel flags are not attach evidence; library roles are not a complete runtime file closure."
+}

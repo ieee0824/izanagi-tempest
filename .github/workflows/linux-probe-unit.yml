@@ -1,0 +1,58 @@
+name: Linux isolation probe unit checks
+
+on:
+  push:
+    branches:
+      - 'pronnia/linux-direct-stage'
+    paths:
+      - '.github/workflows/linux-probe-unit.yml'
+      - 'docs/evidence/connect4-fixture-001/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/tempest-linux-probe/**'
+  pull_request:
+    paths:
+      - '.github/workflows/linux-probe-unit.yml'
+      - 'docs/evidence/connect4-fixture-001/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/tempest-linux-probe/**'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-probe-unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust tools
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: cargo +stable fmt --all -- --check
+      # Fork/FD lifetime fixtures run serially. This does not prove parallel safety.
+      - name: Test local contracts without root, a VM, or model credentials
+        run: cargo +stable test --locked -p tempest-linux-probe -- --test-threads=1
+      - name: Check fork and descriptor fixtures under parallel libtest
+        run: cargo +stable test --locked -p tempest-linux-probe --lib -- --test-threads=4
+      - name: Lint Linux isolation probe
+        run: cargo +stable clippy --locked -p tempest-linux-probe --all-targets -- -D warnings
+      - name: Compile the fixed loopback policy fixture
+        run: gcc -std=c17 -Wall -Wextra -Werror -c docs/evidence/connect4-fixture-001/policy.c -o "$RUNNER_TEMP/connect4-policy.o"
+      - name: Compile and link the fixed-host cases without running them
+        run: |
+          for fixture_case in 0 1 2 3 4 5 6 7; do
+            gcc -std=c17 -Wall -Wextra -Werror -DCONNECT4_CASE="$fixture_case" \
+              docs/evidence/connect4-fixture-001/fixture.c -o "$RUNNER_TEMP/connect4-fixture-$fixture_case"
+          done
+      - name: Compile the read-only host preflight
+        run: gcc -std=c17 -Wall -Wextra -Werror docs/evidence/connect4-fixture-001/preflight.c -o "$RUNNER_TEMP/connect4-preflight"
+      - name: Test pidfd recovery without loading BPF
+        run: |
+          gcc -std=c17 -Wall -Wextra -Werror docs/evidence/connect4-fixture-001/recovery_test.c -o "$RUNNER_TEMP/connect4-recovery-test"
+          timeout 5s "$RUNNER_TEMP/connect4-recovery-test"
+      - name: Test subreaper adoption and pidfd handoff without root
+        run: timeout 10s python3 docs/evidence/connect4-fixture-001/subreaper_test.py
