@@ -187,7 +187,7 @@ static void check_fixed_transfer(void)
     close(output[1]);
 }
 
-static void check_fixed_agent_exchange(int early_exec)
+static void check_fixed_agent_exchange(int early_exec, int close_gate)
 {
     int privileged = geteuid() == 0;
     int input[2], output[2], connect_status[2], gate[2], readiness[2];
@@ -232,9 +232,23 @@ static void check_fixed_agent_exchange(int early_exec)
         assert(check_connect4_worker_privileges(child) == 0);
     assert(check_worker_pipes(child, pipes, sizeof(pipes) / sizeof(pipes[0])) == 0);
     assert(count_connect4_accepts(listener) == 0);
-    assert(write(gate[1], "R", 1) == 1);
+    if (!close_gate)
+        assert(write(gate[1], "R", 1) == 1);
     close(gate[1]);
     int connect_errno;
+    if (close_gate) {
+        assert(read_before(connect_status[0], &connect_errno, sizeof(connect_errno), deadline) < 0 &&
+               errno == EPIPE);
+        int status;
+        assert(waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == 1);
+        assert(count_connect4_accepts(listener) == 0);
+        close(connect_status[0]);
+        close(listener);
+        close(input[1]);
+        close(output[0]);
+        return;
+    }
     assert(read_before(connect_status[0], &connect_errno, sizeof(connect_errno), deadline) == 0);
     assert(connect_errno == 0);
     close(connect_status[0]);
@@ -275,8 +289,9 @@ int main(void)
     check_worker_pipe_identity();
     check_worker_owned_connection();
     check_fixed_transfer();
-    check_fixed_agent_exchange(0);
-    check_fixed_agent_exchange(1);
+    check_fixed_agent_exchange(0, 0);
+    check_fixed_agent_exchange(1, 0);
+    check_fixed_agent_exchange(0, 1);
     int gate[2];
     assert(pipe(gate) == 0);
     pid_t child = fork();
