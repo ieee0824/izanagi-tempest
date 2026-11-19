@@ -241,5 +241,19 @@ MCP の wait status 0 を回収した。B は固定ゲート処理から終了�
 事後に run ディレクトリ、cgroup、対象 UID プロセスは不在。結果は room #17162。
 
 この試験は想定した余分な FD の観測後にゲートを閉じる手順を検証した。
-通常の照合エラーが起点となる `cgroup.kill` の経路と、VM agent 接続は未検証。
 EOF と wait status から終了順序は判定しない。
+
+#### 凍結中の照合エラーで cgroup を終了する固定負例
+
+room #17165 の承認で `059fa0f` の CLI（SHA-256
+`31bd60abc85bd6c8fb30d9e7a347a2264c574cbaa4ef0e4985f42354c7fb41bb`）を
+同じ固定ホスト、親 umask 077、同じ ELF と依存4点で1回実行した。
+入口は `tempest linux-isolation-probe --fixed-mcp-stdio-kill-on-mismatch-fixture`。
+
+凍結中の実 dup の検出で通常の照合エラーを返し、`cgroup.kill` に進んだ。
+CLI は exit 0、`passed=true`、`trial_phase=mcp_frozen_inspection`、
+`trial_reason=identity`、`caller_pipe_mismatch=true`、`caller_released=false`。
+登録済み直子2件の pidfd 終了を確認し、2件とも回収した。`reap_unconfirmed=0`、
+回収と root 削除のエラーは null。事後に run ディレクトリ、cgroup、
+UID 62002/62004 のプロセスは不在。結果 JSON は room #17167。
+この試験の範囲は `production_authorized=false` の固定ローカル stdio。
