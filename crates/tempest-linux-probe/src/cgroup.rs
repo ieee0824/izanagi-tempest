@@ -673,6 +673,7 @@ mod tests {
                 Ok(())
             };
             progress(initial)?;
+            eprintln!("dummy phase=before initial={initial} observed={}", sample());
             let metadata = read_end.metadata()?;
             let deadline = Instant::now() + Duration::from_secs(2);
             let expected = vec![TaskPipeFd {
@@ -701,14 +702,21 @@ mod tests {
                     )
                     .map_err(|_| Fault::Identity)?;
                     thread::sleep(Duration::from_millis(10));
-                    if sample() != frozen {
+                    let observed = sample();
+                    eprintln!(
+                        "dummy phase=frozen start={frozen} end={observed} holders={}",
+                        actual.len()
+                    );
+                    if observed != frozen {
                         return Err(Fault::Identity);
                     }
                     Ok(actual)
                 },
                 &expected,
             )?;
-            progress(frozen)
+            progress(frozen)?;
+            eprintln!("dummy phase=thawed frozen={frozen} observed={}", sample());
+            Ok(())
         })();
         unsafe {
             libc::kill(child, libc::SIGKILL);
