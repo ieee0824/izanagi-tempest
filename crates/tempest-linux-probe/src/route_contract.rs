@@ -301,6 +301,79 @@ impl FixedMcpArtifact {
     }
 }
 
+/// Explicit fixed-host investigation entry, limited to the local handshake.
+pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
+    use super::{cgroup::Group, contract::Role, guard::Guard, os, os::Fault, registry::Registry};
+    use std::{fs, path::Path, process::ExitCode};
+
+    let mut counts = super::registry::Counts::default();
+    let mut untracked_errno = None;
+    let result: Result<(), Fault> = (|| {
+        if unsafe { libc::geteuid() } != 0 || fs::read_dir("/proc/self/task")?.count() != 1 {
+            return Err(Fault::Identity);
+        }
+        let guard = Guard::acquire()?;
+        if !super::runtime::initial_uid_available(Role::B.uid())?
+            || !super::runtime::initial_uid_available(MCP_UID)?
+        {
+            return Err(Fault::Identity);
+        }
+        let artifact = FixedMcpArtifact::open()?;
+        let base = Path::new("/run/tempest-fixed-mcp-stdio");
+        os::private_directory(base)?;
+        let base_fd = fs::File::open(base)?;
+        let roots = [base.join("caller"), base.join("mcp")];
+        let mut root_fds = Vec::new();
+        let exchange = (|| {
+            for root in &roots {
+                os::private_directory(root)?;
+                root_fds.push(fs::File::open(root)?);
+            }
+            let mut group = Group::create()?;
+            let mut registry = Registry::default();
+            let result = run_fixed_exchange(
+                &artifact,
+                &mut group,
+                &guard,
+                &mut registry,
+                [&roots[0], &roots[1]],
+                Instant::now() + Duration::from_secs(10),
+            );
+            if let Err(Fault::UntrackedChildCleanup(errno)) = result {
+                untracked_errno = Some(errno);
+            }
+            recover_fixed_exchange(&mut group, &mut registry, &mut counts)?;
+            result
+        })();
+        let mut cleanup = Ok(());
+        for (root, fd) in roots.iter().zip(root_fds.iter()).rev() {
+            if let Err(error) = os::remove_owned_empty_directory(root, fd) {
+                cleanup = Err(error);
+            }
+        }
+        os::remove_owned_empty_directory(base, &base_fd)?;
+        cleanup?;
+        exchange
+    })();
+    let reason = result.as_ref().err().map(Fault::reason);
+    println!(
+        "{}",
+        serde_json::json!({
+            "scope": "fixed_mcp_stdio_fixture",
+            "passed": result.is_ok(),
+            "production_authorized": false,
+            "reason": reason,
+            "untracked_cleanup_errno": untracked_errno,
+            "recovery": counts,
+        })
+    );
+    if result.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 /// Run the two children in an armed fixture group. The caller supplies
 /// fresh roots and retains group recovery ownership on every return path.
 fn run_fixed_exchange(

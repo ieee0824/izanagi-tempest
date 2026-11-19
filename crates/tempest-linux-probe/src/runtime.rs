@@ -395,9 +395,9 @@ pub(super) fn reap_status(
     }
 }
 
-fn initial_uid_available(role: Role) -> Result<bool, Fault> {
+pub(super) fn initial_uid_available(uid: u32) -> Result<bool, Fault> {
     // No account creation and no reuse of an existing account or live UID.
-    if !unsafe { libc::getpwuid(role.uid()) }.is_null() {
+    if !unsafe { libc::getpwuid(uid) }.is_null() {
         return Ok(false);
     }
     for entry in fs::read_dir("/proc")? {
@@ -411,7 +411,7 @@ fn initial_uid_available(role: Role) -> Result<bool, Fault> {
                 .find_map(|line| line.strip_prefix("Uid:"))
                 .is_some_and(|row| {
                     row.split_whitespace()
-                        .any(|id| id.parse::<u32>() == Ok(role.uid()))
+                        .any(|id| id.parse::<u32>() == Ok(uid))
                 })
             {
                 return Ok(false);
@@ -1406,6 +1406,9 @@ fn handoff_selftest(guard: &super::guard::Guard) -> Result<super::watchdog::Stat
 }
 
 pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
+    if args.len() == 1 && args[0] == "--fixed-mcp-stdio-fixture" {
+        return super::route_contract::fixed_stdio_trial();
+    }
     if args == [std::ffi::OsString::from("--help")] {
         println!("Usage: tempest linux-isolation-probe (fixed dummy-only root probe; no options)");
         return std::process::ExitCode::SUCCESS;
@@ -1431,7 +1434,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         capability_contract(&fs::read_to_string("/proc/sys/kernel/cap_last_cap")?)?;
         phase = "uid_reservation";
         for role in Role::ALL {
-            if !initial_uid_available(role)? {
+            if !initial_uid_available(role.uid())? {
                 return Err(Fault::Identity);
             }
         }
