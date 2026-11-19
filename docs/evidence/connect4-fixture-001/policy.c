@@ -1912,6 +1912,22 @@ int exchange_fixed_relay_client(const struct fixed_relay_pipes *relay,
     return 0;
 }
 
+int exchange_fixed_alternate(const struct fixed_relay_pipes *relay,
+                             int64_t deadline, void *context)
+{
+    (void)context;
+    char response[sizeof(alternate_response) - 1];
+    if (write_before(relay->request, alternate_request, sizeof(alternate_request) - 1,
+                     deadline) < 0 ||
+        read_before(relay->response, response, sizeof(response), deadline) < 0)
+        return -1;
+    if (memcmp(response, alternate_response, sizeof(response)) != 0) {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
+}
+
 static int observe_fixed_relay(const struct connect4_worker *worker,
                               struct fixed_relay_pipes *relay,
                               int64_t deadline, fixed_relay_exchange exchange,

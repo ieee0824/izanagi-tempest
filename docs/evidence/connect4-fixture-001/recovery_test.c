@@ -319,25 +319,18 @@ static void check_fixed_alternate_exchange(int wrong_token)
     close(listener);
 }
 
-static int serve_alternate_control(const struct fixed_relay_pipes *relay,
-                                   int64_t deadline, void *context)
+static void serve_alternate_control(int listener, int64_t deadline)
 {
-    int listener = *(const int *)context;
     struct pollfd ready = {.fd = listener, .events = POLLIN};
     assert(poll_before(&ready, deadline) == 0);
     int peer = accept4(listener, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
     assert(peer >= 0);
-    char token[sizeof(alternate_request)];
-    assert(write_before(relay->request, alternate_request, sizeof(alternate_request) - 1,
-                        deadline) == 0);
-    assert(read_before(peer, token, sizeof(alternate_request) - 1, deadline) == 0);
-    assert(memcmp(token, alternate_request, sizeof(alternate_request) - 1) == 0);
+    char token[sizeof(alternate_request) - 1];
+    assert(read_before(peer, token, sizeof(token), deadline) == 0);
+    assert(memcmp(token, alternate_request, sizeof(token)) == 0);
     assert(write_before(peer, alternate_response, sizeof(alternate_response) - 1,
                         deadline) == 0);
-    assert(read_before(relay->response, token, sizeof(alternate_response) - 1, deadline) == 0);
-    assert(memcmp(token, alternate_response, sizeof(alternate_response) - 1) == 0);
     close(peer);
-    return 0;
 }
 
 static void check_control_runner(void)
@@ -350,10 +343,19 @@ static void check_control_runner(void)
     int controller = (int)syscall(SYS_pidfd_open, getpid(), 0);
     assert(controller >= 0);
     int64_t deadline = monotonic_ns() + 2000000000;
+    pid_t server = fork();
+    assert(server >= 0);
+    if (server == 0) {
+        serve_alternate_control(listener, deadline);
+        _exit(0);
+    }
     struct fixed_relay_result observed;
-    assert(run_fixed_relay_control(port, 1, controller, deadline, serve_alternate_control,
-                                   &listener, &observed) == 0);
+    assert(run_fixed_relay_control(port, 1, controller, deadline, exchange_fixed_alternate,
+                                   NULL, &observed) == 0);
     assert(observed.connect_errno == 0 && observed.relay_exit == 0);
+    int status;
+    assert(waitpid(server, &status, 0) == server);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
     assert(count_connect4_accepts(listener) == 0);
     close(controller);
     close(listener);
