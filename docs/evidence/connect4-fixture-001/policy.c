@@ -800,8 +800,12 @@ int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
         goto done;
     }
     stage = "controller";
-    if ((stop_before_release && stop_test_controller(controller_pidfd) < 0) ||
-        controller_is_live(controller_pidfd) < 0)
+    if (stop_before_release) {
+        if (stop_test_controller(controller_pidfd) < 0)
+            goto done;
+        fputs("fault=before-release controller_exit_observed=1\n", stderr);
+    }
+    if (controller_is_live(controller_pidfd) < 0)
         goto done;
     stage = "release-intent";
     if (record_release_intent(state_fd) < 0)
@@ -1347,6 +1351,9 @@ int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
         } else {
             struct pollfd child = { .fd = worker.pidfd, .events = POLLIN };
             int ready = poll(&child, 1, 0);
+            if (ready == 0)
+                fputs("fault=after-release token_read=1 controller_exit_observed=1 worker_live=1\n",
+                      stderr);
             if (ready >= 0)
                 errno = ready == 0 ? ECANCELED : EPROTO;
             result = -1;
@@ -1377,6 +1384,7 @@ int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
             pinned ? CONNECT4_PIN_REMOVED : CONNECT4_PIN_ABSENT};
         if (retry_connect4_recovery(trial, pending) < 0)
             return -1;
+        fputs("worker_exit_observed=1 worker_reaped_by_pidfd=1\n", stderr);
     } else {
         *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd,
             pinned ? CONNECT4_PIN_HELD : CONNECT4_PIN_UNKNOWN};
