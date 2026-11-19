@@ -200,7 +200,7 @@ impl FixedMcpArtifact {
         workers: [(super::contract::Role, &super::identity::Process); 2],
         ends: [(&super::identity::Descriptor, u32); 2],
         deadline: Instant,
-        caller_pipe_mismatch: &mut bool,
+        duplicate_request_fd: Option<u32>,
     ) -> Result<(), super::os::Fault> {
         use super::{
             contract::Role,
@@ -239,15 +239,20 @@ impl FixedMcpArtifact {
                     let observed =
                         task_pipe_fds(std::path::Path::new("/proc"), caller.pid, pipe, &mut budget)
                             .map_err(|_| Fault::Identity)?;
-                    if observed
-                        != [super::holder_scan::TaskPipeFd {
-                            tid: caller.pid,
-                            start_ticks: caller.birth,
-                            fd,
-                            writes,
-                        }]
-                    {
-                        *caller_pipe_mismatch = true;
+                    let mut expected = vec![super::holder_scan::TaskPipeFd {
+                        tid: caller.pid,
+                        start_ticks: caller.birth,
+                        fd,
+                        writes,
+                    }];
+                    if let Some(extra) = duplicate_request_fd.filter(|_| writes) {
+                        expected.push(super::holder_scan::TaskPipeFd {
+                            fd: extra,
+                            ..expected[0]
+                        });
+                        expected.sort_unstable_by_key(|row| row.fd);
+                    }
+                    if observed != expected {
                         return Err(Fault::Identity);
                     }
                 }
@@ -393,20 +398,8 @@ pub(super) fn fixed_stdio_trial(reject_pipe: bool) -> std::process::ExitCode {
         exchange
     })();
     let reason = result.as_ref().err().map(Fault::reason);
-    let expected_rejection = reject_pipe
-        && reason == Some("identity")
-        && phase == "mcp_frozen_inspection"
-        && diagnostics.caller_pipe_mismatch
-        && !diagnostics.caller_released
-        && counts.reaped == 2
-        && counts.reap_unconfirmed == 0
-        && recovery_reason.is_none()
-        && root_cleanup_reason.is_none();
-    let passed = if reject_pipe {
-        expected_rejection
-    } else {
-        result.is_ok()
-    };
+    let passed = result.is_ok()
+        && (!reject_pipe || (diagnostics.caller_pipe_mismatch && !diagnostics.caller_released));
     println!(
         "{}",
         serde_json::json!({
@@ -469,11 +462,14 @@ fn run_fixed_exchange(
     let (stderr_read, stderr) = os::pipe()?;
     os::syscall(unsafe { libc::fcntl(stderr_read.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) })?;
 
+    let extra = reject_pipe.then(|| request_write.try_clone()).transpose()?;
+    let extra_fd = extra.as_ref().map(|fd| fd.as_raw_fd() as u32);
     let expected = mcp_stdio_fixture::expected_results();
     *phase = "caller_spawn";
     let caller = bind_fresh_child(spawn_fixed_caller(
         caller_root,
         [caller_gate, request_write, response_read, ready_writer],
+        extra,
         [&expected[0], &expected[1]],
         deadline,
     )?)?;
@@ -506,33 +502,31 @@ fn run_fixed_exchange(
         group,
         guard,
         [(Role::B, &caller), (Role::A, &mcp)],
-        [
-            (
-                &stdin,
-                if reject_pipe {
-                    u32::MAX
-                } else {
-                    caller_ends[0]
-                },
-            ),
-            (&stdout, caller_ends[1]),
-        ],
+        [(&stdin, caller_ends[0]), (&stdout, caller_ends[1])],
         deadline,
-        &mut diagnostics.caller_pipe_mismatch,
+        extra_fd,
     )?;
-    *phase = "caller_release";
-    if Instant::now() >= deadline {
-        return Err(os::Fault::Kernel(libc::ETIMEDOUT));
+    if reject_pipe {
+        diagnostics.caller_pipe_mismatch = true;
+        *phase = "caller_reject";
+        // The exact extra holder was observed while frozen. Never send R.
+        drop(release);
+    } else {
+        *phase = "caller_release";
+        if Instant::now() >= deadline {
+            return Err(os::Fault::Kernel(libc::ETIMEDOUT));
+        }
+        use std::io::Write;
+        std::fs::File::from(release).write_all(b"R")?;
+        diagnostics.caller_released = true;
     }
-    use std::io::Write;
-    std::fs::File::from(release).write_all(b"R")?;
-    diagnostics.caller_released = true;
     *phase = "exchange_exit";
     let result = reap_fixed_exchange(
         [(&caller, caller_record), (&mcp, mcp_record)],
         registry,
         deadline,
         diagnostics,
+        reject_pipe,
     );
     if result.is_err() {
         diagnostics.mcp_stderr = read_mcp_stderr(stderr_read);
@@ -612,6 +606,7 @@ fn stop_untracked_child(pid: libc::pid_t) -> Result<(), super::os::Fault> {
 fn spawn_fixed_caller(
     root: &std::path::Path,
     pipes: [OwnedFd; 4],
+    extra: Option<OwnedFd>,
     expected: [&Value; 2],
     deadline: Instant,
 ) -> Result<libc::pid_t, super::os::Fault> {
@@ -629,13 +624,14 @@ fn spawn_fixed_caller(
         unsafe { libc::_exit(125) };
     }
     let [gate, requests, responses, ready] = pipes;
-    let keep = [
+    let mut keep = vec![
         gate.as_raw_fd(),
         requests.as_raw_fd(),
         responses.as_raw_fd(),
         ready.as_raw_fd(),
         parent.fd(),
     ];
+    keep.extend(extra.as_ref().map(AsRawFd::as_raw_fd));
     if os::close_except(&keep).is_err()
         || capsule::prepare_mcp_caller_root(root).is_err()
         || capsule::drop_privileges(Role::B.uid()).is_err()
@@ -688,6 +684,7 @@ fn reap_fixed_exchange(
     registry: &mut super::registry::Registry,
     deadline: Instant,
     diagnostics: &mut ExchangeDiagnostics,
+    reject_pipe: bool,
 ) -> Result<(), super::os::Fault> {
     use super::os::Fault;
 
@@ -695,8 +692,13 @@ fn reap_fixed_exchange(
         .map(|(process, record)| super::runtime::reap_status(process, record, registry, deadline));
     diagnostics.caller_wait_status = caller.as_ref().ok().copied();
     diagnostics.mcp_wait_status = mcp.as_ref().ok().copied();
-    for status in [caller?, mcp?] {
-        if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+    let caller_code = if reject_pipe {
+        mcp_stdio_fixture::ExchangeStage::ReleaseMissing as i32
+    } else {
+        0
+    };
+    for (status, code) in [(caller?, caller_code), (mcp?, 0)] {
+        if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != code {
             return Err(Fault::Identity);
         }
     }
