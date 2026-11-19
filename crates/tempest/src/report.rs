@@ -1114,7 +1114,7 @@ fn route_coverage_verified(_manifest: &Value) -> bool {
 }
 
 pub(crate) fn comparison_conditions(run: &Value) -> Value {
-    json!({
+    let mut conditions = json!({
         "schema_version":1,
         "scenario":{"id":run["scenario_id"],"sha256":run["scenario_sha256"]},
         "actor":run.pointer("/plan/actor").cloned().unwrap_or(Value::Null),
@@ -1137,7 +1137,16 @@ pub(crate) fn comparison_conditions(run: &Value) -> Value {
             "max_export_file_bytes":run.pointer("/conditions/max_export_file_bytes").cloned().unwrap_or(Value::Null),
             "budget":run.pointer("/conditions/budget").cloned().unwrap_or(Value::Null)
         }
-    })
+    });
+    // Legacy bound plans did not include a route in their condition identity.
+    let expects_route = !run["comparison_binding"].is_object()
+        || run
+            .pointer("/comparison_binding/expected_conditions/connection_route")
+            .is_some();
+    if expects_route && let Some(route) = run.pointer("/conditions/connection_route") {
+        conditions["connection_route"] = route.clone();
+    }
+    conditions
 }
 
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -1786,5 +1795,26 @@ mod tests {
             comparison_conditions(&base),
             comparison_conditions(&test_build)
         );
+    }
+    #[test]
+    fn comparison_conditions_include_route_for_explicit_plans() {
+        let mut run = json!({
+            "conditions":{"connection_route":"mock_in_process"},
+            "comparison_binding":{"expected_conditions":{}}
+        });
+        assert!(
+            comparison_conditions(&run)
+                .get("connection_route")
+                .is_none()
+        );
+        run["comparison_binding"]["expected_conditions"]["connection_route"] = "model_relay".into();
+        assert_eq!(
+            comparison_conditions(&run)["connection_route"],
+            "mock_in_process"
+        );
+        run["evidence"] = json!({"route_coverage":"verified"});
+        let before = comparison_conditions(&run);
+        run["evidence"]["route_coverage"] = "unverified".into();
+        assert_eq!(comparison_conditions(&run), before);
     }
 }

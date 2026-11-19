@@ -1119,6 +1119,10 @@ async fn execute(
                 "native_test_build":NATIVE_TEST_BUILD}),
         ),
     };
+    let connection_route = match &setup {
+        AgentSetup::Mock(_) => "mock_in_process",
+        AgentSetup::Native { .. } => "model_relay",
+    };
     let evaluator_sha256 = host_io::digest(&std::env::current_exe()?)?;
     let comparison_binding = if let (Some(path), Some(slot_id)) = (
         options.comparison_plan.as_deref(),
@@ -1130,6 +1134,13 @@ async fn execute(
             return Err(io::Error::other("comparison plan interval mismatch"));
         }
         let slot = comparison.slot(slot_id, &options.id, &evaluator_sha256)?;
+        if let Some(route) = slot.comparison_conditions.get("connection_route")
+            && route.as_str() != Some(connection_route)
+        {
+            return Err(io::Error::other(
+                "comparison slot connection route mismatch",
+            ));
+        }
         if slot.finding_configured != plan.self_check().is_some()
             || slot.retest_configured != plan.retest().is_some()
         {
@@ -1182,6 +1193,7 @@ async fn execute(
         .map(|_| host_io::digest(&root.join("mock-script.json")))
         .transpose()?;
     let mut report = json!({"schema_version":1,"scope":"m5_evaluation","purpose":"collection_and_evaluation","iteration":options.iteration,"adapter":planned_adapter,"comparison_binding":comparison_binding,"status":"preparing","run_id":options.id,"scenario_id":loaded.validated.scenario().id,"scenario_sha256":loaded.sha256,"plan":plan.summary(),"started_ns":host_io::now_ns()?,"conditions":{"image_sha256":host_io::digest(&image)?,"izanagi_sha256":host_io::digest(&root.join("bin/izanagi"))?,"tempest_sha256":host_io::digest(&root.join("bin/tempest"))?,"binary_mode":if NATIVE_TEST_BUILD{"native_test_upstream"}else{"production"},"formal_test_only":NATIVE_TEST_BUILD,"native_test_upstream":options.native_test_upstream,"mock_script_sha256":mock_script_sha256,"companion_sha256":host_io::digest(&companion.join("host_bridge.py"))?,"codec_sha256":host_io::digest(&companion.join("transport.py"))?,"restrict_network":true,"snapshot":true,"share_read_only":true,"host_os":std::env::consts::OS,"host_arch":std::env::consts::ARCH,"repeat_interval_seconds":options.repeat_interval_seconds,"max_export_file_bytes":options.maximum_evidence_file_bytes,"budget":{"max_calls":budget.max_calls,"timeout_ms":budget.timeout.0.as_millis()}},"primary":{},"agent":not_performed(true,"upstream_aborted"),"self_check":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"upstream_aborted"}else{"not_configured"}),"finding":not_performed(plan.self_check().is_some(),if plan.self_check().is_some(){"evaluation_pending"}else{"not_configured"}),"retest":not_performed(plan.retest().is_some(),if plan.retest().is_some(){"upstream_aborted"}else{"not_configured"}),"evaluation":"not_performed"});
+    report["conditions"]["connection_route"] = connection_route.into();
     report["conditions"]["izanagi_version"] = version(&izanagi).await?.into();
     report["conditions"]["tempest_version"] = env!("CARGO_PKG_VERSION").into();
     report["conditions"]["host_utc_offset_seconds"] = host_io::utc_offset_seconds()?.into();
