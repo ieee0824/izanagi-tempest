@@ -713,6 +713,44 @@ static int check_connect4_worker_fds(pid_t child, int gate_fd)
     return check_worker_pipes(child, &gate, 1);
 }
 
+static int64_t monotonic_ns(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+        return -1;
+    return (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
+}
+
+static int poll_before(struct pollfd *fd, int64_t deadline)
+{
+    for (;;) {
+        int64_t now = monotonic_ns();
+        if (now < 0)
+            return -1;
+        if (now >= deadline) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        int64_t remaining = deadline - now;
+        int ready = poll(fd, 1, (int)((remaining + 999999) / 1000000));
+        if (ready < 0 && errno == EINTR)
+            continue;
+        if (ready <= 0) {
+            if (ready == 0)
+                errno = ETIMEDOUT;
+            return -1;
+        }
+        now = monotonic_ns();
+        if (now < 0)
+            return -1;
+        if (now >= deadline) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        return 0;
+    }
+}
+
 /* The manager has closed its own copy of the readiness write end. */
 static int confirm_connect4_ready(int ready_fd)
 {
@@ -721,14 +759,13 @@ static int confirm_connect4_ready(int ready_fd)
         return -1;
     }
     struct pollfd ready = { .fd = ready_fd, .events = POLLIN };
+    int64_t start = monotonic_ns();
+    if (start < 0)
+        return -1;
+    int64_t deadline = start + 2000000000;
     for (unsigned phase = 0; phase < 2; ++phase) {
-        int result = poll(&ready, 1, 1000);
-        if (result < 0)
+        if (poll_before(&ready, deadline) < 0)
             return -1;
-        if (result == 0) {
-            errno = ETIMEDOUT;
-            return -1;
-        }
         if (ready.revents & (POLLERR | POLLNVAL)) {
             errno = EIO;
             return -1;
