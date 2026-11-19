@@ -36,16 +36,30 @@ class Receiver:
         return {'accepted': self.accepted, 'matched': self.matched}
 
     def receive(self):
+        self._receive(REQUEST, RESPONSE)
+
+    def collect_trial_control(self, run_nonce, phase):
+        """Count the fixed request queued by a completed alternate-host control."""
+        if phase not in ('control_before', 'control_after'):
+            raise ValueError('alternate host receipt is only expected during controls')
+        request = f'tempest-dummy-v1:{run_nonce}:{phase}\n'.encode('ascii')
+        if not select.select([self.listener], [], [], 0)[0]:
+            raise RuntimeError('alternate host control did not reach the listener')
+        self._receive(request, None)
+        return self.snapshot()
+
+    def _receive(self, expected, response):
         peer, _ = self.listener.accept()
         self.accepted += 1
         with peer:
             peer.settimeout(TIMEOUT)
             with peer.makefile('rb') as stream:
-                request = stream.read(len(REQUEST) + 1)
-            if request != REQUEST:
+                request = stream.read(len(expected) + 1)
+            if request != expected:
                 raise RuntimeError('unexpected dummy request')
             self.matched += 1
-            peer.sendall(RESPONSE)
+            if response is not None:
+                peer.sendall(response)
 
 
 def observe_linux(receivers):
