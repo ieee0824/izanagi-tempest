@@ -450,6 +450,7 @@ impl Group {
     #[allow(dead_code)]
     pub(super) fn inspect_while_frozen<T: PartialEq>(
         &mut self,
+        _guard: &super::guard::Guard,
         until: Instant,
         role: Role,
         worker: &super::identity::Process,
@@ -458,6 +459,17 @@ impl Group {
     ) -> Result<(), Fault> {
         if !self.armed || worker.pid == 0 || Instant::now() >= until {
             return Err(Fault::Identity);
+        }
+        self.verify()?;
+        if worker.pid == std::process::id()
+            || !read(&self.directory, "cgroup.procs")?.trim().is_empty()
+        {
+            return Err(Fault::Identity);
+        }
+        for other in Role::ALL {
+            if other != role && !self.members(other)?.is_empty() {
+                return Err(Fault::Identity);
+            }
         }
         let result = (|| {
             self.request_frozen(true)?;
