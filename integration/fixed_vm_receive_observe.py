@@ -247,7 +247,8 @@ class TrialBoundaries:
 def collect_trial(execute, observe_route, snapshot_host, run_phase, *, run_nonce, boot_id):
     """Collect the fixed phase evidence around a harness-owned connection runner."""
     binding = {'run_nonce': run_nonce, 'boot_id': boot_id}
-    forward, fingerprint = observe_route()
+    observed_forward, fingerprint = observe_route()
+    forward = dict(observed_forward)
     boundaries = TrialBoundaries(**binding, forward=forward, session_fingerprint=fingerprint)
 
     def observe_boundary(phase, edge):

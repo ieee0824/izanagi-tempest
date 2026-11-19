@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / 'integration'))
 from fixed_vm_receive_observe import (
     PHASES,
     TrialBoundaries,
+    collect_trial,
     session_binding,
     validate_guest_export,
     validate_trial_counts,
@@ -126,3 +127,21 @@ class FixedVmReceiveTests(unittest.TestCase):
                 trial.observe(phase, edge, guest_ack=ack, forward=forward,
                               session_fingerprint=fingerprint)
         trial.require_complete()
+
+    def test_trial_rejects_forward_change_during_final_report(self):
+        nonce = 'b' * 32
+        boot_id = '3d6aa964-65a7-4c14-9444-70ecc42b55f8'
+        forward = {'pid': 42, 'starttime': 100, 'port': 34765}
+
+        def guest_ack(_execute, *, run_nonce, boot_id, phase, operation):
+            if operation == 'report':
+                forward['pid'] = 43
+            return dict(run_nonce=run_nonce, boot_id=boot_id, phase=phase, operation=operation)
+
+        with patch('fixed_vm_receive_observe.observe_guest', side_effect=guest_ack):
+            with self.assertRaisesRegex(ValueError, 'identity changed during final report'):
+                collect_trial(
+                    None, lambda: (forward, b'a' * 32),
+                    lambda: {'accepted': 0, 'matched': 0}, lambda _phase: None,
+                    run_nonce=nonce, boot_id=boot_id,
+                )
