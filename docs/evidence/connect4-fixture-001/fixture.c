@@ -18,7 +18,6 @@ int main(int argc, char **argv)
         return 1;
     }
     int result = -1;
-    int retain_cgroup = 0;
     int denied = -1;
     struct connect4_trial trial = { .link_fd = -1 };
     uint16_t allowed_port, denied_port;
@@ -43,10 +42,18 @@ int main(int argc, char **argv)
                                     denied, denied_port, phases, &pending);
     if (result < 0)
         perror("connect4 trial");
-    if (pending.pidfd >= 0 && retry_connect4_recovery(&trial, &pending) < 0) {
-        perror("connect4 recovery pending");
-        retain_cgroup = 1;
+    if (pending.pidfd >= 0) {
         result = -1;
+        while (retry_connect4_recovery(&trial, &pending) < 0) {
+            if (errno != EBUSY && errno != EWOULDBLOCK && errno != EINTR) {
+                perror("connect4 recovery held for inspection");
+                /* Preserve the original pidfd, link and cgroup until a
+                 * recovery supervisor can take ownership. */
+                for (;;)
+                    pause();
+            }
+            sleep(1);
+        }
     }
     for (unsigned i = 0; i < 3; ++i)
         printf("phase=%u allowed=%d denied=%d code=%d status=%d\n",
@@ -59,14 +66,12 @@ done:
         close(allowed);
     if (denied >= 0)
         close(denied);
-    if (!retain_cgroup) {
-        if (remove_connect4_fixture_cgroup(state, cgroup) < 0) {
-            perror("fixture cgroup cleanup");
-            result = -1;
-        } else if (retire_connect4_fixture_state(state) < 0) {
-            perror("fixture state retirement");
-            result = -1;
-        }
+    if (remove_connect4_fixture_cgroup(state, cgroup) < 0) {
+        perror("fixture cgroup cleanup");
+        result = -1;
+    } else if (retire_connect4_fixture_state(state) < 0) {
+        perror("fixture state retirement");
+        result = -1;
     }
     close(cgroup);
     close(state);
