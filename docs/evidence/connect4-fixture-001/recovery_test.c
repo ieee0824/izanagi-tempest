@@ -88,24 +88,32 @@ static void check_worker_owned_connection(void)
     assert(child >= 0);
     if (child == 0) {
         close(listener);
+        if (prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0 ||
+            restrict_connect4_worker() < 0)
+            _exit(1);
+        if (socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0) != -1 || errno != EPERM)
+            _exit(2);
         int connected;
         if (connect4_loopback(port, &connected) != 0)
-            _exit(1);
-        const char marker = 'T';
-        _exit(write(connected, &marker, sizeof(marker)) != sizeof(marker));
+            _exit(3);
+        char marker;
+        _exit(read(connected, &marker, sizeof(marker)) != sizeof(marker) || marker != 'T');
     }
     struct pollfd ready = {.fd = listener, .events = POLLIN};
     int event = poll(&ready, 1, 2000);
     int peer = event == 1 ? accept4(listener, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK) : -1;
     close(listener);
-    if (peer < 0)
+    ssize_t sent = -1;
+    if (peer >= 0) {
+        const char marker = 'T';
+        sent = send(peer, &marker, sizeof(marker), MSG_NOSIGNAL);
+        close(peer);
+    } else {
         kill(child, SIGKILL);
+    }
     int status;
     assert(waitpid(child, &status, 0) == child);
-    assert(peer >= 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0);
-    char marker;
-    assert(read(peer, &marker, sizeof(marker)) == sizeof(marker) && marker == 'T');
-    close(peer);
+    assert(sent == 1 && WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
 int main(void)
