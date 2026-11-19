@@ -371,6 +371,9 @@ pub(super) fn fixed_stdio_trial() -> std::process::ExitCode {
             "passed": result.is_ok(),
             "production_authorized": false,
             "reason": reason,
+            "trial_reason": trial_reason,
+            "recovery_reason": recovery_reason,
+            "root_cleanup_reason": root_cleanup_reason,
             "untracked_cleanup_errno": untracked_errno,
             "recovery": counts,
         })
