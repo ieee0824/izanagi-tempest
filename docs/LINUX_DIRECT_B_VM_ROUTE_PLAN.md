@@ -224,3 +224,22 @@ SHA-256 を照合して1回実行した別個の試験である。
 この試験は `production_authorized=false` の固定ローカル stdio であり、
 VM agent 接続と凍結中の照合失敗を扱う実機負例は未検証である。
 EOF と wait status から両子の終了順序は判定しない。
+
+#### 呼び出し側に余分な pipe FD がある固定負例
+
+room #17161 の指示で `73a440c` の CLI（SHA-256
+`6abc5058836702f0120db73947dac6e496814a2a97b4b70c83c465c1abbd3f4a`）を
+同じ固定ホスト、親 umask 077、同じ ELF と依存4点で1回実行した。
+入口は `tempest linux-isolation-probe --fixed-mcp-stdio-reject-pipe-fixture`。
+
+凍結中に B の要求書端と実 dup 1件を照合し、解凍後に制御 pipe の書端を閉じた。
+CLI は exit 0、`passed=true`、`negative_pipe_fixture=true`、
+`caller_pipe_mismatch=true`、`caller_released=false`。
+元の直子 B の wait status 32000（exit 125、R より先にゲート EOF）、
+MCP の wait status 0 を回収した。B は固定ゲート処理から終了しており、
+`initialize` の送信処理には進んでいない。回収・root 削除の理由は null、
+事後に run ディレクトリ、cgroup、対象 UID プロセスは不在。結果は room #17162。
+
+この試験は想定した余分な FD の観測後にゲートを閉じる手順を検証した。
+通常の照合エラーが起点となる `cgroup.kill` の経路と、VM agent 接続は未検証。
+EOF と wait status から終了順序は判定しない。
