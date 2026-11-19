@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the fixed relay's pipe ownership, deadline, and child reaping locally."""
 import json
+import math
 import os
 import select
 import signal
@@ -15,7 +16,10 @@ def transfer(source, target, expected, deadline):
     received = bytearray()
     while len(received) < len(expected):
         wait_ready(source, select.POLLIN, deadline)
-        chunk = os.read(source, len(expected) - len(received))
+        try:
+            chunk = os.read(source, len(expected) - len(received))
+        except BlockingIOError:
+            continue
         if not chunk:
             raise EOFError('short fixed frame')
         received.extend(chunk)
@@ -24,7 +28,10 @@ def transfer(source, target, expected, deadline):
     pending = memoryview(received)
     while pending:
         wait_ready(target, select.POLLOUT, deadline)
-        count = os.write(target, pending)
+        try:
+            count = os.write(target, pending)
+        except BlockingIOError:
+            continue
         if count == 0:
             raise EOFError('short fixed write')
         pending = pending[count:]
@@ -34,13 +41,15 @@ def wait_ready(fd, events, deadline):
     poller = select.poll()
     poller.register(fd, events)
     remaining = deadline - time.monotonic()
-    if remaining <= 0 or not poller.poll(max(1, int(remaining * 1000))):
+    if remaining <= 0 or not poller.poll(math.ceil(remaining * 1000)) or time.monotonic() >= deadline:
         raise TimeoutError('fixed relay deadline')
 
 
 def relay(request_fd, response_fd, peer_fd, timeout):
     deadline = time.monotonic() + timeout
     try:
+        os.set_blocking(request_fd, False)
+        os.set_blocking(response_fd, False)
         transfer(request_fd, peer_fd, REQUEST, deadline)
         transfer(peer_fd, response_fd, RESPONSE, deadline)
         return 0
@@ -67,7 +76,7 @@ def exercise(case):
         os.close(response_read)
         try:
             with socket.create_connection(endpoint, timeout=2) as peer:
-                peer.setblocking(True)
+                peer.setblocking(False)
                 status = relay(request_read, response_write, peer.fileno(), 0.25 if case == 'timeout' else 2)
         except OSError:
             status = 4
