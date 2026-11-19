@@ -561,6 +561,22 @@ mod tests {
         );
     }
     #[test]
+    fn path_only_alias_is_not_a_read_endpoint() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let (read, write) = crate::os::pipe().unwrap();
+        let path_only = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH)
+            .open(format!("/proc/self/fd/{}", read.as_raw_fd()))
+            .unwrap();
+        assert!(matches!(
+            ParentPipe::new(path_only.into(), write),
+            Err(Rejection::Pipe)
+        ));
+    }
+
+    #[test]
     fn duplicate_fd_unknown_scan_and_reused_pid_fail_holder_contract() {
         let expected = [Holder {
             process: process(),

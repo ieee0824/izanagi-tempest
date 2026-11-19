@@ -111,3 +111,13 @@ childのfilesystemは別mount capsuleに固定executable/loader/libs、当該ses
   connect4 fixture で確認済みの上位 subreaper の所有順序を移植候補とする。
   B の既存 seccomp は維持する。MCP child の session 専用 connect4 制約と
   mount/権限境界は別 role に実装し、C fixture での実測をその実装の証跡に流用しない。
+
+room #17037 の解放条件は、同じ元 pidfd/starttime を保持したまま、
+exec 後の固定ファイルの device/inode、MCP 側の stdin/stdout の方向と
+対象 pipe、B 側の対応端、親残存端ゼロを確認することとする。
+`identity::Process::identity` と既存 `runtime.rs` の期待実行ファイル照合を
+再利用候補とする。確認と解凍が完了するまで、B の制御 gate は閉じて
+要求をゼロに保つ。固定フレームの応答照合に続いて B が書端を閉じ、
+MCP stdout EOF と両子の回収を独立に確認する。
+`supervisor.rs::session_cli` の drain 記録は参考にするが、
+任意 upstream argv を受ける入口はこの固定結線に接続しない。
