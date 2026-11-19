@@ -10,6 +10,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'crates/tempest-linux-probe/**'
+      - 'integration/fixed_relay_pipe_smoke.py'
   pull_request:
     paths:
       - '.github/workflows/linux-probe-unit.yml'
@@ -17,6 +18,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'crates/tempest-linux-probe/**'
+      - 'integration/fixed_relay_pipe_smoke.py'
 
 permissions:
   contents: read
@@ -56,3 +58,5 @@ jobs:
           timeout 5s "$RUNNER_TEMP/connect4-recovery-test"
       - name: Test subreaper adoption and pidfd handoff without root
         run: timeout 10s python3 docs/evidence/connect4-fixture-001/subreaper_test.py
+      - name: Test fixed relay pipe deadlines and child cleanup
+        run: timeout 15s python3 integration/fixed_relay_pipe_smoke.py
