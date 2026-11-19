@@ -159,6 +159,27 @@ static void check_worker_owned_connection(void)
     assert(sent == 1 && WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
+static void check_fixed_transfer(void)
+{
+    int input[2], output[2];
+    assert(pipe2(input, O_CLOEXEC | O_NONBLOCK) == 0);
+    assert(pipe2(output, O_CLOEXEC | O_NONBLOCK) == 0);
+    assert(write(input[1], "test", 4) == 4);
+    int64_t now = monotonic_ns();
+    assert(now >= 0);
+    assert(transfer_fixed_bytes(input[0], output[1], 4, now) < 0 && errno == ETIMEDOUT);
+    int64_t deadline = now + 1000000000;
+    assert(transfer_fixed_bytes(input[0], output[1], 4, deadline) == 0);
+    char result[4];
+    assert(read(output[0], result, sizeof(result)) == sizeof(result));
+    assert(memcmp(result, "test", sizeof(result)) == 0);
+    close(input[1]);
+    assert(transfer_fixed_bytes(input[0], output[1], 1, deadline) < 0 && errno == EPIPE);
+    close(input[0]);
+    close(output[0]);
+    close(output[1]);
+}
+
 int main(void)
 {
     assert(empty_supplementary_groups("\t \n"));
@@ -168,6 +189,7 @@ int main(void)
     check_invalid_handoff();
     check_worker_pipe_identity();
     check_worker_owned_connection();
+    check_fixed_transfer();
     int gate[2];
     assert(pipe(gate) == 0);
     pid_t child = fork();

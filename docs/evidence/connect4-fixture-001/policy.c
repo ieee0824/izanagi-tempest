@@ -744,6 +744,45 @@ static int poll_before(struct pollfd *fd, int64_t deadline)
     }
 }
 
+/* Both descriptors must be nonblocking. The caller supplies one deadline for
+ * all transfers in the exchange. */
+int transfer_fixed_bytes(int source, int destination, size_t size, int64_t deadline)
+{
+    char buffer[4096];
+    size_t transferred = 0;
+    while (transferred < size) {
+        size_t remaining = size - transferred;
+        struct pollfd readable = {.fd = source, .events = POLLIN};
+        if (poll_before(&readable, deadline) < 0)
+            return -1;
+        ssize_t count = read(source, buffer, remaining < sizeof(buffer) ? remaining : sizeof(buffer));
+        if (count < 0 && (errno == EAGAIN || errno == EINTR))
+            continue;
+        if (count <= 0) {
+            if (count == 0)
+                errno = EPIPE;
+            return -1;
+        }
+        size_t written = 0;
+        while (written < (size_t)count) {
+            struct pollfd writable = {.fd = destination, .events = POLLOUT};
+            if (poll_before(&writable, deadline) < 0)
+                return -1;
+            ssize_t sent = write(destination, buffer + written, (size_t)count - written);
+            if (sent < 0 && (errno == EAGAIN || errno == EINTR))
+                continue;
+            if (sent <= 0) {
+                if (sent == 0)
+                    errno = EIO;
+                return -1;
+            }
+            written += (size_t)sent;
+        }
+        transferred += (size_t)count;
+    }
+    return 0;
+}
+
 /* The manager has closed its own copy of the readiness write end. */
 static int confirm_connect4_ready(int ready_fd)
 {
