@@ -42,6 +42,8 @@ jobs:
         run: cargo +stable clippy --locked -p tempest-linux-probe --all-targets -- -D warnings
       - name: Compile the fixed loopback policy fixture
         run: gcc -std=c17 -Wall -Wextra -Werror -c docs/evidence/connect4-fixture-001/policy.c -o "$RUNNER_TEMP/connect4-policy.o"
+      - name: Compile and link the fixed-host entry point without running it
+        run: gcc -std=c17 -Wall -Wextra -Werror docs/evidence/connect4-fixture-001/fixture.c -o "$RUNNER_TEMP/connect4-fixture"
       - name: Compile the read-only host preflight
         run: gcc -std=c17 -Wall -Wextra -Werror docs/evidence/connect4-fixture-001/preflight.c -o "$RUNNER_TEMP/connect4-preflight"
       - name: Test pidfd recovery without loading BPF
