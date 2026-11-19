@@ -365,3 +365,27 @@ raw のパーティション表と ext4 署名を再読し、既存の選択記�
 親由来の実インストール情報を保持する。回収後に独立 qcow2 を検査し、backing 不在、
 3ファイルの実バイト・所有者・モード、親イメージの SHA 不変と loop 不在を記録する。
 VM 起動は別の検証とする。
+
+#### 派生001の実行結果
+
+room #17222 の承認で派生を1回実行し、新規 private 出力
+`/var/lib/tempest-fixed-vm-receiver-derived-001/fixed-vm-receiver.qcow2` を生成した。
+full003 の SHA-256 は前後とも
+`5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e`。
+raw 内の ext4 を offset 1048576、長さ 3683647488 に限定して扱い、
+変更前後の `e2fsck -fn` はともに exit 0。変換前に loop を解除した。
+
+| 検証対象 | UID:GID / mode | 実 SHA-256 |
+|---|---|---|
+| `/usr/local/libexec/tempest-guest-native` | 0:0 / 0755 | `3bc9fd0a15aa2f1e0e14f8a33731d0051242ae48ca991e937ad8506ae30d4284` |
+| `/etc/tmpfiles.d/tempest-fixed-vm-receiver.conf` | 0:0 / 0644 | `f47820d751837bc4bd2407b0681e6c268d65fcc123c65435771b4be1af70b0fd` |
+| `/etc/tempest/image.json` | 0:0 / 0644 | `817751f48fa3bcdaced86e43e09cdfe8d0505be648312f34d6cbaf06ef1f8b03` |
+
+各ファイルを raw の ext4 から読み出して対象バイトと比較した。
+`qemu-img compare` で raw と完成 qcow2 の内容一致、`qemu-img check` で整合性、
+`qemu-img info` で backing 不在・dirty/corrupt false を確認した。完成 qcow2 は
+2,149,187,584 bytes、SHA-256
+`8e6ad453eea6a270fcee63e3dae5e79f90a4d25e70420c07f9fde52d2f51c3f4`。
+空き容量は開始時 11,181,912,064、変換後 6,929,645,568、scratch 回収後
+9,024,589,824 bytes。raw と loop は事後不在。結果を room #17223 に共有した。
+VM 起動は未実施。
