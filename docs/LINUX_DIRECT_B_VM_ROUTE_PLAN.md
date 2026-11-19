@@ -293,3 +293,7 @@ cgroup の identity、適用済み制約を照合してから通信を許可す�
 親が確保する loopback listener 2つに順番に固定要求を送り、各区間の開始値・
 終了値・差分と、閉鎖後に両宛先で接続が拒否されたことを JSON に出力する。
 この段階の結果が示すのは、ローカルの制約なし対照での計数と listener 回収まで。
+
+Linux では各区間の前後に `/proc` の owner PID・starttime・cgroup・FD と
+`ss` の listener inode・owner・endpoint を照合し、閉鎖後も `ss` で不在を確認する。
+macOS 等の計数結果では `linux_identity=null` とし、Linux の所有証跡として使わない。

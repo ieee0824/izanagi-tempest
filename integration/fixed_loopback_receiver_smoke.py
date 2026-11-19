@@ -4,10 +4,14 @@ from contextlib import ExitStack
 import errno
 import json
 import os
+from pathlib import Path
 import secrets
 import select
 import socket
 import sys
+import subprocess
+
+from network_receiver_observe import fresh_listeners, starttime
 
 LOOPBACK = '127.0.0.1'
 TIMEOUT = 2
@@ -44,6 +48,36 @@ class Receiver:
             peer.sendall(RESPONSE)
 
 
+def observe_linux(receivers):
+    pid = os.getpid()
+    process = Path('/proc') / str(pid)
+
+    def process_identity():
+        return {
+            'pid': pid,
+            'starttime_ticks': starttime((process / 'stat').read_text()),
+            'cgroup': (process / 'cgroup').read_text().splitlines(),
+        }
+
+    owner = process_identity()
+    if not owner['cgroup']:
+        raise RuntimeError('receiver cgroup observation missing')
+    for receiver in receivers.values():
+        endpoint = f'{LOOPBACK}:{receiver.endpoint[1]}'
+        fd = process / 'fd' / str(receiver.listener.fileno())
+        expected = {'local': endpoint, 'all_pids': [pid], 'socket_inode': receiver.inode}
+        if (
+            receiver.inode <= 0
+            or os.readlink(fd) != f'socket:[{receiver.inode}]'
+            or fresh_listeners(receiver.endpoint[1]) != [expected]
+            or os.readlink(fd) != f'socket:[{receiver.inode}]'
+        ):
+            raise RuntimeError('receiver listener identity changed')
+    if process_identity() != owner:
+        raise RuntimeError('receiver owner identity changed')
+    return owner
+
+
 def exchange(receiver):
     with socket.create_connection(receiver.endpoint, timeout=TIMEOUT) as client:
         client.sendall(REQUEST)
@@ -70,6 +104,8 @@ def main():
         'passed': False,
     }
     receivers = {}
+    linux = sys.platform == 'linux'
+    report['linux_identity'] = None
     try:
         with ExitStack() as stack:
             for name in ('same_run_dummy', 'other_dummy'):
@@ -78,10 +114,16 @@ def main():
                 name: {'port': receiver.endpoint[1], 'inode': receiver.inode}
                 for name, receiver in receivers.items()
             }
+            if linux:
+                report['linux_identity'] = observe_linux(receivers)
             for target, receiver in receivers.items():
                 before = {name: item.snapshot() for name, item in receivers.items()}
                 phase = {'before': before}
                 report['phases'][target] = phase
+                if linux:
+                    phase['owner_before'] = observe_linux(receivers)
+                    if phase['owner_before'] != report['linux_identity']:
+                        raise RuntimeError('receiver owner changed before exchange')
                 try:
                     exchange(receiver)
                 finally:
@@ -91,13 +133,25 @@ def main():
                         name: {key: count - before[name][key] for key, count in counts.items()}
                         for name, counts in after.items()
                     }
+                if linux:
+                    phase['owner_after'] = observe_linux(receivers)
+                    if phase['owner_after'] != report['linux_identity']:
+                        raise RuntimeError('receiver owner changed after exchange')
                 for name, counts in phase['delta'].items():
                     expected = int(name == target)
                     if counts != {'accepted': expected, 'matched': expected}:
                         raise RuntimeError('unexpected receiver count')
-    except (OSError, RuntimeError) as error:
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
         report['error'] = str(error)
-    cleanup = {name: listener_absent(item) for name, item in receivers.items()}
+    cleanup = {}
+    for name, item in receivers.items():
+        try:
+            cleanup[name] = listener_absent(item) and (
+                not linux or fresh_listeners(item.endpoint[1]) == []
+            )
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            cleanup[name] = False
+            report.setdefault('cleanup_errors', {})[name] = str(error)
     report['listener_absent'] = cleanup
     report['passed'] = 'error' not in report and len(cleanup) == 2 and all(cleanup.values())
     print(json.dumps(report, sort_keys=True))
