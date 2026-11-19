@@ -962,8 +962,10 @@ int connect4_worker_wait(void)
     const char ready = 'Y';
     ssize_t sent = write(4, &ready, sizeof(ready));
     int closed = close(4);
-    if (sent != sizeof(ready) || closed < 0)
+    if (sent != sizeof(ready) || closed < 0) {
+        errno = EIO;
         return -1;
+    }
     return await_connect4_release(3);
 }
 
@@ -988,13 +990,17 @@ static int try_connect4_loopback(uint16_t port)
 static int run_connect4_worker(uint16_t allowed, uint16_t denied,
                                atomic_int *release_seen)
 {
-    if (allowed == 0 || denied == 0 || allowed == denied ||
-        connect4_worker_wait() < 0)
+    if (allowed == 0 || denied == 0 || allowed == denied)
         return 70;
+    if (connect4_worker_wait() < 0)
+        return errno == EPIPE ? 75 : 70;
     if (release_seen != NULL) {
         atomic_store_explicit(release_seen, 1, memory_order_release);
         /* The fault case holds here until the manager closes the gate. */
         (void)await_connect4_release(3);
+        /* Give the upper owner a bounded interval to observe adoption and
+         * stop a live worker even after the supervisor closes the gate. */
+        (void)poll(NULL, 0, 2000);
         return 74;
     }
     if (try_connect4_loopback(allowed) != 0)
@@ -1295,7 +1301,11 @@ int retry_connect4_recovery(const struct connect4_trial *trial,
 
 static int record_connect4_trial(const struct connect4_trial *trial);
 
+int handoff_connect4_worker_fd(int channel, pid_t worker, int worker_pidfd);
+
 int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
+                       int handoff_channel, atomic_int *known_worker,
+                       int supervisor_fault,
                        int stop_before_release, atomic_int *release_seen,
                        int allowed_listener, uint16_t allowed_port,
                        int denied_listener, uint16_t denied_port,
@@ -1316,11 +1326,25 @@ int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
     struct connect4_worker worker;
     if (spawn_connect4_worker(allowed_port, denied_port, &worker, release_seen) < 0)
         return -1;
+    if (known_worker != NULL)
+        atomic_store_explicit(known_worker, worker.pid, memory_order_release);
     int pinned = 0;
     int result = place_connect4_worker(trial->state_fd, trial->cgroup_fd,
                                          trial->device, trial->cgroup_id,
                                          worker.pid, worker.pidfd);
     const char *failure_stage = "place";
+    if (result == 0 && supervisor_fault == 1) {
+        failure_stage = "supervisor-before-handoff";
+        result = confirm_connect4_ready(worker.ready);
+        if (result == 0) {
+            fputs("fault=supervisor-before-handoff ready=1\n", stderr);
+            result = kill(getpid(), SIGKILL);
+        }
+    }
+    if (result == 0 && handoff_channel >= 0) {
+        failure_stage = "recovery-handoff";
+        result = handoff_connect4_worker_fd(handoff_channel, worker.pid, worker.pidfd);
+    }
     if (result == 0) {
         failure_stage = "prepare-or-release";
         result = release_connect4_worker(trial->state_fd, worker.gate,
@@ -1346,6 +1370,9 @@ int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
         if (!atomic_load_explicit(release_seen, memory_order_acquire)) {
             errno = ETIMEDOUT;
             result = -1;
+        } else if (supervisor_fault == 2) {
+            fputs("fault=supervisor-after-release token_read=1\n", stderr);
+            result = kill(getpid(), SIGKILL);
         } else if (stop_test_controller(controller_pidfd) < 0) {
             result = -1;
         } else {
@@ -1561,6 +1588,12 @@ done:;
 #define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-diagnostic-001"
 #elif CONNECT4_CASE == 4
 #define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-normal-002"
+#elif CONNECT4_CASE == 5
+#define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-subreaper-001"
+#elif CONNECT4_CASE == 6
+#define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-supervisor-before-001"
+#elif CONNECT4_CASE == 7
+#define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-supervisor-after-001"
 #else
 #error "unknown connect4 fixture case"
 #endif
@@ -1766,4 +1799,250 @@ int retire_connect4_fixture_state(int state_fd)
     if (result < 0)
         errno = error;
     return result;
+}
+
+/* The subreaper owns both original pidfds. Keep the supervisor waitable
+ * during adoption so an unrelated readable descriptor cannot stand in for it. */
+int stop_adopted_connect4_worker(int supervisor_pidfd, pid_t worker, int worker_pidfd)
+{
+    if (supervisor_pidfd < 0 || worker_pidfd < 0 || worker <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    siginfo_t supervisor_status = {0};
+    if (waitid(P_PIDFD, (id_t)supervisor_pidfd, &supervisor_status,
+               WEXITED | WNOHANG | WNOWAIT) < 0)
+        return -1;
+    if (supervisor_status.si_pid == 0) {
+        errno = EBUSY;
+        return -1;
+    }
+
+    siginfo_t worker_status = {0};
+    if (waitid(P_PIDFD, (id_t)worker_pidfd, &worker_status,
+               WEXITED | WNOHANG | WNOWAIT) < 0)
+        return -1;
+    if (worker_status.si_pid != 0) {
+        if (worker_status.si_pid == worker)
+            return 0;
+        errno = ESTALE;
+        return -1;
+    }
+
+    if (check_connect4_pidfd_pid(worker_pidfd, worker) < 0)
+        return -1;
+    if (syscall(SYS_pidfd_send_signal, worker_pidfd, SIGKILL, NULL, 0) < 0 &&
+        errno != ESRCH)
+        return -1;
+    struct pollfd exited = { .fd = worker_pidfd, .events = POLLIN };
+    int ready = poll(&exited, 1, 2000);
+    if (ready < 0)
+        return -1;
+    if (ready == 0) {
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    return confirm_worker_exit(worker_pidfd);
+}
+
+/* Retain the supervisor pidfd and the trial resources until this succeeds.
+ * The caller is the sole reaper and records reap before attempting unlink. */
+int recover_adopted_connect4_worker(const struct connect4_trial *trial,
+                                     int supervisor_pidfd,
+                                     struct connect4_pending_recovery *pending,
+                                     int *worker_reaped)
+{
+    int lease = acquire_connect4_lease(trial->state_fd);
+    if (lease < 0)
+        return -1;
+    int result = -1;
+    int link = -1;
+    if (!*worker_reaped) {
+        if (stop_adopted_connect4_worker(supervisor_pidfd, pending->pid,
+                                         pending->pidfd) < 0)
+            goto done;
+        siginfo_t worker = {0};
+        if (waitid(P_PIDFD, (id_t)pending->pidfd, &worker,
+                   WEXITED | WNOHANG) < 0)
+            goto done;
+        if (worker.si_pid != pending->pid) {
+            errno = ESTALE;
+            goto done;
+        }
+        *worker_reaped = 1;
+    }
+
+    link = reopen_connect4_link(trial->pin_path, trial->link_id,
+                                 trial->program_id, trial->cgroup_id);
+    if (link < 0) {
+        if (errno != ENOENT)
+            goto done;
+        struct stat marker;
+        if (fstatat(trial->state_fd, "release-intent", &marker,
+                    AT_SYMLINK_NOFOLLOW) == 0) {
+            errno = ESTALE;
+            goto done;
+        }
+        if (errno != ENOENT)
+            goto done;
+    }
+    if (check_connect4_cgroup_empty(trial->cgroup_fd, trial->device,
+                                     trial->cgroup_id) < 0)
+        goto done;
+    if (link >= 0 && unlink(trial->pin_path) < 0)
+        goto done;
+    pending->phase = link >= 0 ? CONNECT4_PIN_REMOVED : CONNECT4_PIN_ABSENT;
+    result = 0;
+
+done:;
+    int error = errno;
+    if (link >= 0)
+        close(link);
+    close(lease);
+    if (result < 0)
+        errno = error;
+    return result;
+}
+
+/* A private SOCK_SEQPACKET pair binds the message to the supervisor.
+ * The subreaper still verifies the descriptor against the announced PID. */
+int receive_connect4_worker_fd(int channel, pid_t *worker)
+{
+    pid_t candidate = 0;
+    struct iovec payload = { .iov_base = &candidate, .iov_len = sizeof(candidate) };
+    union {
+        struct cmsghdr align;
+        char bytes[CMSG_SPACE(sizeof(int) * 2)];
+    } control = {0};
+    struct msghdr message = {
+        .msg_iov = &payload, .msg_iovlen = 1,
+        .msg_control = control.bytes, .msg_controllen = sizeof(control.bytes),
+    };
+    ssize_t count = recvmsg(channel, &message, MSG_CMSG_CLOEXEC | MSG_DONTWAIT);
+    if (count < 0)
+        return -1;
+    int descriptor = -1;
+    int valid = count == sizeof(candidate) &&
+        !(message.msg_flags & (MSG_TRUNC | MSG_CTRUNC));
+    for (struct cmsghdr *header = CMSG_FIRSTHDR(&message); header != NULL;
+         header = CMSG_NXTHDR(&message, header)) {
+        if (header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS ||
+            header->cmsg_len < CMSG_LEN(0)) {
+            valid = 0;
+            continue;
+        }
+        size_t bytes = header->cmsg_len - CMSG_LEN(0);
+        if (bytes != sizeof(int) || descriptor >= 0)
+            valid = 0;
+        for (size_t offset = 0; offset + sizeof(int) <= bytes; offset += sizeof(int)) {
+            int fd;
+            memcpy(&fd, CMSG_DATA(header) + offset, sizeof(fd));
+            if (descriptor < 0)
+                descriptor = fd;
+            else
+                close(fd);
+        }
+    }
+    if (!valid || descriptor < 0 || check_connect4_pidfd_pid(descriptor, candidate) < 0) {
+        if (descriptor >= 0)
+            close(descriptor);
+        errno = EPROTO;
+        return -1;
+    }
+    *worker = candidate;
+    return descriptor;
+}
+
+/* The worker gate remains closed until the independent owner acknowledges
+ * the original worker pidfd and the resources required for recovery. */
+int handoff_connect4_worker_fd(int channel, pid_t worker, int worker_pidfd)
+{
+    if (check_connect4_pidfd_pid(worker_pidfd, worker) < 0)
+        return -1;
+    struct iovec payload = { .iov_base = &worker, .iov_len = sizeof(worker) };
+    union {
+        struct cmsghdr align;
+        char bytes[CMSG_SPACE(sizeof(int))];
+    } control = {0};
+    struct msghdr message = {
+        .msg_iov = &payload, .msg_iovlen = 1,
+        .msg_control = control.bytes, .msg_controllen = sizeof(control.bytes),
+    };
+    struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    header->cmsg_len = CMSG_LEN(sizeof(worker_pidfd));
+    memcpy(CMSG_DATA(header), &worker_pidfd, sizeof(worker_pidfd));
+    ssize_t count = sendmsg(channel, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
+    if (count < 0)
+        return -1;
+    if (count != sizeof(worker)) {
+        errno = EPROTO;
+        return -1;
+    }
+    struct pollfd reply = { .fd = channel, .events = POLLIN };
+    int ready = poll(&reply, 1, 1000);
+    if (ready < 0)
+        return -1;
+    if (ready == 0) {
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    char ack;
+    count = recv(channel, &ack, sizeof(ack), MSG_TRUNC | MSG_DONTWAIT);
+    if (count < 0)
+        return -1;
+    if (count != sizeof(ack) || ack != 'A') {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
+}
+
+/* Retain the received worker identity even if validation prevents ACK, so
+ * the upper owner can still identify its adopted child on supervisor loss. */
+int acknowledge_connect4_handoff(int channel, const struct connect4_trial *trial,
+                                  pid_t expected_worker,
+                                  struct connect4_pending_recovery *pending)
+{
+    if (pending->pidfd >= 0) {
+        errno = EALREADY;
+        return -1;
+    }
+    pid_t worker;
+    int worker_fd = receive_connect4_worker_fd(channel, &worker);
+    if (worker_fd < 0)
+        return -1;
+    if (worker != expected_worker || expected_worker <= 0) {
+        close(worker_fd);
+        errno = ESTALE;
+        return -1;
+    }
+    *pending = (struct connect4_pending_recovery){
+        worker, worker_fd, CONNECT4_PIN_UNKNOWN,
+    };
+
+    dev_t device;
+    uint64_t cgroup_id;
+    if (read_connect4_cgroup_identity(trial->cgroup_fd, &device, &cgroup_id) < 0)
+        return -1;
+    if (device != trial->device || cgroup_id != trial->cgroup_id) {
+        errno = ESTALE;
+        return -1;
+    }
+    if (check_connect4_link(trial->link_fd, trial->link_id, trial->program_id,
+                            cgroup_id) < 0)
+        return -1;
+    int lease = acquire_connect4_lease(trial->state_fd);
+    if (lease < 0)
+        return -1;
+    close(lease);
+
+    const char ack = 'A';
+    ssize_t count = send(channel, &ack, sizeof(ack), MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (count == sizeof(ack))
+        return 0;
+    if (count >= 0)
+        errno = EPROTO;
+    return -1;
 }
