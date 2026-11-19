@@ -1157,14 +1157,19 @@ int connect4_worker_wait(void)
 }
 
 /* A successful connection remains owned by the worker. */
-static int connect4_loopback(uint16_t port, int *connected_fd)
+static struct sockaddr_in connect4_loopback_address(uint16_t port)
 {
-    *connected_fd = -1;
-    const struct sockaddr_in address = {
+    return (struct sockaddr_in){
         .sin_family = AF_INET,
         .sin_port = htons(port),
         .sin_addr = { .s_addr = htonl(INADDR_LOOPBACK) },
     };
+}
+
+static int connect4_loopback(uint16_t port, int *connected_fd)
+{
+    *connected_fd = -1;
+    const struct sockaddr_in address = connect4_loopback_address(port);
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
     if (fd < 0)
         return -1;
@@ -1175,6 +1180,47 @@ static int connect4_loopback(uint16_t port, int *connected_fd)
     }
     *connected_fd = fd;
     return 0;
+}
+
+/* On failure the worker owns no socket and errno identifies the connect fault. */
+int open_fixed_relay_connection(uint16_t port, int64_t deadline)
+{
+    int64_t now = monotonic_ns();
+    if (now < 0)
+        return -1;
+    if (now >= deadline) {
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    const struct sockaddr_in address = connect4_loopback_address(port);
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, IPPROTO_TCP);
+    if (fd < 0)
+        return -1;
+    if (connect(fd, (const struct sockaddr *)&address, sizeof(address)) < 0) {
+        if (errno != EINPROGRESS)
+            goto fail;
+        struct pollfd writable = {.fd = fd, .events = POLLOUT};
+        if (poll_before(&writable, deadline) < 0)
+            goto fail;
+        int error;
+        socklen_t length = sizeof(error);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) < 0)
+            goto fail;
+        if (length != sizeof(error) || error != 0) {
+            errno = length != sizeof(error) ? EIO : error;
+            goto fail;
+        }
+    }
+    now = monotonic_ns();
+    if (now >= 0 && now < deadline)
+        return fd;
+    if (now >= 0)
+        errno = ETIMEDOUT;
+fail:;
+    int error = errno;
+    close(fd);
+    errno = error;
+    return -1;
 }
 
 static int try_connect4_loopback(uint16_t port)
