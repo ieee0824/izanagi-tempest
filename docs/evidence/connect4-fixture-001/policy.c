@@ -744,18 +744,14 @@ static int poll_before(struct pollfd *fd, int64_t deadline)
     }
 }
 
-/* Both descriptors must be nonblocking. The caller supplies one deadline for
- * all transfers in the exchange. */
-int transfer_fixed_bytes(int source, int destination, size_t size, int64_t deadline)
+static int read_before(int fd, void *buffer, size_t size, int64_t deadline)
 {
-    char buffer[4096];
-    size_t transferred = 0;
-    while (transferred < size) {
-        size_t remaining = size - transferred;
-        struct pollfd readable = {.fd = source, .events = POLLIN};
+    char *bytes = buffer;
+    for (size_t offset = 0; offset < size;) {
+        struct pollfd readable = {.fd = fd, .events = POLLIN};
         if (poll_before(&readable, deadline) < 0)
             return -1;
-        ssize_t count = read(source, buffer, remaining < sizeof(buffer) ? remaining : sizeof(buffer));
+        ssize_t count = read(fd, bytes + offset, size - offset);
         if (count < 0 && (errno == EAGAIN || errno == EINTR))
             continue;
         if (count <= 0) {
@@ -763,24 +759,52 @@ int transfer_fixed_bytes(int source, int destination, size_t size, int64_t deadl
                 errno = EPIPE;
             return -1;
         }
-        size_t written = 0;
-        while (written < (size_t)count) {
-            struct pollfd writable = {.fd = destination, .events = POLLOUT};
-            if (poll_before(&writable, deadline) < 0)
-                return -1;
-            ssize_t sent = write(destination, buffer + written, (size_t)count - written);
-            if (sent < 0 && (errno == EAGAIN || errno == EINTR))
-                continue;
-            if (sent <= 0) {
-                if (sent == 0)
-                    errno = EIO;
-                return -1;
-            }
-            written += (size_t)sent;
-        }
-        transferred += (size_t)count;
+        offset += (size_t)count;
     }
     return 0;
+}
+
+static int write_before(int fd, const void *buffer, size_t size, int64_t deadline)
+{
+    const char *bytes = buffer;
+    for (size_t offset = 0; offset < size;) {
+        struct pollfd writable = {.fd = fd, .events = POLLOUT};
+        if (poll_before(&writable, deadline) < 0)
+            return -1;
+        ssize_t count = write(fd, bytes + offset, size - offset);
+        if (count < 0 && (errno == EAGAIN || errno == EINTR))
+            continue;
+        if (count <= 0) {
+            if (count == 0)
+                errno = EIO;
+            return -1;
+        }
+        offset += (size_t)count;
+    }
+    return 0;
+}
+
+/* The fixed fixture uses Izanagi v3 authenticated frames. The parent and
+ * guest authenticate the bytes, while this relay bounds the frame size. */
+int transfer_authenticated_frame(int source, int destination, int64_t deadline)
+{
+    enum { HEADER = 7, TRAILER = 8 + 32, MAX_BODY = 4096 };
+    unsigned char frame[HEADER + MAX_BODY + TRAILER];
+    if (read_before(source, frame, HEADER, deadline) < 0)
+        return -1;
+    if (frame[0] != 0xff || frame[1] != 3) {
+        errno = EPROTO;
+        return -1;
+    }
+    uint32_t size = (uint32_t)frame[3] | (uint32_t)frame[4] << 8 |
+                    (uint32_t)frame[5] << 16 | (uint32_t)frame[6] << 24;
+    if (size > MAX_BODY) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    if (read_before(source, frame + HEADER, size + TRAILER, deadline) < 0)
+        return -1;
+    return write_before(destination, frame, HEADER + size + TRAILER, deadline);
 }
 
 /* The manager has closed its own copy of the readiness write end. */
