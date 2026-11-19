@@ -12,6 +12,11 @@
 #include <sys/stat.h>
 #include <sys/vfs.h>
 #include <dirent.h>
+#include <grp.h>
+#include <linux/capability.h>
+#include <linux/audit.h>
+#include <linux/seccomp.h>
+#include <sys/prctl.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/file.h>
@@ -637,9 +642,43 @@ static int check_connect4_worker_fds(pid_t child, int gate_fd)
     return worker_gate_is_read_end(child);
 }
 
+/* The manager has closed its own copy of the readiness write end. */
+static int confirm_connect4_ready(int ready_fd)
+{
+    if (ready_fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    struct pollfd ready = { .fd = ready_fd, .events = POLLIN };
+    for (unsigned phase = 0; phase < 2; ++phase) {
+        int result = poll(&ready, 1, 1000);
+        if (result < 0)
+            return -1;
+        if (result == 0) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        if (ready.revents & (POLLERR | POLLNVAL)) {
+            errno = EIO;
+            return -1;
+        }
+        char value;
+        ssize_t count = read(ready_fd, &value, 1);
+        if (count < 0)
+            return -1;
+        if ((phase == 0 && (count != 1 || value != 'Y')) ||
+            (phase == 1 && count != 0)) {
+            errno = EPROTO;
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* The manager owns the worker and holds its original pidfd. Gate FD is
  * a private pipe write end that only the manager can use. */
-int release_connect4_worker(int state_fd, int gate_fd, pid_t child, int worker_pidfd,
+int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
+                            pid_t child, int worker_pidfd,
                             int link_fd,
                             const char *path, int cgroup_fd, dev_t device,
                             uint64_t cgroup_id, uint32_t link_id,
@@ -653,7 +692,8 @@ int release_connect4_worker(int state_fd, int gate_fd, pid_t child, int worker_p
     int verified = -1;
     if (worker_pidfd < 0) {
         errno = EBADF;
-    } else if (waitid(P_PIDFD, (id_t)worker_pidfd, &status,
+    } else if (confirm_connect4_ready(ready_fd) == 0 &&
+               waitid(P_PIDFD, (id_t)worker_pidfd, &status,
                       WEXITED | WNOHANG | WNOWAIT) == 0) {
         if (status.si_pid != 0)
             errno = ESRCH;
@@ -741,4 +781,88 @@ int await_connect4_release(int gate_fd)
         return -1;
     }
     return 0;
+}
+
+/* Run only in the dedicated fork child, before the manager takes the lease.
+ * On failure the child caller must exit without proceeding to the gate. */
+int prepare_connect4_worker(int gate_read_fd, int ready_write_fd)
+{
+    if (gate_read_fd != 3 || ready_write_fd != 4) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (syscall(SYS_close_range, 0U, 2U, 0U) < 0 ||
+        syscall(SYS_close_range, 5U, ~0U, 0U) < 0)
+        return -1;
+    for (unsigned cap = 0; cap <= CAP_LAST_CAP; ++cap) {
+        if (prctl(PR_CAPBSET_DROP, (unsigned long)cap, 0UL, 0UL, 0UL) < 0)
+            return -1;
+    }
+    if (setgroups(0, NULL) < 0 || setresgid(62004, 62004, 62004) < 0 ||
+        setresuid(62004, 62004, 62004) < 0)
+        return -1;
+    struct __user_cap_header_struct header = {
+        .version = _LINUX_CAPABILITY_VERSION_3,
+    };
+    struct __user_cap_data_struct capabilities[2] = {0};
+    if (syscall(SYS_capset, &header, capabilities) < 0 ||
+        prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0)
+        return -1;
+    return 0;
+}
+
+#define GUARD_SYSCALL(number) \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, number, 0, 1), \
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
+#define FILTER_ARG(index) \
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[index]))
+#define FILTER_DENY BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM)
+
+int restrict_connect4_worker(void)
+{
+    struct sock_filter code[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        GUARD_SYSCALL(SYS_read),
+        GUARD_SYSCALL(SYS_poll),
+        GUARD_SYSCALL(SYS_close),
+        GUARD_SYSCALL(SYS_connect),
+        GUARD_SYSCALL(SYS_exit),
+        GUARD_SYSCALL(SYS_exit_group),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_write, 0, 4),
+        FILTER_ARG(0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 4, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        FILTER_DENY,
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_socket, 1, 0),
+        FILTER_DENY,
+        FILTER_ARG(0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_INET, 0, 5),
+        FILTER_ARG(1),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_STREAM | SOCK_CLOEXEC, 0, 3),
+        FILTER_ARG(2),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, IPPROTO_TCP, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        FILTER_DENY,
+    };
+    const struct sock_fprog program = {
+        .len = sizeof(code) / sizeof(code[0]),
+        .filter = code,
+    };
+    return (int)syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &program);
+}
+
+/* The parent waits for the ready byte and EOF before inspecting FD 3. */
+int connect4_worker_wait(void)
+{
+    if (prepare_connect4_worker(3, 4) < 0 || restrict_connect4_worker() < 0)
+        return -1;
+    const char ready = 'Y';
+    ssize_t sent = write(4, &ready, sizeof(ready));
+    int closed = close(4);
+    if (sent != sizeof(ready) || closed < 0)
+        return -1;
+    return await_connect4_release(3);
 }
