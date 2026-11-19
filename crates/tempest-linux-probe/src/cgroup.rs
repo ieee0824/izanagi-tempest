@@ -887,6 +887,16 @@ mod tests {
     #[test]
     #[ignore = "fixed Linux host with root cgroup access"]
     fn fixed_dummy_two_workers_hold_only_crossed_pipe_ends() {
+        fixed_dummy_crossed_pipe_workers(false);
+    }
+
+    #[test]
+    #[ignore = "fixed Linux host with root cgroup access"]
+    fn fixed_dummy_exchanges_bytes_after_thaw() {
+        fixed_dummy_crossed_pipe_workers(true);
+    }
+
+    fn fixed_dummy_crossed_pipe_workers(exchange: bool) {
         use crate::guard::Guard;
         use crate::holder_scan::{Budget, ManagerPipe, TaskPipeFd, task_pipe_fds};
         use crate::identity::Process;
@@ -906,9 +916,12 @@ mod tests {
             [read_b.as_raw_fd(), write_a.as_raw_fd()],
         ];
         let mut children = Vec::new();
+        let mut gates = Vec::<io::PipeWriter>::new();
         let result = (|| -> Result<(), Fault> {
-            for excluded in [ends[1], ends[0]] {
+            for index in 0..2 {
                 use io::Read;
+                let excluded = ends[1 - index];
+                let (gate_read, gate_write) = io::pipe()?;
                 let (mut ready_read, ready_write) = io::pipe()?;
                 let pid = unsafe { libc::fork() };
                 if pid < 0 {
@@ -917,6 +930,10 @@ mod tests {
                 if pid == 0 {
                     unsafe {
                         libc::close(guard.fd());
+                        libc::close(gate_write.as_raw_fd());
+                        for gate in &gates {
+                            libc::close(gate.as_raw_fd());
+                        }
                         for fd in excluded {
                             libc::close(fd);
                         }
@@ -925,12 +942,27 @@ mod tests {
                             libc::_exit(1);
                         }
                         libc::close(ready_write.as_raw_fd());
+                        if exchange {
+                            let mut token = 0u8;
+                            let released = libc::read(
+                                gate_read.as_raw_fd(),
+                                (&mut token as *mut u8).cast(),
+                                1,
+                            );
+                            libc::close(gate_read.as_raw_fd());
+                            if released != 1 || token != b'R' {
+                                libc::_exit(2);
+                            }
+                            fixed_dummy_exchange_child(index, ends[index]);
+                        }
                         loop {
                             libc::pause();
                         }
                     }
                 }
                 children.push(pid);
+                drop(gate_read);
+                gates.push(gate_write);
                 drop(ready_write);
                 let mut ready = libc::pollfd {
                     fd: ready_read.as_raw_fd(),
@@ -989,25 +1021,64 @@ mod tests {
                         .collect()
                 },
                 &expected,
-            )
+            )?;
+            if exchange {
+                use io::Write;
+                for gate in &mut gates {
+                    gate.write_all(b"R")?;
+                }
+                gates.clear();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while a.alive()? || b.alive()? {
+                    if Instant::now() >= deadline {
+                        return Err(Fault::Identity);
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
+            Ok(())
         })();
         let mut all_reaped = true;
         for pid in children {
             unsafe {
-                libc::kill(pid, libc::SIGKILL);
+                if !exchange || result.is_err() {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+                let mut status = 0;
                 let reaped = loop {
-                    let reaped = libc::waitpid(pid, std::ptr::null_mut(), 0);
+                    let reaped = libc::waitpid(pid, &mut status, 0);
                     if reaped >= 0 || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
                     {
                         break reaped;
                     }
                 };
-                all_reaped &= reaped == pid;
+                all_reaped &= reaped == pid
+                    && (!exchange
+                        || result.is_err()
+                        || (libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0));
             }
         }
         group.cleanup().unwrap();
         assert!(all_reaped);
         result.unwrap();
+    }
+
+    unsafe fn fixed_dummy_exchange_child(index: usize, [input, output]: [i32; 2]) -> ! {
+        let mut received = 0u8;
+        let send = |byte: u8| unsafe {
+            libc::write(output, (&byte as *const u8).cast(), 1) == 1 && libc::close(output) == 0
+        };
+        let mut receive = |expected| unsafe {
+            libc::read(input, (&mut received as *mut u8).cast(), 1) == 1
+                && received == expected
+                && libc::read(input, (&mut received as *mut u8).cast(), 1) == 0
+        };
+        let passed = if index == 0 {
+            send(b'Q') && receive(b'A')
+        } else {
+            receive(b'Q') && send(b'A')
+        };
+        unsafe { libc::_exit(if passed { 0 } else { 3 }) }
     }
 
     #[test]
