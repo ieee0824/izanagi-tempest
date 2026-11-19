@@ -28,12 +28,64 @@ static void check_controller_death(void)
     puts("controller_killed=ECANCELED");
 }
 
+static unsigned count_open_descriptors(void)
+{
+    DIR *table = opendir("/proc/self/fd");
+    assert(table != NULL);
+    unsigned count = 0;
+    while (readdir(table) != NULL)
+        ++count;
+    assert(closedir(table) == 0);
+    return count;
+}
+
+static void check_invalid_handoff(void)
+{
+    int channel[2];
+    assert(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, channel) == 0);
+    int original = (int)syscall(SYS_pidfd_open, getpid(), 0);
+    assert(original >= 0);
+    const unsigned baseline = count_open_descriptors();
+    for (unsigned n = 2; n <= 3; ++n) {
+        int descriptors[] = {original, original, original};
+        pid_t pid = getpid();
+        struct iovec payload = {.iov_base = &pid, .iov_len = sizeof(pid)};
+        union {
+            struct cmsghdr align;
+            char bytes[CMSG_SPACE(sizeof(descriptors))];
+        } control = {0};
+        struct msghdr message = {
+            .msg_iov = &payload, .msg_iovlen = 1,
+            .msg_control = control.bytes,
+            .msg_controllen = CMSG_SPACE(n * sizeof(int)),
+        };
+        struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+        header->cmsg_level = SOL_SOCKET;
+        header->cmsg_type = SCM_RIGHTS;
+        header->cmsg_len = CMSG_LEN(n * sizeof(int));
+        memcpy(CMSG_DATA(header), descriptors, n * sizeof(int));
+        assert(sendmsg(channel[0], &message, 0) == sizeof(pid));
+        struct connect4_pending_recovery pending = {-1, -1, CONNECT4_PIN_UNKNOWN};
+        assert(acknowledge_connect4_handoff(channel[1], NULL, pid, &pending) < 0);
+        assert(errno == EPROTO && pending.pidfd == -1);
+        char ack;
+        assert(recv(channel[0], &ack, sizeof(ack), MSG_DONTWAIT) < 0);
+        assert(errno == EAGAIN || errno == EWOULDBLOCK);
+        assert(count_open_descriptors() == baseline);
+    }
+    close(original);
+    close(channel[0]);
+    close(channel[1]);
+    puts("extra_or_truncated_fds=rejected-and-closed ack=absent");
+}
+
 int main(void)
 {
     assert(empty_supplementary_groups("\t \n"));
     assert(!empty_supplementary_groups("\t 62004 \n"));
     assert(!empty_supplementary_groups("\t "));
     check_controller_death();
+    check_invalid_handoff();
     int gate[2];
     assert(pipe(gate) == 0);
     pid_t child = fork();
