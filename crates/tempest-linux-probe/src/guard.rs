@@ -46,6 +46,25 @@ mod tests {
     use super::*;
     #[test]
     fn serialization_survives_owner_fd_drop_until_all_copies_close() {
+        const CHILD: &str = "TEMPEST_GUARD_LIFETIME_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // A different libtest thread can fork while this test owns the lock.
+            // CLOEXEC does not close that fork's copy until exec. Keep the lock
+            // out of the shared test process so the final rebind measures only
+            // this test's deliberate descriptor copies.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "guard::tests::serialization_survives_owner_fd_drop_until_all_copies_close",
+                    "--test-threads=1",
+                ])
+                .env_clear()
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated guard lifetime test failed");
+            return;
+        }
         let name = format!(
             "tempest-guard-test-{}",
             crate::private_io::random_hex().unwrap()

@@ -34,5 +34,7 @@ jobs:
       # Fork/FD lifetime fixtures run serially. This does not prove parallel safety.
       - name: Test local contracts without root, a VM, or model credentials
         run: cargo +stable test --locked -p tempest-linux-probe -- --test-threads=1
+      - name: Check fork and descriptor fixtures under parallel libtest
+        run: cargo +stable test --locked -p tempest-linux-probe --lib -- --test-threads=4
       - name: Lint Linux isolation probe
         run: cargo +stable clippy --locked -p tempest-linux-probe --all-targets -- -D warnings
