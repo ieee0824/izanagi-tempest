@@ -1,0 +1,337 @@
+{
+  "unit": "tempest-izanagi-bootstrap-image-003.service",
+  "invocation_id": "c6f14dd35ebb4525ab301aae427d76e1",
+  "caller_exec_exit": 143,
+  "observer_exit": 1,
+  "observer_result": "unknown: same-invocation terminal attributes not captured after unit GC",
+  "observer_last": {
+    "time": "2026-11-18T12:27:57.104686+00:00",
+    "unit": {
+      "MainPID": "0",
+      "Result": "success",
+      "ExecMainCode": "0",
+      "ExecMainStatus": "0",
+      "ControlGroup": "",
+      "LoadState": "not-found",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "InvocationID": ""
+    },
+    "cgroup_pids": [],
+    "listeners": [],
+    "qemu_network": [],
+    "external_listener_observed": false
+  },
+  "observations": 334,
+  "external_listener_observed": false,
+  "inputs_unchanged": 26,
+  "old001002_inputs_evidence_unchanged": true,
+  "cgroup_absent": true,
+  "uid999_processes_absent": true,
+  "ports_closed": true,
+  "free_bytes": 56653438976,
+  "files": {
+    "/tmp/tempest-x86-full-build-003.log": {
+      "bytes": 31743,
+      "sha256": "02de84758190ec88d250be0238cb287674a35e726902f496d59684563bef5f33",
+      "mode": "0600",
+      "uid": 1000,
+      "gid": 1000
+    },
+    "/tmp/tempest-x86-full-build-observation-003.jsonl": {
+      "bytes": 353700,
+      "sha256": "b3e8880f88a8880e2bd8d47b6f65f9a1526511bc2be96f2b40b038762f04c284",
+      "mode": "0600",
+      "uid": 0,
+      "gid": 0
+    },
+    "/tmp/tempest-x86-full-build-003-screen-pre/screen.png": {
+      "bytes": 50040,
+      "sha256": "4808651e57c2004518191c0b2c969e4dbc81183244da5dc3ded27d31637c9cd7",
+      "mode": "0664",
+      "uid": 1000,
+      "gid": 1000
+    },
+    "/tmp/tempest-x86-full-build-003-screen-post/screen.png": {
+      "bytes": 42707,
+      "sha256": "c914f18cab69a68dcaf1a066873203577f72cd062079bc5755ad1ab6ebea624f",
+      "mode": "0664",
+      "uid": 1000,
+      "gid": 1000
+    },
+    "/var/lib/tempest-izanagi-full-build-003/work/installer-serial.log": {
+      "bytes": 222343,
+      "sha256": "b2b8a7236cc870b82ee1610e903bc3ff6e2b487c3ace2b491a0f7376a5b012d4",
+      "mode": "0600",
+      "uid": 999,
+      "gid": 988
+    },
+    "/var/lib/tempest-izanagi-full-build-003/work/packer-debug.log": {
+      "bytes": 159592,
+      "sha256": "454d4680b6b1b596e0e8697e8770f3e63310014734b80552ccf3a3c07c9367bf",
+      "mode": "0600",
+      "uid": 999,
+      "gid": 988
+    },
+    "/var/lib/tempest-izanagi-full-build-003/work/output-debian/debian-x86_64.qcow2": {
+      "bytes": 2145124352,
+      "sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e",
+      "mode": "0600",
+      "uid": 999,
+      "gid": 988
+    }
+  },
+  "image_info": {
+    "children": [
+      {
+        "name": "file",
+        "info": {
+          "children": [],
+          "virtual-size": 2145124352,
+          "filename": "/var/lib/tempest-izanagi-full-build-003/work/output-debian/debian-x86_64.qcow2",
+          "format": "file",
+          "actual-size": 2145153024,
+          "format-specific": {
+            "type": "file",
+            "data": {}
+          },
+          "dirty-flag": false
+        }
+      }
+    ],
+    "virtual-size": 4294967296,
+    "filename": "/var/lib/tempest-izanagi-full-build-003/work/output-debian/debian-x86_64.qcow2",
+    "cluster-size": 65536,
+    "format": "qcow2",
+    "actual-size": 2145153024,
+    "format-specific": {
+      "type": "qcow2",
+      "data": {
+        "compat": "1.1",
+        "compression-type": "zlib",
+        "lazy-refcounts": false,
+        "refcount-bits": 16,
+        "corrupt": false,
+        "extended-l2": false
+      }
+    },
+    "dirty-flag": false
+  },
+  "trusted_journal_terminal": [
+    {
+      "__REALTIME_TIMESTAMP": "1795004876371218",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "c6f14dd35ebb4525ab301aae427d76e1",
+      "_SYSTEMD_INVOCATION_ID": null,
+      "MESSAGE": "tempest-izanagi-bootstrap-image-003.service: Deactivated successfully."
+    },
+    {
+      "__REALTIME_TIMESTAMP": "1795004877223695",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "c6f14dd35ebb4525ab301aae427d76e1",
+      "_SYSTEMD_INVOCATION_ID": null,
+      "MESSAGE": "tempest-izanagi-bootstrap-image-003.service: Consumed 5min 6.878s CPU time, 4.1G memory peak, 0B memory swap peak."
+    }
+  ],
+  "log_security_markers": [
+    "IZANAGI_IMAGE_SECURITY_OK"
+  ],
+  "log_success": true,
+  "kernel_cmdline_selected": [
+    "[    0.000000] Command line: BOOT_IMAGE=/install.amd/vmlinuz console=tty0 console=ttyS0,115200n8 auto=true priority=critical preseed/url=http://10.0.2.2:18082/preseed.cfg initrd=/install.amd/initrd.gz ---",
+    "[    0.056599] Kernel command line: BOOT_IMAGE=/install.amd/vmlinuz console=tty0 console=ttyS0,115200n8 auto=true priority=critical preseed/url=http://10.0.2.2:18082/preseed.cfg initrd=/install.amd/initrd.gz ---"
+  ],
+  "debug_selected_events": [
+    {
+      "event": "qemu_exec",
+      "timestamp": "2026/11/18 12:22:36"
+    },
+    {
+      "event": "boot_wait",
+      "timestamp": "2026/11/18 12:22:38"
+    },
+    {
+      "event": "typing_boot_commands",
+      "timestamp": "2026/11/18 12:22:48"
+    }
+  ],
+  "pre_screenshot_saved_utc": "2026-11-18T12:22:40.028884+00:00",
+  "http_preseed_get": "not independently captured",
+  "serial_stage_phrase_matches": [
+    {
+      "phrase": "Configuring the network with DHCP",
+      "occurrences": 2,
+      "last_text_offset": 68572
+    },
+    {
+      "phrase": "Installing the base system",
+      "occurrences": 1,
+      "last_text_offset": 97895
+    },
+    {
+      "phrase": "Select and install software",
+      "occurrences": 1,
+      "last_text_offset": 121929
+    },
+    {
+      "phrase": "Finishing the installation",
+      "occurrences": 1,
+      "last_text_offset": 158892
+    }
+  ],
+  "trusted_lifecycle": [
+    {
+      "kind": "starting",
+      "realtime_timestamp_us": 1795004554584029,
+      "boot_id": "30389abc903c40ae89a5c6268ec1c432",
+      "pid": 1,
+      "uid": 0,
+      "invocation_id": "c6f14dd35ebb4525ab301aae427d76e1"
+    },
+    {
+      "kind": "started",
+      "realtime_timestamp_us": 1795004554603548,
+      "boot_id": "30389abc903c40ae89a5c6268ec1c432",
+      "pid": 1,
+      "uid": 0,
+      "invocation_id": "c6f14dd35ebb4525ab301aae427d76e1"
+    },
+    {
+      "kind": "deactivated_successfully",
+      "realtime_timestamp_us": 1795004876371218,
+      "boot_id": "30389abc903c40ae89a5c6268ec1c432",
+      "pid": 1,
+      "uid": 0,
+      "invocation_id": "c6f14dd35ebb4525ab301aae427d76e1"
+    }
+  ],
+  "trusted_started_to_deactivated_seconds": 321.76767,
+  "snapshot_metadata_binding": {
+    "inputs.json": {
+      "sha256": "49c561c109a4604a62dc0a7be57ceddfed7fdfea4f18954afec2db5b562d0b1f",
+      "content": {
+        "tempest_guest_source_tree_sha256": "680b42138d4a8d2b1ae2cd7db8f83721366d58ddc754ee590f3471ac0f4452c8",
+        "tempest_guest_source_dirty": false,
+        "schema_version": 1,
+        "architecture": "x86_64",
+        "izanagi_commit": "16d0b55947006a166cfa29dcb8bfe71f65f8c36a",
+        "lws_commit": "2c0ea463f334f10a562e54f1cdc7ba8a474029e2",
+        "tempest_guest_version": "0.1.0",
+        "tempest_guest_source_commit": "7ab5d4ee98b009086d83a98320dc752c3372bf4f",
+        "built_at": "2026-11-18T12:15:42.023180+00:00",
+        "iso_sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
+        "input_sha256": {
+          "agent": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+          "ebpf": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+          "http": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+          "lws": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+          "guest": "e551b35f3cc230ad1928d6d86c551ff4e4241e4714a4b1452578e63fcb36fd52"
+        },
+        "delivery_race_fixture": false,
+        "derivation_sha256": {
+          "prepare.py": "4dfa961b927f2b0b097aad2ff5a0eef036b9f0a6c6c50053f398d911b8ef5210",
+          "provision.sh": "2cbd4e8c128f289216aebd21ff364a65b5552ee623df56f345cd17e818ba800e",
+          "dispatcher.py": "2c785fa2d24841ed00e5807604343e31e9409c5b7ae9855d0e0adf5449622b09",
+          "quiesce.py": "34cbc78cfec3caedac52bcaa747df62342383612ee5f3f9aab9ab02bac5cb8b0",
+          "x86_template.py": "beff58866542b0df1741b7bd593a8c6605c2f808a0607264f70782ae74d69cc4"
+        },
+        "inputs": {
+          "agent": "/var/lib/tempest-izanagi-full-build-003/inputs/agent",
+          "ebpf": "/var/lib/tempest-izanagi-full-build-003/inputs/ebpf",
+          "http": "/var/lib/tempest-izanagi-full-build-003/inputs/http",
+          "lws": "/var/lib/tempest-izanagi-full-build-003/inputs/lws",
+          "guest": "/var/lib/tempest-izanagi-full-build-003/inputs/guest"
+        },
+        "template_sha256": "f7f12d7cf6a2d970c19fe69d4f370c76d8b9c11766844e7a447abd05cf80aec0",
+        "source_manifest_sha256": "8ccc5195316236fd6832346b4b483ae3bba64146f3616cc0eb9611a06e524c23"
+      }
+    },
+    "packer/image.json": {
+      "sha256": "4cdf6a0faef67d12a6d5ab67f5966b1382e569b8b4f1096560039a49fce3aa29",
+      "content": {
+        "tempest_guest_source_tree_sha256": "680b42138d4a8d2b1ae2cd7db8f83721366d58ddc754ee590f3471ac0f4452c8",
+        "tempest_guest_source_dirty": false,
+        "schema_version": 1,
+        "architecture": "x86_64",
+        "izanagi_commit": "16d0b55947006a166cfa29dcb8bfe71f65f8c36a",
+        "lws_commit": "2c0ea463f334f10a562e54f1cdc7ba8a474029e2",
+        "tempest_guest_version": "0.1.0",
+        "tempest_guest_source_commit": "7ab5d4ee98b009086d83a98320dc752c3372bf4f",
+        "built_at": "2026-11-18T12:15:42.023180+00:00",
+        "iso_sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
+        "input_sha256": {
+          "agent": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+          "ebpf": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+          "http": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+          "lws": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+          "guest": "e551b35f3cc230ad1928d6d86c551ff4e4241e4714a4b1452578e63fcb36fd52"
+        },
+        "delivery_race_fixture": false,
+        "derivation_sha256": {
+          "prepare.py": "4dfa961b927f2b0b097aad2ff5a0eef036b9f0a6c6c50053f398d911b8ef5210",
+          "provision.sh": "2cbd4e8c128f289216aebd21ff364a65b5552ee623df56f345cd17e818ba800e",
+          "dispatcher.py": "2c785fa2d24841ed00e5807604343e31e9409c5b7ae9855d0e0adf5449622b09",
+          "quiesce.py": "34cbc78cfec3caedac52bcaa747df62342383612ee5f3f9aab9ab02bac5cb8b0",
+          "x86_template.py": "beff58866542b0df1741b7bd593a8c6605c2f808a0607264f70782ae74d69cc4"
+        }
+      }
+    },
+    "limit": "expected input/guest metadata only; actual installed guest metadata awaits VM comparison"
+  },
+  "image_info_assessment": {
+    "backing_filename_present": false,
+    "format": "qcow2",
+    "virtual_size": 4294967296,
+    "dirty_flag": false,
+    "format_specific": {
+      "type": "qcow2",
+      "data": {
+        "compat": "1.1",
+        "compression-type": "zlib",
+        "lazy-refcounts": false,
+        "refcount-bits": 16,
+        "corrupt": false,
+        "extended-l2": false
+      }
+    }
+  },
+  "runtime_log_seconds": 321.787,
+  "runtime_interval_note": "PID1 Starting-to-deactivated 321.787189s agrees with runtime log 321.787s at millisecond rounding; Started-to-deactivated 321.767670s uses a later lifecycle boundary.",
+  "trusted_starting_to_deactivated_seconds": 321.787189,
+  "trusted_lifecycle_message_bindings": [
+    {
+      "UNIT": "tempest-izanagi-bootstrap-image-003.service",
+      "_SYSTEMD_UNIT": "init.scope",
+      "MESSAGE_ID": "7d4958e842da4a758f6c1cdc7b36dcc5",
+      "INVOCATION_ID": "c6f14dd35ebb4525ab301aae427d76e1",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795004554584029"
+    },
+    {
+      "UNIT": "tempest-izanagi-bootstrap-image-003.service",
+      "_SYSTEMD_UNIT": "init.scope",
+      "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
+      "INVOCATION_ID": "c6f14dd35ebb4525ab301aae427d76e1",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795004554603548"
+    },
+    {
+      "UNIT": "tempest-izanagi-bootstrap-image-003.service",
+      "_SYSTEMD_UNIT": "init.scope",
+      "MESSAGE_ID": "7ad2d189f7e94e70a38c781354912448",
+      "INVOCATION_ID": "c6f14dd35ebb4525ab301aae427d76e1",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "__REALTIME_TIMESTAMP": "1795004876371218"
+    }
+  ]
+}

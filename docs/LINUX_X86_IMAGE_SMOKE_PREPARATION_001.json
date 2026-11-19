@@ -1,0 +1,26 @@
+{
+  "snapshot_manifest_sha256": "2f41cf29ba00092b9b5682c65e49ece0966f62a523b5f2172749bf34cb58713c",
+  "input_count": 1304,
+  "input_rows_sha256": "4184f80da2cefaefe1113757217debf1188d80e72ab13b8269d7c09158ac3488",
+  "dedicated_user_uid": 999,
+  "input_readable_nonwritable": true,
+  "private_work_modes": "0700",
+  "external_hashes_match": true,
+  "host_xattr_preflight": "passed and temporary file removed",
+  "frozen_python_prefix": "/var/lib/tempest-izanagi-image-smoke-001/inputs/python",
+  "cryptography": "50.0.2",
+  "cffi": "2.1.1",
+  "pycparser": "3.12",
+  "aesgcm_roundtrip": "passed",
+  "image_smoke_help": "exit0 under uid999, env-i, -I -B",
+  "unit_tests": {
+    "suite": 58,
+    "seconds": 8.945,
+    "result": "passed"
+  },
+  "guest_inventory_command_fixture": "accepts known ELF and rejects invalid header",
+  "vm_boot_executed": false,
+  "review_unit_sha256": "d82f31ed37e9a78cf2c4155685f765f0d1b1e738c3d272d3350ffd4a58827964",
+  "review_unit_verify_exit": 0,
+  "prepared_free_bytes": 54454935552
+}

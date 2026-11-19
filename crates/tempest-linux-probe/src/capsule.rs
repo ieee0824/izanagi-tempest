@@ -217,6 +217,139 @@ fn bind(
     Ok(identity)
 }
 
+/// Populate the capsule from the caller's verified snapshots.
+pub(super) fn install_libraries(
+    root: &Path,
+    libraries: &[Snapshot],
+    library_fault: Option<Scenario>,
+) -> Result<(), Fault> {
+    if libraries.len() != LIBRARIES.len() {
+        return Err(Fault::Identity);
+    }
+    let mut installed = Vec::new();
+    for (snapshot, (_, relative)) in libraries.iter().zip(LIBRARIES) {
+        let fault = library_fault.filter(|_| installed.is_empty());
+        installed.push(bind(snapshot, root, relative, fault)?);
+    }
+    for ((snapshot, (_, relative)), expected) in libraries.iter().zip(LIBRARIES).zip(installed) {
+        if verify_library(snapshot, &root.join(relative))? != expected {
+            return Err(Fault::Identity);
+        }
+    }
+    Ok(())
+}
+
+// Used only in the bootstrap child, whose inherited descriptors are disposable.
+pub(super) fn map_descriptors(
+    mappings: &[(RawFd, RawFd)],
+    executable_slot: RawFd,
+) -> Result<(), Fault> {
+    // Duplicate sources away from the fixed destination range before dup2:
+    // descriptor-number collisions must not change the selected objects.
+    let mut copied = Vec::new();
+    for (source, target) in mappings {
+        let fd = unsafe { libc::fcntl(*source, libc::F_DUPFD_CLOEXEC, 64) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        copied.push((fd, *target));
+    }
+    for (source, target) in &copied {
+        os::syscall(unsafe { libc::dup2(*source, *target) })?;
+    }
+    os::syscall(unsafe { libc::fcntl(executable_slot, libc::F_SETFD, libc::FD_CLOEXEC) })?;
+    let keep = mappings
+        .iter()
+        .map(|(_, target)| *target)
+        .collect::<Vec<_>>();
+    os::close_except(&keep)
+}
+
+fn enter_root(root: &Path) -> Result<(), Fault> {
+    use std::os::unix::ffi::OsStrExt;
+    let root = CString::new(root.as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
+    os::syscall(unsafe { libc::chdir(root.as_ptr()) })?;
+    os::syscall(unsafe { libc::chroot(c".".as_ptr()) })?;
+    os::syscall(unsafe { libc::chdir(c"/work".as_ptr()) })?;
+    Ok(())
+}
+
+pub(super) fn drop_privileges(uid: u32) -> Result<(), Fault> {
+    for cap in 0..=40 {
+        os::syscall(unsafe { libc::prctl(libc::PR_CAPBSET_DROP, cap, 0, 0, 0) })?;
+    }
+    os::syscall(unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        )
+    })?;
+    os::syscall(unsafe { libc::setgroups(0, std::ptr::null()) })?;
+    os::syscall(unsafe { libc::setresgid(uid, uid, uid) })?;
+    os::syscall(unsafe { libc::setresuid(uid, uid, uid) })?;
+    // UID transitions clear PDEATHSIG. Restore it before the syscall policy
+    // makes this setting immutable to the payload.
+    os::syscall(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) })?;
+    // Fixed Linux capability ABI v3. No retained effective/permitted/inheritable bits.
+    let header = [0x20080522_u32, 0];
+    let data = [0_u32; 6];
+    os::syscall(unsafe { libc::syscall(libc::SYS_capset, header.as_ptr(), data.as_ptr()) as i32 })?;
+    os::syscall(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) })?;
+    Ok(())
+}
+
+fn make_mounts_private() -> Result<(), Fault> {
+    os::mount(
+        None,
+        Path::new("/"),
+        None,
+        libc::MS_REC | libc::MS_PRIVATE,
+        None,
+    )
+}
+
+fn mount_root(root: &Path) -> Result<(), Fault> {
+    os::mount(
+        Some(Path::new("tmpfs")),
+        root,
+        Some("tmpfs"),
+        libc::MS_NOSUID | libc::MS_NODEV,
+        Some("size=16777216,nr_inodes=128,mode=0755"),
+    )
+}
+
+// The fixture child must already be in its own mount namespace.
+pub(super) fn prepare_mcp_root(root: &Path, libraries: &[Snapshot]) -> Result<(), Fault> {
+    make_mounts_private()?;
+    mount_root(root)?;
+    unsafe {
+        libc::umask(0o022);
+    }
+    for directory in ["lib", "lib/x86_64-linux-gnu", "lib64", "work"] {
+        fs::DirBuilder::new()
+            .mode(0o755)
+            .create(root.join(directory))?;
+    }
+    install_libraries(root, libraries, None)?;
+    enter_root(root)
+}
+
+// The already-loaded caller only needs an empty work directory.
+pub(super) fn prepare_mcp_caller_root(root: &Path) -> Result<(), Fault> {
+    make_mounts_private()?;
+    mount_root(root)?;
+    unsafe {
+        libc::umask(0o022);
+    }
+    fs::DirBuilder::new()
+        .mode(0o755)
+        .create(root.join("work"))?;
+    enter_root(root)
+}
+
 pub(super) fn enter(
     role: Role,
     scenario: Scenario,
@@ -228,21 +361,9 @@ pub(super) fn enter(
     // Clone already supplied independent mount/PID/network namespaces. No
     // device or interface is added to the network namespace.
     *step = 1;
-    os::mount(
-        None,
-        Path::new("/"),
-        None,
-        libc::MS_REC | libc::MS_PRIVATE,
-        None,
-    )?;
+    make_mounts_private()?;
     *step = 2;
-    os::mount(
-        Some(Path::new("tmpfs")),
-        root,
-        Some("tmpfs"),
-        libc::MS_NOSUID | libc::MS_NODEV,
-        Some("size=16777216,nr_inodes=128,mode=0755"),
-    )?;
+    mount_root(root)?;
     unsafe {
         libc::umask(0o022);
     }
@@ -291,17 +412,8 @@ pub(super) fn enter(
         chown(&path, role.uid())?;
     }
     *step = 3;
-    let mut installed = Vec::new();
-    for (snapshot, (_, relative)) in libraries.iter().zip(LIBRARIES) {
-        let fault = (role == Role::A && installed.is_empty() && scenario.library_fault())
-            .then_some(scenario);
-        installed.push(bind(snapshot, root, relative, fault)?);
-    }
-    for ((snapshot, (_, relative)), expected) in libraries.iter().zip(LIBRARIES).zip(installed) {
-        if verify_library(snapshot, &root.join(relative))? != expected {
-            return Err(Fault::Identity);
-        }
-    }
+    let library_fault = (role == Role::A && scenario.library_fault()).then_some(scenario);
+    install_libraries(root, libraries, library_fault)?;
     *step = 4;
     os::mount(
         Some(Path::new("proc")),
@@ -310,32 +422,10 @@ pub(super) fn enter(
         libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_RDONLY,
         Some("hidepid=2,subset=pid"),
     )?;
-    // Duplicate sources away from the fixed destination range before dup2:
-    // descriptor-number collisions must not change the selected objects.
     *step = 5;
-    let mut copied = Vec::new();
-    for (source, target) in mappings {
-        let fd = unsafe { libc::fcntl(*source, libc::F_DUPFD_CLOEXEC, 64) };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        copied.push((fd, *target));
-    }
-    for (source, target) in &copied {
-        os::syscall(unsafe { libc::dup2(*source, *target) })?;
-    }
-    os::syscall(unsafe { libc::fcntl(6, libc::F_SETFD, libc::FD_CLOEXEC) })?;
-    let keep = mappings
-        .iter()
-        .map(|(_, target)| *target)
-        .collect::<Vec<_>>();
-    os::close_except(&keep)?;
+    map_descriptors(mappings, 6)?;
     *step = 6;
-    use std::os::unix::ffi::OsStrExt;
-    let root = CString::new(root.as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
-    os::syscall(unsafe { libc::chdir(root.as_ptr()) })?;
-    os::syscall(unsafe { libc::chroot(c".".as_ptr()) })?;
-    os::syscall(unsafe { libc::chdir(c"/work".as_ptr()) })?;
+    enter_root(root)?;
     *step = 7;
     for (resource, value) in [
         (libc::RLIMIT_CORE, 0),
@@ -356,29 +446,7 @@ pub(super) fn enter(
     ] {
         limit(resource, value)?;
     }
-    for cap in 0..=40 {
-        os::syscall(unsafe { libc::prctl(libc::PR_CAPBSET_DROP, cap, 0, 0, 0) })?;
-    }
-    os::syscall(unsafe {
-        libc::prctl(
-            libc::PR_CAP_AMBIENT,
-            libc::PR_CAP_AMBIENT_CLEAR_ALL,
-            0,
-            0,
-            0,
-        )
-    })?;
-    os::syscall(unsafe { libc::setgroups(0, std::ptr::null()) })?;
-    os::syscall(unsafe { libc::setresgid(role.uid(), role.uid(), role.uid()) })?;
-    os::syscall(unsafe { libc::setresuid(role.uid(), role.uid(), role.uid()) })?;
-    // UID transitions clear PDEATHSIG. Restore it before the syscall policy
-    // makes this setting immutable to the payload.
-    os::syscall(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) })?;
-    // Fixed Linux capability ABI v3. No retained effective/permitted/inheritable bits.
-    let header = [0x20080522_u32, 0];
-    let data = [0_u32; 6];
-    os::syscall(unsafe { libc::syscall(libc::SYS_capset, header.as_ptr(), data.as_ptr()) as i32 })?;
-    os::syscall(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) })?;
+    drop_privileges(role.uid())?;
     *step = 8;
     seccomp::install(role, true)?;
     let argv = [
@@ -401,4 +469,17 @@ pub(super) fn enter(
         )
     };
     Err(std::io::Error::last_os_error().into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_library_set_is_rejected_before_mounting() {
+        assert_eq!(
+            install_libraries(Path::new("/dev/null"), &[], None),
+            Err(Fault::Identity)
+        );
+    }
 }

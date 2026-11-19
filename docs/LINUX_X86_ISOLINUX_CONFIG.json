@@ -1,0 +1,12 @@
+[
+  {
+    "path": "/isolinux/isolinux.cfg",
+    "sha256": "34befdd9cf0c47c265aaa347c2389ec9d99e7304fcabdd1e26b4ecc93e8b9583",
+    "content": "# D-I config version 2.0\n# search path for the c32 support libraries (libcom32, libutil etc.)\npath \nprompt 0\ntimeout 0\ninclude menu.cfg\ndefault vesamenu.c32\n"
+  },
+  {
+    "path": "/isolinux/menu.cfg",
+    "sha256": "35027599b6399da82871d645a6e0a8034f102defe046766721adf579724e0833",
+    "content": "menu hshift 4\nmenu width 70\n\nmenu title \u0007Debian GNU/Linux installer menu (BIOS mode)\ninclude stdmenu.cfg\ninclude gtk.cfg\ninclude txt.cfg\nmenu begin advanced\n    menu label ^Advanced options\n\tmenu title Advanced options\n\tinclude stdmenu.cfg\n\tlabel mainmenu\n\t\tmenu label ^Back..\n\t\tmenu exit\n\tinclude adgtk.cfg\n\tinclude adtxt.cfg\n\tinclude adspkgtk.cfg\n\tinclude adspk.cfg\nmenu end\nmenu begin dark\n    menu label Accessible ^dark contrast installer menu\n\tmenu title Accessible dark contrast option\n\tinclude drkmenu.cfg\n\tlabel mainmenu\n\t\tmenu label ^Back..\n\t\tmenu exit\n\tinclude drkgtk.cfg\n\tinclude drk.cfg\n\tmenu begin advanced\n\t    menu label ^Advanced options\n\t\tmenu title Advanced options\n\t\tinclude drkmenu.cfg\n\t\tlabel mainmenu\n\t\t\tmenu label ^Back..\n\t\t\tmenu exit\n\t\tinclude addrkgtk.cfg\n\t\tinclude addrk.cfg\n\tmenu end\n\tinclude x86drkme.cfg\n\tlabel help\n\t\tmenu label ^Help\n\t\ttext help\n   Display help screens; type 'menu' at boot prompt to return to this menu\n\t\tendtext\n\t\tconfig prompt.cfg\nmenu end\ninclude x86menu.cfg\nlabel help\n\tmenu label ^Help\n\ttext help\n   Display help screens; type 'menu' at boot prompt to return to this menu\n\tendtext\n\tconfig prompt.cfg\ninclude spkgtk.cfg\ninclude spk.cfg\n"
+  }
+]

@@ -1,0 +1,59 @@
+{
+  "old_revision": "8ddf75fd2bb174939597ce7669e1902e4bb3a10f",
+  "new_revision": "fa3f1d9a0663919ec75a5c992e967ae5db113ac4",
+  "external_package_records_equal": true,
+  "external_package_count": 183,
+  "external_records_sha256": "09308a298be796211d0a41d1be616a9ac26419db3f92fadad10899c8d2c55438",
+  "removed_local_packages": [
+    "tempest-kvm-probe",
+    "tempest-linux-probe"
+  ],
+  "added_local_packages": [],
+  "changed_local_package_records": {
+    "tempest": {
+      "before": {
+        "name": "tempest",
+        "version": "0.1.0",
+        "dependencies": [
+          "bytes",
+          "chrono",
+          "futures-util",
+          "http-body-util",
+          "hyper",
+          "hyper-util",
+          "libc",
+          "reqwest",
+          "serde",
+          "serde_json",
+          "serde_path_to_error",
+          "sha2",
+          "tempest-linux-probe",
+          "tempest-model",
+          "tokio",
+          "yaml_serde"
+        ]
+      },
+      "after": {
+        "name": "tempest",
+        "version": "0.1.0",
+        "dependencies": [
+          "bytes",
+          "chrono",
+          "futures-util",
+          "http-body-util",
+          "hyper",
+          "hyper-util",
+          "libc",
+          "reqwest",
+          "serde",
+          "serde_json",
+          "serde_path_to_error",
+          "sha2",
+          "tempest-model",
+          "tokio",
+          "yaml_serde"
+        ]
+      }
+    }
+  }
+}

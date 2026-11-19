@@ -1,0 +1,15 @@
+{
+  "caller_session": 40711,
+  "caller_exit": 0,
+  "observer_session": 39683,
+  "observer_exit": 1,
+  "observer_terminal": "GC terminal unknown",
+  "collector_session": 57320,
+  "collector_exit": 0,
+  "offline_fixture_session": 25211,
+  "offline_fixture_exit": 0,
+  "offline_native_session": 88622,
+  "offline_native_exit": 0,
+  "free_after_offline": 15012126720,
+  "runtime_executed": false
+}

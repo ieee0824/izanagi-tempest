@@ -1,0 +1,7 @@
+{
+  "prior_dummy_test_script_sha256": "3539a9952d70419517575cba455598478fd67b7651bd71302eddceaaa481ea68",
+  "final_script_sha256": "f603096a1efabc5ff92a50ba51273d13e3839799b404a983aa03851fbf034765",
+  "change": "journal description adds target mtime to the physical metadata exception; no control-flow or mutation changes",
+  "prior_review": "LINUX_X86_IMAGE_HARDLINK_REVIEW_001.json",
+  "real_mutation_executed": false
+}

@@ -1,0 +1,158 @@
+[
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/agent",
+    "sha256": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/base.iso",
+    "sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/inputs.json",
+    "sha256": "401d900f5babb814cab81c73528f37d4edacb4bbd979e8abdc4553dbb2df7b81",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/.gitignore",
+    "sha256": "bdfc03d62c82ab1e7d8c18c98e948ac0260b326a8aece0591888d7b5ea4ab058",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/README.md",
+    "sha256": "b0787d292ddc6468ade0c0bfe077f763114e9343d418ba57cf6a670359c16246",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/alpine-x86_64.pkr.hcl",
+    "sha256": "77c17773d03badbcce8b95e94222b2d750b730ffc8a1aa5746307e17c5d6f531",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/alpine.pkr.hcl",
+    "sha256": "0444431d2dd788e8fee9aa4d42180b9d8c35d425543230a32f4de9dc57700938",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/debian.pkr.hcl",
+    "sha256": "aca7e8ce9ce2740c958d37c9fc82da99c213bcd34f11d573dbedc961ff56ff90",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/dispatcher.py",
+    "sha256": "2c785fa2d24841ed00e5807604343e31e9409c5b7ae9855d0e0adf5449622b09",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/http/answers",
+    "sha256": "f29985b574a8a9e4a0456cc0f6b2a33ac0eb9ba4486330fca66ff12fbc2bbe1b",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/http/preseed.cfg",
+    "sha256": "cde7b305928055162599b1876f35277244b676a49047e0d83fb994a922e95515",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/http/setup.sh",
+    "sha256": "72ef1e181bb65df51cf2bdd3d8f6cd7e502a0f9e265b1fdf9109e1fbc6edeaa0",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/image.json",
+    "sha256": "b7f5c48382cd8e5942dbec4660e506fdc931ea2f137ac0e8e775b9aca1c09779",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/lock-down.sh",
+    "sha256": "9860c17fd0c64eaa2cef8f906d8869e8c49df701361fbddff388521de1b48659",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/provision.sh",
+    "sha256": "2cbd4e8c128f289216aebd21ff364a65b5552ee623df56f345cd17e818ba800e",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/quiesce.py",
+    "sha256": "34cbc78cfec3caedac52bcaa747df62342383612ee5f3f9aab9ab02bac5cb8b0",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/tempest.pkrvars.json",
+    "sha256": "61522b5d291a50efee1bf5644629da1c864f819b0731b3a0248729ec095643e9",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/definition/packer/verify-image.sh",
+    "sha256": "c56dd80ec9855754d6621a1c8139dd2b211274c4df3b3d70a82ef5c8e816bf9d",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/ebpf",
+    "sha256": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/guest",
+    "sha256": "e551b35f3cc230ad1928d6d86c551ff4e4241e4714a4b1452578e63fcb36fd52",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/http",
+    "sha256": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/lws",
+    "sha256": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/observe.py",
+    "sha256": "6fd259803f859363c1ccc9676fdaa6438f94edad3f52db3c583be59aa1119995",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/packer",
+    "sha256": "ec8feb5888368fae6838caac5b919b4c2ced6e0a0b4da5450861b1111c233fe8",
+    "mode": "0550",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/plugins/github.com/hashicorp/qemu/packer-plugin-qemu_v1.1.8_x5.0_linux_amd64",
+    "sha256": "7093fbbcfe8b2ace01ecb722a49c49a02187929f431c9a48188dc3c8132203d0",
+    "mode": "0550",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-full-build-001/inputs/plugins/github.com/hashicorp/qemu/packer-plugin-qemu_v1.1.8_x5.0_linux_amd64_SHA256SUM",
+    "sha256": "e846100c30e6873465fbf9770281cefbeab67cf8cd2e1b7114c6da17d5b77c6c",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  }
+]

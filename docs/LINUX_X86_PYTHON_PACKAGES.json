@@ -1,0 +1,108 @@
+{
+  "installed_python3.12": "3.12.3-1ubuntu0.17",
+  "pip": "/usr/bin/python3 -I -m pip: No module named pip",
+  "simulation": {
+    "upgraded": 0,
+    "newly_installed": 3,
+    "removed": 0
+  },
+  "packages": [
+    {
+      "Package": "python3.12-venv",
+      "Version": "3.12.3-1ubuntu0.17",
+      "Filename": "pool/universe/p/python3.12/python3.12-venv_3.12.3-1ubuntu0.17_amd64.deb",
+      "SHA256": "b8d4bfea3df63945b6a202bd0773caf7727dde86d2df91df6e88a8ccf7c18b7e",
+      "Size": "5684",
+      "Depends": "python3.12 (= 3.12.3-1ubuntu0.17), python3-pip-whl (>= 22.2), python3-setuptools-whl",
+      "download_path": "/tmp/tempest-x86-python-debs-001/python3.12-venv_3.12.3-1ubuntu0.17_amd64.deb",
+      "actual_sha256": "b8d4bfea3df63945b6a202bd0773caf7727dde86d2df91df6e88a8ccf7c18b7e",
+      "actual_size": 5684,
+      "file_names": [
+        "./usr/lib/python3.12/ensurepip/__init__.py",
+        "./usr/lib/python3.12/ensurepip/__main__.py",
+        "./usr/lib/python3.12/ensurepip/_uninstall.py",
+        "./usr/share/lintian/overrides/python3.12-venv",
+        "./usr/share/doc/python3.12-venv"
+      ]
+    },
+    {
+      "Package": "python3-pip-whl",
+      "Version": "24.0+dfsg-1ubuntu1.3",
+      "Filename": "pool/universe/p/python-pip/python3-pip-whl_24.0+dfsg-1ubuntu1.3_all.deb",
+      "SHA256": "4b7c50db8f261b208c1d9cde8db148c1f682cc516957b986ada5088cfcee1359",
+      "Size": "1706638",
+      "Depends": "ca-certificates",
+      "download_path": "/tmp/tempest-x86-python-debs-001/python3-pip-whl_24.0+dfsg-1ubuntu1.3_all.deb",
+      "actual_sha256": "4b7c50db8f261b208c1d9cde8db148c1f682cc516957b986ada5088cfcee1359",
+      "actual_size": 1706638,
+      "file_names": [
+        "./usr/share/doc/python3-pip-whl/NEWS.Debian.gz",
+        "./usr/share/doc/python3-pip-whl/changelog.Debian.gz",
+        "./usr/share/doc/python3-pip-whl/copyright",
+        "./usr/share/python-wheels/pip-24.0-py3-none-any.whl"
+      ]
+    },
+    {
+      "Package": "python3-setuptools-whl",
+      "Version": "68.1.2-2ubuntu1.2",
+      "Filename": "pool/universe/s/setuptools/python3-setuptools-whl_68.1.2-2ubuntu1.2_all.deb",
+      "SHA256": "edfa94cc1f6a33af99cfaf6ebfe35dbcd9c4bdd8555b90c0d8e78479faf5c8f0",
+      "Size": "716284",
+      "Depends": null,
+      "download_path": "/tmp/tempest-x86-python-debs-001/python3-setuptools-whl_68.1.2-2ubuntu1.2_all.deb",
+      "actual_sha256": "edfa94cc1f6a33af99cfaf6ebfe35dbcd9c4bdd8555b90c0d8e78479faf5c8f0",
+      "actual_size": 716284,
+      "file_names": [
+        "./usr/share/doc/python3-setuptools-whl/changelog.Debian.gz",
+        "./usr/share/doc/python3-setuptools-whl/copyright",
+        "./usr/share/python-wheels/setuptools-68.1.2-py3-none-any.whl"
+      ]
+    }
+  ],
+  "status": "three exact packages installed successfully; pre/post system invariants match",
+  "system_verification": {
+    "python": {
+      "path": "/usr/bin/python3.12",
+      "sha256": "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f"
+    },
+    "qemu": {
+      "path": "/usr/bin/qemu-system-x86_64",
+      "sha256": "8a35ccba41582fc6c38b9df85fc9e35fa1d42f414d2d7d8090ee9b2f5e7c0854"
+    },
+    "qemu_img": {
+      "path": "/usr/bin/qemu-img",
+      "sha256": "634320b91165669917123e8e79cce1c4d00cee0a4aa4d662d7c0a8186479b3fb"
+    },
+    "loader": {
+      "path": "/lib64/ld-linux-x86-64.so.2",
+      "sha256": "5fc0940888e9d2e1a00e66d6b1a559c36364ee867683652e1074fa576952cc3f"
+    },
+    "libc": {
+      "path": "/lib/x86_64-linux-gnu/libc.so.6",
+      "sha256": "755a371e86cc9f564ab54f66140747700fb0a103f698f659f2060f707897e09a"
+    },
+    "libgcc": {
+      "path": "/lib/x86_64-linux-gnu/libgcc_s.so.1",
+      "sha256": "d93224d2b0dab4247598be683adca02f5cf00586f99c187579cd7e92058fb7cb"
+    },
+    "kvm": {
+      "mode": 432,
+      "uid": 0,
+      "gid": 993,
+      "rdev": 2792
+    },
+    "groups": {
+      "ubuntu": "1000 4 24 27 30 105",
+      "tempest-kvm": "988 993"
+    },
+    "global_crypto": "41.0.7",
+    "unit": "Result=exit-code\nActiveState=failed\nInvocationID=39a30e58b71649d88535100b4e964880\n",
+    "postinstall_invariants_match": true,
+    "installed": {
+      "python3.12-venv": "3.12.3-1ubuntu0.17",
+      "python3-pip-whl": "24.0+dfsg-1ubuntu1.3",
+      "python3-setuptools-whl": "68.1.2-2ubuntu1.2"
+    },
+    "install_exit_code": 0
+  }
+}

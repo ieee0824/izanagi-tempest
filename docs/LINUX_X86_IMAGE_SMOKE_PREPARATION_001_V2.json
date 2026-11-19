@@ -1,0 +1,37 @@
+{
+  "snapshot_version": 2,
+  "snapshot_manifest_sha256": "a0b9921073de80d0bd2c3f064edc95f40a8258c491b211497c0dbc784bc6f4ae",
+  "input_count": 1304,
+  "input_rows_sha256": "4419b3d3e41f98c1089af108ae045921774cacc38eabf7d2fd40efed74c2823a",
+  "source_commit": "53a2d027264818308856a42606f73c005df41429",
+  "host_boot_id_at_preparation": "30389abc903c40ae89a5c6268ec1c432",
+  "dedicated_user_uid": 999,
+  "input_readable_nonwritable": true,
+  "private_work_modes": "0700",
+  "external_hashes_match": true,
+  "preserved_v1_all_input_hashes_and_modes_match": true,
+  "host_xattr_preflight": "passed and temporary file removed",
+  "frozen_python_prefix": "/var/lib/tempest-izanagi-image-smoke-001-v2/inputs/python",
+  "cryptography": "50.0.2",
+  "cffi": "2.1.1",
+  "pycparser": "3.12",
+  "aesgcm_roundtrip": "passed",
+  "image_smoke_help": "exit0 under uid999, env-i, -I -B",
+  "unit_tests": {
+    "suite": 64,
+    "seconds": 8.998,
+    "result": "passed"
+  },
+  "review_unit_sha256": "6d6d4ffcb6e937cafaf99af3236e081ddbc04f4640b43e7e29cad881b65428f5",
+  "prepared_free_bytes": 52258439168,
+  "vm_boot_executed": false,
+  "dummy_transport_key_created": false,
+  "review_unit_verify_exit": 0,
+  "bootstrap_tests": {
+    "tests": 13,
+    "seconds": 0.035,
+    "result": "passed"
+  },
+  "preflight_free_bytes": 52258283520,
+  "unit_unused_uid999_absent_output_exit_logs_absent": true
+}

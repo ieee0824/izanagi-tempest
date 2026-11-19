@@ -39,7 +39,14 @@ impl Descriptor {
         })
     }
 
-    fn matches(&self, pid: u32, fd: i32) -> Result<bool, Fault> {
+    pub(super) fn pipe_identity(&self, access: i32) -> Result<(u64, u64), Fault> {
+        if self.mode & libc::S_IFMT != libc::S_IFIFO || self.access != access {
+            return Err(Fault::Identity);
+        }
+        Ok((self.dev, self.ino))
+    }
+
+    pub(super) fn matches(&self, pid: u32, fd: i32) -> Result<bool, Fault> {
         let metadata = fs::metadata(format!("/proc/{pid}/fd/{fd}"))?;
         let info = fs::read_to_string(format!("/proc/{pid}/fdinfo/{fd}"))?;
         let flags = info
@@ -232,15 +239,29 @@ impl Process {
         Ok([number()?, number()?, number()?])
     }
 
+    pub(super) fn thread_count(&self) -> Result<u32, Fault> {
+        let value = fs::read_to_string(format!("/proc/{}/status", self.pid))?;
+        value
+            .lines()
+            .find_map(|line| line.strip_prefix("Threads:"))
+            .and_then(|count| count.trim().parse().ok())
+            .filter(|count| *count > 0)
+            .ok_or(Fault::Identity)
+    }
+
+    pub(super) fn security_state(&self) -> Result<State, Fault> {
+        let identity = self.identity()?;
+        let value = fs::read_to_string(format!("/proc/{}/status", self.pid))?;
+        status(&value, identity)
+    }
+
     pub(super) fn observe(
         &self,
         group: &Group,
         role: Role,
         descriptors: &BTreeMap<i32, Descriptor>,
     ) -> Result<State, Fault> {
-        let identity = self.identity()?;
-        let value = fs::read_to_string(format!("/proc/{}/status", self.pid))?;
-        let mut state = status(&value, identity)?;
+        let mut state = self.security_state()?;
         let expected: BTreeSet<i32> = descriptors.keys().copied().collect();
         let actual = fs::read_dir(format!("/proc/{}/fd", self.pid))?
             .map(|entry| {

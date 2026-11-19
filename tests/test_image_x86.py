@@ -32,7 +32,10 @@ class X86ImageTests(unittest.TestCase):
     def test_prepare_default_remains_arm64(self):
         self.prepare_architecture('aarch64')
 
-    def prepare_architecture(self, architecture):
+    def test_fixed_receiver_provisioning_is_explicit_in_image_metadata(self):
+        self.prepare_architecture('x86_64', fixed_receiver=True)
+
+    def prepare_architecture(self, architecture, fixed_receiver=False):
         prepare = module('prepare')
         x86 = fixture_module()
         with tempfile.TemporaryDirectory() as directory:
@@ -49,6 +52,8 @@ class X86ImageTests(unittest.TestCase):
                     '--lws-source', str(source), '--iso', str(iso), '--output', str(root / 'out')]
             if architecture == 'x86_64':
                 args += ['--architecture', architecture]
+            if fixed_receiver:
+                args += ['--fixed-vm-receiver-fixture']
             iso_hash = x86.ISO_SHA256 if architecture == 'x86_64' else '6e93fa1759bd9d4b0fc11e938987de6967ee7de5297dac1be27c3a75cc17024b'
             machine = 62 if architecture == 'x86_64' else 183
             for name in ['agent', 'ebpf', 'http', 'lws', 'guest']:
@@ -65,6 +70,12 @@ class X86ImageTests(unittest.TestCase):
                  patch.object(prepare, 'sha', side_effect=lambda p: iso_hash if p == iso else real_sha(p)):
                 prepare.main()
             manifest = json.loads((root / 'out/inputs.json').read_text())
+            guest_metadata = json.loads((root / 'out/packer/image.json').read_text())
+            for metadata in (manifest, guest_metadata):
+                if fixed_receiver:
+                    self.assertIs(metadata['fixed_vm_receiver_fixture'], True)
+                else:
+                    self.assertNotIn('fixed_vm_receiver_fixture', metadata)
             self.assertEqual(manifest['architecture'], architecture)
             self.assertEqual(manifest['iso_sha256'], iso_hash)
             self.assertEqual('x86_template.py' in manifest['derivation_sha256'], architecture == 'x86_64')

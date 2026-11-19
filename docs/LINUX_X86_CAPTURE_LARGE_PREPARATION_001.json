@@ -1,0 +1,23 @@
+{
+  "input_files_checked": 1316,
+  "input_rows_sha256": "3b4d523d3098962b04cd0b5a4366e9639d2101f1950ffb7f6f75a851aca4ab52",
+  "versions": {
+    "prefix": "/var/lib/tempest-izanagi-capture-large-001/inputs/python",
+    "cryptography": "50.0.2",
+    "cffi": "2.1.1",
+    "pycparser": "3.12"
+  },
+  "all_inputs_readable_nonwritable": true,
+  "runtime_hashes_match": true,
+  "work_private": true,
+  "xattr_roundtrip": true,
+  "output_absent": true,
+  "vm_boot_executed": false,
+  "session": 17387,
+  "exit_code": 0,
+  "prepare_session": 96758,
+  "prepare_exit": 0,
+  "free_after_copy": 12812357632,
+  "free_at_uid_check_completed": 12811235328,
+  "directory_count": 181
+}

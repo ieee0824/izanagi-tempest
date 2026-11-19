@@ -1,0 +1,49 @@
+{
+  "iso_path": "/pool/main/g/glibc/libc6_2.41-12+deb13u4_amd64.deb",
+  "bytes": 2846580,
+  "sha256": "967aa62605721081c3eb2a17650611a792aa802d76a6511d1840242623d204c9",
+  "package": "libc6",
+  "version": "2.41-12+deb13u4",
+  "architecture": "amd64",
+  "files": {
+    "usr/lib/x86_64-linux-gnu/libc.so.6": {
+      "sha256": "9792e3cbb541c8f44c7acf5f14f4022ea62998ecc787d326bed4d8b6547dfd92",
+      "bytes": 1995216
+    },
+    "usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": {
+      "sha256": "c8438e4fde1934e61c88311633f00949ff645d5c04cdb8671fa3d78164d2f307",
+      "bytes": 225672
+    },
+    "usr/lib/x86_64-linux-gnu/libm.so.6": {
+      "sha256": "6d567d53e895273ca14a1f9dc164fc6c8d39aed2f60aa46a733c2784228915f3",
+      "bytes": 977112
+    }
+  },
+  "requirements": {
+    "agent": {
+      "all_glibc_versions_provided": true,
+      "missing": [],
+      "glibc_undefined_versioned_symbols": 145,
+      "all_glibc_symbol_version_pairs_provided": true
+    },
+    "http": {
+      "all_glibc_versions_provided": true,
+      "missing": [],
+      "glibc_undefined_versioned_symbols": 122,
+      "all_glibc_symbol_version_pairs_provided": true
+    },
+    "lws": {
+      "all_glibc_versions_provided": true,
+      "missing": [],
+      "glibc_undefined_versioned_symbols": 198,
+      "all_glibc_symbol_version_pairs_provided": true
+    },
+    "guest": {
+      "all_glibc_versions_provided": true,
+      "missing": [],
+      "glibc_undefined_versioned_symbols": 147,
+      "all_glibc_symbol_version_pairs_provided": true
+    }
+  },
+  "limit": "ISO package symbol version inventory only; guest installed package and real load unverified"
+}

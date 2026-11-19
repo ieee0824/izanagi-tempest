@@ -1,7 +1,8 @@
 /* Fixed-host fixture entry under review. */
 #include "policy.c"
 
-static int reap_unreleased_worker(const struct connect4_trial *trial, pid_t worker)
+static int reap_unreleased_worker(const struct connect4_trial *trial, pid_t worker,
+                                  int gate_eof_status)
 {
     if (worker <= 0) {
         errno = ESTALE;
@@ -14,7 +15,7 @@ static int reap_unreleased_worker(const struct connect4_trial *trial, pid_t work
                    WEXITED | WNOHANG | WNOWAIT) < 0)
             return -1;
         if (status.si_pid == worker) {
-            if (status.si_code != CLD_EXITED || status.si_status != 75) {
+            if (status.si_code != CLD_EXITED || status.si_status != gate_eof_status) {
                 errno = EPROTO;
                 return -1;
             }
@@ -29,10 +30,12 @@ static int reap_unreleased_worker(const struct connect4_trial *trial, pid_t work
     return -1;
 }
 
+typedef int (*supervised_trial)(const struct connect4_trial *, int, int,
+                                atomic_int *, atomic_int *, void *);
+
 /* The upper owner created all trial resources before this fork. */
-static int run_with_subreaper(const struct connect4_trial *trial,
-                              int controller_pidfd, int allowed, uint16_t allowed_port,
-                              int denied, uint16_t denied_port)
+static int supervise_trial(const struct connect4_trial *trial, int controller_pidfd,
+                            int gate_eof_status, supervised_trial execute, void *context)
 {
     if (prctl(PR_SET_CHILD_SUBREAPER, 1UL, 0UL, 0UL, 0UL) < 0)
         return -1;
@@ -63,17 +66,8 @@ static int run_with_subreaper(const struct connect4_trial *trial,
     }
     if (supervisor == 0) {
         close(channel[0]);
-        struct connect4_phase phases[3];
-        struct connect4_pending_recovery pending;
-        int result = run_connect4_trial(trial, controller_pidfd, channel[1], known_worker,
-                                        CONNECT4_CASE == 6 ? 1 : CONNECT4_CASE == 7 ? 2 : 0,
-                                        0, CONNECT4_CASE == 7 ? release_seen : NULL, allowed, allowed_port, denied,
-                                        denied_port, phases, &pending);
-        for (unsigned i = 0; i < 3; ++i)
-            fprintf(stderr, "phase=%u allowed=%d denied=%d code=%d status=%d\n",
-                    i, phases[i].allowed_accepts, phases[i].denied_accepts,
-                    phases[i].worker_code, phases[i].worker_status);
-        _exit(result == 0 ? 0 : pending.pidfd >= 0 ? 2 : 1);
+        _exit(execute(trial, controller_pidfd, channel[1], known_worker,
+                      release_seen, context));
     }
 
     close(channel[1]);
@@ -113,7 +107,7 @@ static int run_with_subreaper(const struct connect4_trial *trial,
     } else if (!clean_exit) {
         pid_t known = atomic_load_explicit(known_worker, memory_order_acquire);
         int recovered = known == 0 ? confirm_unpinned_connect4_trial(trial)
-                                   : reap_unreleased_worker(trial, known);
+                                   : reap_unreleased_worker(trial, known, gate_eof_status);
         if (recovered < 0) {
             perror("unreleased recovery held for inspection");
             for (;;)
@@ -139,9 +133,167 @@ static int run_with_subreaper(const struct connect4_trial *trial,
     return -1;
 }
 
+struct probe_trial {
+    int allowed;
+    uint16_t allowed_port;
+    int denied;
+    uint16_t denied_port;
+};
+
+static int execute_probe_trial(const struct connect4_trial *trial, int controller_pidfd,
+                               int channel, atomic_int *known_worker,
+                               atomic_int *release_seen, void *context)
+{
+    const struct probe_trial *probe = context;
+    struct connect4_phase phases[3];
+    struct connect4_pending_recovery pending;
+    int fault = CONNECT4_CASE == 6 ? 1 : CONNECT4_CASE == 7 ? 2 : 0;
+    int result = run_connect4_trial(trial, controller_pidfd, channel, known_worker, fault,
+                                    0, CONNECT4_CASE == 7 ? release_seen : NULL,
+                                    probe->allowed, probe->allowed_port, probe->denied,
+                                    probe->denied_port, phases, &pending);
+    for (unsigned i = 0; i < 3; ++i)
+        fprintf(stderr, "phase=%u allowed=%d denied=%d code=%d status=%d\n",
+                i, phases[i].allowed_accepts, phases[i].denied_accepts,
+                phases[i].worker_code, phases[i].worker_status);
+    return result == 0 ? 0 : pending.pidfd >= 0 ? 2 : 1;
+}
+
+static int execute_relay_denial(const struct connect4_trial *trial, int controller_pidfd,
+                                int channel, atomic_int *known_worker,
+                                atomic_int *release_seen, void *context)
+{
+    (void)release_seen;
+    const struct probe_trial *probe = context;
+    int64_t now = monotonic_ns();
+    if (now < 0)
+        return 1;
+    struct fixed_relay_result observed;
+    struct connect4_pending_recovery pending;
+    int result = run_restricted_fixed_relay(trial, probe->denied_port, 1,
+        controller_pidfd, channel, known_worker, now + 5000000000LL,
+        NULL, NULL, &observed, &pending);
+    int alternate_accepts = count_connect4_accepts(probe->denied);
+    int agent_accepts = count_connect4_accepts(probe->allowed);
+    fprintf(stderr, "connect_errno=%d relay_exit=%d alternate_accepts=%d agent_accepts=%d\n",
+            observed.connect_errno, observed.relay_exit, alternate_accepts, agent_accepts);
+    if (pending.pidfd >= 0)
+        return 2;
+    return result == 0 && observed.connect_errno == EPERM && observed.relay_exit == 1 &&
+        alternate_accepts == 0 && agent_accepts == 0 ? 0 : 1;
+}
+
+struct vm_relay_trial {
+    uint16_t port;
+    int alternate;
+    struct fixed_relay_client client;
+};
+
+static int report_vm_relay(const struct fixed_relay_result *result, int denied)
+{
+    fprintf(stderr, "fixed_relay connect_errno=%d relay_exit=%d\n",
+            result->connect_errno, result->relay_exit);
+    return result->connect_errno == (denied ? EPERM : 0) &&
+        result->relay_exit == denied ? 0 : 1;
+}
+
+static int execute_vm_relay(const struct connect4_trial *trial, int controller,
+                            int channel, atomic_int *known_worker,
+                            atomic_int *release_seen, void *context)
+{
+    (void)release_seen;
+    struct vm_relay_trial *vm = context;
+    int64_t now = monotonic_ns();
+    if (now < 0)
+        return 1;
+    struct fixed_relay_result observed;
+    struct connect4_pending_recovery pending;
+    int result = run_restricted_fixed_relay(trial, vm->port, vm->alternate,
+        controller, channel, known_worker, now + 12000000000LL,
+        vm->alternate ? NULL : exchange_fixed_relay_client, &vm->client, &observed, &pending);
+    int status = report_vm_relay(&observed, vm->alternate);
+    return pending.pidfd >= 0 ? 2 : result < 0 ? 1 : status;
+}
+
+static uint16_t parse_relay_port(const char *value)
+{
+    unsigned port = 0;
+    for (; *value; ++value) {
+        if (*value < '0' || *value > '9')
+            return 0;
+        port = port * 10 + (unsigned)(*value - '0');
+        if (port > UINT16_MAX)
+            return 0;
+    }
+    return (uint16_t)port;
+}
+
+/* This root-only entry consumes ports and private paths from the trusted
+ * VM controller. Run identity and listener ownership are checked by it. */
+static int run_vm_relay_entry(int argc, char **argv)
+{
+    if (argc != 9 || geteuid() != 0 || argv[6][0] != '/' ||
+        strncmp(argv[7], "IZANAGI_SECRET_FILE=/", sizeof("IZANAGI_SECRET_FILE=/") - 1) != 0 ||
+        strncmp(argv[8], "IZANAGI_FIXED_SESSION_DIR=/",
+                sizeof("IZANAGI_FIXED_SESSION_DIR=/") - 1) != 0)
+        return 2;
+    const char *phase = argv[1];
+    int alternate = strcmp(argv[2], "alternate") == 0;
+    int control = strcmp(phase, "control_before") == 0 || strcmp(phase, "control_after") == 0;
+    int allow = CONNECT4_CASE == 9 && !alternate && strcmp(phase, "allow_same_run") == 0;
+    int deny = CONNECT4_CASE == 10 && alternate && strcmp(phase, "deny_other") == 0;
+    uint16_t agent_port = parse_relay_port(argv[3]);
+    uint16_t alternate_port = parse_relay_port(argv[4]);
+    if ((!alternate && strcmp(argv[2], "agent") != 0) || (!control && !allow && !deny) ||
+        agent_port == 0 || alternate_port == 0 || agent_port == alternate_port ||
+        strlen(argv[5]) != 32 || strspn(argv[5], "0123456789abcdef") != 32)
+        return 2;
+    umask(0077);
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
+        return 1;
+    int controller = (int)syscall(SYS_pidfd_open, getpid(), 0);
+    if (controller < 0)
+        return 1;
+    struct vm_relay_trial vm = {
+        .port = alternate ? alternate_port : agent_port,
+        .alternate = alternate,
+        .client = {argv[6], argv[5], phase, argv[7], argv[8]},
+    };
+    if (control) {
+        int64_t now = monotonic_ns();
+        struct fixed_relay_result observed;
+        int result = now < 0 ? -1 : run_fixed_relay_control(vm.port, alternate, controller,
+            now + 12000000000LL, alternate ? exchange_fixed_alternate : exchange_fixed_relay_client,
+            &vm.client, &observed);
+        close(controller);
+        return result < 0 ? 1 : report_vm_relay(&observed, 0);
+    }
+
+    int state, cgroup;
+    if (create_connect4_fixture_state(&state, &cgroup) < 0) {
+        perror("fixed VM relay state");
+        close(controller);
+        return 1;
+    }
+    struct connect4_trial trial = {.link_fd = -1};
+    int result = prepare_connect4_trial(state, cgroup, CONNECT4_PIN_PATH, agent_port, &trial);
+    if (result == 0)
+        result = supervise_trial(&trial, controller, 1, execute_vm_relay, &vm);
+    if (trial.link_fd >= 0)
+        close(trial.link_fd);
+    if (remove_connect4_fixture_cgroup(state, cgroup) < 0 ||
+        retire_connect4_fixture_state(state) < 0)
+        result = -1;
+    close(cgroup);
+    close(state);
+    close(controller);
+    return result == 0 ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
-    (void)argv;
+    if (CONNECT4_CASE >= 9)
+        return run_vm_relay_entry(argc, argv);
     if (argc != 1 || geteuid() != 0) {
         fputs("requires root and no arguments\n", stderr);
         return 2;
@@ -195,9 +347,16 @@ int main(int argc, char **argv)
         perror("prepare trial");
         goto done;
     }
+    if (CONNECT4_CASE == 8) {
+        struct probe_trial probe = {allowed, allowed_port, denied, denied_port};
+        result = supervise_trial(&trial, controller_pidfd, 1, execute_relay_denial, &probe);
+        if (result < 0)
+            perror("fixed relay denial");
+        goto done;
+    }
     if (CONNECT4_CASE >= 5) {
-        result = run_with_subreaper(&trial, controller_pidfd, allowed, allowed_port,
-                                    denied, denied_port);
+        struct probe_trial probe = {allowed, allowed_port, denied, denied_port};
+        result = supervise_trial(&trial, controller_pidfd, 75, execute_probe_trial, &probe);
         if (result < 0)
             perror("subreaper trial");
         goto done;

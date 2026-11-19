@@ -1,0 +1,23 @@
+{
+  "input_files_checked": 1309,
+  "input_rows_sha256": "7834c3ce8191f9d967c0f8146123f48a8af4ad6eb562ab481624dbde2121e4a5",
+  "versions": {
+    "prefix": "/var/lib/tempest-izanagi-proc-exposure-003/inputs/python",
+    "cryptography": "50.0.2",
+    "cffi": "2.1.1",
+    "pycparser": "3.12"
+  },
+  "all_inputs_readable_nonwritable": true,
+  "runtime_hashes_match": true,
+  "work_private": true,
+  "xattr_roundtrip": true,
+  "output_absent": true,
+  "vm_boot_executed": false,
+  "provenance": {
+    "prepare_session": 65229,
+    "prepare_exit": 0,
+    "uid_session": 67928,
+    "uid_exit": 0,
+    "uid_source_delivery": "stdin; no repository permissions changed"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "tool_sha256": {
+    "/usr/bin/qemu-img": "634320b91165669917123e8e79cce1c4d00cee0a4aa4d662d7c0a8186479b3fb",
+    "/usr/sbin/sfdisk": "533096419d9cbf1b2a6e81da22386128736154ca678fbcbcf9d29939fba60594",
+    "/usr/sbin/debugfs": "1e83118cc9582afcad2711fbb7f40f56668adccb386d988cb6d9ad5c2d001049",
+    "/usr/bin/readelf": "64c58e15274bbbb5153f31078e455e9e77ee5f51489e709bba5bb788ce9df2b0"
+  },
+  "helper_sha256": {
+    "select_partition.py": "6783a839fa62ca9cffe2530d652f5abc9869e0d2d563f8921632441d5e2c73ba",
+    "extract_artifacts.py": "7eaf19eb9c87a3a2fdf3295a0424d9aa801a6b6607321d6d780c6948a974efb8"
+  },
+  "free_bytes_at_recording": 46475866112,
+  "extract_caller_exit": "not recovered; process absent and complete report inspected",
+  "vm_boot_for_inspection": false,
+  "stage_invocation_record": {
+    "execution_uid": 999,
+    "environment": {
+      "PATH": "/usr/bin:/bin",
+      "TZ": "UTC",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "HOME": "/var/lib/tempest-izanagi-image-offline-001/work/home",
+      "TMPDIR": "/var/lib/tempest-izanagi-image-offline-001/work/tmp"
+    },
+    "environment_cleared": true,
+    "record_basis": "retained conversation tool-call record; no independent complete caller transcript retained",
+    "qemu_img_argv": [
+      "/usr/bin/qemu-img",
+      "convert",
+      "-f",
+      "qcow2",
+      "-O",
+      "raw",
+      "/var/lib/tempest-izanagi-image-smoke-001-v2/inputs/image.qcow2",
+      "/var/lib/tempest-izanagi-image-offline-001/work/disk.raw"
+    ],
+    "helpers_interpreter_argv": [
+      "/usr/bin/python3",
+      "-I",
+      "-B"
+    ],
+    "helper_paths": [
+      "/var/lib/tempest-izanagi-image-offline-001/inputs/select_partition.py",
+      "/var/lib/tempest-izanagi-image-offline-001/inputs/extract_artifacts.py"
+    ],
+    "timeout_argv": [
+      "/usr/bin/timeout",
+      "--signal=TERM",
+      "--kill-after=10s",
+      "600s"
+    ],
+    "sfdisk_argv_record": "--json on work/disk.raw confirmed by retained record; exact complete wrapper argv not independently recovered",
+    "missing": "complete original stage1/stage2 caller transcripts and sfdisk Python wrapper source; no re-execution to replace missing evidence"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "source_image": "/var/lib/tempest-izanagi-image-smoke-001-v2/inputs/image.qcow2",
+  "expected_sha256": "5885abea1d5820d2626dbd0ba5121bb8f0c106b91a8dc879c0ad99a6f040fe7e",
+  "virtual_size": 4294967296,
+  "maximum_raw_partition_bytes": 8589934592,
+  "free_before": 52260880384,
+  "mode": "read-only inspection; no mount or VM; extracted files will not execute"
+}

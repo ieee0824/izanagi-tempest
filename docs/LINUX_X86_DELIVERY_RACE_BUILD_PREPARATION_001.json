@@ -1,0 +1,37 @@
+{
+  "input_files_checked": 29,
+  "input_rows_sha256": "34e665e1af93a02a1f3a9e2e049cb29d0d947f49a7e4006e6c2968d04c38dc87",
+  "all_inputs_readable_nonwritable": true,
+  "argv": [
+    "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/packer",
+    "validate",
+    "-var-file=/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/tempest.pkrvars.json",
+    "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/definition/packer/debian.pkr.hcl"
+  ],
+  "env": {
+    "PATH": "/usr/bin:/bin",
+    "HOME": "/var/lib/tempest-izanagi-delivery-race-build-001/work/home",
+    "TMPDIR": "/var/lib/tempest-izanagi-delivery-race-build-001/work/tmp",
+    "PACKER_CACHE_DIR": "/var/lib/tempest-izanagi-delivery-race-build-001/work/cache",
+    "PACKER_PLUGIN_PATH": "/var/lib/tempest-izanagi-delivery-race-build-001/inputs/plugins",
+    "CHECKPOINT_DISABLE": "1"
+  },
+  "uid": 999,
+  "full_validate_exit": 0,
+  "build_executed": false,
+  "vm_executed": false,
+  "provenance": {
+    "prepare_session": 30932,
+    "prepare_exit": 0,
+    "uid_check_session": 6545,
+    "uid_check_exit": 0,
+    "source_commit": "57266aa48535700922a0d6c21aed241fdbef2951",
+    "free_bytes_after_copy": 22467149824,
+    "root_and_inputs_uid_gid_mode": [
+      0,
+      988,
+      "0750"
+    ],
+    "uid_check_source_delivery": "stdin; no repository permissions changed"
+  }
+}

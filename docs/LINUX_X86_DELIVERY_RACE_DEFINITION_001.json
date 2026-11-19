@@ -1,0 +1,194 @@
+{
+  "parent_inputs_sha256": "49c561c109a4604a62dc0a7be57ceddfed7fdfea4f18954afec2db5b562d0b1f",
+  "parent_image_metadata_sha256": "4cdf6a0faef67d12a6d5ab67f5966b1382e569b8b4f1096560039a49fce3aa29",
+  "child_inputs_sha256": "d499d9ee1bb77337c3f81abe8af00f75970ce7d286f483e83eb9d95c2803db44",
+  "child_image_metadata_sha256": "d4df9b16d541427789cc7de44bc251ffb0c906b0e326d4bd2b024d9e23a395a6",
+  "compile_fields_preserved": [
+    "tempest_guest_source_commit",
+    "tempest_guest_source_tree_sha256",
+    "tempest_guest_source_dirty",
+    "tempest_guest_version",
+    "input_sha256",
+    "iso_sha256",
+    "izanagi_commit",
+    "lws_commit",
+    "architecture"
+  ],
+  "changed_metadata_keys": [
+    "built_at",
+    "delivery_race_fixture",
+    "derivation_sha256",
+    "source_manifest_sha256"
+  ],
+  "fixture": true,
+  "files": [
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/inputs.json",
+      "relative": "inputs.json",
+      "sha256": "d499d9ee1bb77337c3f81abe8af00f75970ce7d286f483e83eb9d95c2803db44",
+      "bytes": 2041,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/.gitignore",
+      "relative": "packer/.gitignore",
+      "sha256": "bdfc03d62c82ab1e7d8c18c98e948ac0260b326a8aece0591888d7b5ea4ab058",
+      "bytes": 48,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/README.md",
+      "relative": "packer/README.md",
+      "sha256": "b0787d292ddc6468ade0c0bfe077f763114e9343d418ba57cf6a670359c16246",
+      "bytes": 4547,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/alpine-x86_64.pkr.hcl",
+      "relative": "packer/alpine-x86_64.pkr.hcl",
+      "sha256": "77c17773d03badbcce8b95e94222b2d750b730ffc8a1aa5746307e17c5d6f531",
+      "bytes": 2992,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/alpine.pkr.hcl",
+      "relative": "packer/alpine.pkr.hcl",
+      "sha256": "0444431d2dd788e8fee9aa4d42180b9d8c35d425543230a32f4de9dc57700938",
+      "bytes": 4172,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/debian.pkr.hcl",
+      "relative": "packer/debian.pkr.hcl",
+      "sha256": "f7f12d7cf6a2d970c19fe69d4f370c76d8b9c11766844e7a447abd05cf80aec0",
+      "bytes": 7346,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/dispatcher.py",
+      "relative": "packer/dispatcher.py",
+      "sha256": "faf0c5aef7e5ae7600e77c88df61d84edad6b3cdd39e5b765e65d7a96972e1b9",
+      "bytes": 13331,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/http/answers",
+      "relative": "packer/http/answers",
+      "sha256": "f29985b574a8a9e4a0456cc0f6b2a33ac0eb9ba4486330fca66ff12fbc2bbe1b",
+      "bytes": 300,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/http/preseed.cfg",
+      "relative": "packer/http/preseed.cfg",
+      "sha256": "cde7b305928055162599b1876f35277244b676a49047e0d83fb994a922e95515",
+      "bytes": 3080,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/http/setup.sh",
+      "relative": "packer/http/setup.sh",
+      "sha256": "72ef1e181bb65df51cf2bdd3d8f6cd7e502a0f9e265b1fdf9109e1fbc6edeaa0",
+      "bytes": 1118,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/image.json",
+      "relative": "packer/image.json",
+      "sha256": "d4df9b16d541427789cc7de44bc251ffb0c906b0e326d4bd2b024d9e23a395a6",
+      "bytes": 1597,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/lock-down.sh",
+      "relative": "packer/lock-down.sh",
+      "sha256": "9860c17fd0c64eaa2cef8f906d8869e8c49df701361fbddff388521de1b48659",
+      "bytes": 745,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/provision.sh",
+      "relative": "packer/provision.sh",
+      "sha256": "2cbd4e8c128f289216aebd21ff364a65b5552ee623df56f345cd17e818ba800e",
+      "bytes": 6338,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/quiesce.py",
+      "relative": "packer/quiesce.py",
+      "sha256": "72fabf3ce527257ab2bb5fb8cb3b8a8ef7e706ff2715b29e5b7c0857bf5390a8",
+      "bytes": 5139,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/tempest.pkrvars.json",
+      "relative": "packer/tempest.pkrvars.json",
+      "sha256": "0ddde2714662068bf8fd0d62fcb2bc6e9689b378856bd17c6a5070eed1d4e0b0",
+      "bytes": 221,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    },
+    {
+      "path": "/tmp/tempest-delivery-race-definition-001/packer/verify-image.sh",
+      "relative": "packer/verify-image.sh",
+      "sha256": "c56dd80ec9855754d6621a1c8139dd2b211274c4df3b3d70a82ef5c8e816bf9d",
+      "bytes": 1248,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0440"
+    }
+  ],
+  "definition_only": true,
+  "build_executed": false,
+  "vm_executed": false,
+  "standard_prepare_session": 74232,
+  "standard_prepare_exit": 0,
+  "full_validate": {
+    "uid": 999,
+    "gid": 988,
+    "env": {
+      "PATH": "/usr/bin:/bin",
+      "HOME": "/nonexistent",
+      "CHECKPOINT_DISABLE": "1",
+      "PACKER_PLUGIN_PATH": "/var/lib/tempest-izanagi-full-build-003/inputs/plugins"
+    },
+    "argv": [
+      "/var/lib/tempest-izanagi-full-build-003/inputs/packer",
+      "validate",
+      "-var-file=/tmp/tempest-delivery-race-definition-001/packer/tempest.pkrvars.json",
+      "/tmp/tempest-delivery-race-definition-001/packer/debian.pkr.hcl"
+    ],
+    "exit_code": 0,
+    "stdout": "The configuration is valid.",
+    "plugin_init_or_download": false
+  }
+}

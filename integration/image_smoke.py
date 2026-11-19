@@ -18,12 +18,16 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'image'))
+sys.path.insert(0, str(ROOT / 'integration'))
 from transport import Mailbox
+from trace_evidence import trace_probe_evidence
+from artifact_evidence import PATHS as ARTIFACT_PATHS, validate_offline, validate_actor
 from exec_evidence import ExecEvidence, MarkerLeak
 from proc_evidence import CONTROL_KEY, CONTROL_VALUE
 import proc_paging
 import sidecar_evidence
 import network_evidence
+import fixed_vm_receive_observe
 
 
 def sha(path):
@@ -37,6 +41,7 @@ def main():
     parser.add_argument('--image', type=Path, required=True)
     parser.add_argument('--build-inputs', type=Path, help='prepare.py inputs.json; defaults to the standard build layout')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--offline-artifacts', type=Path, help='read-only image inspection report bound to this exact image')
     parser.add_argument('--network-evidence', action='store_true',
                         help='dedicated host-endpoint TCP controls; requires fixed Linux observer and --exec-evidence')
     parser.add_argument('--sidecar-evidence', action='store_true',
@@ -47,11 +52,31 @@ def main():
                         help='retain private exec stdout/stderr and scan dummy management markers')
     parser.add_argument('--tempest', type=Path, help='exercise the independent Rust MCP supervisor/bridge for measured GETs')
     parser.add_argument('--delivery-race-fixture', action='store_true', help='Require forced root deliver PID in quiesce kill evidence')
+    parser.add_argument('--fixed-vm-receiver-preflight', action='store_true',
+                        help='boot only the fixed receiver image and verify initial guest state')
+    parser.add_argument('--fixed-vm-relay-trial', nargs=4,
+                        metavar=('UNIT', 'CLIENT', 'ALLOW_ENTRY', 'DENY_ENTRY'),
+                        help='run the four fixed relay phases after receiver preflight')
     args = parser.parse_args()
-    if args.proc_evidence and not args.exec_evidence:
-        parser.error('--proc-evidence requires --exec-evidence private capture')
+    if args.fixed_vm_relay_trial and (
+        not args.fixed_vm_receiver_preflight or os.geteuid() != 0
+    ):
+        parser.error('fixed relay trial requires root and --fixed-vm-receiver-preflight')
+    fixed_image_sha = None
+    if args.fixed_vm_receiver_preflight:
+        if (sys.platform != 'linux' or not args.exec_evidence or args.offline_artifacts
+                or args.network_evidence or args.sidecar_evidence or args.proc_evidence
+                or args.tempest or args.delivery_race_fixture or not args.build_inputs):
+            parser.error('fixed receiver preflight requires Linux, --exec-evidence, --build-inputs and no other fixture')
+        fixed_image_sha = sha(args.image)
+        if fixed_image_sha != fixed_vm_receive_observe.FIXED_IMAGE_SHA256:
+            parser.error('fixed receiver image digest mismatch')
+        if sha(args.build_inputs) != '0e75f885f5b3b7a300a9128f3041d6fd583b43b2933cee92fa2cd634fe80867c':
+            parser.error('fixed receiver build inputs digest mismatch')
     if args.sidecar_evidence and (not args.exec_evidence or args.proc_evidence or args.tempest is not None or args.delivery_race_fixture):
         parser.error('--sidecar-evidence requires --exec-evidence and excludes proc/tempest/delivery-race modes')
+    if args.proc_evidence and not args.exec_evidence:
+        parser.error('--proc-evidence requires --exec-evidence private capture')
     if args.network_evidence and (sys.platform != 'linux' or not args.exec_evidence or args.sidecar_evidence or args.proc_evidence or args.tempest is not None or args.delivery_race_fixture):
         parser.error('--network-evidence requires Linux/exec-evidence and excludes other fixture modes')
     os.umask(0o077)
@@ -82,6 +107,8 @@ def main():
     from transport import mapped_metadata
     import stat
     mapped_metadata(public, stat.S_IFDIR | 0o777)
+    if args.fixed_vm_receiver_preflight:
+        fixed_vm_receive_observe.stage_receiver(box.workspace, mapped_metadata)
     if args.proc_evidence:
         for source, name in [('proc_evidence.py', 'proc_evidence.py'), ('proc_paging.py', 'proc-probe.py')]:
             path = public / name
@@ -114,20 +141,38 @@ def main():
     if args.sidecar_evidence:
         template = sidecar_evidence.configure(template)
     config.write_text(template.replace('image = "default"', 'image = ' + json.dumps(str(args.image.resolve()))))
-    if args.network_evidence:
+    if args.network_evidence or args.fixed_vm_receiver_preflight:
         network_evidence.require_config(config.read_text())
     base = [str(args.izanagi.resolve()), '--config', str(config)]
     report = {'schema_version': 1, 'status': 'incomplete', 'checks': {},
-              'image_sha256': sha(args.image), 'izanagi_sha256': sha(args.izanagi),
+              'image_sha256': fixed_image_sha or sha(args.image), 'izanagi_sha256': sha(args.izanagi),
               'build_inputs_sha256': sha(inputs_path), 'restrict_network': True}
+    offline_artifacts = None
+    if args.offline_artifacts is not None:
+        offline_artifacts = validate_offline(json.loads(args.offline_artifacts.read_bytes()), report['image_sha256'], build_inputs)
+        report['checks']['offline_artifacts'] = {'passed': True, 'report_sha256': sha(args.offline_artifacts),
+                                                   'scope': 'offline image bytes; runtime identity checked separately'}
     exec_evidence = ExecEvidence(output / 'exec-evidence') if args.exec_evidence else None
+    vm_identity = {}
+    if args.fixed_vm_relay_trial:
+        import grp
+        unit, *relay_binaries = args.fixed_vm_relay_trial
+        relay_client, allow_entry, deny_entry = (Path(path).resolve(strict=True) for path in relay_binaries)
+        home = output / 'vm-home'
+        tmp = output / 'vm-tmp'
+        home.mkdir(mode=0o700)
+        tmp.mkdir(mode=0o700)
+        environment.update(HOME=str(home), TMPDIR=str(tmp))
+        for path in [*output.rglob('*'), output]:
+            os.chown(path, 999, 988, follow_symlinks=False)
+        vm_identity = {'user': 999, 'group': 988, 'extra_groups': [grp.getgrnam('kvm').gr_gid]}
     def save():
         (output / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
     def execute(*command, timeout=30, evidence_context=None):
         def invoke():
             return subprocess.run(base + ['exec', '--', *command], cwd=box.workspace,
                                   capture_output=True, text=True, errors='surrogateescape',
-                                  timeout=timeout, env=environment)
+                                  timeout=timeout, env=environment, **vm_identity)
         if exec_evidence is None:
             return invoke()
         try:
@@ -266,7 +311,7 @@ def main():
         save()
     try:
         with (output / 'up.stdout').open('w') as stdout, (output / 'up.stderr').open('w') as stderr:
-            process = subprocess.Popen(base + ['up'], cwd=box.workspace, stdout=stdout, stderr=stderr, start_new_session=True, env=environment)
+            process = subprocess.Popen(base + ['up'], cwd=box.workspace, stdout=stdout, stderr=stderr, start_new_session=True, env=environment, **vm_identity)
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline and process.poll() is None:
             if 'サンドボックスを起動しました' in (output / 'up.stdout').read_text():
@@ -276,12 +321,46 @@ def main():
             time.sleep(0.5)
         else:
             raise RuntimeError('VM boot failed')
+        if args.fixed_vm_receiver_preflight:
+            report['checks']['fixed_vm_receiver'] = fixed_vm_receive_observe.preflight_guest(execute, build_inputs)
+            report['status'] = 'fixed_receiver_preflight_collected'
+            if args.fixed_vm_relay_trial:
+                import image_smoke_observe
+                session = home / '.izanagi/instances' / hashlib.sha256(
+                    os.fsencode(box.workspace)).hexdigest()
+
+                def observe_route():
+                    forward = image_smoke_observe.agent_forward_identity(
+                        image_smoke_observe.BOOTSTRAP.sample(unit),
+                        image=str(args.image.resolve()), workspace=str(box.workspace))
+                    fingerprint = fixed_vm_receive_observe.session_binding(
+                        box.workspace, home, owner_uid=999, supervisor_pid=process.pid,
+                        forward=forward)
+                    return forward, fingerprint
+
+                def launch(phase, route, agent_port, alternate_port, nonce):
+                    entry = deny_entry if phase == 'deny_other' else allow_entry
+                    return subprocess.run([
+                        entry, phase, route, str(agent_port), str(alternate_port), nonce,
+                        relay_client, 'IZANAGI_SECRET_FILE=' + str(hmac_path),
+                        'IZANAGI_FIXED_SESSION_DIR=' + str(session),
+                    ], capture_output=True, env={})
+
+                report['checks']['fixed_vm_relay'] = fixed_vm_receive_observe.collect_relay_trial(
+                    execute, observe_route, launch, run_nonce=secrets.token_hex(16),
+                    boot_id=report['checks']['fixed_vm_receiver']['boot_id'])
+                report['status'] = 'fixed_relay_trial_collected'
+            save()
+            return
         proc_probe('before_claim')
         check('inventory', 'id; cat /etc/tempest/image.json; stat -c "%u %g %a %n" /workspace /workspace/.tempest-control; cat /proc/mounts')
         image_manifest = json.loads(check('image_manifest', 'cat /etc/tempest/image.json'))
         for field in ['izanagi_commit', 'lws_commit', 'tempest_guest_version', 'tempest_guest_source_commit',
                       'tempest_guest_source_tree_sha256', 'tempest_guest_source_dirty', 'input_sha256', 'derivation_sha256']:
             assert image_manifest[field] == build_inputs[field], 'build/guest provenance mismatch: ' + field
+        for field in ['architecture', 'iso_sha256']:
+            if field in build_inputs:
+                assert image_manifest.get(field) == build_inputs[field], 'build/guest provenance mismatch: ' + field
         assert image_manifest['installed_sha256']['/usr/local/libexec/tempest-guest-native'] == build_inputs['input_sha256']['guest']
         assert image_manifest['installed_sha256']['/usr/local/bin/lws'] == build_inputs['input_sha256']['lws']
         assert image_manifest['installed_sha256']['/usr/local/bin/tempest-guest'] == build_inputs['derivation_sha256']['dispatcher.py']
@@ -289,6 +368,25 @@ def main():
         if args.delivery_race_fixture:
             assert image_manifest.get('delivery_race_fixture') is True, 'guest is not the instrumented fixture'
         report['checks']['build_guest_binding'] = {'passed': True}
+        artifact_code = ("import json,hashlib; from pathlib import Path; p=" + repr(ARTIFACT_PATHS)
+                         + "; out={}\nfor name,path in p.items():\n"
+                         " try:\n  b=Path(path).read_bytes()\n"
+                         " except PermissionError as e:\n  out[name]={'read_errno':e.errno}\n"
+                         " else:\n  assert b[:6]==b'\\x7fELF\\x02\\x01'; "
+                         "out[name]={'sha256':hashlib.sha256(b).hexdigest(),'elf_machine':int.from_bytes(b[18:20],'little')}\n"
+                         "print(json.dumps(out))")
+        installed = json.loads(check('izanagi_installed_artifacts', 'python3 -c ' + shlex.quote(artifact_code)))
+        validate_actor(installed, build_inputs, offline_artifacts)
+        report['checks']['installed_artifact_binding'] = {'passed': True, 'actor_observations': installed}
+        # ldd requires readable bytes; preserve root-only agent permissions and
+        # report this limitation rather than interpreting a denial as an ABI failure.
+        ldd_paths = [ARTIFACT_PATHS[name] for name in ('agent', 'http') if 'read_errno' not in installed[name]]
+        ldd_paths += ['/usr/local/bin/lws', '/usr/local/libexec/tempest-guest-native']
+        report['checks']['runtime_abi_unreadable_paths'] = [path for name, path in ARTIFACT_PATHS.items()
+                                                          if name != 'ebpf' and 'read_errno' in installed[name]]
+        abi_inventory = check('runtime_abi_inventory', 'set -eu; uname -r; getconf GNU_LIBC_VERSION; '
+              'dpkg-query -W libc6 libgcc-s1; ldd ' + ' '.join(shlex.quote(path) for path in ldd_paths))
+        assert 'not found' not in abi_inventory, 'guest runtime library missing'
         metadata_code = ("import json,os,hashlib,stat; from pathlib import Path; "
                          "m=json.loads(Path('/etc/tempest/image.json').read_bytes()); "
                          "assert m['izanagi_commit']=='16d0b55947006a166cfa29dcb8bfe71f65f8c36a'; "
@@ -351,6 +449,9 @@ def main():
             secret_markers.append(credential)
             daemon_identity = call('attest', credential)
             report['checks']['daemon_identity'] = daemon_identity
+            assert daemon_identity['exe_sha256'] == build_inputs['input_sha256']['agent'], 'running agent artifact mismatch'
+            report['checks']['running_agent_build_binding'] = {'passed': True, 'exe_sha256': daemon_identity['exe_sha256']}
+            save()
             report['checks']['claim_nonreissue'] = call('claim', expected_error=True)
             bundle = {'users': [{'name': 'worker', 'policy': {'Version': '2012-10-17', 'Statement': [
                 {'Effect': 'Allow', 'Action': ['s3:GetObject'], 'Resource': 'arn:aws:s3:::public-data/*'}]}}],
@@ -556,9 +657,23 @@ def main():
                 assert body in payload_capture, 'expected HTTP response absent from capture'
             report['checks']['capture_proxy_and_backend'] = {'passed': True, 'decoded_packet_lines': len(parsed.stdout.splitlines())}
             report['checks']['recording_boundary'] = {'passed': True, 'agent_api_rows': len(rows)}
+        trace_nonce = secrets.token_hex(16)
+        trace_path = '/tmp/tempest-trace-' + trace_nonce
+        probe_code = ("import os,json; p=" + repr(trace_path) + "; "
+                      "fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); "
+                      "os.write(fd,b'LOCAL-DUMMY'); os.close(fd); "
+                      "print(json.dumps({'pid':os.getpid(),'path':p}))")
+        probe = execute('/usr/bin/python3', '-c', probe_code)
+        if probe.returncode != 0:
+            raise RuntimeError('dummy trace probe command failed')
+        report['trace_probe'] = json.loads(probe.stdout)
+        if report['trace_probe']['path'] != trace_path:
+            raise RuntimeError('dummy trace probe run/path mismatch')
         report['status'] = 'collected_requires_review'
         save()
     except Exception as error:
+        if args.fixed_vm_relay_trial:
+            report['status'] = 'fixed_relay_trial_failed'
         report['failure'] = str(error)
         save()
         raise
@@ -573,7 +688,12 @@ def main():
                     child.wait(timeout=5)
         if process is not None:
             try:
-                subprocess.run(base + ['down'], cwd=box.workspace, capture_output=True, timeout=30, env=environment)
+                down_result = subprocess.run(base + ['down'], cwd=box.workspace, capture_output=True, timeout=30, env=environment, **vm_identity)
+                if args.fixed_vm_receiver_preflight:
+                    report['fixed_receiver_down_exit'] = down_result.returncode
+                    if down_result.returncode != 0:
+                        report['status'] = 'fixed_receiver_cleanup_failed'
+                        raise RuntimeError('fixed receiver VM down failed')
             finally:
                 # up can still be in startup retries without a registered session.
                 # Its private process group includes only this test's supervisor/VM.
@@ -583,13 +703,25 @@ def main():
                     except ProcessLookupError:
                         pass
                 process.wait(timeout=30)
+                if args.fixed_vm_receiver_preflight:
+                    hmac_path.unlink()
+                    report['fixed_receiver_up_exit'] = process.returncode
+                    save()
     instance = Path.home() / '.izanagi/instances' / hashlib.sha256(str(box.workspace).encode()).hexdigest()
     logs = output / 'izanagi-logs'
     logs.mkdir(mode=0o700)
-    for name in ['events.log', 'alerts.log']:
-        source = instance / 'logs' / name
-        if source.is_file():
-            shutil.copyfile(source, logs / name)
+    for prefix in ['events.log', 'alerts.log']:
+        for source in (instance / 'logs').glob(prefix + '*'):
+            if source.name in [prefix] + [prefix + '.' + str(n) for n in range(1, 4)] and source.is_file():
+                shutil.copyfile(source, logs / source.name)
+    try:
+        report['checks']['ebpf_trace_probe'] = trace_probe_evidence(
+            sorted(logs.glob('events.log*')), report['trace_probe']['pid'], report['trace_probe']['path'])
+    except (ValueError, RuntimeError, OSError) as error:
+        report['status'] = 'trace_evidence_failed'
+        report['failure'] = str(error)
+        save()
+        raise
     if args.sidecar_evidence and 'sidecar_fixture' in report:
         try:
             report['checks']['sidecar_metadata'] = sidecar_evidence.collect(

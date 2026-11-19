@@ -1,0 +1,182 @@
+{
+  "source_revision": "06563333e895924fb0b3892dfd1213a5285eb33f",
+  "source_tree_sha256": "0658b34a13d191c600de78d611cc998d90ac89f75f675e91483d5f0793eacb9a",
+  "source_dirty": false,
+  "guest_binary": {
+    "path": "/tmp/tempest-capture-guest-build-001/target/x86_64-unknown-linux-gnu/release/tempest-guest",
+    "sha256": "3bc9fd0a15aa2f1e0e14f8a33731d0051242ae48ca991e937ad8506ae30d4284",
+    "bytes": 4021520
+  },
+  "metadata_sha256": "2219e4761ac2f6b287caa791039e529419738ad9053d3df025478cb6b348e92a",
+  "inputs_sha256": "807e4ca61739c0a17167db5e4da28f1ea8ea8adc98a09270e9a1826976372e9e",
+  "fixture_instrumented_bytes_verified": true,
+  "full_validate": {
+    "uid": 999,
+    "gid": 988,
+    "env": {
+      "PATH": "/usr/bin:/bin",
+      "HOME": "/nonexistent",
+      "CHECKPOINT_DISABLE": "1",
+      "PACKER_PLUGIN_PATH": "/var/lib/tempest-izanagi-full-build-003/inputs/plugins"
+    },
+    "argv": [
+      "/var/lib/tempest-izanagi-full-build-003/inputs/packer",
+      "validate",
+      "-var-file=/tmp/tempest-capture-definition-001/packer/tempest.pkrvars.json",
+      "/tmp/tempest-capture-definition-001/packer/debian.pkr.hcl"
+    ],
+    "exit_code": 0,
+    "stdout": "The configuration is valid.\n",
+    "stderr": "",
+    "plugin_init_or_download": false
+  },
+  "files": [
+    {
+      "path": "/tmp/tempest-capture-definition-001/inputs.json",
+      "relative": "inputs.json",
+      "sha256": "807e4ca61739c0a17167db5e4da28f1ea8ea8adc98a09270e9a1826976372e9e",
+      "bytes": 2029,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/.gitignore",
+      "relative": "packer/.gitignore",
+      "sha256": "bdfc03d62c82ab1e7d8c18c98e948ac0260b326a8aece0591888d7b5ea4ab058",
+      "bytes": 48,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/README.md",
+      "relative": "packer/README.md",
+      "sha256": "b0787d292ddc6468ade0c0bfe077f763114e9343d418ba57cf6a670359c16246",
+      "bytes": 4547,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/alpine-x86_64.pkr.hcl",
+      "relative": "packer/alpine-x86_64.pkr.hcl",
+      "sha256": "77c17773d03badbcce8b95e94222b2d750b730ffc8a1aa5746307e17c5d6f531",
+      "bytes": 2992,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/alpine.pkr.hcl",
+      "relative": "packer/alpine.pkr.hcl",
+      "sha256": "0444431d2dd788e8fee9aa4d42180b9d8c35d425543230a32f4de9dc57700938",
+      "bytes": 4172,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/debian.pkr.hcl",
+      "relative": "packer/debian.pkr.hcl",
+      "sha256": "c293c4e5946f8bb67cc33a42fed4c6e7e999202494e7a378732bfcaf02ebe552",
+      "bytes": 7334,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/dispatcher.py",
+      "relative": "packer/dispatcher.py",
+      "sha256": "faf0c5aef7e5ae7600e77c88df61d84edad6b3cdd39e5b765e65d7a96972e1b9",
+      "bytes": 13331,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/http/answers",
+      "relative": "packer/http/answers",
+      "sha256": "f29985b574a8a9e4a0456cc0f6b2a33ac0eb9ba4486330fca66ff12fbc2bbe1b",
+      "bytes": 300,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/http/preseed.cfg",
+      "relative": "packer/http/preseed.cfg",
+      "sha256": "cde7b305928055162599b1876f35277244b676a49047e0d83fb994a922e95515",
+      "bytes": 3080,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/http/setup.sh",
+      "relative": "packer/http/setup.sh",
+      "sha256": "72ef1e181bb65df51cf2bdd3d8f6cd7e502a0f9e265b1fdf9109e1fbc6edeaa0",
+      "bytes": 1118,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/image.json",
+      "relative": "packer/image.json",
+      "sha256": "2219e4761ac2f6b287caa791039e529419738ad9053d3df025478cb6b348e92a",
+      "bytes": 1597,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/lock-down.sh",
+      "relative": "packer/lock-down.sh",
+      "sha256": "9860c17fd0c64eaa2cef8f906d8869e8c49df701361fbddff388521de1b48659",
+      "bytes": 745,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/provision.sh",
+      "relative": "packer/provision.sh",
+      "sha256": "2cbd4e8c128f289216aebd21ff364a65b5552ee623df56f345cd17e818ba800e",
+      "bytes": 6338,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/quiesce.py",
+      "relative": "packer/quiesce.py",
+      "sha256": "72fabf3ce527257ab2bb5fb8cb3b8a8ef7e706ff2715b29e5b7c0857bf5390a8",
+      "bytes": 5139,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/tempest.pkrvars.json",
+      "relative": "packer/tempest.pkrvars.json",
+      "sha256": "0ddde2714662068bf8fd0d62fcb2bc6e9689b378856bd17c6a5070eed1d4e0b0",
+      "bytes": 221,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    },
+    {
+      "path": "/tmp/tempest-capture-definition-001/packer/verify-image.sh",
+      "relative": "packer/verify-image.sh",
+      "sha256": "c56dd80ec9855754d6621a1c8139dd2b211274c4df3b3d70a82ef5c8e816bf9d",
+      "bytes": 1248,
+      "uid": 0,
+      "gid": 988,
+      "mode": "0o440"
+    }
+  ],
+  "old_full_inputs_sha256_verified": true,
+  "image_build_executed": false,
+  "vm_executed": false
+}

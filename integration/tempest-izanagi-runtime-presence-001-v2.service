@@ -1,0 +1,19 @@
+[Unit]
+Description=Tempest fixed Linux runtime presence001 (review only; not installed)
+
+[Service]
+Type=exec
+User=tempest-kvm
+Group=tempest-kvm
+SupplementaryGroups=kvm
+KillMode=control-group
+RuntimeMaxSec=1800s
+TimeoutStopSec=10s
+SendSIGKILL=yes
+Restart=no
+UMask=0077
+NoNewPrivileges=yes
+Delegate=no
+WorkingDirectory=/var/lib/tempest-izanagi-runtime-presence-001/work
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 HOME=/var/lib/tempest-izanagi-runtime-presence-001/work/home TMPDIR=/var/lib/tempest-izanagi-runtime-presence-001/work/tmp /var/lib/tempest-izanagi-runtime-presence-001/inputs/python/bin/python -I -B /var/lib/tempest-izanagi-runtime-presence-001/inputs-v2/run_presence.py
+ExecStopPost=/usr/bin/python3 -I -B /var/lib/tempest-izanagi-runtime-presence-001/inputs/record_exit.py

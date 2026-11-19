@@ -1,0 +1,9 @@
+{
+  "start_sector": 2048,
+  "sectors": 7194624,
+  "byte_offset": 1048576,
+  "bytes": 3683647488,
+  "sha256": "fc0d00e15817285952ed756609c8fe27a154c067ae6c34a071f8ff05c325c1b1",
+  "ext4_magic": "53ef",
+  "image_virtual_bytes": 4294967296
+}

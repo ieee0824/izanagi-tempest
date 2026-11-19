@@ -1,0 +1,25 @@
+{
+  "scope": "draft only; large root/snapshot/VM not created; expectation completed fixed before execution",
+  "files": {
+    "integration/runtime_delivery_race.py": "e473ac251e9e8e086017a7c9f0e9183300b3b2b5ca4e70c6a55d5b79faf050c2",
+    "integration/runtime_normal_observe.py": "96bc88295f9db5ec7bf2db9f182fc08701e1676c11b30da58dc267c09cc17354",
+    "integration/izanagi-bootstrap/observe.py": "d9261442b8120fc7d7221c4ad8f4a4678a9990953603da11e72fcc90a16bbd28",
+    "integration/izanagi-bootstrap/record_exit.py": "3fb15eaec175996316857a01676d2972f9b38af6888d1bbbf16e015a915ee43b",
+    "image/transport.py": "79298daa3afef1f99b14818dc97c6970dc72ded14bc378e90d8e71d04e2ab3ea",
+    "image/host_bridge.py": "a57e731cda947b570ee91c8902652c9553f404080dcf3dd1407692be8fb16c45",
+    "image/artifact_evidence.py": "c900809e1d131fe11ba641032ffabf9c77c1c3691c416dae9e15cb24b3f47844",
+    "scenarios/s3-overread-001.yaml": "7c2cc8dacc784c9f2dc079f7ac61f7d2983617fea1c8757b75f059fa30d8fb69",
+    "tools/m0/izanagi.example.toml": "a9f4aca04bfc8774e1ae2cbfde1038c04506343a35baf7ec9204ab0219bc5222",
+    "docs/evidence/delivery-race-large-001/prepare_snapshot.py": "6c08046e9dcec11efca02917a76d35a1175dc96d0312469a4c473d110b06e13c",
+    "docs/evidence/delivery-race-large-001/check_preparation.py": "13b1f663dc9f1560741fdfd168e55d8b43fe360361b1599af2b2ec1a42b03085",
+    "docs/evidence/delivery-race-large-001/run_once.py": "0e1a2cd97ce789f0d0a994dab22312b6902256b8b7522c87c52cf2d7592a7ff1",
+    "docs/LINUX_X86_DELIVERY_RACE_NATIVE_ARTIFACTS_001.json": "6196e8cd1cef75e21c849efdc32cd4628b17bdcedb7f55dd7ed3c419e4699d02",
+    "docs/LINUX_X86_HOST_CLI_001_RESULT.json": "1522f467f7128d6f24d1dd256f4d479ad45d363d762dc82f4027261743c375ad",
+    "docs/LINUX_X86_PYTHON_WHEELS.json": "ada89b31801cdc208ec5c54cff1a9a0788b93285d4ccd1d1f68c462c825698b9",
+    "docs/locks/python-x86-full-002.txt": "4b5a2f5b041f636cb9d23749f350732f7d3561e7c785ac17a4f8b49e0d48f0ba",
+    "docs/evidence/host-endpoint-001/collect_result.py": "ba754b32ffe9d5357ba53f94d5da1be85f4d1d92f83a7d57b237857155c1d2bc",
+    "docs/evidence/runtime-normal-001/collect_result.py": "935aefb11413d5d14698de95493f918c600d76c9ffdb674baf43f84748538b06",
+    "docs/LINUX_X86_DELIVERY_RACE_SMOKE_001_KEY_CLEANUP.json": "03c6528a8fd101fd44f47e638d1c50a5c209c32839ddc556e2d4910c64b1f7ac",
+    "docs/LINUX_X86_DELIVERY_RACE_RAW_CLEANUP_001.json": "8001308fa1fbc08c2016ad392f8f7f32e911ea83cac656e75267a96aee5ba158"
+  }
+}

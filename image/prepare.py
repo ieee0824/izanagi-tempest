@@ -52,6 +52,8 @@ def main():
     for name in ['izanagi-source', 'lws-source', 'iso', 'agent', 'ebpf', 'http', 'lws', 'guest', 'output']:
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--delivery-race-fixture', action='store_true', help='TEST IMAGE ONLY: force deliver to overlap export freeze')
+    parser.add_argument('--fixed-vm-receiver-fixture', action='store_true',
+                        help='TEST IMAGE ONLY: prepare fixed receiver state at guest boot')
     parser.add_argument('--architecture', choices=['aarch64', 'x86_64'], default='aarch64')
     args = parser.parse_args()
     try:
@@ -96,6 +98,8 @@ def main():
                 'iso_sha256': iso_hash, 'input_sha256': {name: sha(path) for name, path in assets.items()},
                 'delivery_race_fixture': args.delivery_race_fixture,
                 'derivation_sha256': {name: hashlib.sha256(data).hexdigest() for name, data in derived.items()}}
+    if args.fixed_vm_receiver_fixture:
+        metadata['fixed_vm_receiver_fixture'] = True
     (output / 'packer/image.json').write_text(json.dumps(metadata, indent=2) + '\n')
     for name in ['provision.sh', 'dispatcher.py', 'quiesce.py']:
         (output / 'packer' / name).write_bytes(derived[name])

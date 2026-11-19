@@ -1,0 +1,29 @@
+{
+  "scope": "Internal unconnected dummy contract prototype only",
+  "files": {
+    "crates/tempest-linux-probe/src/lib.rs": "fa41be0d980eac53ba7327e30ec4d79fc7a61b8abf913ecbbfdf3f34098765e8",
+    "crates/tempest-linux-probe/src/route_contract.rs": "116fb6e92fb1fc34690f8127119bddaa46dd28fdae0d221e8dfff16c4c7479a2"
+  },
+  "validation": {
+    "serial_unit_tests_passed": 55,
+    "new_route_tests": 9,
+    "compile_fail_doctests_passed": 3,
+    "test_exit": 0,
+    "clippy_exit": 0,
+    "fmt_check_exit": 0,
+    "diff_check_exit": 0,
+    "parallel_test_attempt": {
+      "passed": 54,
+      "failed": 1,
+      "failure": "existing guard serialization lifetime test: Kernel(98)/EADDRINUSE",
+      "new_route_tests_passed": 9,
+      "cause_confirmed": false
+    }
+  },
+  "connection_gate": "always OsIsolationUnavailable",
+  "production_authorized": false,
+  "new_cli_added": false,
+  "vm_started": false,
+  "new_release_binary_built": false,
+  "login_or_live_api_called": false
+}

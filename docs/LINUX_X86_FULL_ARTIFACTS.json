@@ -1,0 +1,285 @@
+{
+  "status": "all four userspace release builds exited 0; guest runtime ABI unverified",
+  "compiler": "rustc 1.100.0 (0ef1bc386 2026-11-09)\nbinary: rustc\ncommit-hash: 0ef1bc386059596dada8fb65b50425aab2ea637a\ncommit-date: 2026-11-09\nhost: x86_64-unknown-linux-gnu\nrelease: 1.100.0\nLLVM version: 23.1.5\n",
+  "tempest_guest_source": {
+    "tempest_guest_source_tree_sha256": "680b42138d4a8d2b1ae2cd7db8f83721366d58ddc754ee590f3471ac0f4452c8",
+    "tempest_guest_source_dirty": false
+  },
+  "artifacts": {
+    "agent": {
+      "name": "agent",
+      "command": [
+        "/home/ubuntu/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+        "build",
+        "--manifest-path",
+        "/tmp/tempest-izanagi-upstream-review/izanagi-agent/Cargo.toml",
+        "--release",
+        "--locked",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--jobs",
+        "2",
+        "--target-dir",
+        "/tmp/tempest-x86-userspace-001/agent",
+        "--features",
+        "ebpf"
+      ],
+      "started": 1795002087.6797316,
+      "disk_before": {
+        "total": 82086711296,
+        "used": 18956472320,
+        "free": 63113461760
+      },
+      "lock_before": "9db17aed3c43477d9bc16dfe65b453b6dc0bb36d4f8e8fc8e7b9814edf200bc6",
+      "exit_code": 0,
+      "finished": 1795002163.6229904,
+      "lock_after": "9db17aed3c43477d9bc16dfe65b453b6dc0bb36d4f8e8fc8e7b9814edf200bc6",
+      "disk_after": {
+        "total": 82086711296,
+        "used": 19343646720,
+        "free": 62726287360
+      },
+      "path": "/tmp/tempest-x86-userspace-001/agent/x86_64-unknown-linux-gnu/release/izanagi-agent",
+      "sha256": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+      "bytes": 4125448,
+      "elf_machine": 62,
+      "needed": [
+        "libgcc_s.so.1",
+        "libm.so.6",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "interpreter": [
+        "/lib64/ld-linux-x86-64.so.2"
+      ],
+      "glibc_versions": [
+        "GLIBC_2.2.5",
+        "GLIBC_2.3",
+        "GLIBC_2.3.2",
+        "GLIBC_2.3.4",
+        "GLIBC_2.7",
+        "GLIBC_2.9",
+        "GLIBC_2.10",
+        "GLIBC_2.14",
+        "GLIBC_2.15",
+        "GLIBC_2.16",
+        "GLIBC_2.17",
+        "GLIBC_2.18",
+        "GLIBC_2.25",
+        "GLIBC_2.28",
+        "GLIBC_2.29",
+        "GLIBC_2.30",
+        "GLIBC_2.32",
+        "GLIBC_2.33",
+        "GLIBC_2.34",
+        "GLIBC_2.39"
+      ]
+    },
+    "http": {
+      "name": "http",
+      "command": [
+        "/home/ubuntu/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+        "build",
+        "--manifest-path",
+        "/tmp/tempest-izanagi-upstream-review/izanagi-http-capture/Cargo.toml",
+        "--release",
+        "--locked",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--jobs",
+        "2",
+        "--target-dir",
+        "/tmp/tempest-x86-userspace-001/http"
+      ],
+      "started": 1795002163.6234548,
+      "disk_before": {
+        "total": 82086711296,
+        "used": 19343650816,
+        "free": 62726283264
+      },
+      "lock_before": "c42a9181cf294d7e0ec287029a93027861a45abd485bafd7640a1023a6cd3296",
+      "exit_code": 0,
+      "finished": 1795002255.3036573,
+      "lock_after": "c42a9181cf294d7e0ec287029a93027861a45abd485bafd7640a1023a6cd3296",
+      "disk_after": {
+        "total": 82086711296,
+        "used": 19723595776,
+        "free": 62346338304
+      },
+      "path": "/tmp/tempest-x86-userspace-001/http/x86_64-unknown-linux-gnu/release/izanagi-http-capture",
+      "sha256": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+      "bytes": 7716640,
+      "elf_machine": 62,
+      "needed": [
+        "libgcc_s.so.1",
+        "libm.so.6",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "interpreter": [
+        "/lib64/ld-linux-x86-64.so.2"
+      ],
+      "glibc_versions": [
+        "GLIBC_2.2.5",
+        "GLIBC_2.3",
+        "GLIBC_2.3.2",
+        "GLIBC_2.3.4",
+        "GLIBC_2.4",
+        "GLIBC_2.7",
+        "GLIBC_2.9",
+        "GLIBC_2.10",
+        "GLIBC_2.14",
+        "GLIBC_2.16",
+        "GLIBC_2.17",
+        "GLIBC_2.18",
+        "GLIBC_2.25",
+        "GLIBC_2.28",
+        "GLIBC_2.29",
+        "GLIBC_2.30",
+        "GLIBC_2.32",
+        "GLIBC_2.33",
+        "GLIBC_2.34",
+        "GLIBC_2.38"
+      ]
+    },
+    "lws": {
+      "name": "lws",
+      "command": [
+        "/home/ubuntu/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+        "build",
+        "--manifest-path",
+        "/tmp/tempest-lws-upstream-review/Cargo.toml",
+        "--release",
+        "--locked",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--jobs",
+        "2",
+        "--target-dir",
+        "/tmp/tempest-x86-userspace-001/lws"
+      ],
+      "started": 1795002255.304588,
+      "disk_before": {
+        "total": 82086711296,
+        "used": 19723599872,
+        "free": 62346334208
+      },
+      "lock_before": "cf7d8286d8563d5805614ae7992d6ea7fe3d7ec94e4b050240b402e687f9cbae",
+      "exit_code": 0,
+      "finished": 1795002433.7301688,
+      "lock_after": "cf7d8286d8563d5805614ae7992d6ea7fe3d7ec94e4b050240b402e687f9cbae",
+      "disk_after": {
+        "total": 82086711296,
+        "used": 20249493504,
+        "free": 61820440576
+      },
+      "path": "/tmp/tempest-x86-userspace-001/lws/x86_64-unknown-linux-gnu/release/lws",
+      "sha256": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+      "bytes": 14774032,
+      "elf_machine": 62,
+      "needed": [
+        "libgcc_s.so.1",
+        "libm.so.6",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "interpreter": [
+        "/lib64/ld-linux-x86-64.so.2"
+      ],
+      "glibc_versions": [
+        "GLIBC_2.2.5",
+        "GLIBC_2.3",
+        "GLIBC_2.3.2",
+        "GLIBC_2.3.4",
+        "GLIBC_2.4",
+        "GLIBC_2.7",
+        "GLIBC_2.9",
+        "GLIBC_2.10",
+        "GLIBC_2.14",
+        "GLIBC_2.15",
+        "GLIBC_2.16",
+        "GLIBC_2.17",
+        "GLIBC_2.18",
+        "GLIBC_2.25",
+        "GLIBC_2.28",
+        "GLIBC_2.29",
+        "GLIBC_2.30",
+        "GLIBC_2.32",
+        "GLIBC_2.33",
+        "GLIBC_2.34",
+        "GLIBC_2.38"
+      ]
+    },
+    "guest": {
+      "name": "guest",
+      "command": [
+        "/home/ubuntu/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+        "build",
+        "--manifest-path",
+        "/home/ubuntu/izanagi-tempest/Cargo.toml",
+        "--release",
+        "--locked",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--jobs",
+        "2",
+        "--target-dir",
+        "/tmp/tempest-x86-userspace-001/guest",
+        "-p",
+        "tempest-guest"
+      ],
+      "started": 1795002433.7306058,
+      "disk_before": {
+        "total": 82086711296,
+        "used": 20249497600,
+        "free": 61820436480
+      },
+      "lock_before": "ca753c1880e2cc493369ea6143698bcf60c7456ecdc79767c15cc523776cae77",
+      "exit_code": 0,
+      "finished": 1795002469.2776015,
+      "lock_after": "ca753c1880e2cc493369ea6143698bcf60c7456ecdc79767c15cc523776cae77",
+      "disk_after": {
+        "total": 82086711296,
+        "used": 20453273600,
+        "free": 61616660480
+      },
+      "path": "/tmp/tempest-x86-userspace-001/guest/x86_64-unknown-linux-gnu/release/tempest-guest",
+      "sha256": "e551b35f3cc230ad1928d6d86c551ff4e4241e4714a4b1452578e63fcb36fd52",
+      "bytes": 4015080,
+      "elf_machine": 62,
+      "needed": [
+        "libgcc_s.so.1",
+        "libm.so.6",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "interpreter": [
+        "/lib64/ld-linux-x86-64.so.2"
+      ],
+      "glibc_versions": [
+        "GLIBC_2.2.5",
+        "GLIBC_2.3",
+        "GLIBC_2.3.2",
+        "GLIBC_2.3.4",
+        "GLIBC_2.5",
+        "GLIBC_2.7",
+        "GLIBC_2.9",
+        "GLIBC_2.10",
+        "GLIBC_2.14",
+        "GLIBC_2.15",
+        "GLIBC_2.16",
+        "GLIBC_2.17",
+        "GLIBC_2.18",
+        "GLIBC_2.25",
+        "GLIBC_2.27",
+        "GLIBC_2.28",
+        "GLIBC_2.29",
+        "GLIBC_2.30",
+        "GLIBC_2.32",
+        "GLIBC_2.33",
+        "GLIBC_2.34",
+        "GLIBC_2.39"
+      ]
+    }
+  }
+}

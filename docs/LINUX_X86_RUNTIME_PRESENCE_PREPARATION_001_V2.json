@@ -1,0 +1,16 @@
+{
+  "input_files_checked": 1316,
+  "input_rows_sha256": "f861927a9ceb4549a6c4d36e1c5e338e4f652b3fadb283013e066c3555b92671",
+  "versions": {
+    "prefix": "/var/lib/tempest-izanagi-runtime-presence-001/inputs/python",
+    "cryptography": "50.0.2",
+    "cffi": "2.1.1",
+    "pycparser": "3.12"
+  },
+  "all_inputs_readable_nonwritable": true,
+  "runtime_hashes_match": true,
+  "work_private": true,
+  "xattr_roundtrip": true,
+  "output_absent": true,
+  "vm_boot_executed": false
+}

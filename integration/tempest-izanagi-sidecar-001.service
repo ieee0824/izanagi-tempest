@@ -1,0 +1,19 @@
+[Unit]
+Description=Tempest fixed Linux sidecar001 (review only; not installed)
+
+[Service]
+Type=exec
+User=tempest-kvm
+Group=tempest-kvm
+SupplementaryGroups=kvm
+KillMode=control-group
+RuntimeMaxSec=1800s
+TimeoutStopSec=10s
+SendSIGKILL=yes
+Restart=no
+UMask=0077
+NoNewPrivileges=yes
+Delegate=no
+WorkingDirectory=/var/lib/tempest-izanagi-sidecar-001/work
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 HOME=/var/lib/tempest-izanagi-sidecar-001/work/home TMPDIR=/var/lib/tempest-izanagi-sidecar-001/work/tmp /var/lib/tempest-izanagi-sidecar-001/inputs/python/bin/python -I -B /var/lib/tempest-izanagi-sidecar-001/inputs/repo/integration/image_smoke.py --izanagi /var/lib/tempest-izanagi-sidecar-001/inputs/izanagi --image /var/lib/tempest-izanagi-sidecar-001/inputs/image.qcow2 --build-inputs /var/lib/tempest-izanagi-sidecar-001/inputs/build-inputs.json --offline-artifacts /var/lib/tempest-izanagi-sidecar-001/inputs/offline-artifacts.json --exec-evidence --sidecar-evidence --output /var/lib/tempest-izanagi-sidecar-001/work/output
+ExecStopPost=/usr/bin/python3 -I -B /var/lib/tempest-izanagi-sidecar-001/inputs/record_exit.py

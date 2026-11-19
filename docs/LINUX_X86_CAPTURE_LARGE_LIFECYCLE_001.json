@@ -1,0 +1,15 @@
+{
+  "caller_session": 40205,
+  "caller_exit": 0,
+  "observer_session": 43947,
+  "observer_exit": 1,
+  "observer_terminal": "unknown after unit GC",
+  "collector_session": 57760,
+  "collector_exit": 0,
+  "preflight_session": 29593,
+  "preflight_exit": 0,
+  "collector_source_sha256": "cdee2c0c384b504d8963eda7cc18f369f1b854fb8403a38214f89ff746757b9b",
+  "free_bytes_after_collection": 12672196608,
+  "run_retried": false,
+  "expectation_changed": false
+}

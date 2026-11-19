@@ -77,6 +77,202 @@ python3 tools/m0/probe-agent.py --agent claude --output /private/tmp/tempest-m0-
 VM の `--guest-probe`・`--guest-file`・`--agent-probe` と固定バイナリ指定 `--izanagi` の手順は
 [M0 収集ツール](tools/m0/README.md)を参照してください。
 
+## 開発: Linux direct 方式の隔離調査（Issue #36、WIP）
+
+dummy HOME・連続2 runのcheckpointは`71ab7a4`で実測済みです。両run各21checkがtrue、
+最終ROOT/RUNは不在、guardianは正常終了・reap済みでした。全体statusは`incomplete`です。
+実HOME・Claude設定探索・本番実行許可へは拡張しません。
+binary/監査JSON hash、検証範囲と残りの条件は[HOME・run state隔離gate](docs/LINUX_STATE_ISOLATION.md)を参照してください。
+
+`tempest-linux-probe` は Linux/x86_64 専用の固定 dummy probe です。
+既存の M1 シナリオ検証とは別の調査段階で、model adapter や LaunchPermit を提供しません。
+同じ `tempest` binary の固定 A/B/guard G だけを別 UID・mount/PID/net namespace へ起動し、
+root supervisor が cgroup・kernel identity・開始 barrier と回収を扱います。
+Claude、設定・認証情報、Izanagi/guest、外部 network、HTTP MCP は使いません。
+Issue全体の完了条件と未完gateは[Issue #36 gate台帳](docs/ISSUE-36-GATES.md)に固定します。
+
+```bash
+cargo build --workspace --locked
+cargo test --locked -p tempest-linux-probe
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+python3 integration/linux_existing_cgroup_smoke.py
+python3 integration/linux_supervisor_death_smoke.py
+python3 integration/linux_watchdog_startup_smoke.py
+python3 integration/linux_watchdog_created_smoke.py
+python3 integration/linux_isolation_smoke.py
+```
+
+最後の5コマンドは**専用の Ubuntu 24.04 x86_64 VM**で、非 root user から実行します。
+既存の `sudo -n`、`install`、`timeout` と、kernel の namespace・seccomp・cgroup v2
+（cpu/memory/pids controller、`cgroup.kill`）が必要です。通常の `cargo test` は root probe を起動しません。
+driver は固定の `target/debug/tempest` を root 所有・0700 の `/var/lib/tempest-probe-install-<ID>/`
+へ一時配置し、空の環境で起動して回収します。`/run` の noexec 等の既存 mount 設定は変更しません。
+sudoers/service/user/group/AppArmor/nft の永続設定も変更しません。
+
+HOME正対照の独立観測fixtureは、同じ専用VM上で次を実行します。
+
+```bash
+python3 -m unittest discover -s tests -p 'test_linux_state_*.py' -v
+python3 integration/linux_state_home_smoke.py
+```
+
+rootless unittestとroot fixtureは順番に実行します。fixtureは自所有supervisorだけをptraceし、
+両runの固定barrierで9分類ずつを保持dirfdから読み、各run21件のexact checkと回収を照合します。
+driverの`passed`は`dummy_independent_home_only`限定で、probe本体の`incomplete`を維持します。
+監査JSONはroot所有0600の一時fileへ保存し、公開結果にはbasenameだけを出します。
+root fixtureの実行中は同じ固定資源を使う別probeを並行実行しません。
+
+KVM最小検証器は独立crate `tempest-kvm-probe` で開発中です。native Linux/x86_64と
+C compiler・Linux UAPI headerが必要です。以下はdeviceを開かないビルド・unit検証です。
+
+```bash
+cargo build --locked -p tempest-kvm-probe
+cargo test --locked -p tempest-kvm-probe
+cargo clippy --locked -p tempest-kvm-probe --all-targets -- -D warnings
+```
+
+unitは固定IO→HLTのABI/境界とdummy childの期限・回収だけを検証し、KVM成立を証明しません。
+binaryのdevice実行と専用user作成はartifact監査後の管理者checkpointです。
+[管理者手順](docs/LINUX_KVM_ADMIN_GATE.md)と[固定検証器設計](docs/LINUX_KVM_MINIMAL_PROBE.md)を参照してください。
+
+固定Izanagiの最小boot harnessは独立workspaceで準備中です。
+[setup・build・test手順](integration/izanagi-bootstrap/README.md)と
+[起動前計画](docs/LINUX_IZANAGI_BOOT_PLAN.md)を参照してください。
+専用userのPackerによる[bootstrap image生成と回収](docs/LINUX_BOOTSTRAP_BUILD_003.md)は確認済みです。
+harnessの[boot002単発実測](docs/LINUX_IZANAGI_BOOT_002.md)で認証Ready・固定guest UID1000・downと独立回収を確認しました。
+終了属性の観測不足と別証拠による照合、外部通信拒否の実測や本番VM境界の未達は同報告で区別しています。
+Linux x86の[派生Debian full image build003](docs/LINUX_X86_FULL_BUILD_003.md)も成功し、無人導入・lock-down検査・独立回収を確認しました。
+新imageの実guest load/owner/firewall/doas/mailbox/外部通信拒否とcredential/live-callは未検証です。
+[初回image smokeの固定入力・単発計画](docs/LINUX_X86_IMAGE_SMOKE_001_PLAN.md)は準備済みで、実boot前のレビュー対象です。
+単一QEMU/restrict/snapshot/read-only share observerと、run固有PID/pathの実eBPF採取検査を含みます。
+追加helperの非VM検証は以下で実行できます。
+
+```sh
+python3 -m unittest discover -s tests -p test_trace_evidence.py -v
+python3 -m unittest discover -s tests -p test_image_smoke_observe.py -v
+systemd-analyze verify --man=no integration/tempest-izanagi-image-smoke-001.service
+```
+
+
+旧 WIP（0f5d190）では固定90秒 watchdog と増加した suite の衝突に整合する失敗を
+91,092 ms・`frame_oversize` Ready の child SIGKILL/watchdog exit1/RUN残留として再現しました。
+当時の ownership 遷移は未記録で、過去事象の実行時因果確定とは区別します。残留は root0700 で証拠保全済みです。
+
+現在は5秒 heartbeat lease を root thread の bounded wait/collector/hash巡回で更新します。
+watchdog側Groupは親所有中disarmし、lease失効ではowner pidfdへSIGKILL→死亡確認→単独recoverとします。
+owner自然死、lease失効、明示done/relinquish、recovery失敗は専用status pipeの固定enum/transition/flag/elapsedで区別します。
+control HUPがpidfd死亡より先に届く場合も、HUPだけで回収所有権を取得しません。
+明示handoffは親Group disarm/drop後の一方向command＋ackで行い、後続Group操作をForbiddenにします。
+固定abstract Unix STREAM socketをbindのみ（listen/send/recvなし）で親/watchdogが保持し、全世代を直列化します。
+workerにはFDを継承せず、最後のFD closeで解放されるためファイルやservice設定を残しません。
+通常完了では親がRUNを回収してからdone/ack/guardian waitを行い、最後にserialization guardを解放します。
+回収成功は固定statusのreleased/recoveredとguardian reap、自所有resource回収、guard解放前の不在確認で判定します。
+起動ACK失敗ではguardian pidfdへSIGKILLしてreapを確認し、確認不能なら回収成功にしません。
+作成済みcgroupの所有identityを受信できなければ採用せず、残留があれば回収失敗として保持します。
+startup fixtureは自分のdummy親子だけをptraceし、fork直後・cgroup作成前のguardian停止で
+ACK timeout後の死亡確認、空RUN回収、次世代起動を検証します。ptrace/sysctl設定は変更しません。
+created fixtureはmkdir成功直後と20 byte ACKのwrite syscall entryでguardianを停止します。
+後者は親のread端と同一FIFOのwrite先であることも照合します。ACK失敗後のpidfd死亡確認と
+固定watchdog_startup_failed/resources_removed=false、未証明groupの保持、次回起動の無変更拒否を検証します。
+fixtureだけが停止時にpinしたinodeと全group無人を確認して、自分のcgroupを明示回収します。
+同fixtureはACK write成功（20 byte）のsyscall exitでも停止し、親を再開する前にguardianを
+pidfdでSIGKILL・死亡確認してから、起動失敗・未確認ownership・残留保持と次回拒否を検証します。
+これはACK送信直後のguardian異常の部分試験です。通常実行中のguardian死亡回収は別の未完gateです。
+ACK timeout境界では親の実poll(5000 ms)が0を返したsyscall exitで停止し、その後でguardianの
+ACK write(20 byte)を成功させてから親を再開します。遅れたACKがpipeにあっても、guardianの
+pidfd停止・reap、resources_removed=false、残留保持・次回無変更拒否になることを検証します。
+ACKのwrite直後に親のtimeoutが先行する場合も、親がidentityを受信できなければ自動回収せず残留します。
+その場合は次回probeを拒否し、専用VM管理者が記録と所有identityを確認して回収する必要があります。
+
+通常suiteは旧90秒超のlease更新を固定回帰試験にするため、機能case終了後も主watchdog開始から95秒まで
+空cgroupのままheartbeatを継続します。payloadの30秒期限や外側driverの120秒timeoutは延長しません。
+lease境界・guardian自身の異常終了/fork前異常などの全故障時点は、別の未完gateです。
+通常実行中のguardian異常終了後の親単独回収は[専用設計](docs/LINUX_GUARDIAN_RECOVERY.md)に基づくWIPです。
+PIDFD死亡/reap確認と通常Group disarm後に専用RecoveryGroupだけで回収し、別parent_recovery_statusを出します。
+`python3 integration/linux_guardian_death_smoke.py` は専用VMで加入直後・孫実行中・collector待ちの
+guardian SIGKILL、保持PIDFD死亡、自所有回収、次世代起動を確認します。
+加入直後にguardianとdummy roleをSIGSTOPする負例では、guardian生存中に親が回収へ進まないことも確認します。
+監査は各遷移でregistry件数・direct/descendant・PIDFD死亡・reap済み/未確認件数・cgroup populatedと
+固定の未確認理由を保持し、元のfaultもfirst_faultに併記します。記録削除はPIDではなく独立通番RecordIdで行います。
+`python3 integration/linux_primary_fault_smoke.py` は固定dummyのcollector異常を確認した後、
+自分の親だけをptraceし、EOF後のguardian死亡と出力超過後のcleanup write EIOを分離して注入します。
+最終reasonとは別にfirst_faultがreport_eof/output_limitを保持すること、回収と次世代起動を検証します。
+`python3 integration/linux_snapshot_race_smoke.py` はsnapshot中の終了窓を固定する追加fixtureです。
+guardianの死亡後、親がrole一覧を読んだ後のPIDFD取得入口で対象だけを終了させ、
+証拠不足のFailedとprobe自身が資源を除去しないことを確認した後、同世代に限定したfixture cleanupと
+次世代加入を検証します。`37b1075`の専用Linux実測はdriver exit 0、28.96秒、stderr 0 byteで、
+poll/read/bind注入各1、`bind/exited_after_listing`、3 roleの死亡・reap、fixture cleanup、
+次世代guardian terminal、最終ROOT/RUN不在を確認しました。これは競合後にprobe自身が自動回復した証拠ではありません。
+R/Dの1 byte write未送信なら親所有を保持し、最大5秒のPIDFD死亡待ちとreap後に専用回収を再試行します。
+送信後terminal前のguardian死亡もreap確認後に専用の部分回収を行い、正常terminalがある場合は
+mutationせず最終不在/registryだけを確認します。正常terminalは送信済みR/Dとreason/trigger/transitionの対応、
+owner_dead=falseを検証します。全順序の実測、clone/attach境界、正常終端raceなどの全gateは未完です。
+正常terminalの重複や後続不正データはInvalidとして記録し、先着の正常終端を根拠に最終状態の検証だけを続けます。
+
+現 WIP は baseline が成功しても `status: "incomplete"`・終了コード 1 を返します。
+rootless unit・API compile-fail 試験と baseline の観測は、M1 全体の合格や本番隔離の証明には使いません。
+実行中 ancillary 10ケースと偽 ready nonce の拒否は root 統合で確認済みです。
+既存 cgroup に対する起動拒否では、既存プロセス・limits・構造を変更せず、
+自分の空 RUN だけを inode 照合して削除することを別 fixture で検証します。
+外部 cleanup なしに同じ binary を2回実行して、同じ拒否を再現します。
+同 fixture は supervisor の RUN directory FD を kernel から確認して一時停止し、
+RUN path 交換と unexpected entry を注入して保持を実測します。
+RUN が置換された場合や予期しない内容がある場合は削除せず、
+削除失敗も固定 `run_cleanup` failure と `resources_removed: false` にします。
+cgroup control の設定・readback・attach・kill・events と role directory の作成/削除は、
+保持した directory FD から openat/mkdirat/unlinkat で行い、control 操作で ROOT を再解決しません。
+FD/path 照合と最上位 ROOT/RUN の rmdir の間の同時 race・trusted cleanup 競合は別の未完 gate です。
+watchdog が cgroup を作成し、保持した directory fd の dev/inode を照合してから親へ所有権を通知します。
+通知前の親停止でも watchdog が自分の group だけを回収する設計です（停止タイミング別の故障注入は未完）。
+既存 group の作成拒否では回収権を取得しません。watchdog 自身が作成途中に停止して残留した場合も、次回は採用せず拒否します。
+supervisor SIGKILL fixture は、A の加入直後と、setsid/double-fork した孫の親・group・session を
+kernel から確認した後と、heartbeat停止（親SIGSTOP）の3ケースで、対象/guardianのpidfd死亡・run/cgroup回収を確認します。
+status pipeを同一FIFO inodeで検証して複製し、owner_deadとlease_expiredの理由と死亡前後のownership遷移を観測します。
+祖先の終了・group/session の離脱を実測し、単なる最初の fork を孫と取り違えない条件を要求します。
+ACK timeout境界の全順序・他のbootstrap時点の停止、Drop cleanup失敗の故障注入は未検証です。
+library は write fd を bind 前に close し、同 inode の read fd から配置します。
+bootstrap の bind 前後・全配置後と、supervisor の Ready 後・barrier 直前に
+dev/inode/uid/gid/mode/nlink/hash を確認し、bind 後は ro/nosuid/nodev と exec 可を照合します。
+worker は各 library の read 成功・write 拒否と bind の read-write remount 拒否を観測します。
+固定 A の実 bootstrap に、RO bind 後の writable alias からの改変、hardlink 追加、
+symlink 交換、同じ bytes の別 inode への交換を注入する4ケースも実行します。
+各注入は正常配置の確認後に行い、期待した型の拒否と Go 前の出力0・全 role 回収を要求します。
+これは実 worker への write fd 継承や元 view の露出など他の故障注入を代替しません。
+固定 resource ケースでは A の fork を最大16回、tmpfs 書き込みを最大16 MiBへ制限します。
+pids は cgroup の current=12・max=12・events増加と11子の pidfd、
+tmpfs は ENOSPC と kernel の空きblock=0・容量上限16 MiBを照合します。
+B/G の正対照は A の上限到達後に実行し、終了後は子の pidfd 死亡・cgroup 空・資源回収を確認します。
+別の固定ケースでは、A が fork→setsid→fork し、中間の子だけを終了させます。
+残った孫の親が A、group=session が A と異なり孫自身の PID とも異なることを照合し、
+uid/cap/NNP/seccomp/namespace/code/FD/cgroup が A の隔離状態を継承することを実測します。
+通常 cleanup 後も孫の pidfd 死亡を確認します。
+pids/孫ケースでは全対象の生存確認→cgroup.kill→pidfd 死亡観測を行い、
+個別 leader kill や reap より前に停止を確認します。その後に reap/cgroup 空/全体回収を別に確認します。
+固定負例では cgroup.kill の write を省き、3秒以内に停止しないことを検出してから
+個別 kill で回収します。fallback が成功しても cgroup.kill 成功には読み替えません。
+report EOF の固定ケースでは、生存中の A が FD5 だけを閉じ、監督が実際の pipe EOF を検出します。
+report timeout の固定ケースでは、全 role が生存・隔離されたまま、通常の30秒 overall deadline まで応答を止めます。
+両ケースで故障時の kernel identity（EOF は FD5 のみ除外）、出力0、全3 role の reap と cgroup 空を照合します。
+監督は report/stdout/stderr の read end だけを保持し、不要な write end で EOF を隠しません。
+memory ケースでは A の上限128 MiB・swap0を照合後、固定160 MiB mmap の各pageに触れます。
+A の SIGKILL 終了と local max/oom/oom_kill 増加を照合し、親・B/G の local counter 不変と
+A 終了後の B/G 正対照、全3 role の reap/cgroup空を確認します。
+local counter の意味は [kernel の cgroup v2 仕様](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files) を参照。
+通常 exit code と signal/core flag は区別し、exit9 と SIGKILL の取り違えを実 child で試験します。
+report 待機中は全 role の stdout/stderr を同時 poll し、4 KiB buffer で読み捨てます。
+role ごとの stdout+stderr 合計閾値は64 KiBです。超過検出時は最大1 chunk の観測超過を許容し、
+raw bytes を audit/file に保存せず、その role と stream の固定識別子だけを診断します。
+固定 flood は stdout/stderr 各256 KiBまでとし、全 role Entered後の合図から開始します。
+所定collectorで超過counterとkernel stateを照合→停止/reap/cgroup空を確認し、別段階の単なる失敗を成功にしません。
+EOF済streamはpoll対象から外し、既存の出力0負例は読み捨て済counterも0であることを要求します。
+これらは CPU/audit の枯渇や、他の停止時点の回収を代替しません。
+library 配置と write fd の追加負例、PID/UID/run 混入、
+資源枯渇・監査容量不足・bootstrap/control の EOF・cancel・他の timeout/監督異常時点と孫 process の回収等が残っています。
+失敗の診断は固定 stage/reason・数値 errno・child exit/signal/core flag・固定 output role/stream に限り、raw argv/env/stderr/任意 path や credential を出しません。
+`/run/tempest-linux-isolation-probe` または `/sys/fs/cgroup/tempest-linux-isolation-probe` が残った場合は、
+成功にせず新規 probe を拒否します。driver は未知の残留資源を削除しません。
+
 ## 開発: M1 のシナリオ静的検証
 
 Rust edition 2024 の toolchain と Cargo が必要です（Rust 1.99.0 / macOS arm64 で検証）。
@@ -161,7 +357,8 @@ packer build -var-file=tempest.pkrvars.json debian.pkr.hcl
 実VMでの確認範囲、digest、既知の限界は [M3 検証記録](docs/M3-IMAGE.md) を参照してください。
 
 Linux x86_64/KVM向けには`image/prepare.py --architecture x86_64`で固定Debian定義を導出できます。
-固定入力からの無人image生成とlock-downは確認済みですが、x86 guestの採取・権限・通信境界は未検証です。
+固定入力からの無人image生成とlock-downに加え、[通常M3の採取・権限境界](docs/LINUX_X86_IMAGE_SMOKE_002.md)と[専用fixtureの配送競合・回復](docs/LINUX_X86_DELIVERY_RACE_SMOKE_001.md)を固定Linux上で確認しました。各記録の限定範囲と監視終端欠測を保持し、Internet全般や本番MCPの検証へは一般化しません。
+[固定host CLIとmockのcompleted回復・fresh retest](docs/LINUX_X86_DELIVERY_RACE_COMPLETED_001.md)も確認しました。空のmock操作による配送試験であり、正式なモデル比較には含めません。
 固定ISO/ELF検査、loopback接続、serial診断と具体コマンドは[image/README.md](image/README.md)を参照してください。
 `restrict_network=true` のまま、M2操作、owner/doas分離、私有入力・応答、短時間PCAPを検証しています。
 一般のエージェント終了・回収フローは未実装です。

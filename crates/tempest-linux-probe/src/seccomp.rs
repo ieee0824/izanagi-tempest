@@ -23,6 +23,14 @@ fn jump(value: u32, yes: u8, no: u8) -> libc::sock_filter {
 }
 
 pub(super) fn install(role: Role, bootstrap_exec: bool) -> Result<(), Fault> {
+    install_filter(Some(role), bootstrap_exec)
+}
+
+pub(super) fn install_mcp_stdio() -> Result<(), Fault> {
+    install_filter(None, true)
+}
+
+fn install_filter(role: Option<Role>, bootstrap_exec: bool) -> Result<(), Fault> {
     if !cfg!(target_arch = "x86_64") {
         return Err(Fault::Kernel(libc::ENOTSUP));
     }
@@ -84,8 +92,6 @@ pub(super) fn install(role: Role, bootstrap_exec: bool) -> Result<(), Fault> {
         libc::SYS_ppoll,
         libc::SYS_wait4,
         libc::SYS_waitid,
-        libc::SYS_fork,
-        libc::SYS_vfork,
         libc::SYS_setsid,
         libc::SYS_uname,
         libc::SYS_prlimit64,
@@ -98,7 +104,58 @@ pub(super) fn install(role: Role, bootstrap_exec: bool) -> Result<(), Fault> {
     }
     // Only the guard receives ancillary data. A/B cannot receive a late fd
     // behind its back. No role may create a new socket, connect, mount or trace.
-    if role == Role::Guard {
+    if role.is_some() {
+        for number in [libc::SYS_fork, libc::SYS_vfork] {
+            program.push(jump(number as u32, 0, 1));
+            program.push(statement(ret, libc::SECCOMP_RET_ALLOW));
+        }
+    } else {
+        for number in [
+            libc::SYS_epoll_create1,
+            libc::SYS_epoll_ctl,
+            libc::SYS_epoll_wait,
+            libc::SYS_epoll_pwait,
+            libc::SYS_eventfd2,
+            libc::SYS_sched_getaffinity,
+            libc::SYS_sched_yield,
+            libc::SYS_getcpu,
+            libc::SYS_pipe2,
+        ] {
+            program.push(jump(number as u32, 0, 1));
+            program.push(statement(ret, libc::SECCOMP_RET_ALLOW));
+        }
+        // Mio's signal wakeup pair is private to this process. Match all
+        // three scalar arguments, including their high words.
+        program.push(jump(libc::SYS_socketpair as u32, 0, 14));
+        for (index, expected) in [
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let offset = 16 + index as u32 * 8;
+            let remaining = 4 * (2 - index as u8);
+            program.extend([
+                statement(load, offset + 4),
+                jump(0, 0, remaining + 3),
+                statement(load, offset),
+                jump(expected as u32, 0, remaining + 1),
+            ]);
+        }
+        program.extend([
+            statement(ret, libc::SECCOMP_RET_ALLOW),
+            statement(ret, deny),
+            statement(load, 0),
+        ]);
+        // Let glibc fall back to the inspectable clone flags.
+        program.extend([
+            jump(libc::SYS_clone3 as u32, 0, 1),
+            statement(ret, libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32),
+        ]);
+    }
+    if role == Some(Role::Guard) {
         program.push(jump(libc::SYS_recvmsg as u32, 0, 1));
         program.push(statement(ret, libc::SECCOMP_RET_ALLOW));
     }
@@ -114,6 +171,26 @@ pub(super) fn install(role: Role, bootstrap_exec: bool) -> Result<(), Fault> {
         statement(ret, deny),
         statement(load, 0),
     ]);
+    if role.is_none() {
+        const THREAD_FLAGS: u32 = (libc::CLONE_VM
+            | libc::CLONE_FS
+            | libc::CLONE_FILES
+            | libc::CLONE_SIGHAND
+            | libc::CLONE_THREAD
+            | libc::CLONE_SYSVSEM
+            | libc::CLONE_SETTLS
+            | libc::CLONE_PARENT_SETTID
+            | libc::CLONE_CHILD_CLEARTID) as u32;
+        program.extend([
+            jump(libc::SYS_clone as u32, 0, 6),
+            statement(load, 20),
+            jump(0, 0, 3),
+            statement(load, 16),
+            jump(THREAD_FLAGS, 0, 1),
+            statement(ret, libc::SECCOMP_RET_ALLOW),
+            statement(ret, deny),
+        ]);
+    }
     program.extend([
         jump(libc::SYS_clone as u32, 0, 4),
         statement(load, 16), // args[0]: clone flags
@@ -170,4 +247,58 @@ pub(super) fn install(role: Role, bootstrap_exec: bool) -> Result<(), Fault> {
     // SAFETY: filter storage is live, immutable to the kernel during the call,
     // and copied by the kernel before this function returns.
     syscall(unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &descriptor) })
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_stdio_allows_runtime_threads_and_denies_network() {
+        const CHILD: &str = "TEMPEST_MCP_SECCOMP_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "seccomp::tests::mcp_stdio_allows_runtime_threads_and_denies_network",
+                    "--test-threads=1",
+                ])
+                .env_clear()
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "{status}");
+            return;
+        }
+        install_mcp_stdio().unwrap();
+        let denied = |result| {
+            assert_eq!(result, -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EPERM)
+            );
+        };
+        let thread = std::thread::spawn(move || {
+            denied(unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) });
+            denied(unsafe { libc::connect(-1, std::ptr::null(), 0) });
+        });
+        thread.join().unwrap();
+        denied(unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) });
+        let mut pair = [-1; 2];
+        let flags = libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC;
+        assert_eq!(
+            unsafe { libc::socketpair(libc::AF_UNIX, flags, 0, pair.as_mut_ptr()) },
+            0
+        );
+        for fd in pair {
+            assert_eq!(unsafe { libc::close(fd) }, 0);
+        }
+        for (family, kind, protocol) in [
+            (libc::AF_INET, flags, 0),
+            (libc::AF_UNIX, libc::SOCK_STREAM, 0),
+            (libc::AF_UNIX, flags, 1),
+        ] {
+            denied(unsafe { libc::socketpair(family, kind, protocol, pair.as_mut_ptr()) });
+        }
+    }
 }

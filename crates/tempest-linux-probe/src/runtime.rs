@@ -90,11 +90,6 @@ struct SpawnSpec<'a> {
     ipc: &'a [(RawFd, RawFd)],
 }
 
-fn code_identity(code: &Snapshot) -> Result<(u64, u64), Fault> {
-    let metadata = fs::metadata(format!("/proc/self/fd/{}", code.fd()))?;
-    Ok((metadata.dev(), metadata.ino()))
-}
-
 fn write_event(channel: &Channel, manifest: &Manifest) -> Result<(), Fault> {
     let bytes = serde_json::to_vec(manifest).map_err(|_| Fault::Identity)?;
     channel.send(&bytes)
@@ -310,7 +305,7 @@ fn spawn(
         group.attach(role, process.pid)?;
         registry.attached(id)?;
         let mut expected = process.identity()?;
-        expected.code = code_identity(code)?;
+        expected.code = code.identity()?;
         Ok((process, expected, id))
     })();
     let (process, expected, record) = match bound {
@@ -364,7 +359,21 @@ fn reap(
     record: super::registry::RecordId,
     registry: &mut super::registry::Registry,
 ) -> Result<(), Fault> {
-    let until = Instant::now() + Duration::from_secs(3);
+    reap_status(
+        process,
+        record,
+        registry,
+        Instant::now() + Duration::from_secs(3),
+    )
+    .map(|_| ())
+}
+
+pub(super) fn reap_status(
+    process: &Process,
+    record: super::registry::RecordId,
+    registry: &mut super::registry::Registry,
+    until: Instant,
+) -> Result<i32, Fault> {
     loop {
         super::lease::pulse()?;
         let mut status = 0;
@@ -374,7 +383,7 @@ fn reap(
                 return Err(Fault::Identity);
             }
             registry.reaped(record)?;
-            return Ok(());
+            return Ok(status);
         }
         if value < 0 {
             return Err(io::Error::last_os_error().into());
@@ -386,9 +395,9 @@ fn reap(
     }
 }
 
-fn initial_uid_available(role: Role) -> Result<bool, Fault> {
+pub(super) fn initial_uid_available(uid: u32) -> Result<bool, Fault> {
     // No account creation and no reuse of an existing account or live UID.
-    if !unsafe { libc::getpwuid(role.uid()) }.is_null() {
+    if !unsafe { libc::getpwuid(uid) }.is_null() {
         return Ok(false);
     }
     for entry in fs::read_dir("/proc")? {
@@ -402,7 +411,7 @@ fn initial_uid_available(role: Role) -> Result<bool, Fault> {
                 .find_map(|line| line.strip_prefix("Uid:"))
                 .is_some_and(|row| {
                     row.split_whitespace()
-                        .any(|id| id.parse::<u32>() == Ok(role.uid()))
+                        .any(|id| id.parse::<u32>() == Ok(uid))
                 })
             {
                 return Ok(false);
@@ -1397,8 +1406,21 @@ fn handoff_selftest(guard: &super::guard::Guard) -> Result<super::watchdog::Stat
 }
 
 pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
+    use super::route_contract::{StdioTrial, fixed_stdio_trial};
+
+    if args.len() == 1 && args[0] == "--fixed-mcp-stdio-fixture" {
+        return fixed_stdio_trial(StdioTrial::Exchange);
+    }
+    if args.len() == 1 && args[0] == "--fixed-mcp-stdio-reject-pipe-fixture" {
+        return fixed_stdio_trial(StdioTrial::CloseGate);
+    }
+    if args.len() == 1 && args[0] == "--fixed-mcp-stdio-kill-on-mismatch-fixture" {
+        return fixed_stdio_trial(StdioTrial::KillOnMismatch);
+    }
     if args == [std::ffi::OsString::from("--help")] {
-        println!("Usage: tempest linux-isolation-probe (fixed dummy-only root probe; no options)");
+        println!(
+            "Usage: tempest linux-isolation-probe [--fixed-mcp-stdio-fixture | --fixed-mcp-stdio-reject-pipe-fixture | --fixed-mcp-stdio-kill-on-mismatch-fixture] (fixed dummy-only root probes)"
+        );
         return std::process::ExitCode::SUCCESS;
     }
     if !args.is_empty() || unsafe { libc::geteuid() } != 0 {
@@ -1422,7 +1444,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         capability_contract(&fs::read_to_string("/proc/sys/kernel/cap_last_cap")?)?;
         phase = "uid_reservation";
         for role in Role::ALL {
-            if !initial_uid_available(role)? {
+            if !initial_uid_available(role.uid())? {
                 return Err(Fault::Identity);
             }
         }

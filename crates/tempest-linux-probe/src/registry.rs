@@ -294,7 +294,17 @@ impl Registry {
         self.stop_and_reap_verified(counts)
     }
 
-    // The only production entry is the proof-taking wrapper above. Keeping
+    /// The stdio fixture owns its direct children without delegating to
+    /// a guardian. Its cgroup must already have received the stop request.
+    #[allow(dead_code)]
+    pub(super) fn stop_stdio_fixture_children(&mut self, counts: &mut Counts) -> Result<(), Fault> {
+        if self.entries.iter().any(|entry| !entry.direct) {
+            return Err(Fault::Identity);
+        }
+        self.stop_and_reap_verified(counts)
+    }
+
+    // Production recovery uses the proof-taking wrapper above. Keeping
     // the operation private also lets tests exercise real owned child waits
     // without manufacturing the guardian ownership proof.
     fn stop_and_reap_verified(&mut self, counts: &mut Counts) -> Result<(), Fault> {

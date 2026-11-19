@@ -1,0 +1,29 @@
+{
+  "scope": "Read-only source baseline for proposed Linux B route; no new route binary or runtime acceptance",
+  "repository_revision": "c95e0ccd8dc75f6d3e52921a8095980143125cf2",
+  "files": {
+    "crates/tempest-linux-probe/src/lib.rs": "b81c221cf13a2f51d1aaaa5d0036a3a1143c99cb086118b038d1739c7c8e622c",
+    "crates/tempest-linux-probe/src/capsule.rs": "9e5b36a0284cbcd0363a5d0fa9c7f41b974c6a21f34187bbe2db72770a7cd0d4",
+    "crates/tempest-linux-probe/src/contract.rs": "d8b4bb7fe34a30ec458b903e838dffb6ff60182f43cedfc15300ef083c0335e9",
+    "crates/tempest-linux-probe/src/runtime.rs": "afb9f544f928b46b11b7881f906cafe1bb28067ed5feaadc30238e5c43df4817",
+    "crates/tempest-linux-probe/src/seccomp.rs": "4c888a69e7d8a9c18bc2c159b567641f6a1b320b7ec936f12db106487e4772f6",
+    "crates/tempest-linux-probe/src/worker.rs": "062192029834002400d17228d037e89708f871dea6b351eea07d8b321c93ccb8",
+    "crates/tempest-linux-probe/src/registry.rs": "5b2b56b8dec34b336b8360bcd32c752d3721e18df1ca034316839d55e61c2831",
+    "crates/tempest/src/vm.rs": "abd76aa1eebed5b3a0dd6003055a10e5b3c29c16a19d00038ad12c8bb925d6a2",
+    "crates/tempest/src/guest_transport.rs": "cdca97eac62e8ebc9b99520fda96de0f8fe1f6e81b2e728782bb6ed8e8b9d5ed",
+    "crates/tempest/src/proxy_cli.rs": "f560fa1e2c0725d678cebc9a143a6041c40506ca60af5fa0a4245003f2dffae9",
+    "crates/tempest/src/relay.rs": "a1c68c5b4d4877a829ff1d7779be0cc5548dc9be0275deda2df59b4948590bfb",
+    "crates/tempest/src/run_cli.rs": "09a67b882c327d23093a5bfadac2f29ba8799db8ce4781a3ec46493b102778ac",
+    "crates/tempest/src/capability_proof.rs": "9c171612efb88a07b18a42bba4caab6caa42040e1c02865bfb013fffec25f66c",
+    "crates/tempest/src/direct_evidence.rs": "ad8199e82466a2dcc2dfbe733d8e3e7f46a5c99fbedc62bf364227965cc15c16",
+    "crates/tempest/src/adapter.rs": "a32b09a3a73a1b8beaaf202b1960e5cd12bae8aa58a9da564a08d3d7ccc27a57"
+  },
+  "baseline_artifacts": {
+    "host_tempest": "4f66f0bd2fca5e98490440c9069da26630c331d9dd56a26dd808c24f1603549d",
+    "izanagi": "088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8",
+    "image": "b46a44433488b067db24940e4a7231604628f35403517856a3c84f01939c65df",
+    "guest": "3bc9fd0a15aa2f1e0e14f8a33731d0051242ae48ca991e937ad8506ae30d4284"
+  },
+  "new_route_binary": null,
+  "production_catalog_measured_for_new_route": false
+}

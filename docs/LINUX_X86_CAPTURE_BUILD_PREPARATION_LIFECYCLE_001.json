@@ -1,0 +1,14 @@
+{
+  "session": 92623,
+  "observation": "during pre-copy preflight",
+  "root_absent": true,
+  "free_bytes": 23864639488,
+  "prepare_script_sha256": "f16748085fac04a7f9a807f2b7ade4f7502acfc0d303b694e9e749b8a0fc1ac3",
+  "prepare_exit": 0,
+  "prepare_session": 92623,
+  "uid_check_session": 72174,
+  "uid_check_exit": 0,
+  "free_after": 22948745216,
+  "build_executed": false,
+  "vm_executed": false
+}

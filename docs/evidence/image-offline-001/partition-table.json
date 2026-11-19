@@ -1,0 +1,28 @@
+{
+   "partitiontable": {
+      "label": "dos",
+      "id": "0x284dbf0b",
+      "device": "/var/lib/tempest-izanagi-image-offline-001/work/disk.raw",
+      "unit": "sectors",
+      "sectorsize": 512,
+      "partitions": [
+         {
+            "node": "/var/lib/tempest-izanagi-image-offline-001/work/disk.raw1",
+            "start": 2048,
+            "size": 7194624,
+            "type": "83",
+            "bootable": true
+         },{
+            "node": "/var/lib/tempest-izanagi-image-offline-001/work/disk.raw2",
+            "start": 7198718,
+            "size": 1187842,
+            "type": "f"
+         },{
+            "node": "/var/lib/tempest-izanagi-image-offline-001/work/disk.raw5",
+            "start": 7198720,
+            "size": 1187840,
+            "type": "82"
+         }
+      ]
+   }
+}

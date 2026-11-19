@@ -214,6 +214,10 @@ boot nonce・session fingerprint・daemon InvocationIDへ結び、seed応答喪�
 fresh retest transportを実VMで検査する。run終了時は成果物allowlistを照合し、HMAC、private inbox、
 `__pycache__`、未完了partialなどのtransientが残れば完了にしない。
 
+現在の実VM証拠の再検証範囲と旧fault scriptの検査不備は
+[M5検証状況](M5-VALIDATION.md#現在の再検証との区別)に記録する。
+seed-loss001の廃棄証拠と同ID予約拒否の追加検査を混同せず、#15の完了前に両方を照合する。
+
 controllerのSIGKILL後は自動resumeしない。`tempest recover RUN_DIRECTORY`がcontroller PIDの停止と
 primary/retest各VMのsession fingerprintを照合してIzanagi downとVM PID消滅を確認する。
 各VMは`up`のspawn前にdurable launch intentを置き、spawn後のPID記録とsession確定を段階更新する。

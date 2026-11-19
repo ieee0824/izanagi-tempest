@@ -1,0 +1,39 @@
+name: Izanagi bootstrap unit checks
+
+on:
+  push:
+    branches:
+      - 'pronnia/linux-direct-stage'
+    paths:
+      - '.github/workflows/izanagi-bootstrap-unit.yml'
+      - 'integration/izanagi-bootstrap/**'
+  pull_request:
+    paths:
+      - '.github/workflows/izanagi-bootstrap-unit.yml'
+      - 'integration/izanagi-bootstrap/**'
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap-unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust tools
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: cargo +stable fmt --manifest-path integration/izanagi-bootstrap/Cargo.toml -- --check
+      - name: Test mock bootstrap without starting a VM
+        run: cargo +stable test --manifest-path integration/izanagi-bootstrap/Cargo.toml --locked -- --test-threads=1
+      - name: Test listener boundary classification
+        run: python3 -m unittest discover -s integration/izanagi-bootstrap -p 'test_*.py' -v
+      - name: Check preparation scripts without executing them
+        run: |
+          python3 -m py_compile integration/izanagi-bootstrap/prepare.py integration/izanagi-bootstrap/observe.py
+          sh -n integration/izanagi-bootstrap/guest-bootstrap.sh
+      - name: Lint bootstrap harness
+        run: cargo +stable clippy --manifest-path integration/izanagi-bootstrap/Cargo.toml --all-targets --locked -- -D warnings

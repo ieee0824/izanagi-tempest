@@ -2,7 +2,7 @@
 
 ## 保存証拠から確認できること
 
-[large001結果](https://github.com/ieee0824/izanagi-tempest/blob/f0f40cf/docs/LINUX_X86_DELIVERY_RACE_LARGE_001_RESULT.json)では、capture期間は1.102961秒、indexed PCAPは59299901 B、captured1930/drop155、HTTP recorderは29接続・parse/task/connection/admission error各0。PCAP全体は未取得のためパケット単位の欠落位置やburst分布は不明である。PCAPサイズ/記録期間の比は約51.27 MiB/sだが、これは受信時刻分布やディスク速度の実測ではない。
+[large001結果](LINUX_X86_DELIVERY_RACE_LARGE_001_RESULT.json)では、capture期間は1.102961秒、indexed PCAPは59299901 B、captured1930/drop155、HTTP recorderは29接続・parse/task/connection/admission error各0。PCAP全体は未取得のためパケット単位の欠落位置やburst分布は不明である。PCAPサイズ/記録期間の比は約51.27 MiB/sだが、これは受信時刻分布やディスク速度の実測ではない。
 
 元runの `izanagi.toml` は2 CPU/4G。guest `control.rs::seal` は `tcpdump -n -U --immediate-mode -B 4096`、全loopback、filterなし。stderrはreadiness後も別taskでdrainしている。`finalize` はrecorderを停止・drain後にtcpdumpへSIGINTを送り、drop>0をincompleteにする。保存manifestにshutdown失敗はなく、これだけではCPU競合、ring不足、書込速度のいずれかに原因を断定できない。
 

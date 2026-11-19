@@ -34,6 +34,19 @@ Issue #6 / PR #31。以下は現行実装と確認済み証拠の対応である
 私有run directoryにはcredential claimを含む証跡があり、リポジトリへ複製しない。
 上記パスはこの検証環境の所在であり、他環境で存在するとは限らない。
 
+## 現在の再検証との区別
+
+上記は当時の検証報告であり、私有パスの存在やhashを現在再測定できたという意味ではない。
+新しい固定x86 imageでは[正常2回/reset](LINUX_X86_RUNTIME_NORMAL_001.md)を保存証拠付きで確認した。
+finding/retestの4presenceも新imageで実施済みであり、下記に保存証拠と限界を示す。
+
+[seed-loss001](LINUX_X86_RUNTIME_SEED_LOSS_001.md)は成功seed返信の喪失、agent未開始、VM廃棄を確認したが、
+同run ID拒否の検査がCLIのstdout/stderr契約と不一致でtrial全体は失敗した。
+旧scriptには削除済みbridgeによるENOENTを拒否成功と誤認し得る問題と、失敗seed返信でも注入する問題もあった。
+PR #47/#48で修正したが、旧報告の同ID拒否や適用成功をその修正だけで遡及認定しない。
+#15は既存runへの[VMなし予約拒否追加証拠](LINUX_X86_RUNTIME_RESERVATION_001.md)と正常2回・主体/競合検証を合わせて完了条件を満たし、close済み。旧seed-loss trial自体の失敗と旧retry出力欠測は保持する。
+mockの部分評価成功と正式モデル比較の適格性は引き続き区別する。
+
 ## 固定Linux x86での4presence再検証
 
 #14はPR #39でDESIGN/IMPLEMENTATIONの4presence・未実施理由・別分母を接続し、

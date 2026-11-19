@@ -1,0 +1,23 @@
+{
+  "input_files_checked": 1314,
+  "input_rows_sha256": "e8ca4e0177cdd1f2d5cb8eec3293e68a3f78a7f740e18b0c1a67c666e06e5195",
+  "versions": {
+    "prefix": "/var/lib/tempest-izanagi-host-endpoint-001/inputs/python",
+    "cryptography": "50.0.2",
+    "cffi": "2.1.1",
+    "pycparser": "3.12"
+  },
+  "all_inputs_readable_nonwritable": true,
+  "runtime_hashes_match": true,
+  "work_private": true,
+  "xattr_roundtrip": true,
+  "output_absent": true,
+  "vm_boot_executed": false,
+  "provenance": {
+    "prepare_session": 24072,
+    "prepare_exit": 0,
+    "uid_session": 85966,
+    "uid_exit": 0,
+    "uid_source_delivery": "stdin; repository permissions unchanged"
+  }
+}

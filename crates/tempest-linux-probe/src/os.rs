@@ -31,6 +31,7 @@ pub(super) enum Fault {
     Bootstrap(u8, i32),
     ForeignReady,
     RunCleanup,
+    UntrackedChildCleanup(i32),
     ReportTimeout,
     ReportEof,
     CgroupKillFailureRecovered,
@@ -58,6 +59,7 @@ impl Fault {
             Self::Bootstrap(_, _) => "bootstrap",
             Self::ForeignReady => "foreign_ready",
             Self::RunCleanup => "run_cleanup",
+            Self::UntrackedChildCleanup(_) => "untracked_child_cleanup",
             Self::ReportTimeout => "report_timeout",
             Self::ReportEof => "report_eof",
             Self::CgroupKillFailureRecovered => "cgroup_kill_failure_recovered",
@@ -170,6 +172,11 @@ impl Snapshot {
         self.fd.as_raw_fd()
     }
 
+    pub(super) fn identity(&self) -> Result<(u64, u64), Fault> {
+        let metadata = fs::metadata(format!("/proc/self/fd/{}", self.fd()))?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+
     pub(super) fn materialize(&self, target: &mut File) -> Result<(), Fault> {
         let mut offset = 0;
         let mut buffer = [0_u8; 65536];
@@ -218,6 +225,27 @@ impl Snapshot {
         }
         Ok(())
     }
+}
+
+/// Fork-style clone with independent mount, PID and network namespaces.
+pub(super) fn clone_isolated() -> Result<libc::pid_t, Fault> {
+    if !cfg!(target_arch = "x86_64") || fs::read_dir("/proc/self/task")?.count() != 1 {
+        return Err(Fault::Identity);
+    }
+    let pid = unsafe {
+        libc::syscall(
+            libc::SYS_clone,
+            libc::CLONE_NEWNS | libc::CLONE_NEWPID | libc::CLONE_NEWNET | libc::SIGCHLD,
+            0,
+            0,
+            0,
+            0,
+        )
+    };
+    if pid < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(pid as libc::pid_t)
 }
 
 pub(super) fn pipe() -> Result<(OwnedFd, OwnedFd), Fault> {

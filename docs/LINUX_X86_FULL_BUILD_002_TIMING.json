@@ -1,0 +1,29 @@
+{
+  "debug_selected_events": [
+    {
+      "event": "qemu_start",
+      "timestamp": "2026/11/18 12:09:29"
+    },
+    {
+      "event": "qemu_exec",
+      "timestamp": "2026/11/18 12:09:29"
+    },
+    {
+      "event": "boot_wait",
+      "timestamp": "2026/11/18 12:09:31"
+    },
+    {
+      "event": "typing_boot_commands",
+      "timestamp": "2026/11/18 12:10:31"
+    }
+  ],
+  "first_qemu_observed": "2026-11-18T12:09:30.158479+00:00",
+  "screens": {
+    "pre": {
+      "saved_mtime_utc": "2026-11-18T12:09:54.576453+00:00"
+    },
+    "post": {
+      "saved_mtime_utc": "2026-11-18T12:10:48.579309+00:00"
+    }
+  }
+}

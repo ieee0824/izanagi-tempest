@@ -597,10 +597,10 @@ done:
     return 0;
 }
 
-static int worker_gate_is_read_end(pid_t child)
+static int check_worker_pipe_direction(pid_t child, int fd, int direction)
 {
     char path[64], line[128];
-    snprintf(path, sizeof(path), "/proc/%ld/fdinfo/3", (long)child);
+    snprintf(path, sizeof(path), "/proc/%ld/fdinfo/%d", (long)child, fd);
     FILE *info = fopen(path, "re");
     if (!info)
         return -1;
@@ -618,7 +618,7 @@ static int worker_gate_is_read_end(pid_t child)
             int consumed;
             if (found || sscanf(line + 6, "%o%n", &flags, &consumed) != 1 ||
                 strcmp(line + 6 + consumed, "\n") != 0 ||
-                (flags & (O_PATH | O_ACCMODE)) != O_RDONLY)
+                (flags & (O_PATH | O_ACCMODE)) != (unsigned)direction)
                 break;
             found = 1;
         }
@@ -631,52 +631,194 @@ static int worker_gate_is_read_end(pid_t child)
     return 0;
 }
 
-/* The fixed worker retains only gate read end 3 at this stage. */
-static int check_connect4_worker_fds(pid_t child, int gate_fd)
+static int check_pipe_end(int fd, int direction, struct stat *identity)
 {
-    struct stat writer, reader;
-    int flags = fcntl(gate_fd, F_GETFL);
-    if (flags < 0 || fstat(gate_fd, &writer) < 0)
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0 || fstat(fd, identity) < 0)
         return -1;
-    if ((flags & (O_PATH | O_ACCMODE)) != O_WRONLY || !S_ISFIFO(writer.st_mode)) {
+    if ((flags & (O_PATH | O_ACCMODE)) != direction || !S_ISFIFO(identity->st_mode)) {
         errno = ESTALE;
         return -1;
     }
+    return 0;
+}
+
+struct worker_pipe {
+    int child_fd;
+    int child_direction;
+    int parent_fd;
+    int parent_direction;
+};
+
+static int check_worker_pipes(pid_t child, const struct worker_pipe *pipes, size_t count)
+{
     char path[64];
     snprintf(path, sizeof(path), "/proc/%ld/fd", (long)child);
     DIR *table = opendir(path);
     if (!table)
         return -1;
-    int found = 0;
-    int verified = 0;
-    for (unsigned i = 0; i < 8; ++i) {
+
+    size_t found = 0;
+    int result = -1;
+    for (;;) {
         errno = 0;
         struct dirent *entry = readdir(table);
         if (!entry) {
-            verified = errno == 0 && found;
+            if (errno == 0 && found == count)
+                result = 0;
+            else if (errno == 0)
+                errno = ESTALE;
             break;
         }
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
-        if (found || strcmp(entry->d_name, "3") != 0)
+
+        const struct worker_pipe *expected = NULL;
+        for (size_t i = 0; i < count; ++i) {
+            char fd_name[32];
+            snprintf(fd_name, sizeof(fd_name), "%d", pipes[i].child_fd);
+            if (strcmp(entry->d_name, fd_name) == 0) {
+                expected = &pipes[i];
+                break;
+            }
+        }
+        if (!expected) {
+            errno = ESTALE;
             break;
-        if (fstatat(dirfd(table), "3", &reader, 0) < 0) {
-            int error = errno;
-            closedir(table);
-            errno = error;
+        }
+        struct stat parent_end, child_end;
+        if (check_pipe_end(expected->parent_fd, expected->parent_direction, &parent_end) < 0 ||
+            fstatat(dirfd(table), entry->d_name, &child_end, 0) < 0)
+            break;
+        if (!S_ISFIFO(child_end.st_mode) || child_end.st_dev != parent_end.st_dev ||
+            child_end.st_ino != parent_end.st_ino) {
+            errno = ESTALE;
+            break;
+        }
+        if (check_worker_pipe_direction(child, expected->child_fd, expected->child_direction) < 0)
+            break;
+        ++found;
+    }
+    int error = errno;
+    closedir(table);
+    if (result < 0)
+        errno = error;
+    return result;
+}
+
+static int64_t monotonic_ns(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+        return -1;
+    return (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
+}
+
+static int poll_before(struct pollfd *fd, int64_t deadline)
+{
+    for (;;) {
+        int64_t now = monotonic_ns();
+        if (now < 0)
+            return -1;
+        if (now >= deadline) {
+            errno = ETIMEDOUT;
             return -1;
         }
-        if (!S_ISFIFO(reader.st_mode) || reader.st_dev != writer.st_dev ||
-            reader.st_ino != writer.st_ino)
-            break;
-        found = 1;
+        int64_t remaining = deadline - now;
+        int ready = poll(fd, 1, (int)((remaining + 999999) / 1000000));
+        if (ready < 0 && errno == EINTR)
+            continue;
+        if (ready <= 0) {
+            if (ready == 0)
+                errno = ETIMEDOUT;
+            return -1;
+        }
+        now = monotonic_ns();
+        if (now < 0)
+            return -1;
+        if (now >= deadline) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        return 0;
     }
-    closedir(table);
-    if (!verified) {
-        errno = ESTALE;
+}
+
+static int read_before(int fd, void *buffer, size_t size, int64_t deadline)
+{
+    char *bytes = buffer;
+    for (size_t offset = 0; offset < size;) {
+        struct pollfd readable = {.fd = fd, .events = POLLIN};
+        if (poll_before(&readable, deadline) < 0)
+            return -1;
+        ssize_t count = read(fd, bytes + offset, size - offset);
+        if (count < 0 && (errno == EAGAIN || errno == EINTR))
+            continue;
+        if (count <= 0) {
+            if (count == 0)
+                errno = EPIPE;
+            return -1;
+        }
+        offset += (size_t)count;
+    }
+    return 0;
+}
+
+static int write_before(int fd, const void *buffer, size_t size, int64_t deadline)
+{
+    const char *bytes = buffer;
+    for (size_t offset = 0; offset < size;) {
+        struct pollfd writable = {.fd = fd, .events = POLLOUT};
+        if (poll_before(&writable, deadline) < 0)
+            return -1;
+        ssize_t count = write(fd, bytes + offset, size - offset);
+        if (count < 0 && (errno == EAGAIN || errno == EINTR))
+            continue;
+        if (count <= 0) {
+            if (count == 0)
+                errno = EIO;
+            return -1;
+        }
+        offset += (size_t)count;
+    }
+    return 0;
+}
+
+/* The fixed fixture uses Izanagi v3 authenticated frames. The parent and
+ * guest authenticate the bytes, while this relay bounds the frame size. */
+static int transfer_authenticated_frame(int source, int destination,
+                                        unsigned char expected_type, int64_t deadline)
+{
+    enum { HEADER = 7, TRAILER = 8 + 32, MAX_BODY = 4096 };
+    unsigned char frame[HEADER + MAX_BODY + TRAILER];
+    if (read_before(source, frame, HEADER, deadline) < 0)
+        return -1;
+    if (frame[0] != 0xff || frame[1] != 3 || frame[2] != expected_type) {
+        errno = EPROTO;
         return -1;
     }
-    return worker_gate_is_read_end(child);
+    uint32_t size = (uint32_t)frame[3] | (uint32_t)frame[4] << 8 |
+                    (uint32_t)frame[5] << 16 | (uint32_t)frame[6] << 24;
+    if (size > MAX_BODY) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    if (read_before(source, frame + HEADER, size + TRAILER, deadline) < 0)
+        return -1;
+    return write_before(destination, frame, HEADER + size + TRAILER, deadline);
+}
+
+/* Only the fixed authenticated Hello/Ready/Exec conversation is relayed.
+ * The trusted parent constructs the fixed request and validates the response. */
+int relay_fixed_agent_request(int request_fd, int response_fd, int socket_fd, int64_t deadline)
+{
+    enum { READY = 3, HELLO = 5, EXEC = 6, EXEC_RESULT = 7 };
+    if (transfer_authenticated_frame(request_fd, socket_fd, HELLO, deadline) < 0 ||
+        transfer_authenticated_frame(socket_fd, response_fd, HELLO, deadline) < 0 ||
+        transfer_authenticated_frame(socket_fd, response_fd, READY, deadline) < 0 ||
+        transfer_authenticated_frame(request_fd, socket_fd, EXEC, deadline) < 0)
+        return -1;
+    return transfer_authenticated_frame(socket_fd, response_fd, EXEC_RESULT, deadline);
 }
 
 /* The manager has closed its own copy of the readiness write end. */
@@ -687,14 +829,13 @@ static int confirm_connect4_ready(int ready_fd)
         return -1;
     }
     struct pollfd ready = { .fd = ready_fd, .events = POLLIN };
+    int64_t start = monotonic_ns();
+    if (start < 0)
+        return -1;
+    int64_t deadline = start + 2000000000;
     for (unsigned phase = 0; phase < 2; ++phase) {
-        int result = poll(&ready, 1, 1000);
-        if (result < 0)
+        if (poll_before(&ready, deadline) < 0)
             return -1;
-        if (result == 0) {
-            errno = ETIMEDOUT;
-            return -1;
-        }
         if (ready.revents & (POLLERR | POLLNVAL)) {
             errno = EIO;
             return -1;
@@ -743,7 +884,22 @@ static int stop_test_controller(int controller_pidfd)
     return -1;
 }
 
-int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
+static int send_connect4_release(int gate_fd)
+{
+    const char token = 'R';
+    ssize_t sent;
+    do {
+        sent = write(gate_fd, &token, sizeof(token));
+    } while (sent < 0 && errno == EINTR);
+    if (sent == 1)
+        return 0;
+    if (sent == 0)
+        errno = EIO;
+    return -1;
+}
+
+static int release_connect4_worker(int state_fd, int ready_fd,
+                            const struct worker_pipe *pipes, size_t pipe_count,
                             int controller_pidfd,
                             pid_t child, int worker_pidfd,
                             int link_fd,
@@ -752,6 +908,14 @@ int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
                             uint32_t program_id, int *pinned,
                             int stop_before_release)
 {
+    /* FD 3 is the only channel that can release the worker. */
+    if (pipe_count == 0 || pipes[0].child_fd != 3 ||
+        pipes[0].child_direction != O_RDONLY || pipes[0].parent_direction != O_WRONLY) {
+        errno = EINVAL;
+        return -1;
+    }
+    int gate_fd = pipes[0].parent_fd;
+
     int lease = acquire_connect4_lease(state_fd);
     if (lease < 0)
         return -1;
@@ -786,7 +950,7 @@ int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
     if (check_connect4_worker_privileges(child) < 0)
         goto done;
     stage = "worker-descriptors";
-    if (check_connect4_worker_fds(child, gate_fd) < 0)
+    if (check_worker_pipes(child, pipes, pipe_count) < 0)
         goto done;
     stage = "membership-recheck";
     if (check_connect4_worker_membership(cgroup_fd, child) < 0)
@@ -814,12 +978,7 @@ int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
     if (controller_is_live(controller_pidfd) < 0)
         goto done;
     stage = "release-token";
-    const char token = 'R';
-    ssize_t sent = write(gate_fd, &token, sizeof(token));
-    if (sent == 1)
-        result = 0;
-    else if (sent == 0)
-        errno = EIO;
+    result = send_connect4_release(gate_fd);
 
 done:;
     int error = errno;
@@ -883,23 +1042,46 @@ int await_connect4_release(int gate_fd)
     return 0;
 }
 
-/* Run only in the dedicated fork child, before the manager takes the lease.
- * On failure the child caller must exit without proceeding to the gate. */
-int prepare_connect4_worker(int gate_read_fd, int ready_write_fd)
+/* Used only immediately after fork. Any failure requires child exit. */
+static int map_fixed_pipes(const int *inherited, size_t count,
+                           int preserve_stdio, int descriptor_flags)
 {
-    if (gate_read_fd != 3 || ready_write_fd != 4) {
+    enum { FIRST_FD = 3, MAX_PIPES = 5 };
+    int temporary[MAX_PIPES];
+    if (count == 0 || count > MAX_PIPES) {
         errno = EINVAL;
         return -1;
     }
-    if (syscall(SYS_close_range, 0U, 2U, 0U) < 0 ||
-        syscall(SYS_close_range, 5U, ~0U, 0U) < 0)
+    unsigned first_unused = FIRST_FD + (unsigned)count;
+    for (size_t i = 0; i < count; ++i) {
+        temporary[i] = fcntl(inherited[i], F_DUPFD_CLOEXEC, first_unused);
+        if (temporary[i] < 0)
+            return -1;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (dup3(temporary[i], FIRST_FD + (int)i, descriptor_flags) < 0)
+            return -1;
+    }
+    if ((!preserve_stdio && syscall(SYS_close_range, 0U, FIRST_FD - 1U, 0U) < 0) ||
+        syscall(SYS_close_range, first_unused, ~0U, 0U) < 0)
         return -1;
+    return 0;
+}
+
+static int map_worker_pipes(const int *inherited, size_t count)
+{
+    return map_fixed_pipes(inherited, count, 0, O_CLOEXEC);
+}
+
+/* Apply the same fixed privilege drop to probe and relay children. */
+static int drop_fixed_privileges(uid_t uid, gid_t gid)
+{
     for (unsigned cap = 0; cap <= CAP_LAST_CAP; ++cap) {
         if (prctl(PR_CAPBSET_DROP, (unsigned long)cap, 0UL, 0UL, 0UL) < 0)
             return -1;
     }
-    if (setgroups(0, NULL) < 0 || setresgid(62004, 62004, 62004) < 0 ||
-        setresuid(62004, 62004, 62004) < 0)
+    if (setgroups(0, NULL) < 0 || setresgid(gid, gid, gid) < 0 ||
+        setresuid(uid, uid, uid) < 0)
         return -1;
     struct __user_cap_header_struct header = {
         .version = _LINUX_CAPABILITY_VERSION_3,
@@ -911,12 +1093,105 @@ int prepare_connect4_worker(int gate_read_fd, int ready_write_fd)
     return 0;
 }
 
+static int drop_connect4_worker_privileges(void)
+{
+    return drop_fixed_privileges(62004, 62004);
+}
+
+/* Run only in the dedicated fork child, before the manager takes the lease.
+ * On failure the child caller must exit without proceeding to the gate. */
+int prepare_connect4_worker(int gate_read_fd, int ready_write_fd)
+{
+    if (gate_read_fd != 3 || ready_write_fd != 4) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (syscall(SYS_close_range, 0U, 2U, 0U) < 0 ||
+        syscall(SYS_close_range, 5U, ~0U, 0U) < 0)
+        return -1;
+    return drop_connect4_worker_privileges();
+}
+
 #define GUARD_SYSCALL(number) \
     BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, number, 0, 1), \
     BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
 #define FILTER_ARG(index) \
     BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[index]))
 #define FILTER_DENY BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM)
+
+/* The cgroup policy constrains the destination. This filter constrains the
+ * socket kind and prevents execution or file opens during connect setup. */
+int restrict_fixed_relay_setup(void)
+{
+    struct sock_filter code[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        GUARD_SYSCALL(SYS_read),
+        GUARD_SYSCALL(SYS_write),
+        GUARD_SYSCALL(SYS_poll),
+        GUARD_SYSCALL(SYS_clock_gettime),
+        GUARD_SYSCALL(SYS_connect),
+        GUARD_SYSCALL(SYS_getsockopt),
+        GUARD_SYSCALL(SYS_close),
+        GUARD_SYSCALL(SYS_seccomp),
+        GUARD_SYSCALL(SYS_exit),
+        GUARD_SYSCALL(SYS_exit_group),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_socket, 1, 0),
+        FILTER_DENY,
+        FILTER_ARG(0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_INET, 0, 5),
+        FILTER_ARG(1),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, 3),
+        FILTER_ARG(2),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, IPPROTO_TCP, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        FILTER_DENY,
+    };
+    const struct sock_fprog program = {
+        .len = sizeof(code) / sizeof(code[0]),
+        .filter = code,
+    };
+    return (int)syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &program);
+}
+
+/* Install after connecting. Socket creation and further connects are denied. */
+int restrict_fixed_relay_io(int request_fd, int response_fd, int socket_fd)
+{
+    struct sock_filter code[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        GUARD_SYSCALL(SYS_poll),
+        GUARD_SYSCALL(SYS_exit),
+        GUARD_SYSCALL(SYS_exit_group),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_clock_gettime, 0, 4),
+        FILTER_ARG(0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, CLOCK_MONOTONIC, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        FILTER_DENY,
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_read, 0, 5),
+        FILTER_ARG(0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, request_fd, 1, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, socket_fd, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        FILTER_DENY,
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_write, 0, 5),
+        FILTER_ARG(0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, response_fd, 1, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, socket_fd, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        FILTER_DENY,
+        FILTER_DENY,
+    };
+    const struct sock_fprog program = {
+        .len = sizeof(code) / sizeof(code[0]),
+        .filter = code,
+    };
+    return (int)syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &program);
+}
 
 int restrict_connect4_worker(void)
 {
@@ -969,20 +1244,144 @@ int connect4_worker_wait(void)
     return await_connect4_release(3);
 }
 
-static int try_connect4_loopback(uint16_t port)
+/* A successful connection remains owned by the worker. */
+static struct sockaddr_in connect4_loopback_address(uint16_t port)
 {
-    const struct sockaddr_in address = {
+    return (struct sockaddr_in){
         .sin_family = AF_INET,
         .sin_port = htons(port),
         .sin_addr = { .s_addr = htonl(INADDR_LOOPBACK) },
     };
+}
+
+static int connect4_loopback(uint16_t port, int *connected_fd)
+{
+    *connected_fd = -1;
+    const struct sockaddr_in address = connect4_loopback_address(port);
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
     if (fd < 0)
         return -1;
-    int result = connect(fd, (const struct sockaddr *)&address, sizeof(address));
-    int error = result < 0 ? errno : 0;
+    if (connect(fd, (const struct sockaddr *)&address, sizeof(address)) < 0) {
+        int error = errno;
+        close(fd);
+        return error;
+    }
+    *connected_fd = fd;
+    return 0;
+}
+
+/* On failure the worker owns no socket and errno identifies the connect fault. */
+int open_fixed_relay_connection(uint16_t port, int64_t deadline)
+{
+    int64_t now = monotonic_ns();
+    if (now < 0)
+        return -1;
+    if (now >= deadline) {
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    const struct sockaddr_in address = connect4_loopback_address(port);
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, IPPROTO_TCP);
+    if (fd < 0)
+        return -1;
+    if (connect(fd, (const struct sockaddr *)&address, sizeof(address)) < 0) {
+        if (errno != EINPROGRESS)
+            goto fail;
+        struct pollfd writable = {.fd = fd, .events = POLLOUT};
+        if (poll_before(&writable, deadline) < 0)
+            goto fail;
+        int error;
+        socklen_t length = sizeof(error);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) < 0)
+            goto fail;
+        if (length != sizeof(error) || error != 0) {
+            errno = length != sizeof(error) ? EIO : error;
+            goto fail;
+        }
+    }
+    now = monotonic_ns();
+    if (now >= 0 && now < deadline)
+        return fd;
+    if (now >= 0)
+        errno = ETIMEDOUT;
+fail:;
+    int error = errno;
     close(fd);
-    return error;
+    errno = error;
+    return -1;
+}
+
+/* Run in the isolated child after mapping its five fixed pipe ends.
+ * A failure is terminal. The parent owns recovery and reaping. */
+int connect_fixed_relay_worker(uint16_t port, int64_t deadline)
+{
+    if (restrict_fixed_relay_setup() < 0)
+        return -1;
+    if (write(4, "Y", 1) != 1 || close(4) < 0 || await_connect4_release(3) < 0)
+        return -1;
+    if (close(3) < 0)
+        return -1;
+
+    int socket_fd = open_fixed_relay_connection(port, deadline);
+    int connect_errno = socket_fd < 0 ? errno : 0;
+    if (write(7, &connect_errno, sizeof(connect_errno)) != sizeof(connect_errno) ||
+        close(7) < 0)
+        return -1;
+    if (socket_fd < 0) {
+        errno = connect_errno;
+        return -1;
+    }
+    if (restrict_fixed_relay_io(5, 6, socket_fd) < 0)
+        return -1;
+    return socket_fd;
+}
+
+/* The caller exits with this result so the worker's remaining descriptors
+ * close together. The separate status pipe records the actual connect errno. */
+int run_fixed_relay_worker(uint16_t port, int64_t deadline)
+{
+    int socket_fd = connect_fixed_relay_worker(port, deadline);
+    if (socket_fd < 0)
+        return 1;
+    return relay_fixed_agent_request(5, 6, socket_fd, deadline) == 0 ? 0 : 2;
+}
+
+static const char alternate_request[] = "tempest-alternate-dummy-v1";
+static const char alternate_response[] = "tempest-alternate-ack-v1";
+
+static int relay_fixed_token(int source, int destination, const char *expected,
+                             size_t size, int64_t deadline)
+{
+    char token[sizeof(alternate_request)];
+    if (size > sizeof(token) || read_before(source, token, size, deadline) < 0)
+        return -1;
+    if (memcmp(token, expected, size) != 0) {
+        errno = EPROTO;
+        return -1;
+    }
+    return write_before(destination, token, size, deadline);
+}
+
+static int run_fixed_alternate_worker(uint16_t port, int64_t deadline)
+{
+    int socket_fd = connect_fixed_relay_worker(port, deadline);
+    if (socket_fd < 0)
+        return 1;
+    if (relay_fixed_token(5, socket_fd, alternate_request,
+                          sizeof(alternate_request) - 1, deadline) < 0 ||
+        relay_fixed_token(socket_fd, 6, alternate_response,
+                          sizeof(alternate_response) - 1, deadline) < 0)
+        return 2;
+    return 0;
+}
+
+static int try_connect4_loopback(uint16_t port)
+{
+    int fd;
+    int result = connect4_loopback(port, &fd);
+    if (fd >= 0)
+        close(fd);
+    return result;
 }
 
 /* Call in the dedicated child. The manager observes the actual exit status
@@ -1180,59 +1579,94 @@ struct connect4_worker {
     int ready;
 };
 
-/* The manager calls this before taking the lease. Forked child remaps the
- * pipe ends from temporary numbers to avoid collisions with FD 3 or 4. */
-int spawn_connect4_worker(uint16_t allowed, uint16_t denied,
-                           struct connect4_worker *worker, atomic_int *release_seen)
+struct fixed_relay_pipes {
+    int request;
+    int response;
+    int status;
+};
+
+/* Call in the trusted client child immediately before exec. Stdio belongs
+ * to the harness; only its two data pipes pass through as extra descriptors. */
+int map_fixed_relay_client_pipes(const struct fixed_relay_pipes *relay)
 {
-    int gate[2], ready[2];
+    const int inherited[] = {relay->request, relay->response};
+    return map_fixed_pipes(inherited, sizeof(inherited) / sizeof(inherited[0]), 1, 0);
+}
+
+enum { FIXED_RELAY_PIPE_COUNT = 4 };
+
+static void describe_fixed_relay_pipes(
+    const struct connect4_worker *worker, const struct fixed_relay_pipes *relay,
+    struct worker_pipe pipes[static FIXED_RELAY_PIPE_COUNT])
+{
+    pipes[0] = (struct worker_pipe){3, O_RDONLY, worker->gate, O_WRONLY};
+    pipes[1] = (struct worker_pipe){5, O_RDONLY, relay->request, O_WRONLY};
+    pipes[2] = (struct worker_pipe){6, O_WRONLY, relay->response, O_RDONLY};
+    pipes[3] = (struct worker_pipe){7, O_WRONLY, relay->status, O_RDONLY};
+}
+
+/* Fork before taking the lease. Child pipe ends are remapped together
+ * so no inherited descriptor can collide with the fixed layout. */
+static int spawn_worker(uint16_t allowed, uint16_t denied,
+                        struct connect4_worker *worker, atomic_int *release_seen,
+                        struct fixed_relay_pipes *relay, int64_t deadline, int alternate)
+{
+    enum { GATE, READY, REQUEST, RESPONSE, STATUS };
+    const unsigned count = relay == NULL ? 2 : 5;
+    int pipes[5][2];
+    unsigned opened = 0;
     *worker = (struct connect4_worker){-1, -1, -1, -1};
-    if (pipe2(gate, O_CLOEXEC) < 0)
-        return -1;
-    if (pipe2(ready, O_CLOEXEC) < 0) {
+    if (relay != NULL)
+        *relay = (struct fixed_relay_pipes){-1, -1, -1};
+    for (; opened < count; ++opened) {
+        int flags = O_CLOEXEC | (opened >= REQUEST ? O_NONBLOCK : 0);
+        if (pipe2(pipes[opened], flags) < 0)
+            break;
+    }
+    if (opened != count) {
         int error = errno;
-        close(gate[0]);
-        close(gate[1]);
+        for (unsigned i = 0; i < opened; ++i) {
+            close(pipes[i][0]);
+            close(pipes[i][1]);
+        }
         errno = error;
         return -1;
     }
+
+    const unsigned child_end[] = {0, 1, 0, 1, 1};
+    int privileged = geteuid() == 0;
     pid_t child = fork();
     if (child == 0) {
-        int gate_read = fcntl(gate[0], F_DUPFD_CLOEXEC, 5);
-        int ready_write = fcntl(ready[1], F_DUPFD_CLOEXEC, 5);
-        if (gate_read < 0 || ready_write < 0)
+        int inherited[5];
+        for (unsigned i = 0; i < count; ++i)
+            inherited[i] = pipes[i][child_end[i]];
+        if (map_worker_pipes(inherited, count) < 0)
             _exit(69);
-        int gate_target = dup3(gate_read, 3, O_CLOEXEC);
-        if (gate_target < 0)
-            _exit(69);
-        int ready_target = dup3(ready_write, 4, O_CLOEXEC);
-        if (ready_target < 0) {
-            close(gate_target);
-            _exit(69);
-        }
-        close(gate_read);
-        close(ready_write);
-        int status = run_connect4_worker(allowed, denied, release_seen);
-        close(gate_target);
-        /* The worker closes the readiness end after its notification.
-         * On a setup failure it may still be open. */
-        close(ready_target);
-        _exit(status);
+        if (relay == NULL)
+            _exit(run_connect4_worker(allowed, denied, release_seen));
+        if ((privileged ? drop_connect4_worker_privileges() :
+             prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL)) < 0)
+            _exit(70);
+        _exit(alternate ? run_fixed_alternate_worker(allowed, deadline)
+                        : run_fixed_relay_worker(allowed, deadline));
     }
 
     int error = errno;
-    close(gate[0]);
-    close(ready[1]);
+    for (unsigned i = 0; i < count; ++i)
+        close(pipes[i][child_end[i]]);
     if (child > 0) {
         int pidfd = retain_connect4_worker(child);
         if (pidfd >= 0) {
-            *worker = (struct connect4_worker){child, pidfd, gate[1], ready[0]};
+            *worker = (struct connect4_worker){child, pidfd, pipes[GATE][1], pipes[READY][0]};
+            if (relay != NULL)
+                *relay = (struct fixed_relay_pipes){pipes[REQUEST][1], pipes[RESPONSE][0],
+                                                  pipes[STATUS][0]};
             return 0;
         }
         error = errno;
     }
-    close(gate[1]);
-    close(ready[0]);
+    for (unsigned i = 0; i < count; ++i)
+        close(pipes[i][1 - child_end[i]]);
     if (child > 0) {
         /* This manager is the sole reaper. The PID cannot have been reused. */
         kill(child, SIGKILL);
@@ -1240,6 +1674,59 @@ int spawn_connect4_worker(uint16_t allowed, uint16_t denied,
     }
     errno = error;
     return -1;
+}
+
+int spawn_connect4_worker(uint16_t allowed, uint16_t denied,
+                          struct connect4_worker *worker, atomic_int *release_seen)
+{
+    return spawn_worker(allowed, denied, worker, release_seen, NULL, 0, 0);
+}
+
+int spawn_fixed_relay_worker(uint16_t port, int64_t deadline,
+                             struct connect4_worker *worker,
+                             struct fixed_relay_pipes *relay)
+{
+    return spawn_worker(port, 0, worker, NULL, relay, deadline, 0);
+}
+
+int spawn_fixed_alternate_worker(uint16_t port, int64_t deadline,
+                                 struct connect4_worker *worker,
+                                 struct fixed_relay_pipes *relay)
+{
+    return spawn_worker(port, 0, worker, NULL, relay, deadline, 1);
+}
+
+int read_fixed_relay_connect_errno(const struct fixed_relay_pipes *relay,
+                                   int64_t deadline, int *connect_errno)
+{
+    int reported;
+    if (read_before(relay->status, &reported, sizeof(reported), deadline) < 0)
+        return -1;
+    if (reported < 0 || reported > 4095) {
+        errno = EPROTO;
+        return -1;
+    }
+    *connect_errno = reported;
+    return 0;
+}
+
+/* Leave the child waitable so cleanup can still verify the original pidfd. */
+int observe_fixed_relay_exit(const struct connect4_worker *worker,
+                             int64_t deadline, int *relay_exit)
+{
+    struct pollfd exited = {.fd = worker->pidfd, .events = POLLIN};
+    if (poll_before(&exited, deadline) < 0)
+        return -1;
+    siginfo_t status = {0};
+    if (waitid(P_PIDFD, (id_t)worker->pidfd, &status, WEXITED | WNOHANG | WNOWAIT) < 0)
+        return -1;
+    if (status.si_pid != worker->pid || status.si_code != CLD_EXITED ||
+        status.si_status > 2) {
+        errno = EPROTO;
+        return -1;
+    }
+    *relay_exit = status.si_status;
+    return 0;
 }
 
 struct connect4_trial {
@@ -1303,6 +1790,293 @@ static int record_connect4_trial(const struct connect4_trial *trial);
 
 int handoff_connect4_worker_fd(int channel, pid_t worker, int worker_pidfd);
 
+/* Preserve the worker identity for deferred recovery if immediate cleanup fails. */
+static int finish_connect4_worker(const struct connect4_trial *trial,
+                                  const struct connect4_worker *worker,
+                                  int pinned, int saved,
+                                  struct connect4_pending_recovery *pending)
+{
+    if (syscall(SYS_pidfd_send_signal, worker->pidfd, SIGKILL, NULL, 0) < 0 &&
+        errno != ESRCH)
+        saved = errno;
+    struct pollfd exited = { .fd = worker->pidfd, .events = POLLIN };
+    if (poll(&exited, 1, 2000) == 1 && confirm_worker_exit(worker->pidfd) == 0) {
+        int recovered = pinned ? recover_connect4_pin(trial->state_fd, trial->pin_path, worker->pidfd,
+                                 trial->cgroup_fd, trial->device, trial->cgroup_id,
+                                 trial->link_id, trial->program_id)
+            : confirm_unpinned_connect4_trial(trial);
+        if (recovered < 0) {
+            *pending = (struct connect4_pending_recovery){worker->pid, worker->pidfd,
+                CONNECT4_PIN_UNKNOWN};
+            return -1;
+        }
+        *pending = (struct connect4_pending_recovery){worker->pid, worker->pidfd,
+            pinned ? CONNECT4_PIN_REMOVED : CONNECT4_PIN_ABSENT};
+        if (retry_connect4_recovery(trial, pending) < 0)
+            return -1;
+        fputs("worker_exit_observed=1 worker_reaped_by_pidfd=1\n", stderr);
+    } else {
+        *pending = (struct connect4_pending_recovery){worker->pid, worker->pidfd,
+            pinned ? CONNECT4_PIN_HELD : CONNECT4_PIN_UNKNOWN};
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    if (saved != 0) {
+        errno = saved;
+        return -1;
+    }
+    return 0;
+}
+
+/* Control workers have the same privileges and descriptors as restricted
+ * workers. The immediate caller owns the child and its pidfd. */
+int release_fixed_relay_control(const struct connect4_worker *worker,
+                                const struct fixed_relay_pipes *relay,
+                                int controller_pidfd)
+{
+    struct worker_pipe pipes[FIXED_RELAY_PIPE_COUNT];
+    describe_fixed_relay_pipes(worker, relay, pipes);
+    if (controller_is_live(controller_pidfd) < 0 ||
+        confirm_connect4_ready(worker->ready) < 0 ||
+        check_connect4_pidfd_pid(worker->pidfd, worker->pid) < 0 ||
+        check_connect4_worker_privileges(worker->pid) < 0 ||
+        check_worker_pipes(worker->pid, pipes, FIXED_RELAY_PIPE_COUNT) < 0 ||
+        controller_is_live(controller_pidfd) < 0)
+        return -1;
+    return send_connect4_release(worker->gate);
+}
+
+struct fixed_relay_result {
+    int connect_errno;
+    int relay_exit;
+};
+
+typedef int (*fixed_relay_exchange)(const struct fixed_relay_pipes *, int64_t, void *);
+
+struct fixed_relay_client {
+    const char *binary;
+    const char *run_nonce;
+    const char *phase;
+    /* Complete IZANAGI_SECRET_FILE assignment from the trusted VM owner. */
+    const char *secret_env;
+    const char *session_env;
+};
+
+/* Called only by the trusted harness. The client runs as the dedicated VM
+ * owner, inherits no supervisor descriptors, and writes its ACK to stdout. */
+int exchange_fixed_relay_client(const struct fixed_relay_pipes *relay,
+                                int64_t deadline, void *context)
+{
+    const struct fixed_relay_client *client = context;
+    pid_t owner = getpid();
+    pid_t child = fork();
+    if (child < 0)
+        return -1;
+    if (child == 0) {
+        if (drop_fixed_privileges(999, 988) < 0 ||
+            prctl(PR_SET_PDEATHSIG, SIGKILL, 0UL, 0UL, 0UL) < 0 ||
+            getppid() != owner || map_fixed_relay_client_pipes(relay) < 0)
+            _exit(126);
+        char *const argv[] = {
+            (char *)client->binary, (char *)client->run_nonce, (char *)client->phase, NULL,
+        };
+        char *const env[] = {(char *)client->secret_env, (char *)client->session_env, NULL};
+        execve(client->binary, argv, env);
+        _exit(127);
+    }
+
+    int pidfd = retain_connect4_worker(child);
+    int error = pidfd < 0 ? errno : 0;
+    if (pidfd >= 0) {
+        struct pollfd exited = {.fd = pidfd, .events = POLLIN};
+        if (poll_before(&exited, deadline) < 0)
+            error = errno;
+    }
+    /* Sole reaper: even if pidfd acquisition failed, PID reuse is impossible. */
+    if (error != 0)
+        (void)kill(child, SIGKILL);
+    int status;
+    pid_t reaped;
+    do {
+        reaped = waitpid(child, &status, 0);
+    } while (reaped < 0 && errno == EINTR);
+    if (reaped < 0 && error == 0)
+        error = errno;
+    if (pidfd >= 0)
+        close(pidfd);
+    if (error == 0 && (!WIFEXITED(status) || WEXITSTATUS(status) != 0))
+        error = EPROTO;
+    if (error != 0) {
+        errno = error;
+        return -1;
+    }
+    return 0;
+}
+
+int exchange_fixed_alternate(const struct fixed_relay_pipes *relay,
+                             int64_t deadline, void *context)
+{
+    (void)context;
+    char response[sizeof(alternate_response) - 1];
+    if (write_before(relay->request, alternate_request, sizeof(alternate_request) - 1,
+                     deadline) < 0 ||
+        read_before(relay->response, response, sizeof(response), deadline) < 0)
+        return -1;
+    if (memcmp(response, alternate_response, sizeof(response)) != 0) {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
+}
+
+static int observe_fixed_relay(const struct connect4_worker *worker,
+                              struct fixed_relay_pipes *relay,
+                              int64_t deadline, fixed_relay_exchange exchange,
+                              void *context, struct fixed_relay_result *observed)
+{
+    if (read_fixed_relay_connect_errno(relay, deadline, &observed->connect_errno) < 0)
+        return -1;
+    int error = 0;
+    if (observed->connect_errno == 0) {
+        errno = 0;
+        if (exchange == NULL || exchange(relay, deadline, context) < 0)
+            error = errno != 0 ? errno : EPROTO;
+    }
+    /* Close the supervisor's write end so an interrupted client produces EOF. */
+    close(relay->request);
+    close(relay->response);
+    relay->request = -1;
+    relay->response = -1;
+    if (observe_fixed_relay_exit(worker, deadline, &observed->relay_exit) < 0)
+        return -1;
+    if (error != 0) {
+        errno = error;
+        return -1;
+    }
+    return 0;
+}
+
+int run_fixed_relay_control(uint16_t port, int alternate, int controller_pidfd,
+                            int64_t deadline, fixed_relay_exchange exchange,
+                            void *context, struct fixed_relay_result *observed)
+{
+    *observed = (struct fixed_relay_result){-1, -1};
+    struct connect4_worker worker;
+    struct fixed_relay_pipes relay;
+    int spawned = alternate ? spawn_fixed_alternate_worker(port, deadline, &worker, &relay)
+                            : spawn_fixed_relay_worker(port, deadline, &worker, &relay);
+    if (spawned < 0)
+        return -1;
+
+    int result = release_fixed_relay_control(&worker, &relay, controller_pidfd);
+    int error = result < 0 ? errno : 0;
+    close(worker.gate);
+    close(worker.ready);
+    if (result == 0) {
+        result = observe_fixed_relay(&worker, &relay, deadline, exchange, context, observed);
+        error = result < 0 ? errno : 0;
+    }
+    if (relay.request >= 0)
+        close(relay.request);
+    if (relay.response >= 0)
+        close(relay.response);
+    close(relay.status);
+
+    /* Sole reaper, holding the original pidfd until the child is reaped. */
+    if (observed->relay_exit < 0 &&
+        syscall(SYS_pidfd_send_signal, worker.pidfd, SIGKILL, NULL, 0) < 0 && errno != ESRCH)
+        error = errno;
+    siginfo_t status = {0};
+    int reaped;
+    do {
+        reaped = waitid(P_PIDFD, (id_t)worker.pidfd, &status, WEXITED);
+    } while (reaped < 0 && errno == EINTR);
+    if (reaped < 0)
+        error = errno;
+    close(worker.pidfd);
+    if (error != 0) {
+        errno = error;
+        return -1;
+    }
+    return result;
+}
+
+/* The caller retains the pidfd and must finish or recover the worker on
+ * failure as well as on success. The upper owner must already know its PID. */
+int place_and_release_fixed_relay(const struct connect4_trial *trial,
+                                  const struct connect4_worker *worker,
+                                  const struct fixed_relay_pipes *relay,
+                                  int controller_pidfd, int handoff_channel,
+                                  int *pinned)
+{
+    *pinned = 0;
+    if (handoff_channel < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (controller_is_live(controller_pidfd) < 0 ||
+        place_connect4_worker(trial->state_fd, trial->cgroup_fd, trial->device,
+                              trial->cgroup_id, worker->pid, worker->pidfd) < 0 ||
+        handoff_connect4_worker_fd(handoff_channel, worker->pid, worker->pidfd) < 0)
+        return -1;
+
+    struct worker_pipe pipes[FIXED_RELAY_PIPE_COUNT];
+    describe_fixed_relay_pipes(worker, relay, pipes);
+    return release_connect4_worker(trial->state_fd, worker->ready,
+                                   pipes, FIXED_RELAY_PIPE_COUNT, controller_pidfd,
+                                   worker->pid, worker->pidfd, trial->link_fd,
+                                   trial->pin_path, trial->cgroup_fd, trial->device,
+                                   trial->cgroup_id, trial->link_id, trial->program_id,
+                                   pinned, 0);
+}
+
+int run_restricted_fixed_relay(
+    const struct connect4_trial *trial, uint16_t port, int alternate,
+    int controller_pidfd, int handoff_channel, atomic_int *known_worker,
+    int64_t deadline, fixed_relay_exchange exchange, void *context,
+    struct fixed_relay_result *observed, struct connect4_pending_recovery *pending)
+{
+    *observed = (struct fixed_relay_result){-1, -1};
+    *pending = (struct connect4_pending_recovery){-1, -1, CONNECT4_PIN_UNKNOWN};
+    if (handoff_channel < 0 || known_worker == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (controller_is_live(controller_pidfd) < 0 || record_connect4_trial(trial) < 0)
+        return -1;
+
+    /* Do not infer absence if the supervisor dies during fork. */
+    atomic_store_explicit(known_worker, -1, memory_order_release);
+    struct connect4_worker worker;
+    struct fixed_relay_pipes relay;
+    int spawned = alternate ? spawn_fixed_alternate_worker(port, deadline, &worker, &relay)
+                            : spawn_fixed_relay_worker(port, deadline, &worker, &relay);
+    if (spawned < 0) {
+        atomic_store_explicit(known_worker, 0, memory_order_release);
+        return -1;
+    }
+    atomic_store_explicit(known_worker, worker.pid, memory_order_release);
+
+    int pinned;
+    int result = place_and_release_fixed_relay(trial, &worker, &relay, controller_pidfd,
+                                                handoff_channel, &pinned);
+    int saved = result < 0 ? errno : 0;
+    close(worker.gate);
+    close(worker.ready);
+    if (result == 0) {
+        result = observe_fixed_relay(&worker, &relay, deadline, exchange, context, observed);
+        if (result == 0)
+            result = controller_is_live(controller_pidfd);
+        saved = result < 0 ? errno : 0;
+    }
+    if (relay.request >= 0)
+        close(relay.request);
+    if (relay.response >= 0)
+        close(relay.response);
+    close(relay.status);
+    return finish_connect4_worker(trial, &worker, pinned, saved, pending);
+}
+
 int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
                        int handoff_channel, atomic_int *known_worker,
                        int supervisor_fault,
@@ -1351,8 +2125,9 @@ int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
     }
     if (result == 0) {
         failure_stage = "prepare-or-release";
-        result = release_connect4_worker(trial->state_fd, worker.gate,
-                                            worker.ready, controller_pidfd,
+        const struct worker_pipe gate = {3, O_RDONLY, worker.gate, O_WRONLY};
+        result = release_connect4_worker(trial->state_fd, worker.ready, &gate, 1,
+                                            controller_pidfd,
                                             worker.pid, worker.pidfd,
                                             trial->link_fd, trial->pin_path,
                                             trial->cgroup_fd, trial->device,
@@ -1397,35 +2172,8 @@ int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
                                             denied_listener, &phases[1]);
 
     int saved = result < 0 ? errno : 0;
-    if (syscall(SYS_pidfd_send_signal, worker.pidfd, SIGKILL, NULL, 0) < 0 &&
-        errno != ESRCH)
-        saved = errno;
-    struct pollfd exited = { .fd = worker.pidfd, .events = POLLIN };
-    if (poll(&exited, 1, 2000) == 1 && confirm_worker_exit(worker.pidfd) == 0) {
-        int recovered = pinned ? recover_connect4_pin(trial->state_fd, trial->pin_path, worker.pidfd,
-                                 trial->cgroup_fd, trial->device, trial->cgroup_id,
-                                 trial->link_id, trial->program_id)
-            : confirm_unpinned_connect4_trial(trial);
-        if (recovered < 0) {
-            *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd,
-                CONNECT4_PIN_UNKNOWN};
-            return -1;
-        }
-        *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd,
-            pinned ? CONNECT4_PIN_REMOVED : CONNECT4_PIN_ABSENT};
-        if (retry_connect4_recovery(trial, pending) < 0)
-            return -1;
-        fputs("worker_exit_observed=1 worker_reaped_by_pidfd=1\n", stderr);
-    } else {
-        *pending = (struct connect4_pending_recovery){worker.pid, worker.pidfd,
-            pinned ? CONNECT4_PIN_HELD : CONNECT4_PIN_UNKNOWN};
-        errno = ETIMEDOUT;
+    if (finish_connect4_worker(trial, &worker, pinned, saved, pending) < 0)
         return -1;
-    }
-    if (saved != 0) {
-        errno = saved;
-        return -1;
-    }
     return measure_connect4_control(allowed_listener, allowed_port, denied_listener,
                                       denied_port, &phases[2]);
 }
@@ -1582,6 +2330,11 @@ done:;
 #ifndef CONNECT4_CASE
 #define CONNECT4_CASE 0
 #endif
+#if CONNECT4_CASE == 9 || CONNECT4_CASE == 10
+#ifndef FIXED_VM_TRIAL_SUFFIX
+#error "set FIXED_VM_TRIAL_SUFFIX to this trial's unique suffix"
+#endif
+#endif
 #if CONNECT4_CASE == 0
 #define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-001"
 #elif CONNECT4_CASE == 1
@@ -1598,6 +2351,12 @@ done:;
 #define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-supervisor-before-001"
 #elif CONNECT4_CASE == 7
 #define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-supervisor-after-001"
+#elif CONNECT4_CASE == 8
+#define CONNECT4_TRIAL_NAME "tempest-fixed-relay-denial-001"
+#elif CONNECT4_CASE == 9
+#define CONNECT4_TRIAL_NAME "tempest-fixed-vm-relay-allow-" FIXED_VM_TRIAL_SUFFIX
+#elif CONNECT4_CASE == 10
+#define CONNECT4_TRIAL_NAME "tempest-fixed-vm-relay-deny-" FIXED_VM_TRIAL_SUFFIX
 #else
 #error "unknown connect4 fixture case"
 #endif
@@ -1697,6 +2456,8 @@ int create_connect4_fixture_state(int *state_fd, int *cgroup_fd)
         goto done;
     if (fstatat(state_parent, CONNECT4_TRIAL_NAME ".retired", &existing,
                 AT_SYMLINK_NOFOLLOW) == 0) {
+        fputs("fixture setup: retired trial ledger already exists: "
+              CONNECT4_TRIAL_NAME ".retired\n", stderr);
         errno = EEXIST;
         goto done;
     }

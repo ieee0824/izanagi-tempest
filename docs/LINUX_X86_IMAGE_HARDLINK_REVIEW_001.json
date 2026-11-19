@@ -1,0 +1,35 @@
+{
+  "mutation_executed_on_real_images": false,
+  "script_sha256": "3539a9952d70419517575cba455598478fd67b7651bd71302eddceaaa481ea68",
+  "test_source_sha256": "7ddaac67537bcb6b0497a5b62d1f6a258ee3c9c464bc9210e7782f92e789e429",
+  "dummy_test_command": [
+    "sudo",
+    "python3",
+    "-I",
+    "-B",
+    "docs/evidence/image-hardlink-001/test_apply.py"
+  ],
+  "dummy_test_exit": 0,
+  "dummy_tests_passed": 4,
+  "dummy_test_scope": [
+    "seven atomic replacements preserve bytes/mode",
+    "wrong hash/owner/mode/link count rejected before replacement",
+    "existing journal rejects changes",
+    "injected second replacement failure leaves partial state and retry is refused"
+  ],
+  "read_only_preservation_verifier": {
+    "session": 7751,
+    "exit_code": 0,
+    "seed_loss_full_tree_unchanged": true,
+    "snapshot_content_owner_mode_verified": true,
+    "public_result_file_hashes_verified": true
+  },
+  "initial_read_only_verifier": {
+    "session": 28013,
+    "exit_code": 1,
+    "reason": "legacy snapshot schema lacked type; explicit file schema branch added; no mutation"
+  },
+  "authorization_reference_in_journal": true,
+  "script_sha256_in_journal": true,
+  "physical_identity_exception_in_journal": true
+}

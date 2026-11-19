@@ -1,0 +1,72 @@
+{
+  "parent_compile": {
+    "tempest_guest_source_commit": "7ab5d4ee98b009086d83a98320dc752c3372bf4f",
+    "tempest_guest_source_tree_sha256": "680b42138d4a8d2b1ae2cd7db8f83721366d58ddc754ee590f3471ac0f4452c8",
+    "tempest_guest_source_dirty": false,
+    "tempest_guest_version": "0.1.0",
+    "input_sha256": {
+      "agent": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+      "ebpf": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+      "http": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+      "lws": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+      "guest": "e551b35f3cc230ad1928d6d86c551ff4e4241e4714a4b1452578e63fcb36fd52"
+    },
+    "iso_sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
+    "izanagi_commit": "16d0b55947006a166cfa29dcb8bfe71f65f8c36a",
+    "lws_commit": "2c0ea463f334f10a562e54f1cdc7ba8a474029e2",
+    "architecture": "x86_64"
+  },
+  "child_compile": {
+    "tempest_guest_source_commit": "7ab5d4ee98b009086d83a98320dc752c3372bf4f",
+    "tempest_guest_source_tree_sha256": "680b42138d4a8d2b1ae2cd7db8f83721366d58ddc754ee590f3471ac0f4452c8",
+    "tempest_guest_source_dirty": false,
+    "tempest_guest_version": "0.1.0",
+    "input_sha256": {
+      "agent": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+      "ebpf": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+      "http": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+      "lws": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+      "guest": "e551b35f3cc230ad1928d6d86c551ff4e4241e4714a4b1452578e63fcb36fd52"
+    },
+    "iso_sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
+    "izanagi_commit": "16d0b55947006a166cfa29dcb8bfe71f65f8c36a",
+    "lws_commit": "2c0ea463f334f10a562e54f1cdc7ba8a474029e2",
+    "architecture": "x86_64"
+  },
+  "guest_image_compile": {
+    "tempest_guest_source_commit": "7ab5d4ee98b009086d83a98320dc752c3372bf4f",
+    "tempest_guest_source_tree_sha256": "680b42138d4a8d2b1ae2cd7db8f83721366d58ddc754ee590f3471ac0f4452c8",
+    "tempest_guest_source_dirty": false,
+    "tempest_guest_version": "0.1.0",
+    "input_sha256": {
+      "agent": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+      "ebpf": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+      "http": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+      "lws": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+      "guest": "e551b35f3cc230ad1928d6d86c551ff4e4241e4714a4b1452578e63fcb36fd52"
+    },
+    "iso_sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
+    "izanagi_commit": "16d0b55947006a166cfa29dcb8bfe71f65f8c36a",
+    "lws_commit": "2c0ea463f334f10a562e54f1cdc7ba8a474029e2",
+    "architecture": "x86_64"
+  },
+  "parent_source_manifest_sha256_field": "8ccc5195316236fd6832346b4b483ae3bba64146f3616cc0eb9611a06e524c23",
+  "parent_derivation": {
+    "prepare.py": "4dfa961b927f2b0b097aad2ff5a0eef036b9f0a6c6c50053f398d911b8ef5210",
+    "provision.sh": "2cbd4e8c128f289216aebd21ff364a65b5552ee623df56f345cd17e818ba800e",
+    "dispatcher.py": "2c785fa2d24841ed00e5807604343e31e9409c5b7ae9855d0e0adf5449622b09",
+    "quiesce.py": "34cbc78cfec3caedac52bcaa747df62342383612ee5f3f9aab9ab02bac5cb8b0",
+    "x86_template.py": "beff58866542b0df1741b7bd593a8c6605c2f808a0607264f70782ae74d69cc4"
+  },
+  "child_derivation": {
+    "prepare.py": "4dfa961b927f2b0b097aad2ff5a0eef036b9f0a6c6c50053f398d911b8ef5210",
+    "provision.sh": "2cbd4e8c128f289216aebd21ff364a65b5552ee623df56f345cd17e818ba800e",
+    "dispatcher.py": "faf0c5aef7e5ae7600e77c88df61d84edad6b3cdd39e5b765e65d7a96972e1b9",
+    "quiesce.py": "72fabf3ce527257ab2bb5fb8cb3b8a8ef7e706ff2715b29e5b7c0857bf5390a8",
+    "x86_template.py": "beff58866542b0df1741b7bd593a8c6605c2f808a0607264f70782ae74d69cc4",
+    "delivery_race_fixture.py": "562a44539935b975f3c9b1eba8e141579d12c5791d62206163578f4ddf170dc6"
+  },
+  "parent_fixture": false,
+  "child_fixture": true,
+  "guest_image_fixture": true
+}

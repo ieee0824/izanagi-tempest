@@ -1,0 +1,80 @@
+[
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/packer",
+    "sha256": "ec8feb5888368fae6838caac5b919b4c2ced6e0a0b4da5450861b1111c233fe8",
+    "mode": "0550",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/plugins/github.com/hashicorp/qemu/packer-plugin-qemu_v1.1.8_x5.0_linux_amd64",
+    "sha256": "7093fbbcfe8b2ace01ecb722a49c49a02187929f431c9a48188dc3c8132203d0",
+    "mode": "0550",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/plugins/github.com/hashicorp/qemu/packer-plugin-qemu_v1.1.8_x5.0_linux_amd64_SHA256SUM",
+    "sha256": "e846100c30e6873465fbf9770281cefbeab67cf8cd2e1b7114c6da17d5b77c6c",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/base.iso",
+    "sha256": "d91fb5c7a73528c89e0a1aa9a7d959f9deb9ca3dc5211e39bd73fd7df0d9070e",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/izanagi-agent",
+    "sha256": "bef79dc096be3b699affefd525b3ea54489035403e16afc78dfa8e8a860ca9ee",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/definition/http/setup.sh",
+    "sha256": "72ef1e181bb65df51cf2bdd3d8f6cd7e502a0f9e265b1fdf9109e1fbc6edeaa0",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/definition/http/answers",
+    "sha256": "f29985b574a8a9e4a0456cc0f6b2a33ac0eb9ba4486330fca66ff12fbc2bbe1b",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/definition/lock-down.sh",
+    "sha256": "9860c17fd0c64eaa2cef8f906d8869e8c49df701361fbddff388521de1b48659",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/definition/verify-image.sh",
+    "sha256": "c56dd80ec9855754d6621a1c8139dd2b211274c4df3b3d70a82ef5c8e816bf9d",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/definition/bootstrap.pkr.hcl",
+    "sha256": "b28982f49790d8809cbca6ee18a340d2b014351e00661cf01796fcc0ff92c104",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/definition/guest-bootstrap.sh",
+    "sha256": "2ba814622f57bd7ac0f6af3f27af0c4ffcf896aa085cddabbef7ccb3331e500c",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/definition/bootstrap.pkrvars.json",
+    "sha256": "d1d9baf6c9794df6eb4b145734765be369da5f10225855e1d01d060ac7b648e5",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  },
+  {
+    "path": "/var/lib/tempest-izanagi-bootstrap-build/inputs/definition/inputs.json",
+    "sha256": "0f8218be32f69646618f4b230275cfa748d09fcbc1f9d32108fa28e1b2699248",
+    "mode": "0440",
+    "owner": "root:tempest-kvm"
+  }
+]

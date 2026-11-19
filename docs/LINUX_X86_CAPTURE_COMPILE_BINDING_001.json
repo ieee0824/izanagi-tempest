@@ -1,0 +1,20 @@
+{
+  "parent_compile": {
+    "tempest_guest_source_commit": "06563333e895924fb0b3892dfd1213a5285eb33f",
+    "tempest_guest_source_tree_sha256": "0658b34a13d191c600de78d611cc998d90ac89f75f675e91483d5f0793eacb9a",
+    "tempest_guest_source_dirty": false,
+    "tempest_guest_version": "0.1.0",
+    "input_sha256": {
+      "agent": "81ae0caf1a83cf11b2f990745774fc8b0dbf443e316a10ac92391de1e52138aa",
+      "ebpf": "80869934a2adfca856f26127b25b3396639cbe16a96167a728e1c80ad9990a41",
+      "http": "0d5b6f7f3e9d5dcf0802914db7bfc282be352fba4fd0a4928fa87b50052507f7",
+      "lws": "fca06411b778c978f67222cf878c9053cf37cbd9eefee18b3498122cbe95a46e",
+      "guest": "3bc9fd0a15aa2f1e0e14f8a33731d0051242ae48ca991e937ad8506ae30d4284"
+    },
+    "iso_sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
+    "izanagi_commit": "16d0b55947006a166cfa29dcb8bfe71f65f8c36a",
+    "lws_commit": "2c0ea463f334f10a562e54f1cdc7ba8a474029e2",
+    "architecture": "x86_64"
+  },
+  "compile_scope": "New guest source and binary; old fixture compile metadata is not reused."
+}

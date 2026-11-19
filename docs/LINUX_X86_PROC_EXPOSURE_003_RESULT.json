@@ -1,0 +1,265 @@
+{
+  "status": "paged_proc_and_exec_scan_passed_observer_terminal_unknown",
+  "caller_exit": 0,
+  "observer_exit": 1,
+  "observer_terminal": "unknown after unit GC; not treated as success",
+  "unit": "tempest-izanagi-proc-exposure-003.service",
+  "invocation_id": "42b4754bbf1f48159eace8e9834f033a",
+  "host_boot_id": "30389abc903c40ae89a5c6268ec1c432",
+  "public_helper_host_metadata": {
+    "proc_evidence.py": {
+      "host_uid": 999,
+      "host_gid": 988,
+      "host_mode": "0444",
+      "mapped": {
+        "uid": 0,
+        "gid": 0,
+        "mode": 33060
+      },
+      "source_hash_matches": true
+    },
+    "proc-probe.py": {
+      "host_uid": 999,
+      "host_gid": 988,
+      "host_mode": "0444",
+      "mapped": {
+        "uid": 0,
+        "gid": 0,
+        "mode": 33060
+      },
+      "source_hash_matches": true
+    }
+  },
+  "individual_guest_helper_stat": "not measured; host xattr/mode and successful guest reads do not prove individual guest stat",
+  "saved_proc_checks": {
+    "before_claim": {
+      "passed": true,
+      "pages": 2,
+      "enumerated_processes": 132,
+      "covered_requested_processes": 132,
+      "requested_binding": {
+        "matched": 130,
+        "vanished": 2
+      },
+      "records": 134,
+      "positive_controls": {
+        "cmdline": true,
+        "environ": true,
+        "fd_list": true
+      },
+      "stable_identities": 132,
+      "cmdline_status": {
+        "read": 132,
+        "vanished": 2
+      },
+      "environ_status": {
+        "denied": 130,
+        "read": 2,
+        "vanished": 2
+      },
+      "fd_status": {
+        "denied": 130,
+        "listed": 2,
+        "vanished": 2
+      },
+      "truncated_streams": 0,
+      "unexpected_errors": 0,
+      "wire_bytes": 42112,
+      "started_monotonic_ns": 8486358008,
+      "ended_monotonic_ns": 8664550189,
+      "scope": "paged actor observations of enumerated identities; counts include observer per page; not simultaneous or complete lifetime"
+    },
+    "after_seed": {
+      "passed": true,
+      "pages": 1,
+      "enumerated_processes": 113,
+      "covered_requested_processes": 113,
+      "requested_binding": {
+        "matched": 111,
+        "vanished": 2
+      },
+      "records": 114,
+      "positive_controls": {
+        "cmdline": true,
+        "environ": true,
+        "fd_list": true
+      },
+      "stable_identities": 112,
+      "cmdline_status": {
+        "read": 112,
+        "vanished": 2
+      },
+      "environ_status": {
+        "denied": 111,
+        "vanished": 2,
+        "read": 1
+      },
+      "fd_status": {
+        "denied": 111,
+        "vanished": 2,
+        "listed": 1
+      },
+      "truncated_streams": 0,
+      "unexpected_errors": 0,
+      "wire_bytes": 35109,
+      "started_monotonic_ns": 19806449753,
+      "ended_monotonic_ns": 19906750041,
+      "scope": "paged actor observations of enumerated identities; counts include observer per page; not simultaneous or complete lifetime"
+    },
+    "before_export": {
+      "passed": true,
+      "pages": 1,
+      "enumerated_processes": 116,
+      "covered_requested_processes": 116,
+      "requested_binding": {
+        "matched": 114,
+        "vanished": 2
+      },
+      "records": 117,
+      "positive_controls": {
+        "cmdline": true,
+        "environ": true,
+        "fd_list": true
+      },
+      "stable_identities": 115,
+      "cmdline_status": {
+        "read": 115,
+        "vanished": 2
+      },
+      "environ_status": {
+        "denied": 113,
+        "read": 2,
+        "vanished": 2
+      },
+      "fd_status": {
+        "denied": 113,
+        "listed": 2,
+        "vanished": 2
+      },
+      "truncated_streams": 0,
+      "unexpected_errors": 0,
+      "wire_bytes": 36562,
+      "started_monotonic_ns": 32252928393,
+      "ended_monotonic_ns": 32358426798,
+      "scope": "paged actor observations of enumerated identities; counts include observer per page; not simultaneous or complete lifetime"
+    }
+  },
+  "proc_summary_recomputed_from_private_frames": true,
+  "proc_scope": "enumerated identities in three bounded paged intervals; not complete lifetime, FD contents or short-lived native coverage",
+  "saved_exec_scan": {
+    "passed": true,
+    "executions": 180,
+    "streams": 360,
+    "timed_out": 0,
+    "operations": {
+      "exec": 125,
+      "ping": 8,
+      "claim": 3,
+      "attest": 2,
+      "seed": 27,
+      "probe": 4,
+      "seal": 2,
+      "export": 4,
+      "fetch": 5
+    },
+    "expected_error_reads": 5,
+    "leaked_streams": [],
+    "scope": "captured host CLI exec stdout/stderr only; not native PIPEs or complete proc lifetime"
+  },
+  "capture_metadata_reconciled": true,
+  "capture_files": 540,
+  "capture_directory_mode0700_files0600_uid999_verified": true,
+  "collector_scan_scope": "saved in-run scan results plus metadata/count/size/mode reconciliation; markers not recovered and raw streams not rescanned for markers; saved proc frames summarized separately",
+  "host_timeout_scope": "no host timeout occurred; partial-output behavior covered by unit fixture only",
+  "existing_log_scan_passed": true,
+  "actual_trace_probe_passed": true,
+  "exit_recorder": {
+    "unit_name": "tempest-izanagi-proc-exposure-003.service",
+    "invocation_id": "42b4754bbf1f48159eace8e9834f033a",
+    "unit": {
+      "Result": "success",
+      "ExecMainCode": "1",
+      "ExecMainStatus": "0",
+      "ControlGroup": "/system.slice/tempest-izanagi-proc-exposure-003.service",
+      "ActiveState": "deactivating",
+      "SubState": "stop-post",
+      "InvocationID": "42b4754bbf1f48159eace8e9834f033a"
+    },
+    "service_result": "success",
+    "exit_code": "exited",
+    "exit_status": "0",
+    "scope": "ExecStopPost snapshot; final cgroup and journal checks are separate"
+  },
+  "trusted_lifecycle": [
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-003.service",
+      "MESSAGE_ID": "7d4958e842da4a758f6c1cdc7b36dcc5",
+      "__REALTIME_TIMESTAMP": "1795021824427837",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "42b4754bbf1f48159eace8e9834f033a"
+    },
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-003.service",
+      "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
+      "__REALTIME_TIMESTAMP": "1795021824430224",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "42b4754bbf1f48159eace8e9834f033a"
+    },
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-003.service",
+      "MESSAGE_ID": "7ad2d189f7e94e70a38c781354912448",
+      "__REALTIME_TIMESTAMP": "1795021869618400",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "42b4754bbf1f48159eace8e9834f033a"
+    },
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-003.service",
+      "MESSAGE_ID": "ae8f7b866b0347b9af31fe1c80b127c0",
+      "__REALTIME_TIMESTAMP": "1795021869618725",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "42b4754bbf1f48159eace8e9834f033a"
+    }
+  ],
+  "observer_samples": 51,
+  "observed_qemu": {
+    "pid": 302655,
+    "starttime_ticks": 36438214,
+    "cwd": "/var/lib/tempest-izanagi-proc-exposure-003/work/output/workspace"
+  },
+  "inputs_unchanged": 1309,
+  "old_inputs_evidence_unchanged": true,
+  "external_runtime_unchanged": true,
+  "cgroup_absent": true,
+  "uid999_absent": true,
+  "observed_ports_closed": [
+    35509
+  ],
+  "dummy_transport_key": "retained private pending result review; not read by collector",
+  "free_bytes": 27786539008,
+  "files": {
+    "/var/lib/tempest-izanagi-proc-exposure-003/work/output/summary.json": {
+      "sha256": "ebdabb8d4ea7782157e2308f2644d74bddc88b742550fba9d8144d0424aef928",
+      "bytes": 25128
+    },
+    "/tmp/tempest-proc-exposure-observation-003.jsonl": {
+      "sha256": "a2be4b8e73a8bec1f79381174a2ff72a69fc7bbc64a670e0c6da3d64601de060",
+      "bytes": 42426
+    },
+    "/var/lib/tempest-izanagi-proc-exposure-003/work/evidence/exit-status.json": {
+      "sha256": "c73ddc048da8a64b093891290dabc20393afb68e796d2d95957e2a00ba6e37b9",
+      "bytes": 522
+    },
+    "/tmp/tempest-proc-exposure-003.log": {
+      "sha256": "7ef41c56b1e57d7c3a23fce7b6fbe44dda4bff316a00878ca946b662cee9e059",
+      "bytes": 303
+    }
+  }
+}

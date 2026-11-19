@@ -1,0 +1,92 @@
+{
+  "status": "failed_helper_xattr_setup_before_vm",
+  "caller_exit": 1,
+  "observer_exit": 1,
+  "observer_failure": "same-invocation terminal captured, but no QEMU identity observed",
+  "unit": "tempest-izanagi-proc-exposure-002.service",
+  "invocation_id": "dd6e5cb56b4640ba922e548b3c984f37",
+  "snapshot_source": "d4fd5cbc7189a8f522b84d68ddc1f10e292324f0",
+  "inputs_unchanged": 1309,
+  "old_inputs_evidence_unchanged": true,
+  "external_runtime_unchanged": true,
+  "observer_samples": 6,
+  "qemu_samples": 0,
+  "listener_samples": 0,
+  "failure_location": "os.setxattr after chmod0444 of first public helper",
+  "summary": "not created",
+  "proc_observations": "not reached",
+  "exec_marker_scan": "not reached",
+  "cgroup_absent": true,
+  "uid999_absent": true,
+  "exit_recorder": {
+    "unit_name": "tempest-izanagi-proc-exposure-002.service",
+    "invocation_id": "dd6e5cb56b4640ba922e548b3c984f37",
+    "unit": {
+      "Result": "exit-code",
+      "ExecMainCode": "1",
+      "ExecMainStatus": "1",
+      "ControlGroup": "/system.slice/tempest-izanagi-proc-exposure-002.service",
+      "ActiveState": "deactivating",
+      "SubState": "stop-post",
+      "InvocationID": "dd6e5cb56b4640ba922e548b3c984f37"
+    },
+    "service_result": "exit-code",
+    "exit_code": "exited",
+    "exit_status": "1",
+    "scope": "ExecStopPost snapshot; final cgroup and journal checks are separate"
+  },
+  "trusted_lifecycle": [
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-002.service",
+      "MESSAGE_ID": "7d4958e842da4a758f6c1cdc7b36dcc5",
+      "__REALTIME_TIMESTAMP": "1795021088080729",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "dd6e5cb56b4640ba922e548b3c984f37"
+    },
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-002.service",
+      "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
+      "__REALTIME_TIMESTAMP": "1795021088083152",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "dd6e5cb56b4640ba922e548b3c984f37"
+    },
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-002.service",
+      "MESSAGE_ID": "98e322203f7a4ed290d09fe03c09fe15",
+      "__REALTIME_TIMESTAMP": "1795021088148915",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "dd6e5cb56b4640ba922e548b3c984f37"
+    },
+    {
+      "UNIT": "tempest-izanagi-proc-exposure-002.service",
+      "MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c",
+      "__REALTIME_TIMESTAMP": "1795021088186585",
+      "_BOOT_ID": "30389abc903c40ae89a5c6268ec1c432",
+      "_PID": "1",
+      "_UID": "0",
+      "INVOCATION_ID": "dd6e5cb56b4640ba922e548b3c984f37"
+    }
+  ],
+  "dummy_transport_key": "retained private pending result review; value/hash unread",
+  "scope": "pre-boot source failure plus sampled no-QEMU; no proc or VM acceptance evidence",
+  "files": {
+    "/tmp/tempest-proc-exposure-002.log": {
+      "sha256": "4980817f0c97d5ffb9f81c3a4cfc889618ef543b1bff5cb187aae9ad511ec0db",
+      "bytes": 858
+    },
+    "/tmp/tempest-proc-exposure-observation-002.jsonl": {
+      "sha256": "e1e59dfce6ed4c1823cba86f586faf42f9ac295f853a5b0e553f39e5fb8b2623",
+      "bytes": 2083
+    },
+    "/var/lib/tempest-izanagi-proc-exposure-002/work/evidence/exit-status.json": {
+      "sha256": "ef45e4588542d9ed483db6d659c7a5b58528da448ec71f248f723d2fc9eb76b9",
+      "bytes": 526
+    }
+  }
+}

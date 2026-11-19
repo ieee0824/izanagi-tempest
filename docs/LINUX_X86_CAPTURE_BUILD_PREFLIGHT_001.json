@@ -1,0 +1,14 @@
+{
+  "input_rows": 29,
+  "inputs_and_sources_unchanged": true,
+  "unit_unused": true,
+  "uid999_empty": true,
+  "outputs_absent": true,
+  "fixed_ports_closed": [
+    18082,
+    22222,
+    5902
+  ],
+  "free_bytes": 22948376576,
+  "run_once_sha256": "62c54ce37c6e66d8d1f8e8a993246a95e384581c266f2d05ebb2a0bc5ab4bc6f"
+}

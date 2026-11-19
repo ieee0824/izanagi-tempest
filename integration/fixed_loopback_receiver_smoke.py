@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Measure fixed loopback dummy receipts and listener cleanup without a VM."""
+from contextlib import ExitStack
+import errno
+import json
+import os
+from pathlib import Path
+import secrets
+import select
+import socket
+import sys
+import subprocess
+
+from network_receiver_observe import fresh_listeners, starttime
+
+LOOPBACK = '127.0.0.1'
+TIMEOUT = 2
+REQUEST = b'tempest dummy request\n'
+RESPONSE = b'tempest dummy response\n'
+
+
+class Receiver:
+    def __init__(self, stack):
+        self.listener = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+        self.listener.bind((LOOPBACK, 0))
+        self.listener.listen(1)
+        self.listener.settimeout(TIMEOUT)
+        self.endpoint = self.listener.getsockname()
+        self.inode = os.fstat(self.listener.fileno()).st_ino
+        self.accepted = 0
+        self.matched = 0
+
+    def snapshot(self):
+        if select.select([self.listener], [], [], 0)[0]:
+            raise RuntimeError('unexpected queued connection')
+        return {'accepted': self.accepted, 'matched': self.matched}
+
+    def receive(self):
+        self._receive(REQUEST, RESPONSE)
+
+    def collect_trial_control(self, run_nonce, phase):
+        """Count the fixed request queued by a completed alternate-host control."""
+        if phase not in ('control_before', 'control_after'):
+            raise ValueError('alternate host receipt is only expected during controls')
+        request = f'tempest-dummy-v1:{run_nonce}:{phase}\n'.encode('ascii')
+        if not select.select([self.listener], [], [], 0)[0]:
+            raise RuntimeError('alternate host control did not reach the listener')
+        self._receive(request, None)
+        return self.snapshot()
+
+    def _receive(self, expected, response):
+        peer, _ = self.listener.accept()
+        self.accepted += 1
+        with peer:
+            peer.settimeout(TIMEOUT)
+            with peer.makefile('rb') as stream:
+                request = stream.read(len(expected) + 1)
+            if request != expected:
+                raise RuntimeError('unexpected dummy request')
+            self.matched += 1
+            if response is not None:
+                peer.sendall(response)
+
+
+def observe_linux(receivers):
+    pid = os.getpid()
+    process = Path('/proc') / str(pid)
+
+    def process_identity():
+        return {
+            'pid': pid,
+            'starttime_ticks': starttime((process / 'stat').read_text()),
+            'cgroup': (process / 'cgroup').read_text().splitlines(),
+        }
+
+    owner = process_identity()
+    if not owner['cgroup']:
+        raise RuntimeError('receiver cgroup observation missing')
+    for receiver in receivers.values():
+        endpoint = f'{LOOPBACK}:{receiver.endpoint[1]}'
+        fd = process / 'fd' / str(receiver.listener.fileno())
+        expected = {'local': endpoint, 'all_pids': [pid], 'socket_inode': receiver.inode}
+        if (
+            receiver.inode <= 0
+            or os.readlink(fd) != f'socket:[{receiver.inode}]'
+            or fresh_listeners(receiver.endpoint[1]) != [expected]
+            or os.readlink(fd) != f'socket:[{receiver.inode}]'
+        ):
+            raise RuntimeError('receiver listener identity changed')
+    if process_identity() != owner:
+        raise RuntimeError('receiver owner identity changed')
+    return owner
+
+
+def exchange(receiver):
+    with socket.create_connection(receiver.endpoint, timeout=TIMEOUT) as client:
+        client.sendall(REQUEST)
+        client.shutdown(socket.SHUT_WR)
+        receiver.receive()
+        with client.makefile('rb') as stream:
+            if stream.read(len(RESPONSE) + 1) != RESPONSE:
+                raise RuntimeError('unexpected dummy response')
+
+
+def listener_absent(receiver):
+    if receiver.listener.fileno() != -1:
+        return False
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+        client.settimeout(TIMEOUT)
+        return client.connect_ex(receiver.endpoint) == errno.ECONNREFUSED
+
+
+def main():
+    report = {
+        'scope': 'fixed_loopback_receivers',
+        'run': secrets.token_hex(16),
+        'phases': {},
+        'passed': False,
+    }
+    receivers = {}
+    linux = sys.platform == 'linux'
+    report['linux_identity'] = None
+    try:
+        with ExitStack() as stack:
+            for name in ('same_run_dummy', 'other_dummy'):
+                receivers[name] = Receiver(stack)
+            report['receivers'] = {
+                name: {'port': receiver.endpoint[1], 'inode': receiver.inode}
+                for name, receiver in receivers.items()
+            }
+            if linux:
+                report['linux_identity'] = observe_linux(receivers)
+            for target, receiver in receivers.items():
+                before = {name: item.snapshot() for name, item in receivers.items()}
+                phase = {'before': before}
+                report['phases'][target] = phase
+                if linux:
+                    phase['owner_before'] = observe_linux(receivers)
+                    if phase['owner_before'] != report['linux_identity']:
+                        raise RuntimeError('receiver owner changed before exchange')
+                try:
+                    exchange(receiver)
+                finally:
+                    after = {name: item.snapshot() for name, item in receivers.items()}
+                    phase['after'] = after
+                    phase['delta'] = {
+                        name: {key: count - before[name][key] for key, count in counts.items()}
+                        for name, counts in after.items()
+                    }
+                if linux:
+                    phase['owner_after'] = observe_linux(receivers)
+                    if phase['owner_after'] != report['linux_identity']:
+                        raise RuntimeError('receiver owner changed after exchange')
+                for name, counts in phase['delta'].items():
+                    expected = int(name == target)
+                    if counts != {'accepted': expected, 'matched': expected}:
+                        raise RuntimeError('unexpected receiver count')
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        report['error'] = str(error)
+    cleanup = {}
+    for name, item in receivers.items():
+        try:
+            cleanup[name] = listener_absent(item) and (
+                not linux or fresh_listeners(item.endpoint[1]) == []
+            )
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            cleanup[name] = False
+            report.setdefault('cleanup_errors', {})[name] = str(error)
+    report['listener_absent'] = cleanup
+    report['passed'] = 'error' not in report and len(cleanup) == 2 and all(cleanup.values())
+    print(json.dumps(report, sort_keys=True))
+    return 0 if report['passed'] else 1
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 1:
+        sys.exit('This fixture takes no arguments.')
+    sys.exit(main())
