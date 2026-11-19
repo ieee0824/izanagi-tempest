@@ -1074,14 +1074,14 @@ static int map_worker_pipes(const int *inherited, size_t count)
 }
 
 /* Apply the same fixed privilege drop to probe and relay children. */
-static int drop_connect4_worker_privileges(void)
+static int drop_fixed_privileges(uid_t uid, gid_t gid)
 {
     for (unsigned cap = 0; cap <= CAP_LAST_CAP; ++cap) {
         if (prctl(PR_CAPBSET_DROP, (unsigned long)cap, 0UL, 0UL, 0UL) < 0)
             return -1;
     }
-    if (setgroups(0, NULL) < 0 || setresgid(62004, 62004, 62004) < 0 ||
-        setresuid(62004, 62004, 62004) < 0)
+    if (setgroups(0, NULL) < 0 || setresgid(gid, gid, gid) < 0 ||
+        setresuid(uid, uid, uid) < 0)
         return -1;
     struct __user_cap_header_struct header = {
         .version = _LINUX_CAPABILITY_VERSION_3,
@@ -1091,6 +1091,11 @@ static int drop_connect4_worker_privileges(void)
         prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0)
         return -1;
     return 0;
+}
+
+static int drop_connect4_worker_privileges(void)
+{
+    return drop_fixed_privileges(62004, 62004);
 }
 
 /* Run only in the dedicated fork child, before the manager takes the lease.
@@ -1848,8 +1853,67 @@ struct fixed_relay_result {
 
 typedef int (*fixed_relay_exchange)(const struct fixed_relay_pipes *, int64_t, void *);
 
+struct fixed_relay_client {
+    const char *binary;
+    const char *run_nonce;
+    const char *phase;
+    /* Complete IZANAGI_SECRET_FILE assignment from the trusted VM owner. */
+    const char *secret_env;
+};
+
+/* Called only by the trusted harness. The client runs as the dedicated VM
+ * owner, inherits no supervisor descriptors, and writes its ACK to stdout. */
+int exchange_fixed_relay_client(const struct fixed_relay_pipes *relay,
+                                int64_t deadline, void *context)
+{
+    const struct fixed_relay_client *client = context;
+    pid_t owner = getpid();
+    pid_t child = fork();
+    if (child < 0)
+        return -1;
+    if (child == 0) {
+        if (drop_fixed_privileges(999, 988) < 0 ||
+            prctl(PR_SET_PDEATHSIG, SIGKILL, 0UL, 0UL, 0UL) < 0 ||
+            getppid() != owner || map_fixed_relay_client_pipes(relay) < 0)
+            _exit(126);
+        char *const argv[] = {
+            (char *)client->binary, (char *)client->run_nonce, (char *)client->phase, NULL,
+        };
+        char *const env[] = {(char *)client->secret_env, NULL};
+        execve(client->binary, argv, env);
+        _exit(127);
+    }
+
+    int pidfd = retain_connect4_worker(child);
+    int error = pidfd < 0 ? errno : 0;
+    if (pidfd >= 0) {
+        struct pollfd exited = {.fd = pidfd, .events = POLLIN};
+        if (poll_before(&exited, deadline) < 0)
+            error = errno;
+    }
+    /* Sole reaper: even if pidfd acquisition failed, PID reuse is impossible. */
+    if (error != 0)
+        (void)kill(child, SIGKILL);
+    int status;
+    pid_t reaped;
+    do {
+        reaped = waitpid(child, &status, 0);
+    } while (reaped < 0 && errno == EINTR);
+    if (reaped < 0 && error == 0)
+        error = errno;
+    if (pidfd >= 0)
+        close(pidfd);
+    if (error == 0 && (!WIFEXITED(status) || WEXITSTATUS(status) != 0))
+        error = EPROTO;
+    if (error != 0) {
+        errno = error;
+        return -1;
+    }
+    return 0;
+}
+
 static int observe_fixed_relay(const struct connect4_worker *worker,
-                              const struct fixed_relay_pipes *relay,
+                              struct fixed_relay_pipes *relay,
                               int64_t deadline, fixed_relay_exchange exchange,
                               void *context, struct fixed_relay_result *observed)
 {
@@ -1861,6 +1925,11 @@ static int observe_fixed_relay(const struct connect4_worker *worker,
         if (exchange == NULL || exchange(relay, deadline, context) < 0)
             error = errno != 0 ? errno : EPROTO;
     }
+    /* Close the supervisor's write end so an interrupted client produces EOF. */
+    close(relay->request);
+    close(relay->response);
+    relay->request = -1;
+    relay->response = -1;
     if (observe_fixed_relay_exit(worker, deadline, &observed->relay_exit) < 0)
         return -1;
     if (error != 0) {
@@ -1890,8 +1959,10 @@ int run_fixed_relay_control(uint16_t port, int alternate, int controller_pidfd,
         result = observe_fixed_relay(&worker, &relay, deadline, exchange, context, observed);
         error = result < 0 ? errno : 0;
     }
-    close(relay.request);
-    close(relay.response);
+    if (relay.request >= 0)
+        close(relay.request);
+    if (relay.response >= 0)
+        close(relay.response);
     close(relay.status);
 
     /* Sole reaper, holding the original pidfd until the child is reaped. */
@@ -1981,8 +2052,10 @@ int run_restricted_fixed_relay(
             result = controller_is_live(controller_pidfd);
         saved = result < 0 ? errno : 0;
     }
-    close(relay.request);
-    close(relay.response);
+    if (relay.request >= 0)
+        close(relay.request);
+    if (relay.response >= 0)
+        close(relay.response);
     close(relay.status);
     return finish_connect4_worker(trial, &worker, pinned, saved, pending);
 }
