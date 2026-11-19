@@ -44,7 +44,7 @@ jobs:
         run: gcc -std=c17 -Wall -Wextra -Werror -c docs/evidence/connect4-fixture-001/policy.c -o "$RUNNER_TEMP/connect4-policy.o"
       - name: Compile and link the fixed-host cases without running them
         run: |
-          for fixture_case in 0 1 2 3 4; do
+          for fixture_case in 0 1 2 3 4 5 6 7; do
             gcc -std=c17 -Wall -Wextra -Werror -DCONNECT4_CASE="$fixture_case" \
               docs/evidence/connect4-fixture-001/fixture.c -o "$RUNNER_TEMP/connect4-fixture-$fixture_case"
           done
