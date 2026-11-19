@@ -12,18 +12,35 @@ use std::{
 const IZANAGI_MCP_ARTIFACT: &str = "/usr/local/libexec/tempest/izanagi-mcp-fixture";
 const IZANAGI_MCP_SHA256: &str = "088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8";
 
-pub(super) fn fixed_mcp_snapshot() -> Result<super::os::Snapshot, super::os::Fault> {
-    let snapshot = super::os::Snapshot::trusted(std::path::Path::new(IZANAGI_MCP_ARTIFACT))?;
-    if snapshot.sha256 != IZANAGI_MCP_SHA256 {
-        return Err(super::os::Fault::Identity);
+pub(super) struct FixedMcpArtifact(super::os::Snapshot);
+
+impl FixedMcpArtifact {
+    pub(super) fn open() -> Result<Self, super::os::Fault> {
+        let snapshot = super::os::Snapshot::trusted(std::path::Path::new(IZANAGI_MCP_ARTIFACT))?;
+        if snapshot.sha256 != IZANAGI_MCP_SHA256 {
+            return Err(super::os::Fault::Identity);
+        }
+        Ok(Self(snapshot))
     }
-    Ok(snapshot)
+
+    pub(super) fn executable_fd(&self) -> std::os::fd::RawFd {
+        self.0.fd()
+    }
+
+    pub(super) fn verify_stdio(
+        &self,
+        child: &super::identity::Process,
+        stdin: &super::identity::Descriptor,
+        stdout: &super::identity::Descriptor,
+    ) -> Result<(), super::os::Fault> {
+        verify_mcp_stdio(child, self.0.identity()?, stdin, stdout)
+    }
 }
 
 /// A caller holds the original pidfd and keeps the worker frozen while
 /// observing both standard streams. Release also requires the group-level
 /// membership and pipe-holder checks.
-pub(super) fn verify_mcp_stdio(
+fn verify_mcp_stdio(
     child: &super::identity::Process,
     executable: (u64, u64),
     stdin: &super::identity::Descriptor,

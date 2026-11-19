@@ -170,6 +170,11 @@ impl Snapshot {
         self.fd.as_raw_fd()
     }
 
+    pub(super) fn identity(&self) -> Result<(u64, u64), Fault> {
+        let metadata = fs::metadata(format!("/proc/self/fd/{}", self.fd()))?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+
     pub(super) fn materialize(&self, target: &mut File) -> Result<(), Fault> {
         let mut offset = 0;
         let mut buffer = [0_u8; 65536];

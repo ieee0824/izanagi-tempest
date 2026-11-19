@@ -90,11 +90,6 @@ struct SpawnSpec<'a> {
     ipc: &'a [(RawFd, RawFd)],
 }
 
-fn code_identity(code: &Snapshot) -> Result<(u64, u64), Fault> {
-    let metadata = fs::metadata(format!("/proc/self/fd/{}", code.fd()))?;
-    Ok((metadata.dev(), metadata.ino()))
-}
-
 fn write_event(channel: &Channel, manifest: &Manifest) -> Result<(), Fault> {
     let bytes = serde_json::to_vec(manifest).map_err(|_| Fault::Identity)?;
     channel.send(&bytes)
@@ -310,7 +305,7 @@ fn spawn(
         group.attach(role, process.pid)?;
         registry.attached(id)?;
         let mut expected = process.identity()?;
-        expected.code = code_identity(code)?;
+        expected.code = code.identity()?;
         Ok((process, expected, id))
     })();
     let (process, expected, record) = match bound {
