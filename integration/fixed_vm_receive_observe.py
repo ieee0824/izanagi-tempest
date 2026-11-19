@@ -8,6 +8,8 @@ import uuid
 PHASES = ('control_before', 'allow_same_run', 'deny_other', 'control_after')
 FIELDS = {'schema_version', 'run_nonce', 'boot_id'}
 COUNT_FIELDS = ('received', 'matched')
+FIXED_IMAGE_SHA256 = '8e6ad453eea6a270fcee63e3dae5e79f90a4d25e70420c07f9fde52d2f51c3f4'
+FIXED_GUEST_SHA256 = '3bc9fd0a15aa2f1e0e14f8a33731d0051242ae48ca991e937ad8506ae30d4284'
 RECEIVER_PATH = Path('readonly-check/fixed-vm-receive.py')
 RECEIVER_SOURCE = Path(__file__).resolve().parents[1] / 'image/fixed_vm_receive.py'
 
@@ -115,7 +117,9 @@ def preflight_guest(execute, build_inputs):
     """Check the dedicated image and capture boot identity before the first phase."""
     if build_inputs.get('fixed_vm_receiver_fixture') is not True:
         raise ValueError('fixed receiver fixture image required')
-    code = """import json, os, pwd, stat, uuid
+    if build_inputs.get('input_sha256', {}).get('guest') != FIXED_GUEST_SHA256:
+        raise ValueError('fixed receiver guest input digest mismatch')
+    code = """import hashlib, json, os, pwd, stat, uuid
 from pathlib import Path
 path = Path('/run/tempest-fixed-vm-receiver')
 info = path.lstat()
@@ -125,8 +129,15 @@ if (owner.pw_uid == 0 or os.geteuid() != owner.pw_uid or os.getegid() != owner.p
     or not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700
     or next(path.iterdir(), None) is not None):
     raise SystemExit('invalid fixed receiver record directory')
+guest = '/usr/local/libexec/tempest-guest-native'
+manifest = json.loads(Path('/etc/tempest/image.json').read_bytes())
+with Path(guest).open('rb') as binary:
+    actual = hashlib.file_digest(binary, 'sha256').hexdigest()
+if (manifest.get('fixed_vm_receiver_fixture') is not True
+    or manifest['input_sha256']['guest'] != actual or manifest['installed_sha256'][guest] != actual):
+    raise SystemExit('invalid fixed receiver guest manifest')
 boot = uuid.UUID(Path('/proc/sys/kernel/random/boot_id').read_text().strip())
-print(json.dumps({'boot_id': str(boot), 'uid': info.st_uid, 'gid': info.st_gid}))
+print(json.dumps({'boot_id': str(boot), 'uid': info.st_uid, 'gid': info.st_gid, 'guest_sha256': actual}))
 """
     result = execute('/usr/bin/python3', '-I', '-B', '-c', code, timeout=10)
     if result.returncode != 0:
@@ -135,11 +146,13 @@ print(json.dumps({'boot_id': str(boot), 'uid': info.st_uid, 'gid': info.st_gid})
     if len(stdout) > 256 or stdout.count('\n') != 1 or not stdout.endswith('\n'):
         raise ValueError('invalid guest preflight framing')
     record = json.loads(stdout, object_pairs_hook=unique_object)
-    if not isinstance(record, dict) or set(record) != {'boot_id', 'uid', 'gid'}:
+    if not isinstance(record, dict) or set(record) != {'boot_id', 'uid', 'gid', 'guest_sha256'}:
         raise ValueError('invalid guest preflight schema')
     boot_id = record['boot_id']
     if not isinstance(boot_id, str) or str(uuid.UUID(boot_id)) != boot_id:
         raise ValueError('invalid guest preflight boot ID')
     if any(type(record[key]) is not int or record[key] <= 0 for key in ('uid', 'gid')):
         raise ValueError('invalid guest preflight ownership')
+    if record['guest_sha256'] != FIXED_GUEST_SHA256:
+        raise ValueError('guest executable digest mismatch')
     return record

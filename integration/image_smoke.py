@@ -26,6 +26,7 @@ from proc_evidence import CONTROL_KEY, CONTROL_VALUE
 import proc_paging
 import sidecar_evidence
 import network_evidence
+import fixed_vm_receive_observe
 
 
 def sha(path):
@@ -50,7 +51,20 @@ def main():
                         help='retain private exec stdout/stderr and scan dummy management markers')
     parser.add_argument('--tempest', type=Path, help='exercise the independent Rust MCP supervisor/bridge for measured GETs')
     parser.add_argument('--delivery-race-fixture', action='store_true', help='Require forced root deliver PID in quiesce kill evidence')
+    parser.add_argument('--fixed-vm-receiver-preflight', action='store_true',
+                        help='boot only the fixed receiver image and verify initial guest state')
     args = parser.parse_args()
+    fixed_image_sha = None
+    if args.fixed_vm_receiver_preflight:
+        if (sys.platform != 'linux' or not args.exec_evidence or args.offline_artifacts
+                or args.network_evidence or args.sidecar_evidence or args.proc_evidence
+                or args.tempest or args.delivery_race_fixture or not args.build_inputs):
+            parser.error('fixed receiver preflight requires Linux, --exec-evidence, --build-inputs and no other fixture')
+        fixed_image_sha = sha(args.image)
+        if fixed_image_sha != fixed_vm_receive_observe.FIXED_IMAGE_SHA256:
+            parser.error('fixed receiver image digest mismatch')
+        if sha(args.build_inputs) != '0e75f885f5b3b7a300a9128f3041d6fd583b43b2933cee92fa2cd634fe80867c':
+            parser.error('fixed receiver build inputs digest mismatch')
     if args.sidecar_evidence and (not args.exec_evidence or args.proc_evidence or args.tempest is not None or args.delivery_race_fixture):
         parser.error('--sidecar-evidence requires --exec-evidence and excludes proc/tempest/delivery-race modes')
     if args.proc_evidence and not args.exec_evidence:
@@ -85,6 +99,8 @@ def main():
     from transport import mapped_metadata
     import stat
     mapped_metadata(public, stat.S_IFDIR | 0o777)
+    if args.fixed_vm_receiver_preflight:
+        fixed_vm_receive_observe.stage_receiver(box.workspace, mapped_metadata)
     if args.proc_evidence:
         for source, name in [('proc_evidence.py', 'proc_evidence.py'), ('proc_paging.py', 'proc-probe.py')]:
             path = public / name
@@ -117,11 +133,11 @@ def main():
     if args.sidecar_evidence:
         template = sidecar_evidence.configure(template)
     config.write_text(template.replace('image = "default"', 'image = ' + json.dumps(str(args.image.resolve()))))
-    if args.network_evidence:
+    if args.network_evidence or args.fixed_vm_receiver_preflight:
         network_evidence.require_config(config.read_text())
     base = [str(args.izanagi.resolve()), '--config', str(config)]
     report = {'schema_version': 1, 'status': 'incomplete', 'checks': {},
-              'image_sha256': sha(args.image), 'izanagi_sha256': sha(args.izanagi),
+              'image_sha256': fixed_image_sha or sha(args.image), 'izanagi_sha256': sha(args.izanagi),
               'build_inputs_sha256': sha(inputs_path), 'restrict_network': True}
     offline_artifacts = None
     if args.offline_artifacts is not None:
@@ -284,6 +300,11 @@ def main():
             time.sleep(0.5)
         else:
             raise RuntimeError('VM boot failed')
+        if args.fixed_vm_receiver_preflight:
+            report['checks']['fixed_vm_receiver'] = fixed_vm_receive_observe.preflight_guest(execute, build_inputs)
+            report['status'] = 'fixed_receiver_preflight_collected'
+            save()
+            return
         proc_probe('before_claim')
         check('inventory', 'id; cat /etc/tempest/image.json; stat -c "%u %g %a %n" /workspace /workspace/.tempest-control; cat /proc/mounts')
         image_manifest = json.loads(check('image_manifest', 'cat /etc/tempest/image.json'))
@@ -618,7 +639,12 @@ def main():
                     child.wait(timeout=5)
         if process is not None:
             try:
-                subprocess.run(base + ['down'], cwd=box.workspace, capture_output=True, timeout=30, env=environment)
+                down_result = subprocess.run(base + ['down'], cwd=box.workspace, capture_output=True, timeout=30, env=environment)
+                if args.fixed_vm_receiver_preflight:
+                    report['fixed_receiver_down_exit'] = down_result.returncode
+                    if down_result.returncode != 0:
+                        report['status'] = 'fixed_receiver_cleanup_failed'
+                        raise RuntimeError('fixed receiver VM down failed')
             finally:
                 # up can still be in startup retries without a registered session.
                 # Its private process group includes only this test's supervisor/VM.
@@ -628,6 +654,10 @@ def main():
                     except ProcessLookupError:
                         pass
                 process.wait(timeout=30)
+                if args.fixed_vm_receiver_preflight:
+                    hmac_path.unlink()
+                    report['fixed_receiver_up_exit'] = process.returncode
+                    save()
     instance = Path.home() / '.izanagi/instances' / hashlib.sha256(str(box.workspace).encode()).hexdigest()
     logs = output / 'izanagi-logs'
     logs.mkdir(mode=0o700)
