@@ -597,10 +597,10 @@ done:
     return 0;
 }
 
-static int worker_gate_is_read_end(pid_t child)
+static int check_worker_pipe_direction(pid_t child, int fd, int direction)
 {
     char path[64], line[128];
-    snprintf(path, sizeof(path), "/proc/%ld/fdinfo/3", (long)child);
+    snprintf(path, sizeof(path), "/proc/%ld/fdinfo/%d", (long)child, fd);
     FILE *info = fopen(path, "re");
     if (!info)
         return -1;
@@ -618,7 +618,7 @@ static int worker_gate_is_read_end(pid_t child)
             int consumed;
             if (found || sscanf(line + 6, "%o%n", &flags, &consumed) != 1 ||
                 strcmp(line + 6 + consumed, "\n") != 0 ||
-                (flags & (O_PATH | O_ACCMODE)) != O_RDONLY)
+                (flags & (O_PATH | O_ACCMODE)) != (unsigned)direction)
                 break;
             found = 1;
         }
@@ -631,17 +631,24 @@ static int worker_gate_is_read_end(pid_t child)
     return 0;
 }
 
+static int check_pipe_end(int fd, int direction, struct stat *identity)
+{
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0 || fstat(fd, identity) < 0)
+        return -1;
+    if ((flags & (O_PATH | O_ACCMODE)) != direction || !S_ISFIFO(identity->st_mode)) {
+        errno = ESTALE;
+        return -1;
+    }
+    return 0;
+}
+
 /* The fixed worker retains only gate read end 3 at this stage. */
 static int check_connect4_worker_fds(pid_t child, int gate_fd)
 {
     struct stat writer, reader;
-    int flags = fcntl(gate_fd, F_GETFL);
-    if (flags < 0 || fstat(gate_fd, &writer) < 0)
+    if (check_pipe_end(gate_fd, O_WRONLY, &writer) < 0)
         return -1;
-    if ((flags & (O_PATH | O_ACCMODE)) != O_WRONLY || !S_ISFIFO(writer.st_mode)) {
-        errno = ESTALE;
-        return -1;
-    }
     char path[64];
     snprintf(path, sizeof(path), "/proc/%ld/fd", (long)child);
     DIR *table = opendir(path);
@@ -676,7 +683,7 @@ static int check_connect4_worker_fds(pid_t child, int gate_fd)
         errno = ESTALE;
         return -1;
     }
-    return worker_gate_is_read_end(child);
+    return check_worker_pipe_direction(child, 3, O_RDONLY);
 }
 
 /* The manager has closed its own copy of the readiness write end. */
