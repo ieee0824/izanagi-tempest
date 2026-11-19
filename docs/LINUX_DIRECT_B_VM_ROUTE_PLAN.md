@@ -121,3 +121,11 @@ exec 後の固定ファイルの device/inode、MCP 側の stdin/stdout の方�
 MCP stdout EOF と両子の回収を独立に確認する。
 `supervisor.rs::session_cli` の drain 記録は参考にするが、
 任意 upstream argv を受ける入口はこの固定結線に接続しない。
+
+room #17053 の固定 artifact 検査は `route_contract::fixed_mcp_snapshot` に置く。
+固定 SHA を照合する対象は `os::Snapshot::trusted` が sealed memfd に
+コピーしたバイト列とする。レビュー対象のビルド出力は /tmp 配下にあるため、
+起動時の入力は root 所有で書込制限した
+`/usr/local/libexec/tempest/izanagi-mcp-fixture` を予定する。
+このパスは staging 先の契約であり、配置と loader/library closure の確認は
+実行前に行う。artifact 検査からプロセスを起動する入口はまだない。

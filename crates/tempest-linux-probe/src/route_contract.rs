@@ -6,6 +6,20 @@ use std::{
     time::{Duration, Instant},
 };
 
+// The reviewed build must be staged beneath a root-owned, non-writable path
+// before Snapshot::trusted can consume it. The build output under /tmp is not
+// an executable source for this fixture.
+const IZANAGI_MCP_ARTIFACT: &str = "/usr/local/libexec/tempest/izanagi-mcp-fixture";
+const IZANAGI_MCP_SHA256: &str = "088a5ca1fcf6f78501fabb329ff41a6318935e4971d86ef23e98626df5c3b0f8";
+
+pub(super) fn fixed_mcp_snapshot() -> Result<super::os::Snapshot, super::os::Fault> {
+    let snapshot = super::os::Snapshot::trusted(std::path::Path::new(IZANAGI_MCP_ARTIFACT))?;
+    if snapshot.sha256 != IZANAGI_MCP_SHA256 {
+        return Err(super::os::Fault::Identity);
+    }
+    Ok(snapshot)
+}
+
 struct UniqueValue(serde_json::Value);
 
 impl<'de> serde::Deserialize<'de> for UniqueValue {
