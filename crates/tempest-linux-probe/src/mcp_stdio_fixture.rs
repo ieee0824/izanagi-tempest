@@ -60,33 +60,50 @@ pub(super) fn expected_results() -> [serde_json::Value; 2] {
     ]
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub(super) enum ExchangeStage {
+    Release = 125,
+    PipeSetup = 130,
+    InitializeSend = 131,
+    InitializeResponse = 132,
+    ToolListSend = 133,
+    ToolListResponse = 134,
+    StdoutEof = 135,
+}
+
 /// The caller supplies the reviewed results and releases this code only
 /// after checking the isolated child's executable and pipe ownership.
-pub(crate) fn exchange(
+pub(super) fn exchange(
     requests: OwnedFd,
     responses: OwnedFd,
     initialize_result: &serde_json::Value,
     catalog_result: &serde_json::Value,
     deadline: Instant,
-) -> io::Result<()> {
+) -> Result<(), (ExchangeStage, io::Error)> {
     let mut requests = File::from(requests);
     let mut responses = File::from(responses);
     for file in [&requests, &responses] {
         let fd = file.as_raw_fd();
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-            return Err(io::Error::last_os_error());
+            return Err((ExchangeStage::PipeSetup, io::Error::last_os_error()));
         }
     }
 
-    send(&mut requests, INITIALIZE, deadline)?;
-    receive(&mut responses, 1, initialize_result, deadline)?;
-    send(&mut requests, INITIALIZED, deadline)?;
-    send(&mut requests, TOOLS_LIST, deadline)?;
-    receive(&mut responses, 2, catalog_result, deadline)?;
+    send(&mut requests, INITIALIZE, deadline)
+        .map_err(|error| (ExchangeStage::InitializeSend, error))?;
+    receive(&mut responses, 1, initialize_result, deadline)
+        .map_err(|error| (ExchangeStage::InitializeResponse, error))?;
+    send(&mut requests, INITIALIZED, deadline)
+        .map_err(|error| (ExchangeStage::ToolListSend, error))?;
+    send(&mut requests, TOOLS_LIST, deadline)
+        .map_err(|error| (ExchangeStage::ToolListSend, error))?;
+    receive(&mut responses, 2, catalog_result, deadline)
+        .map_err(|error| (ExchangeStage::ToolListResponse, error))?;
     drop(requests);
 
-    expect_stdout_eof(&mut responses, deadline)
+    expect_stdout_eof(&mut responses, deadline).map_err(|error| (ExchangeStage::StdoutEof, error))
 }
 
 fn expect_stdout_eof(responses: &mut File, deadline: Instant) -> io::Result<()> {
@@ -289,7 +306,8 @@ mod tests {
             Instant::now(),
         )
         .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(error.0, ExchangeStage::InitializeSend);
+        assert_eq!(error.1.kind(), io::ErrorKind::TimedOut);
         assert_eq!(File::from(read_request).read(&mut [0]).unwrap(), 0);
     }
 

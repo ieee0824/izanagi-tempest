@@ -630,8 +630,7 @@ fn run_fixed_caller(
     unsafe {
         libc::_exit(match result {
             Ok(()) => 0,
-            Err(super::os::Fault::Identity) => 125,
-            Err(_) => 126,
+            Err(stage) => stage as i32,
         })
     }
 }
@@ -642,12 +641,12 @@ fn exchange_after_release(
     responses: OwnedFd,
     expected: [&Value; 2],
     deadline: Instant,
-) -> Result<(), super::os::Fault> {
+) -> Result<(), mcp_stdio_fixture::ExchangeStage> {
     mcp_stdio_fixture::expect_control_byte(gate, b'R', deadline)
-        .map_err(|_| super::os::Fault::Identity)?;
+        .map_err(|_| mcp_stdio_fixture::ExchangeStage::Release)?;
     let [initialize, catalog] = expected;
-    mcp_stdio_fixture::exchange(requests, responses, initialize, catalog, deadline)?;
-    Ok(())
+    mcp_stdio_fixture::exchange(requests, responses, initialize, catalog, deadline)
+        .map_err(|(stage, _)| stage)
 }
 
 /// Reap both tracked direct children before accepting a completed exchange.
@@ -1217,7 +1216,7 @@ mod tests {
                 [&Value::Null; 2],
                 Instant::now() + Duration::from_secs(1),
             ),
-            Err(crate::os::Fault::Identity),
+            Err(mcp_stdio_fixture::ExchangeStage::Release),
         );
         assert_eq!(std::fs::File::from(request_read).read(&mut [0]).unwrap(), 0);
     }
