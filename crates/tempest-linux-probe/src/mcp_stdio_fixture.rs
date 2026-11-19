@@ -171,6 +171,26 @@ mod tests {
     }
 
     #[test]
+    fn rejects_an_oversize_unterminated_response() {
+        let (read_end, write_end) = crate::os::pipe().unwrap();
+        let writer = std::thread::spawn(move || {
+            File::from(write_end)
+                .write_all(&vec![b' '; MAX_FRAME_BYTES + 1])
+                .unwrap();
+        });
+        let error = receive(
+            &mut File::from(read_end),
+            1,
+            &serde_json::json!({}),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap_err();
+        writer.join().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "oversize MCP response");
+    }
+
+    #[test]
     fn elapsed_deadline_sends_no_requests_and_closes_the_request_pipe() {
         let (read_request, write_request) = crate::os::pipe().unwrap();
         let (read_response, _write_response) = crate::os::pipe().unwrap();
