@@ -73,3 +73,11 @@ room #16989 の範囲で、`b98090c` の `fixture.c` と `policy.c` を `git sho
 終了コードは1。前対照の受理件数は許可側1件、拒否側1件。試験本体は `Operation not permitted` で終了し、workerの接続結果と後対照の受理件数は未観測。ログは拒否された操作を特定できる粒度を持たないため、正常系の受入は未達である。
 
 終了後に `/sys/fs/cgroup/tempest-connect4-fixture-001`、`/sys/fs/bpf/tempest-connect4-fixture-001`、`/var/lib/tempest-connect4-fixture-001` の不在と、`/var/lib/tempest-connect4-fixture-001.retired` がroot所有・0700のディレクトリであることを確認した。固定名での再実行は行わず、退役台帳を保全する。結果は room #16990 に投稿した。
+
+## 診断試行と修正後の正常試行
+
+`5e4a7ed` を `-DCONNECT4_CASE=3` でビルドし、診断専用名 `tempest-connect4-fixture-diagnostic-001` の4パスが未使用と確認して一度実行した。バイナリSHA-256は `122f132ca834dc3f7f566dcbc3bf634bd1a86ea8a2fb55871c8200e1f2692794`。終了1、前対照 `(1,1)`、試験中と後対照は未観測。診断は `worker-privileges` の `Groups` 不一致で `errno=1`、`pin_created=1`。終了後に固定pin、専用cgroup、現行台帳の不在と退役台帳の存在を確認した。room #16995 に報告済み。
+
+同ホストで補助グループが空の別プロセスを観測すると、`getgroups()` は空で、`Groups:` の後ろにタブと空白があった。`4c53105` で空白だけの値を空集合として扱い、補助GIDや打切りは拒否するよう修正した。
+
+`a1b3180` を `-DCONNECT4_CASE=4` でビルドし、固定名 `tempest-connect4-fixture-normal-002` の4パスが未使用と確認して一度実行した。バイナリSHA-256は `a5f1f08d62cab54486d2b74b3cd6b600614b1433410ec68eb8e2d0d43e74a3b9`。終了0、前 `(1,1)`、試験中 `(1,0)`、後 `(1,1)`。workerは `CLD_EXITED`、status 0。workerのstatus 0は許可先への接続成功と拒否先への `EPERM` の両方を要する。終了後に固定pin、専用cgroup、現行台帳の不在とroot所有・0700の退役台帳を確認した。元2件の台帳の `trial-identity` SHA-256は一致した。room #16997 に報告済み。起動許可前後の強制終了は未実行。
