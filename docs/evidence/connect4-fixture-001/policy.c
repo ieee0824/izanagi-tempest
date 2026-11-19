@@ -155,3 +155,30 @@ int reopen_connect4_link(const char *path, uint32_t link_id,
     errno = error;
     return -1;
 }
+
+/* Capture this from the original program FD, before link creation. */
+int read_connect4_program_id(int program_fd, uint32_t *program_id)
+{
+    if (program_fd < 0 || program_id == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    *program_id = 0;
+    struct bpf_prog_info info = {0};
+    union bpf_attr attr = {
+        .info = {
+            .bpf_fd = (uint32_t)program_fd,
+            .info_len = sizeof(info),
+            .info = (uintptr_t)&info,
+        },
+    };
+    if (bpf_call(BPF_OBJ_GET_INFO_BY_FD, &attr) != 0)
+        return -1;
+    if (attr.info.info_len < offsetof(struct bpf_prog_info, id) + sizeof(info.id) ||
+        info.type != BPF_PROG_TYPE_CGROUP_SOCK_ADDR || info.id == 0) {
+        errno = ESTALE;
+        return -1;
+    }
+    *program_id = info.id;
+    return 0;
+}
