@@ -36,7 +36,8 @@ impl FixedMcpArtifact {
     ///
     /// # Safety
     /// The caller must be the dedicated, single-threaded fixture child,
-    /// already tracked by the supervisor and attached to its cgroup.
+    /// created with CLONE_NEWPID, tracked by the supervisor, and attached
+    /// to its cgroup.
     /// Its root directory must be freshly created for this trial.
     /// This function consumes the child's inherited descriptor table.
     pub(super) unsafe fn exec_mcp(
@@ -130,8 +131,12 @@ impl FixedMcpArtifact {
         let state = child.security_state()?;
         let supervisor = super::identity::namespace_ids(std::process::id())?;
         if state.identity.code != executable
-            || state.identity.namespaces[0] == supervisor[0]
-            || state.identity.namespaces[2] == supervisor[2]
+            || state
+                .identity
+                .namespaces
+                .iter()
+                .zip(supervisor)
+                .any(|(observed, manager)| *observed == manager)
             || state.uid != [MCP_UID; 4]
             || state.gid != [MCP_UID; 4]
             || !state.groups.is_empty()
