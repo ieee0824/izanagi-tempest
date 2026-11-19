@@ -44,7 +44,8 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 [Issue #36 の測定記録](https://github.com/ieee0824/izanagi-tempest/issues/36#issuecomment-7010159462)と
 cc-sakura 投稿 17357 に基づく Linux x86_64 の `--version` 用の一覧です。
 固定 CLI を専用設定とともに新規 root に配置し、下記の読み取り専用入力で起動できました。
-共有ライブラリのターゲットは `/usr/lib/x86_64-linux-gnu/` 配下です。
+ホストでの共有ライブラリの解決先は `/usr/lib/x86_64-linux-gnu/` 配下です。
+試験 root 内の配置先は `/lib/x86_64-linux-gnu/` 配下で、CLI は `/bin/claude` です。
 
 | 入力 | SHA-256 |
 |---|---|
@@ -59,6 +60,11 @@ cc-sakura 投稿 17357 に基づく Linux x86_64 の `--version` 用の一覧で
 ELF の `PT_INTERP` が指定する `/lib64/ld-linux-x86-64.so.2` にも上表と同じローダーを配置しました。
 試験では `ld.so.cache`、`/etc`、`/proc`、`/dev`、通常 HOME を配置せず、起動後に一時 root を回収しました。
 個々のファイルの必要性、動的ロード、ログインやモデル実行時の依存は未確認です。
+
+cc-sakura 投稿 17359 のディスク上の再現では、CLI 単体が 365,842,960 B、全ファイルの合計が
+369,441,675 B、実割当が 369,491,968 B でした。既存 capsule の 16 MiB tmpfs には全ファイルを
+コピーできません。親が照合した読み取り専用のスナップショットから個別ファイルを bind mount する案を
+検討します。この方式での起動とマウント属性の照合は未実施です。
 
 ### 残りの受入
 
