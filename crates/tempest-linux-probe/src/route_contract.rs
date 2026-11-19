@@ -114,6 +114,9 @@ fn verify_mcp_stdio(
     Ok(())
 }
 
+#[path = "mcp_stdio_fixture.rs"]
+pub(super) mod mcp_stdio_fixture;
+
 struct UniqueValue(serde_json::Value);
 
 impl<'de> serde::Deserialize<'de> for UniqueValue {
