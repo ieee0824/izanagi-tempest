@@ -73,12 +73,9 @@ fn supervise_inner(
     budget: Duration,
     missing_gate_reader: bool,
 ) -> io::Result<Outcome> {
-    // A concurrent test fork can inherit the gate reader and suppress EPIPE.
+    // Keep other test launches from inheriting an open gate reader.
     #[cfg(test)]
-    let _guard = {
-        static SUPERVISE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        SUPERVISE_LOCK.lock().unwrap()
-    };
+    let _guard = crate::TEST_CHILD_LAUNCH_LOCK.lock().unwrap();
 
     // Fixed standalone probe policy; EPIPE must become a diagnostic, not death.
     if unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) } == libc::SIG_ERR {
