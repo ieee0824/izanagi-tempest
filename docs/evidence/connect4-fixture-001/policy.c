@@ -1928,6 +1928,51 @@ int place_and_release_fixed_relay(const struct connect4_trial *trial,
                                    pinned, 0);
 }
 
+int run_restricted_fixed_relay(
+    const struct connect4_trial *trial, uint16_t port, int alternate,
+    int controller_pidfd, int handoff_channel, atomic_int *known_worker,
+    int64_t deadline, fixed_relay_exchange exchange, void *context,
+    struct fixed_relay_result *observed, struct connect4_pending_recovery *pending)
+{
+    *observed = (struct fixed_relay_result){-1, -1};
+    *pending = (struct connect4_pending_recovery){-1, -1, CONNECT4_PIN_UNKNOWN};
+    if (handoff_channel < 0 || known_worker == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (controller_is_live(controller_pidfd) < 0 || record_connect4_trial(trial) < 0)
+        return -1;
+
+    /* Do not infer absence if the supervisor dies during fork. */
+    atomic_store_explicit(known_worker, -1, memory_order_release);
+    struct connect4_worker worker;
+    struct fixed_relay_pipes relay;
+    int spawned = alternate ? spawn_fixed_alternate_worker(port, deadline, &worker, &relay)
+                            : spawn_fixed_relay_worker(port, deadline, &worker, &relay);
+    if (spawned < 0) {
+        atomic_store_explicit(known_worker, 0, memory_order_release);
+        return -1;
+    }
+    atomic_store_explicit(known_worker, worker.pid, memory_order_release);
+
+    int pinned;
+    int result = place_and_release_fixed_relay(trial, &worker, &relay, controller_pidfd,
+                                                handoff_channel, &pinned);
+    int saved = result < 0 ? errno : 0;
+    close(worker.gate);
+    close(worker.ready);
+    if (result == 0) {
+        result = observe_fixed_relay(&worker, &relay, deadline, exchange, context, observed);
+        if (result == 0)
+            result = controller_is_live(controller_pidfd);
+        saved = result < 0 ? errno : 0;
+    }
+    close(relay.request);
+    close(relay.response);
+    close(relay.status);
+    return finish_connect4_worker(trial, &worker, pinned, saved, pending);
+}
+
 int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
                        int handoff_channel, atomic_int *known_worker,
                        int supervisor_fault,
