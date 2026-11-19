@@ -55,20 +55,28 @@ def relay(request_fd, response_fd, peer_fd, timeout):
 def exercise(case):
     request_read, request_write = os.pipe2(os.O_CLOEXEC)
     response_read, response_write = os.pipe2(os.O_CLOEXEC)
-    local, peer = socket.socketpair()
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(1)
+    listener.settimeout(2)
+    endpoint = listener.getsockname()
     pid = os.fork()
     if pid == 0:
-        local.close()
+        listener.close()
         os.close(request_write)
         os.close(response_read)
-        status = relay(request_read, response_write, peer.fileno(), 0.25 if case == 'timeout' else 2)
+        try:
+            with socket.create_connection(endpoint, timeout=2) as peer:
+                peer.setblocking(True)
+                status = relay(request_read, response_write, peer.fileno(), 0.25 if case == 'timeout' else 2)
+        except OSError:
+            status = 4
         os._exit(status)
 
-    peer.close()
     os.close(request_read)
     os.close(response_write)
     pidfd = None
-    with local, os.fdopen(request_write, 'wb', buffering=0) as request, \
+    with listener, os.fdopen(request_write, 'wb', buffering=0) as request, \
             os.fdopen(response_read, 'rb', buffering=0) as response:
         try:
             pidfd = os.pidfd_open(pid)
@@ -76,17 +84,19 @@ def exercise(case):
                 request.write(REQUEST[:1] if case == 'short_request' else REQUEST)
                 request.close()
             if case in ('complete', 'peer_eof'):
-                local.settimeout(2)
-                with local.makefile('rb') as reader:
-                    if reader.readline(len(REQUEST) + 1) != REQUEST:
-                        raise RuntimeError('dummy peer did not receive fixed request')
-                if case == 'peer_eof':
-                    local.shutdown(socket.SHUT_WR)
-                else:
-                    local.sendall(RESPONSE)
-                    wait_ready(response.fileno(), select.POLLIN, time.monotonic() + 2)
-                    if response.read(len(RESPONSE) + 1) != RESPONSE:
-                        raise RuntimeError('parent did not receive fixed response')
+                local, _ = listener.accept()
+                with local:
+                    local.settimeout(2)
+                    with local.makefile('rb') as reader:
+                        if reader.readline(len(REQUEST) + 1) != REQUEST:
+                            raise RuntimeError('dummy peer did not receive fixed request')
+                    if case == 'peer_eof':
+                        local.shutdown(socket.SHUT_WR)
+                    else:
+                        local.sendall(RESPONSE)
+                        wait_ready(response.fileno(), select.POLLIN, time.monotonic() + 2)
+                        if response.read(len(RESPONSE) + 1) != RESPONSE:
+                            raise RuntimeError('parent did not receive fixed response')
             wait_ready(pidfd, select.POLLIN, time.monotonic() + 2)
         except BaseException:
             try:
