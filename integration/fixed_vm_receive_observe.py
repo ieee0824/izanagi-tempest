@@ -378,3 +378,57 @@ def collect_trial(execute, observe_route, snapshot_host, run_phase, *, run_nonce
     validate_trial_counts(json.dumps(guest).encode(), host_phases, **binding)
     return {'guest': guest, 'host_phases': host_phases, 'forward': forward,
             'phase_transport': connect_results}
+
+
+def collect_relay_trial(execute, observe_route, launch, *, run_nonce, boot_id):
+    """Drive fixed relay entries using the current VM and an independent listener."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    forward, fingerprint = observe_route()
+    forward = dict(forward)
+    agent_port = forward['port']
+    if type(agent_port) is not int or not 0 < agent_port <= 65535:
+        raise ValueError('invalid fixed VM forward port')
+
+    def bound_route():
+        current = observe_route()
+        if current != (forward, fingerprint):
+            raise ValueError('fixed VM route changed during relay trial')
+        return current
+
+    with AlternateListener() as listener, ThreadPoolExecutor(max_workers=1) as executor:
+        def run_route(phase, route):
+            bound_route()
+            result = launch(phase, route, agent_port, listener.port, run_nonce)
+            if result.returncode != 0:
+                raise RuntimeError('fixed relay entry rejected the phase')
+            records = [line for line in result.stderr.splitlines()
+                       if line.startswith(b'fixed_relay ')]
+            if len(records) != 1:
+                raise ValueError('missing or duplicate fixed relay result')
+            match = re.fullmatch(rb'fixed_relay connect_errno=([0-9]{1,4}) relay_exit=([012])',
+                                 records[0])
+            if match is None:
+                raise ValueError('invalid fixed relay result')
+            connect_errno, relay_exit = map(int, match.groups())
+            if route == 'agent':
+                validate_guest_ack(result.stdout, run_nonce=run_nonce, boot_id=boot_id,
+                                   phase=phase, operation='request')
+            elif result.stdout:
+                raise ValueError('unexpected alternate relay output')
+            bound_route()
+            return {'connect_errno': connect_errno,
+                    'relay_exit': ('complete', 'not_started', 'failed')[relay_exit]}
+
+        def run_phase(phase):
+            if phase == 'deny_other':
+                return {'alternate': run_route(phase, 'alternate')}
+            observed = {'agent': run_route(phase, 'agent')}
+            if phase in ('control_before', 'control_after'):
+                served = executor.submit(listener.serve_control, deadline=time.monotonic() + 12)
+                observed['alternate'] = run_route(phase, 'alternate')
+                served.result()
+            return observed
+
+        return collect_trial(execute, bound_route, listener.snapshot, run_phase,
+                             run_nonce=run_nonce, boot_id=boot_id)

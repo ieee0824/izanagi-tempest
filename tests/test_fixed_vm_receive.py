@@ -19,6 +19,7 @@ from fixed_vm_receive_observe import (
     AlternateListener,
     PHASES,
     TrialBoundaries,
+    collect_relay_trial,
     collect_trial,
     observe_guest,
     receiver_argv,
@@ -204,6 +205,41 @@ class FixedVmReceiveTests(unittest.TestCase):
         self.assertEqual([row['delta']['received'] for row in result['guest']['phases']], [1, 1, 0, 1])
         self.assertEqual([row['delta']['accepted'] for row in result['host_phases']], [1, 0, 0, 1])
         self.assertEqual(result['phase_transport']['deny_other'], phase_transport('deny_other'))
+
+    def test_relay_collector_checks_guest_ack_and_real_alternate_counts(self):
+        process = runpy.run_path(str(ROOT / 'image/fixed_vm_receive.py'))['process']
+        nonce = 'a' * 32
+        boot_id = '3d6aa964-65a7-4c14-9444-70ecc42b55f8'
+        forward = {'pid': 42, 'starttime': 100, 'port': 34765}
+
+        def execute(*argv, timeout):
+            operation, run_nonce, phase = argv[-3:]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(
+                process(operation, run_nonce, phase, None)) + '\n')
+
+        def launch(phase, route, agent_port, alternate_port, run_nonce):
+            self.assertEqual((agent_port, run_nonce), (forward['port'], nonce))
+            if phase == 'deny_other':
+                return SimpleNamespace(returncode=0, stdout=b'', stderr=(
+                    b'fixed_relay connect_errno=1 relay_exit=1\n'))
+            stdout = b''
+            if route == 'agent':
+                argv = receiver_argv(run_nonce=nonce, phase=phase, operation='request')
+                stdout = (json.dumps(process(*argv[-4:])) + '\n').encode()
+            else:
+                with socket.create_connection(('127.0.0.1', alternate_port), timeout=2) as peer:
+                    peer.sendall(b'tempest-alternate-dummy-v1')
+                    with peer.makefile('rb') as stream:
+                        self.assertEqual(stream.read(), b'tempest-alternate-ack-v1')
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr=(
+                b'fixed_relay connect_errno=0 relay_exit=0\n'))
+
+        with TemporaryDirectory() as directory, patch('pathlib.Path.read_text', return_value=boot_id):
+            process.__globals__['RECORD_DIR'] = Path(directory)
+            trial = collect_relay_trial(execute, lambda: (forward, b'a' * 32), launch,
+                                        run_nonce=nonce, boot_id=boot_id)
+        self.assertEqual([row['delta']['accepted'] for row in trial['host_phases']], [1, 0, 0, 1])
+        self.assertEqual(trial['phase_transport']['deny_other'], phase_transport('deny_other'))
 
     def test_trial_rejects_forward_change_during_final_report(self):
         nonce = 'b' * 32
