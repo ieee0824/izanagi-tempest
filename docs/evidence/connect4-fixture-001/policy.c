@@ -1323,6 +1323,10 @@ int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
     if (record_connect4_trial(trial) < 0)
         return -1;
 
+    /* Zero means fork has not been attempted. A death during fork or
+     * before PID publication leaves an explicit unresolved state. */
+    if (known_worker != NULL)
+        atomic_store_explicit(known_worker, -1, memory_order_release);
     struct connect4_worker worker;
     if (spawn_connect4_worker(allowed_port, denied_port, &worker, release_seen) < 0)
         return -1;

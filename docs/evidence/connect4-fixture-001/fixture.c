@@ -112,13 +112,18 @@ static int run_with_subreaper(const struct connect4_trial *trial,
                 worker.phase == CONNECT4_PIN_REMOVED ? "removed" : "absent");
     } else if (!clean_exit) {
         pid_t known = atomic_load_explicit(known_worker, memory_order_acquire);
-        if (reap_unreleased_worker(trial, known) < 0) {
+        int recovered = known == 0 ? confirm_unpinned_connect4_trial(trial)
+                                   : reap_unreleased_worker(trial, known);
+        if (recovered < 0) {
             perror("unreleased recovery held for inspection");
             for (;;)
                 pause();
         }
-        fputs("supervisor_exit_observed=1 unreleased_worker_reaped=1 gate_eof=1\n",
-              stderr);
+        if (known == 0)
+            fputs("supervisor_exit_observed=1 worker_not_spawned=1\n", stderr);
+        else
+            fputs("supervisor_exit_observed=1 unreleased_worker_reaped=1 gate_eof=1\n",
+                  stderr);
     }
     munmap(known_worker, 2 * sizeof(*known_worker));
     if (worker.pidfd >= 0)
