@@ -13,6 +13,7 @@
 #include <sys/vfs.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 
 enum { CONNECT4_INSTRUCTION_COUNT = 8 };
 
@@ -279,4 +280,37 @@ int pin_and_verify_connect4_link(int link_fd, const char *path, int cgroup_fd,
         pin_connect4_link(link_fd, path) < 0)
         return -1;
     return reopen_connect4_link(path, link_id, program_id, cgroup_id);
+}
+
+/* The caller supplies the original worker pidfd and owns the exclusive
+ * recovery lease over both the private pin path and the cgroup. */
+int unpin_connect4_after_exit(const char *path, int worker_pidfd, int cgroup_fd,
+                              dev_t device, uint64_t cgroup_id,
+                              uint32_t link_id, uint32_t program_id)
+{
+    if (worker_pidfd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    struct pollfd worker = { .fd = worker_pidfd, .events = POLLIN };
+    int ready = poll(&worker, 1, 0);
+    if (ready < 0)
+        return -1;
+    if (ready != 1 || !(worker.revents & POLLIN) ||
+        (worker.revents & (POLLERR | POLLNVAL))) {
+        errno = EBUSY;
+        return -1;
+    }
+
+    int link = reopen_connect4_link(path, link_id, program_id, cgroup_id);
+    if (link < 0)
+        return -1;
+    int result = check_connect4_cgroup_empty(cgroup_fd, device, cgroup_id);
+    if (result == 0)
+        result = unlink(path);
+    int error = errno;
+    close(link);
+    if (result < 0)
+        errno = error;
+    return result;
 }
