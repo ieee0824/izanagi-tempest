@@ -1316,6 +1316,16 @@ int connect_fixed_relay_worker(uint16_t port, int64_t deadline)
     return socket_fd;
 }
 
+/* The caller exits with this result so the worker's remaining descriptors
+ * close together. The separate status pipe records the actual connect errno. */
+int run_fixed_relay_worker(uint16_t port, int64_t deadline)
+{
+    int socket_fd = connect_fixed_relay_worker(port, deadline);
+    if (socket_fd < 0)
+        return 1;
+    return relay_fixed_agent_request(5, 6, socket_fd, deadline) == 0 ? 0 : 2;
+}
+
 static int try_connect4_loopback(uint16_t port)
 {
     int fd;

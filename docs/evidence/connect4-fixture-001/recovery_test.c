@@ -187,7 +187,7 @@ static void check_fixed_transfer(void)
     close(output[1]);
 }
 
-static void check_fixed_agent_exchange(void)
+static void check_fixed_agent_exchange(int early_exec)
 {
     int privileged = geteuid() == 0;
     int input[2], output[2], connect_status[2], gate[2], readiness[2];
@@ -213,17 +213,7 @@ static void check_fixed_agent_exchange(void)
         if ((privileged ? drop_connect4_worker_privileges() :
              prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL)) < 0)
             _exit(6);
-        int socket_fd = connect_fixed_relay_worker(port, deadline);
-        if (socket_fd < 0)
-            _exit(1);
-        if (write(STDERR_FILENO, "", 0) != -1 || errno != EPERM ||
-            socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP) != -1 ||
-            errno != EPERM)
-            _exit(4);
-        if (relay_fixed_agent_request(5, 6, socket_fd, deadline) < 0)
-            _exit(2);
-        _exit(relay_fixed_agent_request(5, 6, socket_fd, deadline) == 0 ||
-              errno != EPROTO);
+        _exit(run_fixed_relay_worker(port, deadline));
     }
     close(input[0]);
     close(output[1]);
@@ -253,20 +243,23 @@ static void check_fixed_agent_exchange(void)
     int peer = accept4(listener, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
     assert(peer >= 0);
     close(listener);
-    assert(write_before(input[1], request, sizeof(request), deadline) == 0);
-    assert(write_before(peer, response, sizeof(response), deadline) == 0);
     unsigned char observed[sizeof(response)];
-    assert(read_before(peer, observed, sizeof(request), deadline) == 0);
-    assert(memcmp(observed, request, sizeof(request)) == 0);
-    assert(read_before(output[0], observed, sizeof(response), deadline) == 0);
-    assert(memcmp(observed, response, sizeof(response)) == 0);
-    assert(write_before(input[1], request[1], sizeof(request[1]), deadline) == 0);
+    if (early_exec) {
+        assert(write_before(input[1], request[1], sizeof(request[1]), deadline) == 0);
+    } else {
+        assert(write_before(input[1], request, sizeof(request), deadline) == 0);
+        assert(write_before(peer, response, sizeof(response), deadline) == 0);
+        assert(read_before(peer, observed, sizeof(request), deadline) == 0);
+        assert(memcmp(observed, request, sizeof(request)) == 0);
+        assert(read_before(output[0], observed, sizeof(response), deadline) == 0);
+        assert(memcmp(observed, response, sizeof(response)) == 0);
+    }
     ready = (struct pollfd){.fd = peer, .events = POLLIN};
     assert(poll_before(&ready, deadline) == 0);
     assert(read(peer, observed, sizeof(observed)) == 0);
     int status;
     assert(waitpid(child, &status, 0) == child);
-    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == (early_exec ? 2 : 0));
     close(peer);
     close(input[1]);
     close(output[0]);
@@ -282,7 +275,8 @@ int main(void)
     check_worker_pipe_identity();
     check_worker_owned_connection();
     check_fixed_transfer();
-    check_fixed_agent_exchange();
+    check_fixed_agent_exchange(0);
+    check_fixed_agent_exchange(1);
     int gate[2];
     assert(pipe(gate) == 0);
     pid_t child = fork();
