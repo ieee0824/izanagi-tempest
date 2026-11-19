@@ -368,6 +368,30 @@ fn run_in_root(scratch: &Path, root: &Path) -> Result<(u64, u64), Fault> {
     ))
 }
 
+fn confirm_offline_network() -> Result<(), Fault> {
+    use std::ffi::CStr;
+    let mut interfaces = std::ptr::null_mut();
+    super::os::syscall(unsafe { libc::getifaddrs(&mut interfaces) })?;
+    let mut current = interfaces;
+    let mut has_loopback = false;
+    let mut offline = true;
+    while let Some(interface) = unsafe { current.as_ref() } {
+        let name = unsafe { CStr::from_ptr(interface.ifa_name) };
+        let flags = interface.ifa_flags as libc::c_int;
+        if name != c"lo" || flags & libc::IFF_LOOPBACK == 0 || flags & libc::IFF_UP != 0 {
+            offline = false;
+            break;
+        }
+        has_loopback = true;
+        current = interface.ifa_next;
+    }
+    unsafe { libc::freeifaddrs(interfaces) };
+    if !offline || !has_loopback {
+        return Err(Fault::Identity);
+    }
+    Ok(())
+}
+
 fn trial<T>(
     scratch: &Path,
     execute: impl FnOnce(&Path, &Path) -> Result<T, Fault>,
@@ -375,6 +399,7 @@ fn trial<T>(
     use super::{capsule, os};
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     os::syscall(unsafe { libc::unshare(libc::CLONE_NEWNS | libc::CLONE_NEWNET) })?;
+    confirm_offline_network()?;
     capsule::make_mounts_private()?;
     let root = scratch.join("root");
     fs::create_dir(&root)?;
@@ -415,7 +440,7 @@ pub(super) fn run() -> std::process::ExitCode {
     match (result, cleanup) {
         (Ok((bytes, inodes)), Ok(())) => {
             println!(
-                "{{\"version\":\"2.1.325\",\"uid\":{UID},\"gid\":{GID},\"tmpfs_bytes\":{bytes},\"tmpfs_inodes\":{inodes},\"cleanup\":true}}"
+                "{{\"version\":\"2.1.325\",\"uid\":{UID},\"gid\":{GID},\"tmpfs_bytes\":{bytes},\"tmpfs_inodes\":{inodes},\"offline_network_verified\":true,\"cleanup\":true}}"
             );
             ExitCode::SUCCESS
         }
