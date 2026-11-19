@@ -215,3 +215,30 @@ def session_binding(workspace, home, *, owner_uid, supervisor_pid, forward):
     ):
         raise ValueError('private QEMU session does not match observed forward')
     return hashlib.sha256(data).digest()
+
+
+class TrialBoundaries:
+    """Require a live forward, session and guest binding at each phase boundary."""
+
+    def __init__(self, *, run_nonce, boot_id, forward, session_fingerprint):
+        if re.fullmatch(r'[0-9a-f]{32}', run_nonce) is None or str(uuid.UUID(boot_id)) != boot_id:
+            raise ValueError('invalid fixed trial binding')
+        if not isinstance(session_fingerprint, bytes) or len(session_fingerprint) != 32:
+            raise ValueError('missing private session fingerprint')
+        self._identity = (run_nonce, boot_id, dict(forward), session_fingerprint)
+        self._boundaries = iter((phase, edge) for phase in PHASES for edge in ('start', 'end'))
+        self._next = next(self._boundaries, None)
+
+    def observe(self, phase, edge, *, guest_ack, forward, session_fingerprint):
+        if (phase, edge) != self._next:
+            raise ValueError('missing or out-of-order trial boundary')
+        if (guest_ack['phase'], guest_ack['operation']) != (phase, edge):
+            raise ValueError('guest acknowledgement is for a different boundary')
+        bound = (guest_ack['run_nonce'], guest_ack['boot_id'], forward, session_fingerprint)
+        if bound != self._identity:
+            raise ValueError('fixed VM identity changed at trial boundary')
+        self._next = next(self._boundaries, None)
+
+    def require_complete(self):
+        if self._next is not None:
+            raise ValueError('incomplete trial boundary observations')
