@@ -6,12 +6,14 @@ on:
       - 'pronnia/linux-direct-stage'
     paths:
       - '.github/workflows/linux-probe-unit.yml'
+      - 'docs/evidence/connect4-fixture-001/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'crates/tempest-linux-probe/**'
   pull_request:
     paths:
       - '.github/workflows/linux-probe-unit.yml'
+      - 'docs/evidence/connect4-fixture-001/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'crates/tempest-linux-probe/**'
@@ -38,3 +40,5 @@ jobs:
         run: cargo +stable test --locked -p tempest-linux-probe --lib -- --test-threads=4
       - name: Lint Linux isolation probe
         run: cargo +stable clippy --locked -p tempest-linux-probe --all-targets -- -D warnings
+      - name: Compile the fixed loopback policy fixture
+        run: gcc -std=c17 -Wall -Wextra -Werror -c docs/evidence/connect4-fixture-001/policy.c -o "$RUNNER_TEMP/connect4-policy.o"
