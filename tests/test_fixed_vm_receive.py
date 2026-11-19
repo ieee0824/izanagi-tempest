@@ -1,4 +1,6 @@
+import hashlib
 import json
+import os
 from pathlib import Path
 import runpy
 import sys
@@ -9,7 +11,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'integration'))
-from fixed_vm_receive_observe import PHASES, validate_guest_export, validate_trial_counts
+from fixed_vm_receive_observe import PHASES, session_binding, validate_guest_export, validate_trial_counts
 
 
 class FixedVmReceiveTests(unittest.TestCase):
@@ -67,3 +69,26 @@ class FixedVmReceiveTests(unittest.TestCase):
         host_phases[2]['run_nonce'] = 'c' * 32
         with self.assertRaisesRegex(ValueError, 'host phase binding mismatch'):
             validate_trial_counts(raw, host_phases, run_nonce=nonce, boot_id=boot_id)
+
+    def test_session_binding_rejects_wrong_parent_port_and_symlink(self):
+        with TemporaryDirectory() as directory:
+            home = Path(directory)
+            workspace = home / 'workspace'
+            instance = hashlib.sha256(os.fsencode(workspace)).hexdigest()
+            path = home / '.izanagi' / 'instances' / instance / 'session.json'
+            path.parent.mkdir(parents=True)
+            data = json.dumps({'backend': {'type': 'qemu', 'host_port': 23456},
+                               'pid': 123, 'started_at': 1}).encode()
+            path.write_bytes(data)
+            path.chmod(0o600)
+            expected = {'owner_uid': os.getuid(), 'supervisor_pid': 123,
+                        'forward': {'port': 23456}}
+            self.assertEqual(session_binding(workspace, home, **expected),
+                             hashlib.sha256(data).digest())
+            for difference in ({'supervisor_pid': 124}, {'forward': {'port': 23457}}):
+                with self.subTest(difference=difference), self.assertRaises(ValueError):
+                    session_binding(workspace, home, **(expected | difference))
+            moved = path.rename(path.with_suffix('.original'))
+            path.symlink_to(moved)
+            with self.assertRaises(OSError):
+                session_binding(workspace, home, **expected)
