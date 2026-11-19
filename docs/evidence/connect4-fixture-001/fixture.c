@@ -95,8 +95,12 @@ static int run_with_subreaper(const struct connect4_trial *trial,
         for (;;)
             pause();
     }
-    int normal = status.si_code == CLD_EXITED && status.si_status == 0;
-    if (!normal && worker.pidfd >= 0) {
+    /* Exit 1 reports a failed trial with no pending worker recovery.
+     * In particular, a failed post-control follows successful worker reap. */
+    int clean_exit = status.si_code == CLD_EXITED &&
+        (status.si_status == 0 || status.si_status == 1);
+    int trial_passed = clean_exit && status.si_status == 0;
+    if (!clean_exit && worker.pidfd >= 0) {
         int reaped = 0;
         if (recover_adopted_connect4_worker(trial, supervisor_fd, &worker,
                                              &reaped) < 0) {
@@ -106,7 +110,7 @@ static int run_with_subreaper(const struct connect4_trial *trial,
         }
         fprintf(stderr, "supervisor_exit_observed=1 adopted_worker_reaped=1 pin=%s\n",
                 worker.phase == CONNECT4_PIN_REMOVED ? "removed" : "absent");
-    } else if (!normal) {
+    } else if (!clean_exit) {
         pid_t known = atomic_load_explicit(known_worker, memory_order_acquire);
         if (reap_unreleased_worker(trial, known) < 0) {
             perror("unreleased recovery held for inspection");
@@ -124,9 +128,9 @@ static int run_with_subreaper(const struct connect4_trial *trial,
         return -1;
     }
     close(supervisor_fd);
-    if (normal)
+    if (trial_passed)
         return 0;
-    errno = ECANCELED;
+    errno = clean_exit ? EIO : ECANCELED;
     return -1;
 }
 
