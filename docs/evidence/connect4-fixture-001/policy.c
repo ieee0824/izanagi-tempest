@@ -786,13 +786,14 @@ static int write_before(int fd, const void *buffer, size_t size, int64_t deadlin
 
 /* The fixed fixture uses Izanagi v3 authenticated frames. The parent and
  * guest authenticate the bytes, while this relay bounds the frame size. */
-int transfer_authenticated_frame(int source, int destination, int64_t deadline)
+static int transfer_authenticated_frame(int source, int destination,
+                                        unsigned char expected_type, int64_t deadline)
 {
     enum { HEADER = 7, TRAILER = 8 + 32, MAX_BODY = 4096 };
     unsigned char frame[HEADER + MAX_BODY + TRAILER];
     if (read_before(source, frame, HEADER, deadline) < 0)
         return -1;
-    if (frame[0] != 0xff || frame[1] != 3) {
+    if (frame[0] != 0xff || frame[1] != 3 || frame[2] != expected_type) {
         errno = EPROTO;
         return -1;
     }
@@ -805,6 +806,19 @@ int transfer_authenticated_frame(int source, int destination, int64_t deadline)
     if (read_before(source, frame + HEADER, size + TRAILER, deadline) < 0)
         return -1;
     return write_before(destination, frame, HEADER + size + TRAILER, deadline);
+}
+
+/* Only the fixed authenticated Hello/Ready/Exec conversation is relayed.
+ * The trusted parent constructs the fixed request and validates the response. */
+int relay_fixed_agent_request(int request_fd, int response_fd, int socket_fd, int64_t deadline)
+{
+    enum { READY = 3, HELLO = 5, EXEC = 6, EXEC_RESULT = 7 };
+    if (transfer_authenticated_frame(request_fd, socket_fd, HELLO, deadline) < 0 ||
+        transfer_authenticated_frame(socket_fd, response_fd, HELLO, deadline) < 0 ||
+        transfer_authenticated_frame(socket_fd, response_fd, READY, deadline) < 0 ||
+        transfer_authenticated_frame(request_fd, socket_fd, EXEC, deadline) < 0)
+        return -1;
+    return transfer_authenticated_frame(socket_fd, response_fd, EXEC_RESULT, deadline);
 }
 
 /* The manager has closed its own copy of the readiness write end. */

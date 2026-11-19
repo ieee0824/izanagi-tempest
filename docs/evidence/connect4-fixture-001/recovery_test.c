@@ -168,23 +168,52 @@ static void check_fixed_transfer(void)
     assert(write(input[1], frame, sizeof(frame)) == sizeof(frame));
     int64_t now = monotonic_ns();
     assert(now >= 0);
-    assert(transfer_authenticated_frame(input[0], output[1], now) < 0 && errno == ETIMEDOUT);
+    assert(transfer_authenticated_frame(input[0], output[1], 1, now) < 0 && errno == ETIMEDOUT);
     int64_t deadline = now + 1000000000;
-    assert(transfer_authenticated_frame(input[0], output[1], deadline) == 0);
+    assert(transfer_authenticated_frame(input[0], output[1], 1, deadline) == 0);
     unsigned char result[sizeof(frame)];
     assert(read(output[0], result, sizeof(result)) == sizeof(result));
     assert(memcmp(result, frame, sizeof(result)) == 0);
     const unsigned char oversized[] = {0xff, 3, 1, 1, 16, 0, 0};
     assert(write(input[1], oversized, sizeof(oversized)) == sizeof(oversized));
-    assert(transfer_authenticated_frame(input[0], output[1], deadline) < 0 && errno == EMSGSIZE);
+    assert(transfer_authenticated_frame(input[0], output[1], 1, deadline) < 0 && errno == EMSGSIZE);
     assert(read(output[0], result, sizeof(result)) < 0 && errno == EAGAIN);
     assert(write(input[1], frame, 7) == 7);
     close(input[1]);
-    assert(transfer_authenticated_frame(input[0], output[1], deadline) < 0 && errno == EPIPE);
+    assert(transfer_authenticated_frame(input[0], output[1], 1, deadline) < 0 && errno == EPIPE);
     assert(read(output[0], result, sizeof(result)) < 0 && errno == EAGAIN);
     close(input[0]);
     close(output[0]);
     close(output[1]);
+}
+
+static void check_fixed_agent_exchange(void)
+{
+    int input[2], output[2], peer[2];
+    assert(pipe2(input, O_CLOEXEC | O_NONBLOCK) == 0);
+    assert(pipe2(output, O_CLOEXEC | O_NONBLOCK) == 0);
+    assert(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, peer) == 0);
+    unsigned char request[2][47] = {{0xff, 3, 5}, {0xff, 3, 6}};
+    unsigned char response[3][47] = {{0xff, 3, 5}, {0xff, 3, 3}, {0xff, 3, 7}};
+    assert(write(input[1], request, sizeof(request)) == sizeof(request));
+    assert(write(peer[1], response, sizeof(response)) == sizeof(response));
+    int64_t now = monotonic_ns();
+    assert(now >= 0);
+    int64_t deadline = now + 1000000000;
+    assert(relay_fixed_agent_request(input[0], output[1], peer[0], deadline) == 0);
+    unsigned char observed[sizeof(response)];
+    assert(read_before(peer[1], observed, sizeof(request), deadline) == 0);
+    assert(memcmp(observed, request, sizeof(request)) == 0);
+    assert(read_before(output[0], observed, sizeof(response), deadline) == 0);
+    assert(memcmp(observed, response, sizeof(response)) == 0);
+    assert(write(input[1], request[1], sizeof(request[1])) == sizeof(request[1]));
+    assert(relay_fixed_agent_request(input[0], output[1], peer[0], deadline) < 0 && errno == EPROTO);
+    assert(read(peer[1], observed, sizeof(observed)) < 0 && errno == EAGAIN);
+    for (unsigned i = 0; i < 2; ++i) {
+        close(input[i]);
+        close(output[i]);
+        close(peer[i]);
+    }
 }
 
 int main(void)
@@ -197,6 +226,7 @@ int main(void)
     check_worker_pipe_identity();
     check_worker_owned_connection();
     check_fixed_transfer();
+    check_fixed_agent_exchange();
     int gate[2];
     assert(pipe(gate) == 0);
     pid_t child = fork();
