@@ -12,9 +12,30 @@ int main(int argc, char **argv)
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
         return 2;
 
+    int control[2];
+    if (pipe2(control, O_CLOEXEC) < 0)
+        return 1;
+    pid_t controller = fork();
+    if (controller < 0)
+        return 1;
+    if (controller == 0) {
+        close(control[1]);
+        char byte;
+        _exit(read(control[0], &byte, 1) != 0);
+    }
+    close(control[0]);
+    int controller_pidfd = retain_connect4_worker(controller);
+    if (controller_pidfd < 0) {
+        close(control[1]);
+        waitpid(controller, NULL, 0);
+        return 1;
+    }
+
     int state, cgroup;
     if (create_connect4_fixture_state(&state, &cgroup) < 0) {
         perror("fixture state");
+        close(control[1]);
+        waitpid(controller, NULL, 0);
         return 1;
     }
     int result = -1;
@@ -38,7 +59,7 @@ int main(int argc, char **argv)
     }
     struct connect4_pending_recovery pending;
     struct connect4_phase phases[3];
-    result = run_connect4_trial(&trial, allowed, allowed_port,
+    result = run_connect4_trial(&trial, controller_pidfd, allowed, allowed_port,
                                     denied, denied_port, phases, &pending);
     if (result < 0)
         perror("connect4 trial");
@@ -75,5 +96,8 @@ done:
     }
     close(cgroup);
     close(state);
+    close(control[1]);
+    close(controller_pidfd);
+    waitpid(controller, NULL, 0);
     return result == 0 ? 0 : 1;
 }

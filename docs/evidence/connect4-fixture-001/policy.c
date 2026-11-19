@@ -690,9 +690,25 @@ static int confirm_connect4_ready(int ready_fd)
     return 0;
 }
 
+static int controller_is_live(int controller_pidfd)
+{
+    if (controller_pidfd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    struct pollfd controller = { .fd = controller_pidfd, .events = POLLIN };
+    int ready = poll(&controller, 1, 0);
+    if (ready == 0)
+        return 0;
+    if (ready > 0)
+        errno = ECANCELED;
+    return -1;
+}
+
 /* The manager owns the worker and holds its original pidfd. Gate FD is
  * a private pipe write end that only the manager can use. */
 int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
+                            int controller_pidfd,
                             pid_t child, int worker_pidfd,
                             int link_fd,
                             const char *path, int cgroup_fd, dev_t device,
@@ -729,7 +745,9 @@ int release_connect4_worker(int state_fd, int gate_fd, int ready_fd,
             errno = ESRCH;
             goto done;
         }
-        if (record_release_intent(state_fd) < 0)
+        if (controller_is_live(controller_pidfd) < 0 ||
+            record_release_intent(state_fd) < 0 ||
+            controller_is_live(controller_pidfd) < 0)
             goto done;
         const char token = 'R';
         ssize_t sent = write(gate_fd, &token, sizeof(token));
@@ -994,19 +1012,23 @@ int measure_connect4_control(int allowed_listener, uint16_t allowed_port,
 
 /* Observe without reaping so the manager can still use the original pidfd
  * for recovery. On timeout the manager must keep the policy pinned. */
-int measure_connect4_worker(int pidfd, int allowed_listener, int denied_listener,
+int measure_connect4_worker(int pidfd, int controller_pidfd,
+                            int allowed_listener, int denied_listener,
                             struct connect4_phase *phase)
 {
     *phase = (struct connect4_phase){-1, -1, -1, -1};
-    struct pollfd worker = { .fd = pidfd, .events = POLLIN };
-    int ready = poll(&worker, 1, 2000);
+    struct pollfd watched[] = {
+        { .fd = pidfd, .events = POLLIN },
+        { .fd = controller_pidfd, .events = POLLIN },
+    };
+    int ready = poll(watched, 2, 2000);
     if (ready < 0)
         return -1;
     if (ready == 0) {
         errno = ETIMEDOUT;
         return -1;
     }
-    if (confirm_worker_exit(pidfd) < 0)
+    if (controller_is_live(controller_pidfd) < 0 || confirm_worker_exit(pidfd) < 0)
         return -1;
     siginfo_t status = {0};
     if (waitid(P_PIDFD, (id_t)pidfd, &status, WEXITED | WNOHANG | WNOWAIT) < 0)
@@ -1199,7 +1221,7 @@ int retry_connect4_recovery(const struct connect4_trial *trial,
 
 static int record_connect4_trial(const struct connect4_trial *trial);
 
-int run_connect4_trial(const struct connect4_trial *trial,
+int run_connect4_trial(const struct connect4_trial *trial, int controller_pidfd,
                        int allowed_listener, uint16_t allowed_port,
                        int denied_listener, uint16_t denied_port,
                        struct connect4_phase phases[static 3],
@@ -1208,7 +1230,8 @@ int run_connect4_trial(const struct connect4_trial *trial,
     *pending = (struct connect4_pending_recovery){-1, -1, CONNECT4_PIN_UNKNOWN};
     for (unsigned i = 0; i < 3; ++i)
         phases[i] = (struct connect4_phase){-1, -1, -1, -1};
-    if (measure_connect4_control(allowed_listener, allowed_port, denied_listener,
+    if (controller_is_live(controller_pidfd) < 0 ||
+        measure_connect4_control(allowed_listener, allowed_port, denied_listener,
                                  denied_port, &phases[0]) < 0)
         return -1;
 
@@ -1224,7 +1247,8 @@ int run_connect4_trial(const struct connect4_trial *trial,
                                          worker.pid, worker.pidfd);
     if (result == 0)
         result = release_connect4_worker(trial->state_fd, worker.gate,
-                                            worker.ready, worker.pid, worker.pidfd,
+                                            worker.ready, controller_pidfd,
+                                            worker.pid, worker.pidfd,
                                             trial->link_fd, trial->pin_path,
                                             trial->cgroup_fd, trial->device,
                                             trial->cgroup_id, trial->link_id,
@@ -1232,7 +1256,7 @@ int run_connect4_trial(const struct connect4_trial *trial,
     close(worker.gate);
     close(worker.ready);
     if (result == 0)
-        result = measure_connect4_worker(worker.pidfd, allowed_listener,
+        result = measure_connect4_worker(worker.pidfd, controller_pidfd, allowed_listener,
                                             denied_listener, &phases[1]);
 
     int saved = result < 0 ? errno : 0;
@@ -1434,15 +1458,26 @@ int create_connect4_trial_directory(int parent, const char *name)
         errno = EINVAL;
         return -1;
     }
-    if (mkdirat(parent, name, 0700) < 0)
+    if (mkdirat(parent, name, 0700) < 0) {
+        int error = errno;
+        fprintf(stderr, "fixture directory %s: mkdir failed (%d)\n", name, error);
+        errno = error;
         return -1;
+    }
     int child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (child < 0)
+    if (child < 0) {
+        int error = errno;
+        fprintf(stderr, "fixture directory %s: created but open failed (%d)\n",
+                name, error);
+        errno = error;
         return -1;
+    }
     if (fstat(child, &child_info) < 0 ||
         fstatat(parent, name, &entry_info, AT_SYMLINK_NOFOLLOW) < 0) {
         int error = errno;
         close(child);
+        fprintf(stderr, "fixture directory %s: created but stat failed (%d)\n",
+                name, error);
         errno = error;
         return -1;
     }
@@ -1452,6 +1487,7 @@ int create_connect4_trial_directory(int parent, const char *name)
         child_info.st_dev != entry_info.st_dev ||
         child_info.st_ino != entry_info.st_ino) {
         close(child);
+        fprintf(stderr, "fixture directory %s: created but identity mismatch\n", name);
         errno = ESTALE;
         return -1;
     }
