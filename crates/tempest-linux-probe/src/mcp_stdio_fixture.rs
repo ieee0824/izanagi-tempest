@@ -67,6 +67,11 @@ pub(super) enum ExchangeStage {
     ReleaseRead = 136,
     ReleaseEofWait = 137,
     ReleaseExtra = 138,
+    ReleaseWrongByte = 139,
+    ReleaseReadTimeout = 140,
+    ReleaseEofTimeout = 141,
+    ReleaseReadDenied = 142,
+    ReleaseEofDenied = 143,
     PipeSetup = 130,
     InitializeSend = 131,
     InitializeResponse = 132,
@@ -119,6 +124,7 @@ fn expect_stdout_eof(responses: &mut File, deadline: Instant) -> io::Result<()> 
 #[derive(Debug)]
 pub(super) enum ControlError {
     Missing,
+    WrongByte,
     Read(io::Error),
     EofWait(io::Error),
     Extra,
@@ -128,6 +134,7 @@ impl ControlError {
     pub(super) fn into_io(self) -> io::Error {
         match self {
             Self::Missing => invalid("missing fixture control byte"),
+            Self::WrongByte => invalid("incorrect fixture control byte"),
             Self::Read(error) | Self::EofWait(error) => error,
             Self::Extra => invalid("unexpected data after fixture control byte"),
         }
@@ -136,6 +143,19 @@ impl ControlError {
     pub(super) fn stage(&self) -> ExchangeStage {
         match self {
             Self::Missing => ExchangeStage::ReleaseMissing,
+            Self::WrongByte => ExchangeStage::ReleaseWrongByte,
+            Self::Read(error) if error.kind() == io::ErrorKind::TimedOut => {
+                ExchangeStage::ReleaseReadTimeout
+            }
+            Self::EofWait(error) if error.kind() == io::ErrorKind::TimedOut => {
+                ExchangeStage::ReleaseEofTimeout
+            }
+            Self::Read(error) if error.raw_os_error() == Some(libc::EPERM) => {
+                ExchangeStage::ReleaseReadDenied
+            }
+            Self::EofWait(error) if error.raw_os_error() == Some(libc::EPERM) => {
+                ExchangeStage::ReleaseEofDenied
+            }
             Self::Read(_) => ExchangeStage::ReleaseRead,
             Self::EofWait(_) => ExchangeStage::ReleaseEofWait,
             Self::Extra => ExchangeStage::ReleaseExtra,
@@ -150,10 +170,11 @@ pub(super) fn expect_control_byte(
 ) -> Result<(), ControlError> {
     let mut reader = File::from(reader);
     let mut byte = [0];
-    if read(&mut reader, &mut byte, deadline).map_err(ControlError::Read)? != 1
-        || byte != [expected]
-    {
+    if read(&mut reader, &mut byte, deadline).map_err(ControlError::Read)? == 0 {
         return Err(ControlError::Missing);
+    }
+    if byte != [expected] {
+        return Err(ControlError::WrongByte);
     }
     if read(&mut reader, &mut byte, deadline).map_err(ControlError::EofWait)? != 0 {
         return Err(ControlError::Extra);
