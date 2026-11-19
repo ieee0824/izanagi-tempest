@@ -159,6 +159,30 @@ static int execute_probe_trial(const struct connect4_trial *trial, int controlle
     return result == 0 ? 0 : pending.pidfd >= 0 ? 2 : 1;
 }
 
+static int execute_relay_denial(const struct connect4_trial *trial, int controller_pidfd,
+                                int channel, atomic_int *known_worker,
+                                atomic_int *release_seen, void *context)
+{
+    (void)release_seen;
+    const struct probe_trial *probe = context;
+    int64_t now = monotonic_ns();
+    if (now < 0)
+        return 1;
+    struct fixed_relay_result observed;
+    struct connect4_pending_recovery pending;
+    int result = run_restricted_fixed_relay(trial, probe->denied_port, 1,
+        controller_pidfd, channel, known_worker, now + 5000000000LL,
+        NULL, NULL, &observed, &pending);
+    int alternate_accepts = count_connect4_accepts(probe->denied);
+    int agent_accepts = count_connect4_accepts(probe->allowed);
+    fprintf(stderr, "connect_errno=%d relay_exit=%d alternate_accepts=%d agent_accepts=%d\n",
+            observed.connect_errno, observed.relay_exit, alternate_accepts, agent_accepts);
+    if (pending.pidfd >= 0)
+        return 2;
+    return result == 0 && observed.connect_errno == EPERM && observed.relay_exit == 1 &&
+        alternate_accepts == 0 && agent_accepts == 0 ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
     (void)argv;
@@ -213,6 +237,13 @@ int main(int argc, char **argv)
     if (prepare_connect4_trial(state, cgroup, CONNECT4_PIN_PATH,
                                allowed_port, &trial) < 0) {
         perror("prepare trial");
+        goto done;
+    }
+    if (CONNECT4_CASE == 8) {
+        struct probe_trial probe = {allowed, allowed_port, denied, denied_port};
+        result = supervise_trial(&trial, controller_pidfd, 1, execute_relay_denial, &probe);
+        if (result < 0)
+            perror("fixed relay denial");
         goto done;
     }
     if (CONNECT4_CASE >= 5) {

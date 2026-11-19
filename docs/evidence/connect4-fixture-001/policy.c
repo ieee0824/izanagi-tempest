@@ -2242,6 +2242,8 @@ done:;
 #define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-supervisor-before-001"
 #elif CONNECT4_CASE == 7
 #define CONNECT4_TRIAL_NAME "tempest-connect4-fixture-supervisor-after-001"
+#elif CONNECT4_CASE == 8
+#define CONNECT4_TRIAL_NAME "tempest-fixed-relay-denial-001"
 #else
 #error "unknown connect4 fixture case"
 #endif
