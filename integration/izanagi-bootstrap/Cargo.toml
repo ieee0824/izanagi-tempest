@@ -3,12 +3,13 @@ name = "tempest-izanagi-bootstrap"
 version = "0.1.0"
 edition = "2024"
 publish = false
+default-run = "tempest-izanagi-bootstrap"
 
 [workspace]
 
 [dependencies]
 izanagi = { git = "https://github.com/ieee0824/izanagi.git", rev = "16d0b55947006a166cfa29dcb8bfe71f65f8c36a" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
 serde_json = "1"
 libc = "0.2"
 
