@@ -1825,6 +1825,111 @@ fn check_unused_login_permit(ledger: &File, permit_id: u128) -> io::Result<()> {
     }
 }
 
+const LOGIN_GENERATION_INPUTS: [(&str, u64); 5] = [
+    ("claude-manual-login.json", 4096),
+    ("claude-login-diagnostic-handoff", 4096),
+    ("claude-login-diagnostic-signature", 64),
+    ("claude-login-diagnostic-trust-key", 32),
+    ("claude-login-diagnostic-target-registration", 4096),
+];
+
+fn open_private_login_directory(parent: &File, name: &str) -> io::Result<File> {
+    let fd = open_login_child(parent, std::ffi::OsStr::new(name), libc::O_DIRECTORY)?;
+    let metadata = fd.metadata()?;
+    if (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777) != (0, 0, 0o700) {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    Ok(fd)
+}
+
+fn verify_approved_login_manifest(
+    approved: &[u8],
+    revision: u64,
+    manifest: &[u8],
+) -> io::Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ApprovedGeneration {
+        revision: u64,
+        manifest_sha256: String,
+    }
+
+    let approved: ApprovedGeneration =
+        serde_json::from_slice(approved).map_err(io::Error::other)?;
+    if approved.revision != revision
+        || approved.manifest_sha256 != format!("{:x}", Sha256::digest(manifest))
+    {
+        return Err(io::Error::other(
+            "publication does not match approved generation",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> {
+    use sha2::{Digest, Sha256};
+
+    let lock = open_pinned_login_policy(open_login_child(
+        publication,
+        std::ffi::OsStr::new("lock"),
+        0,
+    )?)?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    match open_login_child(publication, std::ffi::OsStr::new("pending"), 0) {
+        Ok(_) => return Err(io::Error::other("publication unconfirmed")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let authority = open_private_login_directory(parent, "claude-login-authority")?;
+    let revision = |directory: &File, name| -> io::Result<u64> {
+        let bytes = read_login_child(directory, name, 20)?;
+        let value = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
+        let number: u64 = value.parse().map_err(io::Error::other)?;
+        if number == 0 || number.to_string() != value {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(number)
+    };
+    let floor = revision(&authority, "minimum")?;
+    let current = revision(publication, "current")?;
+    if current < floor {
+        return Err(io::Error::other("publication below management floor"));
+    }
+    let generation = open_private_login_directory(publication, &current.to_string())?;
+    let manifest_bytes = read_login_child(&generation, "manifest", 4096)?;
+    let approved = read_login_child(&authority, "approved-generation", 4096)?;
+    verify_approved_login_manifest(&approved, current, &manifest_bytes)?;
+    let manifest: std::collections::BTreeMap<String, String> =
+        serde_json::from_slice(&manifest_bytes).map_err(io::Error::other)?;
+    if manifest.len() != LOGIN_GENERATION_INPUTS.len() {
+        return Err(io::Error::other("incomplete publication manifest"));
+    }
+    let mut inputs = std::collections::BTreeMap::new();
+    for (name, limit) in LOGIN_GENERATION_INPUTS {
+        let bytes = read_login_child(&generation, name, limit)?;
+        if manifest.get(name) != Some(&format!("{:x}", Sha256::digest(&bytes))) {
+            return Err(io::Error::other("publication digest mismatch"));
+        }
+        inputs.insert(name, bytes);
+    }
+    // Check the independently provisioned key as well as the generation manifest.
+    if inputs["claude-login-diagnostic-trust-key"] != read_login_child(&authority, "trust-key", 32)?
+    {
+        return Err(io::Error::other("publication trust key mismatch"));
+    }
+    let policy = &inputs["claude-manual-login.json"];
+    let scope =
+        validate_manual_login_policy(policy.as_slice())?.ok_or(io::ErrorKind::InvalidData)?;
+    diagnose_manual_login_handoff_with(parent, &scope, |name, _| {
+        inputs
+            .get(name)
+            .cloned()
+            .ok_or(io::ErrorKind::InvalidData.into())
+    })
+}
+
 fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     let parent = pin_login_path(
         path.parent().ok_or(io::ErrorKind::InvalidInput)?,
@@ -1834,11 +1939,23 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
-    let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
-    let policy = open_pinned_login_policy(open_login_child(&parent, name, 0)?)?;
-    let scope = validate_manual_login_policy(policy)?;
-    if let Some(scope) = scope {
-        diagnose_manual_login_handoff(&parent, &scope)?;
+    match open_private_login_directory(&parent, "claude-login-publication") {
+        Ok(publication) => {
+            verify_login_generation(&parent, &publication).map_err(|error| {
+                eprintln!("manual login publication diagnostic refused: {error}");
+                io::Error::from(io::ErrorKind::InvalidData)
+            })?;
+            eprintln!("manual login publication diagnostic verified");
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+            let policy = open_pinned_login_policy(open_login_child(&parent, name, 0)?)?;
+            let scope = validate_manual_login_policy(policy)?;
+            if let Some(scope) = scope {
+                diagnose_manual_login_handoff(&parent, &scope)?;
+            }
+        }
+        Err(error) => return Err(error),
     }
     // A valid file describes the design. It does not authorize a live login.
     Err(io::Error::new(
@@ -1903,7 +2020,16 @@ fn verify_login_handoff(
 }
 
 fn diagnose_manual_login_handoff(parent: &File, scope: &LoginPolicyScope) -> io::Result<()> {
-    let read = |name, limit| read_login_child(parent, name, limit);
+    diagnose_manual_login_handoff_with(parent, scope, |name, limit| {
+        read_login_child(parent, name, limit)
+    })
+}
+
+fn diagnose_manual_login_handoff_with(
+    parent: &File,
+    scope: &LoginPolicyScope,
+    read: impl Fn(&str, u64) -> io::Result<Vec<u8>>,
+) -> io::Result<()> {
     let payload = match read("claude-login-diagnostic-handoff", 4096) {
         Ok(payload) => payload,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -2435,6 +2561,24 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn published_manifest_must_match_the_independently_approved_revision_and_digest() {
+        let old_manifest = br#"{"settings":"old","signature":"valid-for-old-handoff"}"#;
+        let new_manifest = br#"{"settings":"new","signature":"valid-for-new-handoff"}"#;
+        let approval = |revision, manifest: &[u8]| {
+            serde_json::to_vec(&serde_json::json!({
+                "revision": revision,
+                "manifest_sha256": format!("{:x}", Sha256::digest(manifest)),
+            }))
+            .unwrap()
+        };
+        let old_approval = approval(1, old_manifest);
+        let new_approval = approval(2, new_manifest);
+        verify_approved_login_manifest(&new_approval, 2, new_manifest).unwrap();
+        assert!(verify_approved_login_manifest(&old_approval, 2, old_manifest).is_err());
+        assert!(verify_approved_login_manifest(&new_approval, 2, old_manifest).is_err());
+    }
 
     #[test]
     #[ignore = "requires root-owned fixtures under /var/lib"]

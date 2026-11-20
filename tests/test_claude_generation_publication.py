@@ -69,7 +69,7 @@ class Publication:
     def current_revision(self):
         return int(self.current.read_bytes()) if self.current.exists() else 0
 
-    def publish(self, revision, sync_commit=None):
+    def publish(self, revision, sync_commit=None, *, persist_floor=None):
         with self.exclusive():
             if self.pending.exists():
                 raise ValueError("publication unconfirmed")
@@ -78,12 +78,24 @@ class Publication:
             self.verify(revision)
             self.write(self.pending, str(revision).encode())
             self.sync(self.root)  # Persist the refusal marker before replacing current.
+            if persist_floor is not None:
+                persist_floor(revision)
             replacement = self.root / "next"
             self.write(replacement, str(revision).encode())
             replacement.replace(self.current)
             (sync_commit or self.sync)(self.root)
             self.pending.unlink()
             self.sync(self.root)
+
+    def inspect(self, floor_path):
+        with self.lock.open("rb") as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            if self.pending.exists():
+                raise ValueError("publication unconfirmed")
+            current = self.current_revision()
+            if current < int(floor_path.read_bytes()):
+                raise ValueError("revision below management floor")
+            return self.verify(current)
 
     def recover(self, minimum_revision):
         with self.exclusive():
@@ -182,6 +194,51 @@ class PublicationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "management floor"):
             reopened.consume(1, "restored", minimum_revision=2)
         self.assertEqual(list(reopened.ledger.iterdir()), [])
+
+    def test_complete_publication_sequence_then_read_only_inspection(self):
+        authority = self.state.root.parent / f"{self.state.root.name}-authority"
+        authority.mkdir()
+        floor = authority / "minimum"
+        self.addCleanup(authority.rmdir)
+        self.addCleanup(floor.unlink)
+        self.state.write(floor, b"1")
+        self.state.sync(authority)
+
+        def persist_floor(revision):
+            self.assertEqual(int(self.state.pending.read_bytes()), revision)
+            self.assertEqual(self.state.current_revision(), 1)
+            replacement = authority / "next"
+            self.state.write(replacement, str(revision).encode())
+            replacement.replace(floor)
+            self.state.sync(authority)
+
+        def confirm_current(directory):
+            self.assertEqual(floor.read_bytes(), b"2")
+            self.assertEqual(self.state.pending.read_bytes(), b"2")
+            self.assertEqual(self.state.current_revision(), 2)
+            self.state.sync(directory)
+
+        self.state.publish(2, confirm_current, persist_floor=persist_floor)
+        before = {path: path.stat().st_ctime_ns for path in self.state.root.rglob("*")}
+        self.assertEqual(
+            self.state.inspect(floor),
+            {name: f"2:{name}".encode() for name in self.state.files},
+        )
+        self.assertEqual(
+            {path: path.stat().st_ctime_ns for path in self.state.root.rglob("*")}, before
+        )
+        self.assertEqual(list(self.state.ledger.iterdir()), [])
+        self.state.write(self.state.pending, b"2")
+        with self.assertRaisesRegex(ValueError, "publication unconfirmed"):
+            self.state.inspect(floor)
+        self.state.pending.unlink()
+        self.state.current.write_bytes(b"1")
+        with self.assertRaisesRegex(ValueError, "management floor"):
+            self.state.inspect(floor)
+        self.state.current.write_bytes(b"2")
+        (self.state.root / "2" / "registration").write_bytes(b"1:registration")
+        with self.assertRaisesRegex(ValueError, "mixed generation"):
+            self.state.inspect(floor)
 
     def test_uncertain_switch_blocks_until_reopened_and_confirmed(self):
         def sync_failure(_):
