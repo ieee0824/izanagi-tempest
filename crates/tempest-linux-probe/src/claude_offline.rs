@@ -728,8 +728,52 @@ impl FixtureStop {
     }
 }
 
+struct FixtureGrant {
+    id: u128,
+    ledger: File,
+    record: File,
+}
+
+impl FixtureGrant {
+    fn claim(&self, stage: &File) -> io::Result<[u8; 48]> {
+        let mut claim = [0; 48];
+        claim[..16].copy_from_slice(&self.id.to_be_bytes());
+        let ledger = fd_identity(&self.ledger)?;
+        let stage = fd_identity(stage)?;
+        for (chunk, value) in claim[16..]
+            .chunks_exact_mut(8)
+            .zip([ledger.0, ledger.1, stage.0, stage.1])
+        {
+            chunk.copy_from_slice(&value.to_be_bytes());
+        }
+        Ok(claim)
+    }
+
+    fn verify(&self, control: &mut UnixStream, work: &WorkArea) -> io::Result<()> {
+        let mut claim = [0; 48];
+        control.read_exact(&mut claim)?;
+        let record = open_login_child(
+            &self.ledger,
+            std::ffi::OsStr::new(&format!("{:032x}", self.id)),
+            libc::O_PATH,
+        )?;
+        let stage = open_login_child(&work.pinned, std::ffi::OsStr::new("artifact-busybox"), 0)?;
+        if fd_identity(&record)? != fd_identity(&self.record)? || claim != self.claim(&stage)? {
+            return Err(io::Error::other("synthetic grant identity mismatch"));
+        }
+        if !stage.metadata()?.is_file() {
+            return Err(io::Error::other(
+                "synthetic grant stage is not a regular file",
+            ));
+        }
+        let stage = File::open(format!("/proc/self/fd/{}", stage.as_raw_fd()))?;
+        verify_artifact(&stage, &BUSYBOX).map_err(|fault| io::Error::other(fault.reason()))
+    }
+}
+
 struct FixturePermit {
     verified_executable: Option<File>,
+    grant: Option<FixtureGrant>,
     administrator_stop: Option<FixtureStop>,
     expires: std::time::Instant,
     executable_digest: &'static str,
@@ -1051,7 +1095,7 @@ fn run_fixture_with_config(
         mount_artifact(root, artifact, &staged)
             .inspect_err(|fault| stage_failure("artifact_mount", fault))?;
     }
-    if diagnostic != Diagnostic::Version {
+    let staged_busybox = if diagnostic != Diagnostic::Version {
         let destination = scratch.join("artifact-busybox");
         let staged =
             match local_auth.and_then(|(_, _, permit)| permit.verified_executable.as_ref()) {
@@ -1060,7 +1104,10 @@ fn run_fixture_with_config(
             }
             .inspect_err(|fault| stage_failure("busybox", fault))?;
         mount_artifact(root, &BUSYBOX, &staged)?;
-    }
+        Some(staged)
+    } else {
+        None
+    };
     if let Some(config) = private_config {
         own(&root.join("home/fixture"), 0o755)?;
         config.bind(root)?;
@@ -1150,7 +1197,26 @@ fn run_fixture_with_config(
                         .saturating_duration_since(std::time::Instant::now()),
                 );
             }
-            ChildNetwork::Verified(local_auth::request(control, case)?)
+            let mut claim = permit
+                .grant
+                .as_ref()
+                .map(|grant| {
+                    grant.claim(
+                        staged_busybox
+                            .as_ref()
+                            .ok_or_else(|| io::Error::other("synthetic stage missing"))?,
+                    )
+                })
+                .transpose()?;
+            if let Some(claim) = claim.as_mut() {
+                match case {
+                    local_auth::Case::WrongGrantId => claim[0] ^= 1,
+                    local_auth::Case::WrongGrantLedger => claim[16] ^= 1,
+                    local_auth::Case::WrongGrantStage => claim[32] ^= 1,
+                    _ => {}
+                }
+            }
+            ChildNetwork::Verified(local_auth::request(control, case, claim.as_ref())?)
         } else {
             request_cli_start(control)?;
             ChildNetwork::NewOffline
@@ -1562,6 +1628,9 @@ fn supervised_with_network(
         }
         verified_network = Some(identity);
         if let Some(permit) = permit {
+            if let Some(grant) = &permit.grant {
+                grant.verify(&mut outside, work)?;
+            }
             permit.validate()?;
         }
         cli_granted = true;
@@ -2509,6 +2578,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
             let now = std::time::Instant::now();
             FixturePermit {
                 verified_executable: None,
+                grant: None,
                 administrator_stop: None,
                 expires: if matches!(case, local_auth::Case::ExpiredPermit) {
                     now
@@ -2550,6 +2620,9 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     | local_auth::Case::SignedPermit
                     | local_auth::Case::SignedAdministratorStop
                     | local_auth::Case::PermitExpiresBeforeGrant
+                    | local_auth::Case::WrongGrantId
+                    | local_auth::Case::WrongGrantLedger
+                    | local_auth::Case::WrongGrantStage
             )
         ) {
             use std::time::Instant;
@@ -2614,7 +2687,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     permit.verified_executable = Some(inputs.executable);
                     (inputs.id, inputs.expires, inputs.ledger)
                 };
-            login_permit::consume(
+            let record = login_permit::consume(
                 &ledger,
                 &login_permit::Permit {
                     id,
@@ -2624,6 +2697,9 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                 expected,
                 Instant::now(),
             )?;
+            if permit.verified_executable.is_some() {
+                permit.grant = Some(FixtureGrant { id, ledger, record });
+            }
             permit.expires = expiry;
             if matches!(
                 local_auth_case,
