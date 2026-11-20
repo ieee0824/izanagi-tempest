@@ -8,14 +8,14 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Scope<'a> {
-    pub executable_sha256: [u8; 32],
+    pub executable_sha256: &'a str,
     pub arguments: &'a [&'a str],
     pub authority: &'a str,
 }
 
 pub(super) struct Permit<'a> {
     pub id: u128,
-    pub expires_at: std::time::SystemTime,
+    pub expires_at: std::time::Instant,
     pub scope: Scope<'a>,
 }
 
@@ -26,7 +26,7 @@ pub(super) fn consume(
     ledger: &File,
     permit: &Permit<'_>,
     expected: Scope<'_>,
-    now: std::time::SystemTime,
+    now: std::time::Instant,
 ) -> io::Result<()> {
     if permit.scope != expected {
         return Err(refused("manual login permit scope mismatch"));
@@ -39,6 +39,7 @@ pub(super) fn consume(
 
 /// Revocation and consumption compete for the same record. Either operation
 /// permanently closes the permit ID in this ledger.
+#[cfg(test)]
 pub(super) fn revoke(ledger: &File, id: u128) -> io::Result<()> {
     close_permit(ledger, id)
 }
@@ -78,7 +79,7 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
-        time::{Duration, UNIX_EPOCH},
+        time::{Duration, Instant, UNIX_EPOCH},
     };
 
     struct Ledger(PathBuf);
@@ -106,7 +107,7 @@ mod tests {
     }
 
     const SCOPE: Scope<'static> = Scope {
-        executable_sha256: [7; 32],
+        executable_sha256: "fixed-dummy-digest",
         arguments: &["auth", "login"],
         authority: "auth.example.invalid:443",
     };
@@ -115,9 +116,10 @@ mod tests {
     fn rejects_expired_wrong_scope_and_revoked_permits() {
         let tmp = Ledger::new();
         let ledger = File::open(&tmp.0).unwrap();
+        let now = Instant::now();
         let permit = Permit {
             id: 1,
-            expires_at: UNIX_EPOCH + Duration::from_secs(60),
+            expires_at: now + Duration::from_secs(60),
             scope: SCOPE,
         };
         assert_eq!(
@@ -128,7 +130,7 @@ mod tests {
         );
         for scope in [
             Scope {
-                executable_sha256: [8; 32],
+                executable_sha256: "other-dummy-digest",
                 ..SCOPE
             },
             Scope {
@@ -141,7 +143,7 @@ mod tests {
             },
         ] {
             assert_eq!(
-                consume(&ledger, &permit, scope, UNIX_EPOCH)
+                consume(&ledger, &permit, scope, now)
                     .unwrap_err()
                     .to_string(),
                 "manual login permit scope mismatch"
@@ -150,9 +152,7 @@ mod tests {
         assert_eq!(fs::read_dir(&tmp.0).unwrap().count(), 0);
         revoke(&ledger, permit.id).unwrap();
         assert_eq!(
-            consume(&ledger, &permit, SCOPE, UNIX_EPOCH)
-                .unwrap_err()
-                .kind(),
+            consume(&ledger, &permit, SCOPE, now).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
         );
     }
@@ -161,12 +161,13 @@ mod tests {
     fn rejects_when_the_consumption_record_cannot_be_created() {
         let tmp = Ledger::new();
         let ledger = File::create(tmp.0.join("not-a-directory")).unwrap();
+        let now = Instant::now();
         let permit = Permit {
             id: 3,
-            expires_at: UNIX_EPOCH + Duration::from_secs(60),
+            expires_at: now + Duration::from_secs(60),
             scope: SCOPE,
         };
-        let result = consume(&ledger, &permit, SCOPE, UNIX_EPOCH);
+        let result = consume(&ledger, &permit, SCOPE, now);
         assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::ENOTDIR));
     }
 
@@ -174,9 +175,10 @@ mod tests {
     fn commits_before_start_and_rejects_concurrent_reuse() {
         let tmp = Ledger::new();
         let ledger = File::open(&tmp.0).unwrap();
+        let now = Instant::now();
         let permit = Permit {
             id: 2,
-            expires_at: UNIX_EPOCH + Duration::from_secs(60),
+            expires_at: now + Duration::from_secs(60),
             scope: SCOPE,
         };
         let barrier = std::sync::Barrier::new(2);
@@ -185,7 +187,7 @@ mod tests {
             for _ in 0..2 {
                 threads.spawn(|| {
                     barrier.wait();
-                    if consume(&ledger, &permit, SCOPE, UNIX_EPOCH).is_ok() {
+                    if consume(&ledger, &permit, SCOPE, now).is_ok() {
                         assert!(tmp.0.join(format!("{:032x}", permit.id)).is_file());
                         starts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -193,6 +195,6 @@ mod tests {
             }
         });
         assert_eq!(starts.into_inner(), 1);
-        assert!(consume(&File::open(&tmp.0).unwrap(), &permit, SCOPE, UNIX_EPOCH).is_err());
+        assert!(consume(&File::open(&tmp.0).unwrap(), &permit, SCOPE, now).is_err());
     }
 }
