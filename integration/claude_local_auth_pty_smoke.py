@@ -76,7 +76,7 @@ def main():
         success=POSITIVE + REMOVED,
     )
     assert_empty()
-    print("match: auth accepted, other host and three direct ports denied; disconnect reaped, listeners closed, generation removed")
+    print("match: auth accepted, other host and three direct ports denied; disconnect reaped, active tunnel and listeners closed, generation removed")
     return 0
 
 

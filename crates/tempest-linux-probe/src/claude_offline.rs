@@ -711,7 +711,14 @@ fn run_pty_child(
                 test "$separator" = "$(printf "\r")"
                 IFS= read -r answer
                 test "$answer" = ACK
-            '
+                printf "ready\n" > /tunnel-ready
+                IFS= read -r unexpected
+                exit 1
+            ' &
+            tunnel=$!
+            IFS= read -r established < /tunnel-ready
+            test "$established" = ready
+            kill -0 "$tunnel"
             for port in 39272 39273 39274; do
                 if /bin/busybox nc -w 1 127.0.0.1 "$port" -e /bin/busybox true; then exit 1; fi
             done
@@ -719,6 +726,7 @@ fn run_pty_child(
         printf 'fixture-ready\n'
         IFS= read -r request
         test "$request" = probe
+        if test -n "${tunnel:-}"; then kill -0 "$tunnel"; fi
         /bin/busybox sleep 60 &
         descendant=$!
         kill -0 "$descendant"
@@ -928,6 +936,9 @@ fn run_fixture_with_config(
         // BusyBox ash opens /dev/null for a background job's stdin.
         fs::create_dir(root.join("dev"))?;
         File::create(root.join("dev/null"))?;
+        if local_auth.is_some() {
+            fixture_fifo(&root.join("tunnel-ready"))?;
+        }
         Some(fixture_fifo(&root.join("pty-ready"))?)
     } else {
         None
