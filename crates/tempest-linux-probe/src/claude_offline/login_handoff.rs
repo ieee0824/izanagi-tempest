@@ -9,7 +9,7 @@ const DOMAIN: &[u8] = b"izanagi-tempest:manual-login-handoff:fixture-v1\0";
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(serde::Serialize))]
 #[serde(deny_unknown_fields)]
-pub(super) struct Handoff {
+struct Handoff {
     permit_id: String,
     approval_pair_sha256: String,
     expires_unix_seconds: u64,
@@ -26,7 +26,7 @@ pub(super) fn verify_handoff(
     signature: &[u8],
     expected: Scope<'_>,
     now_unix_seconds: u64,
-) -> io::Result<Handoff> {
+) -> io::Result<u128> {
     if signed.len() > 4096 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -43,18 +43,20 @@ pub(super) fn verify_handoff(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "wrong handoff purpose"))?;
     let handoff: Handoff = serde_json::from_slice(payload)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid handoff payload"))?;
-    if handoff.permit_id.is_empty()
-        || handoff.approval_pair_sha256.len() != 64
-        || !handoff
-            .approval_pair_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
-    {
+    let lowercase_hex = |value: &str, len| {
+        value.len() == len
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    if !lowercase_hex(&handoff.permit_id, 32) || !lowercase_hex(&handoff.approval_pair_sha256, 64) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid handoff identifiers",
         ));
     }
+    let permit_id = u128::from_str_radix(&handoff.permit_id, 16)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid handoff permit ID"))?;
     if handoff.expires_unix_seconds <= now_unix_seconds {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -75,7 +77,7 @@ pub(super) fn verify_handoff(
             "handoff scope mismatch",
         ));
     }
-    Ok(handoff)
+    Ok(permit_id)
 }
 
 #[test]
@@ -93,7 +95,7 @@ fn offline_handoff_checks_signature_expiry_and_scope() {
         approved_ips_revision: 7,
     };
     let handoff = Handoff {
-        permit_id: "fixture-only".into(),
+        permit_id: format!("{:032x}", 42),
         approval_pair_sha256: "a".repeat(64),
         expires_unix_seconds: 120,
         target_id: expected.target_id.into(),
@@ -106,13 +108,11 @@ fn offline_handoff_checks_signature_expiry_and_scope() {
     signed.extend(serde_json::to_vec(&handoff).unwrap());
     let signature = key.sign(&signed);
     let verify = |bytes: &[u8], signature: &[u8], scope, now| {
-        verify_handoff(trusted, bytes, signature, scope, now)
-            .map(|result| result.permit_id)
-            .map_err(|error| error.to_string())
+        verify_handoff(trusted, bytes, signature, scope, now).map_err(|error| error.to_string())
     };
     assert_eq!(
         verify(&signed, signature.as_ref(), expected, 119).unwrap(),
-        "fixture-only"
+        42
     );
     assert_eq!(
         verify(&signed, signature.as_ref(), expected, 120).unwrap_err(),
@@ -122,6 +122,22 @@ fn offline_handoff_checks_signature_expiry_and_scope() {
         verify(&signed, other.sign(&signed).as_ref(), expected, 119).unwrap_err(),
         "invalid handoff signature"
     );
+    for (field, malformed) in [
+        ("permit_id", "2a".to_owned()),
+        ("permit_id", format!("{:032X}", 42)),
+        ("approval_pair_sha256", "a".repeat(63)),
+        ("approval_pair_sha256", "A".repeat(64)),
+        ("approval_pair_sha256", "g".repeat(64)),
+    ] {
+        let mut body = serde_json::to_value(&handoff).unwrap();
+        body[field] = malformed.into();
+        let mut malformed = DOMAIN.to_vec();
+        malformed.extend(serde_json::to_vec(&body).unwrap());
+        assert_eq!(
+            verify(&malformed, key.sign(&malformed).as_ref(), expected, 119).unwrap_err(),
+            "invalid handoff identifiers"
+        );
+    }
     let mut altered = signed.clone();
     altered[DOMAIN.len()] ^= 1;
     assert_eq!(
