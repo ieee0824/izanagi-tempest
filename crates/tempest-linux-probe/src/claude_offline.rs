@@ -622,6 +622,44 @@ fn request_cli_start(control: &mut UnixStream) -> Result<(), Fault> {
     Ok(())
 }
 
+fn network_identity(namespace: &File) -> io::Result<(u64, u64)> {
+    let metadata = namespace.metadata()?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn verify_waiting_network(pid: libc::pid_t) -> io::Result<File> {
+    // The direct child is unreaped, so its PID cannot identify a replacement.
+    let path = format!("/proc/{pid}/ns/net");
+    let namespace = File::open(&path)?;
+    let identity = network_identity(&namespace)?;
+    let original = File::open("/proc/thread-self/ns/net")?;
+    if identity == network_identity(&original)? {
+        return Err(io::Error::other(
+            "offline supervisor shares the grant issuer network",
+        ));
+    }
+
+    let inspector = unsafe { libc::fork() };
+    if inspector < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if inspector == 0 {
+        let entered = unsafe { libc::setns(namespace.as_raw_fd(), libc::CLONE_NEWNET) } == 0;
+        let verified = entered && confirm_offline_network().is_ok();
+        unsafe { libc::_exit(i32::from(!verified)) };
+    }
+    let status = wait_for_supervisor(inspector)?;
+    if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+        return Err(io::Error::other("offline network inspection failed"));
+    }
+    if identity != network_identity(&File::open(path)?)? {
+        return Err(io::Error::other(
+            "offline supervisor network changed during inspection",
+        ));
+    }
+    Ok(namespace)
+}
+
 fn supervised(
     parent: &File,
     work: &WorkArea,
@@ -674,6 +712,7 @@ fn supervised(
         if message != *b"C" {
             return Err(io::Error::other("invalid offline start request"));
         }
+        let _verified_namespace = verify_waiting_network(pid)?;
         cli_granted = true;
         outside.write_all(b"G")?;
         outside.read_exact(&mut report)
@@ -938,6 +977,68 @@ mod tests {
             (1, 2)
         );
         assert!(!restarted.path.exists());
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires root and private mount/network namespaces"]
+    fn offline_grant_requires_independent_network_verification() {
+        use std::{process::Command, time::Duration};
+
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let path = Path::new("/var/lib").join(format!(
+            "tempest-offline-grant-test-{}",
+            super::super::private_io::random_hex().unwrap()
+        ));
+        let parent = lock_parent(&path).unwrap();
+        let original = File::open("/proc/thread-self/ns/net").unwrap();
+        let issuer_identity = network_identity(&original).unwrap();
+        assert!(verify_waiting_network(0).is_err());
+
+        for case in ["offline", "issuer-network", "loopback-up"] {
+            let work = WorkArea::create(&parent, &path).unwrap();
+            let marker = path.join(case);
+            let ready = path.join("ready");
+            let result = supervised(&parent, &work, |scratch, _, control, reaped| {
+                fs::write(scratch.join("artifact-0"), b"fixed dummy")?;
+                if case == "issuer-network" {
+                    super::super::os::syscall(unsafe {
+                        libc::setns(original.as_raw_fd(), libc::CLONE_NEWNET)
+                    })?;
+                }
+                if case == "loopback-up"
+                    && !Command::new("/usr/sbin/ip")
+                        .args(["link", "set", "lo", "up"])
+                        .status()?
+                        .success()
+                {
+                    return Err(Fault::Identity);
+                }
+                fs::write(&ready, b"ready")?;
+                request_cli_start(control)?;
+                fs::write(&marker, b"G")?;
+                run_in_pid_namespace(Command::new("/bin/true"), Duration::from_secs(2), reaped)?;
+                Ok((1, 2))
+            });
+            assert_eq!(fs::read(&ready).unwrap(), b"ready");
+            fs::remove_file(ready).unwrap();
+            if case == "offline" {
+                assert_eq!(result.unwrap(), (1, 2));
+                assert_eq!(fs::read(&marker).unwrap(), b"G");
+                fs::remove_file(marker).unwrap();
+            } else {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "offline supervisor failed during staging; work removed; signal=0"
+                );
+                assert!(!marker.exists());
+            }
+            assert!(!work.path.exists());
+            assert_eq!(
+                network_identity(&File::open("/proc/thread-self/ns/net").unwrap()).unwrap(),
+                issuer_identity
+            );
+        }
         fs::remove_dir_all(path).unwrap();
     }
 
