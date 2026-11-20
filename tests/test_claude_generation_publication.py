@@ -261,3 +261,122 @@ class PublicationTest(unittest.TestCase):
         reopened.current.write_bytes(b"2")
         reopened.recover(2)
         reopened.consume(2, "confirmed", minimum_revision=2)
+
+
+class RevocationPublication:
+    """Offline model of a revocation update with an independent commit record."""
+
+    def __init__(self, publication, authority):
+        self.publication = publication
+        self.authority = authority
+
+    @staticmethod
+    def replace(directory, name, content):
+        staged = directory / "next"
+        Publication.write(staged, content)
+        staged.replace(directory / name)
+        Publication.sync(directory)
+
+    def commit_record(self, revision, payload):
+        record = {"revision": revision, "sha256": hashlib.sha256(payload).hexdigest()}
+        self.replace(self.authority, "committed", json.dumps(record).encode())
+
+    def publish(self, sync_after_removal):
+        with self.publication.exclusive():
+            root = self.publication.root
+            Publication.write(root / "revocation-pending", b"2")
+            Publication.sync(root)
+            self.replace(self.authority, "revocation-minimum", b"2")
+            payload = b"2:revoked"
+            self.replace(root, "revocation-state", payload)
+            (root / "revocation-pending").unlink()
+            sync_after_removal(root)
+            self.commit_record(2, payload)
+
+    def inspect(self, payload=None):
+        root = self.publication.root
+        with self.publication.lock.open("rb") as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            if (root / "revocation-pending").exists():
+                raise ValueError("revocation update pending")
+            minimum = int((self.authority / "revocation-minimum").read_bytes())
+            committed = json.loads((self.authority / "committed").read_bytes())
+            if payload is None:
+                payload = (root / "revocation-state").read_bytes()
+            revision = int(payload.split(b":", 1)[0])
+            if (
+                revision < minimum
+                or revision != committed["revision"]
+                or hashlib.sha256(payload).hexdigest() != committed["sha256"]
+            ):
+                raise ValueError("revocation update unconfirmed")
+            return payload
+
+    def confirm_fixture(self):
+        with self.publication.exclusive():
+            root = self.publication.root
+            minimum = int((self.authority / "revocation-minimum").read_bytes())
+            payload = (root / "revocation-state").read_bytes()
+            if minimum != 2 or payload != b"2:revoked":
+                raise ValueError("fixture authority cannot confirm the update")
+            Publication.sync(root)
+            self.commit_record(minimum, payload)
+
+
+class RevocationPublicationTest(unittest.TestCase):
+    def test_writer_exit_after_failed_marker_removal_sync_is_fail_closed(self):
+        import multiprocessing
+
+        with tempfile.TemporaryDirectory() as storage:
+            root = Path(storage) / "publication"
+            authority = Path(storage) / "authority"
+            root.mkdir()
+            authority.mkdir()
+            publication = Publication(root)
+            publication.ledger.mkdir()
+            Publication.write(publication.lock, b"")
+            Publication.write(publication.ledger / "used", b"")
+            ledger_before = (publication.ledger.stat().st_ctime_ns,
+                             (publication.ledger / "used").stat().st_ctime_ns)
+            updater = RevocationPublication(publication, authority)
+            updater.replace(authority, "revocation-minimum", b"1")
+            updater.replace(root, "revocation-state", b"1:allowed")
+            updater.commit_record(1, b"1:allowed")
+            self.assertEqual(updater.inspect(), b"1:allowed")
+
+            def write_then_exit():
+                def fail_sync(_):
+                    try:
+                        raise OSError(errno.EIO, "injected parent sync failure")
+                    except OSError as error:
+                        # Exit with the exclusive lock still held. The kernel
+                        # releases it when the writer dies.
+                        os._exit(37 if error.errno == errno.EIO else 38)
+
+                updater.publish(fail_sync)
+
+            writer = multiprocessing.get_context("fork").Process(target=write_then_exit)
+            writer.start()
+            writer.join(timeout=5)
+            if writer.is_alive():
+                writer.kill()
+                writer.join()
+                self.fail("publication writer did not exit")
+            self.assertEqual(writer.exitcode, 37)
+            self.assertFalse((root / "revocation-pending").exists())
+
+            reopened = RevocationPublication(Publication(root), authority)
+            for candidate in (None, b"1:allowed", b"2:allowed"):
+                with self.assertRaisesRegex(ValueError, "revocation update unconfirmed"):
+                    reopened.inspect(candidate)
+            self.assertEqual(
+                (publication.ledger.stat().st_ctime_ns,
+                 (publication.ledger / "used").stat().st_ctime_ns),
+                ledger_before,
+            )
+            reopened.confirm_fixture()
+            self.assertEqual(reopened.inspect(), b"2:revoked")
+            for candidate in (b"1:allowed", b"2:allowed"):
+                with self.assertRaisesRegex(ValueError, "revocation update unconfirmed"):
+                    reopened.inspect(candidate)
+            self.assertEqual(list(publication.ledger.iterdir()), [publication.ledger / "used"])
