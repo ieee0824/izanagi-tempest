@@ -136,15 +136,17 @@ def check_permit_replay(binary):
                 **overrides,
             }, out)
 
-    def check_refusal(reason, expected):
+    def check_refusal(reason, expected, case="single-use-permit", timeout=2):
         master, slave = pty.openpty()
         try:
             result = subprocess.run(
-                [binary, "single-use-permit"], stdin=slave, stdout=slave,
-                stderr=subprocess.PIPE, env={}, timeout=2,
+                [binary, case], stdin=slave, stdout=slave,
+                stderr=subprocess.PIPE, env={}, timeout=timeout,
             )
             if result.returncode != 1 or reason not in result.stderr:
                 raise RuntimeError(f"synthetic permit refusal failed: {result.stderr!r}")
+            if case == "permit-expires-before-grant" and NEGATIVE not in result.stderr:
+                raise RuntimeError(f"late expiry did not close an unused gateway: {result.stderr!r}")
             if any(WORK.iterdir()) or set(CONFIG.iterdir()) != expected:
                 raise RuntimeError("rejected permit staged a new generation")
         finally:
@@ -170,6 +172,14 @@ def check_permit_replay(binary):
         )
         if set(CONFIG.iterdir()) != {marker, policy} or not marker.is_file() or marker.stat().st_size:
             raise RuntimeError("unexpected settings or permit artifacts after cleanup")
+        check_refusal(b"manual login permit already consumed or revoked", {marker, policy})
+        marker.unlink()
+        write_settings(int(time.time()) + 4)
+        check_refusal(
+            b"work removed; synthetic permit expired", {marker, policy},
+            case="permit-expires-before-grant", timeout=10,
+        )
+        write_settings(int(time.time()) + 45)
         check_refusal(b"manual login permit already consumed or revoked", {marker, policy})
     finally:
         marker.unlink(missing_ok=True)
@@ -197,7 +207,7 @@ def main():
     )
     assert_empty()
     check_permit_replay(binary)
-    print("configured permit: missing, expired and replayed settings refused; first use recovered")
+    print("configured permit: missing, expired and replayed settings refused; late expiry recovered without traffic")
     print("concurrent launch: refused before staging")
     print("match: auth accepted, other host and three direct ports denied; disconnect reaped, active tunnel and listeners closed, generation removed")
     return 0

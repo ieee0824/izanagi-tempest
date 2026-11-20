@@ -1066,6 +1066,14 @@ fn run_fixture_with_config(
             permit.validate().inspect_err(|error| {
                 eprintln!("local auth refused before grant: {error}");
             })?;
+            if matches!(case, local_auth::Case::PermitExpiresBeforeGrant) {
+                // Exercise the final grant gate after successful staging.
+                std::thread::sleep(
+                    permit
+                        .expires
+                        .saturating_duration_since(std::time::Instant::now()),
+                );
+            }
             ChildNetwork::Verified(local_auth::request(control, case)?)
         } else {
             request_cli_start(control)?;
@@ -1405,7 +1413,7 @@ fn supervised_observed(
     execute: impl FnOnce(&Path, &Path, &mut UnixStream, &mut bool) -> Result<(u64, u64), Fault>,
     observation: &mut Option<OfflineObservation>,
 ) -> io::Result<(u64, u64)> {
-    supervised_with_network(parent, work, execute, observation, false)
+    supervised_with_network(parent, work, execute, observation, None)
 }
 
 fn supervised_with_network(
@@ -1413,9 +1421,10 @@ fn supervised_with_network(
     work: &WorkArea,
     execute: impl FnOnce(&Path, &Path, &mut UnixStream, &mut bool) -> Result<(u64, u64), Fault>,
     observation: &mut Option<OfflineObservation>,
-    local_auth: bool,
+    permit: Option<&FixturePermit>,
 ) -> io::Result<(u64, u64)> {
     const RECOVERABLE_FAILURE: i32 = 2;
+    let local_auth = permit.is_some();
     let (mut outside, mut inside) = UnixStream::pair().or_else(|error| {
         work.remove(parent)?;
         Err(error)
@@ -1469,6 +1478,9 @@ fn supervised_with_network(
             local_auth::read_claim(&mut outside, identity)?;
         }
         verified_network = Some(identity);
+        if let Some(permit) = permit {
+            permit.validate()?;
+        }
         cli_granted = true;
         outside.write_all(b"G")?;
         if local_auth {
@@ -2072,7 +2084,10 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         })?;
         let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
         let config_parent = lock_parent(config_path)?;
-        if matches!(local_auth_case, Some(local_auth::Case::SingleUsePermit)) {
+        if matches!(
+            local_auth_case,
+            Some(local_auth::Case::SingleUsePermit | local_auth::Case::PermitExpiresBeforeGrant)
+        ) {
             let permit = permit
                 .as_mut()
                 .ok_or_else(|| io::Error::other("synthetic permit missing"))?;
@@ -2145,7 +2160,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                 )
             },
             &mut observation,
-            local_auth_case.is_some(),
+            permit.as_ref(),
         );
         let action = writable_config::disposition(
             observation.map(|item| item.recovery),
