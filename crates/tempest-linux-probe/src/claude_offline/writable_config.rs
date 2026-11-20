@@ -464,6 +464,221 @@ mod tests {
         fs::remove_dir(fixture).unwrap();
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+    struct FixtureGeneration {
+        permit_id: u64,
+        work: (u64, u64),
+        config: (u64, u64),
+    }
+
+    #[derive(serde::Serialize)]
+    struct RecoveryRecord {
+        generation: FixtureGeneration,
+        child_terminated: Option<FixtureGeneration>,
+        communication_closed: Option<FixtureGeneration>,
+        mounts_detached: Option<FixtureGeneration>,
+        ledger_present: bool,
+        ledger_synced: Option<bool>,
+        supervisor_wait_status: i32,
+        decision_unix_seconds: u64,
+        reviewer: &'static str,
+    }
+
+    impl RecoveryRecord {
+        fn permits_recovery(&self) -> bool {
+            self.ledger_present
+                && self.ledger_synced == Some(true)
+                && [
+                    self.child_terminated,
+                    self.communication_closed,
+                    self.mounts_detached,
+                ]
+                .iter()
+                .all(|evidence| *evidence == Some(self.generation))
+        }
+    }
+
+    #[test]
+    #[ignore = "requires root and private mount/network namespaces"]
+    fn synthetic_recovery_record_requires_matching_termination_evidence() {
+        use super::super::{
+            BUSYBOX, LOGIN_ARGS, login_connect, login_permit, request_cli_start,
+            run_in_pid_namespace, supervised_observed,
+        };
+        use std::{
+            io::{Read, Write},
+            net::Shutdown,
+            os::unix::net::UnixStream,
+            process::Command,
+            time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+        };
+
+        let root = Path::new("/var/lib").join(format!(
+            "tempest-recovery-record-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, PermissionsExt::from_mode(0o700)).unwrap();
+        let work_root = root.join("work");
+        let config_root = root.join("config");
+        let ledger_root = root.join("ledger");
+        for directory in [&work_root, &config_root, &ledger_root] {
+            fs::create_dir(directory).unwrap();
+        }
+        let work_parent = File::open(&work_root).unwrap();
+        let config_parent = File::open(&config_root).unwrap();
+        let ledger = File::open(&ledger_root).unwrap();
+        let scope = login_permit::Scope {
+            executable_sha256: BUSYBOX.sha256,
+            arguments: &LOGIN_ARGS,
+            authority: login_connect::AUTHORITY,
+            target_id: "synthetic-recovery-record",
+            approved_ips_revision: 1,
+        };
+        let mut normal_generation = None;
+
+        for (id, confirm_exit) in [(1, true), (2, false)] {
+            let work = WorkArea::create(&work_parent, &work_root).unwrap();
+            let config = Generation::create(&config_parent, &config_root, &work).unwrap();
+            let generation = FixtureGeneration {
+                permit_id: u64::try_from(id).unwrap(),
+                work: fd_identity(&work.pinned).unwrap(),
+                config: fd_identity(&config.pinned).unwrap(),
+            };
+            let permit = login_permit::Permit {
+                id,
+                expires_at: Instant::now() + Duration::from_secs(30),
+                scope,
+            };
+            let permit_id = format!("{id:032x}");
+            // consume reports success only after syncing both the record and its parent.
+            let consumed = login_permit::consume(&ledger, &permit, scope, Instant::now()).unwrap();
+            let (mut observer, mut fixture_channel) = UnixStream::pair().unwrap();
+            observer
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut observation = None;
+            let result = supervised_observed(
+                &work_parent,
+                &work,
+                |_, root, control, reaped| {
+                    fs::create_dir_all(root.join("home/fixture/config"))?;
+                    config.bind(root)?;
+                    request_cli_start(control)?;
+                    if !confirm_exit {
+                        unsafe { libc::_exit(7) }
+                    }
+                    run_in_pid_namespace(
+                        Command::new("/bin/true"),
+                        Duration::from_secs(2),
+                        reaped,
+                    )?;
+                    fixture_channel.write_all(b"C")?;
+                    fixture_channel.shutdown(Shutdown::Write)?;
+                    Ok((0, 0))
+                },
+                &mut observation,
+            );
+            drop(fixture_channel);
+            let observation = observation.unwrap();
+            assert_eq!(observation.work_identity, generation.work);
+            let same_config = WorkArea::open_at(&config_parent, &config.name).unwrap();
+            assert_eq!(fd_identity(&same_config).unwrap(), generation.config);
+            let termination_attested = matches!(
+                observation.recovery,
+                OfflineRecovery::RemovedAfterTermination
+            );
+            let mut close_marker = [0; 1];
+            let finished_channel = observer.read(&mut close_marker).is_ok_and(|n| n == 1)
+                && close_marker == *b"C"
+                && observer.read(&mut close_marker).is_ok_and(|n| n == 0);
+            let record_path = ledger_root.join(&permit_id);
+            let visible_record = File::open(&record_path).unwrap();
+            let mut record = RecoveryRecord {
+                generation,
+                child_terminated: termination_attested.then_some(generation),
+                communication_closed: finished_channel.then_some(generation),
+                mounts_detached: termination_attested.then_some(generation),
+                ledger_present: fd_identity(&visible_record).unwrap()
+                    == fd_identity(&consumed).unwrap(),
+                ledger_synced: Some(true),
+                supervisor_wait_status: observation.supervisor_wait_status,
+                decision_unix_seconds: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                reviewer: "synthetic-integration-test",
+            };
+            let recovery_allowed = record.permits_recovery();
+            assert_eq!(recovery_allowed, confirm_exit);
+            assert_eq!(result.is_ok(), confirm_exit);
+            assert!(record.ledger_present);
+            assert_eq!(record.ledger_synced, Some(true));
+            assert_eq!(
+                login_permit::consume(&ledger, &permit, scope, Instant::now())
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+
+            if recovery_allowed {
+                for field in ["child", "communication", "mounts"] {
+                    let evidence = match field {
+                        "child" => &mut record.child_terminated,
+                        "communication" => &mut record.communication_closed,
+                        _ => &mut record.mounts_detached,
+                    };
+                    *evidence = None;
+                    assert!(!record.permits_recovery(), "{field}");
+                    record.child_terminated = Some(generation);
+                    record.communication_closed = Some(generation);
+                    record.mounts_detached = Some(generation);
+                }
+                record.ledger_synced = None;
+                assert!(!record.permits_recovery());
+                record.ledger_synced = Some(true);
+                config
+                    .finish(&config_parent, Disposition::Remove, false)
+                    .unwrap();
+                assert!(!config.path.exists() && !work.path.exists());
+                normal_generation = Some(generation);
+            } else {
+                assert!(
+                    config
+                        .finish(&config_parent, Disposition::Quarantine, false)
+                        .is_err()
+                );
+                assert!(config.path.is_dir() && work.path.is_dir());
+                let other = normal_generation.unwrap();
+                assert_ne!(generation, other);
+                for (child, communication, mounts) in [
+                    (other, generation, generation),
+                    (generation, other, generation),
+                    (generation, generation, other),
+                ] {
+                    let mismatched = RecoveryRecord {
+                        child_terminated: Some(child),
+                        communication_closed: Some(communication),
+                        mounts_detached: Some(mounts),
+                        ..record
+                    };
+                    assert!(!mismatched.permits_recovery());
+                }
+            }
+            println!(
+                "{}",
+                serde_json::json!({
+                    "decision": if recovery_allowed { "recovered" } else { "quarantine" },
+                    "observation": record,
+                })
+            );
+        }
+
+        // Fixture teardown after asserting quarantine. No application child was started
+        // in the fault case, and the enclosing test mount namespace is disposable.
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn disposition_requires_confirmed_termination_for_retention() {
         use Disposition::*;
