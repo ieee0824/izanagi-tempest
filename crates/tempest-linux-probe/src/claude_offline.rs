@@ -1712,43 +1712,46 @@ fn verify_shared_terminal(input: libc::c_int, output: libc::c_int) -> io::Result
 
 const MANUAL_LOGIN_POLICY: &str = "/etc/tempest/claude-manual-login.json";
 
-fn open_manual_login_policy(path: &Path) -> io::Result<File> {
-    use std::ffi::CString;
-    fn open_child(parent: &File, name: &std::ffi::OsStr, flags: libc::c_int) -> io::Result<File> {
-        let name = CString::new(name.as_bytes())?;
-        let fd = unsafe {
-            libc::openat(
-                parent.as_raw_fd(),
-                name.as_ptr(),
-                flags | libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(unsafe { File::from_raw_fd(fd) })
+fn open_login_child(parent: &File, name: &std::ffi::OsStr, flags: libc::c_int) -> io::Result<File> {
+    let name = std::ffi::CString::new(name.as_bytes())?;
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
     }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
 
+fn pin_login_path(path: &Path, flags: libc::c_int) -> io::Result<File> {
     let mut components = path.components();
     if components.next() != Some(std::path::Component::RootDir) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     let mut directory = File::open("/")?;
     let mut components = components.peekable();
-    let pinned = loop {
+    loop {
         let Some(std::path::Component::Normal(name)) = components.next() else {
             return Err(io::ErrorKind::InvalidInput.into());
         };
         if components.peek().is_none() {
-            break open_child(&directory, name, 0)?;
+            return open_login_child(&directory, name, flags);
         }
-        let next = open_child(&directory, name, libc::O_DIRECTORY)?;
+        let next = open_login_child(&directory, name, libc::O_DIRECTORY)?;
         let metadata = next.metadata()?;
         if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         directory = next;
-    };
+    }
+}
+
+fn open_manual_login_policy(path: &Path) -> io::Result<File> {
+    let pinned = pin_login_path(path, 0)?;
     let metadata = pinned.metadata()?;
     if !metadata.is_file()
         || (
@@ -1768,6 +1771,26 @@ fn open_manual_login_policy(path: &Path) -> io::Result<File> {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     Ok(input)
+}
+
+fn diagnose_login_ledger(path: &Path, permit_id: u128) -> io::Result<()> {
+    let ledger = pin_login_path(path, libc::O_DIRECTORY)?;
+    let metadata = ledger.metadata()?;
+    if (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777) != (0, 0, 0o700) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "invalid ledger ownership or mode",
+        ));
+    }
+    let name = format!("{permit_id:032x}");
+    match open_login_child(&ledger, std::ffi::OsStr::new(&name), 0) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "permit already consumed or revoked",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn check_manual_login_policy(path: &Path) -> io::Result<()> {
@@ -1822,7 +1845,7 @@ fn diagnose_manual_login_handoff(policy: &Path, scope: &LoginPolicyScope) -> io:
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
             .as_secs();
-        login_handoff::verify_handoff(
+        let (permit_id, _) = login_handoff::verify_handoff(
             key,
             &payload,
             &signature,
@@ -1830,18 +1853,27 @@ fn diagnose_manual_login_handoff(policy: &Path, scope: &LoginPolicyScope) -> io:
             scope.expires_unix_seconds,
             now,
         )?;
-        Ok::<_, io::Error>(())
+        Ok::<_, io::Error>(permit_id)
     })();
-    if let Err(error) = result {
+    let permit_id = result.map_err(|error| {
         eprintln!("manual login handoff diagnostic refused: {error}");
-        return Err(io::ErrorKind::InvalidData.into());
-    }
+        io::Error::from(io::ErrorKind::InvalidData)
+    })?;
     eprintln!("manual login handoff diagnostic verified");
     verify_fixed_artifact(&ARTIFACTS[0]).map_err(|fault| {
         stage_failure("manual_login_fixed_cli", &fault);
         io::Error::new(io::ErrorKind::InvalidData, "manual login fixed CLI refused")
     })?;
     eprintln!("manual login fixed CLI verified");
+    diagnose_login_ledger(
+        &policy.with_file_name("claude-login-diagnostic-ledger"),
+        permit_id,
+    )
+    .map_err(|error| {
+        eprintln!("manual login ledger diagnostic refused: {error}");
+        io::Error::from(io::ErrorKind::InvalidData)
+    })?;
+    eprintln!("manual login ledger diagnostic verified");
     Ok(())
 }
 
