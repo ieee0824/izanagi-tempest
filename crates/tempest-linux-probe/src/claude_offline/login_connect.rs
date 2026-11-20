@@ -193,6 +193,7 @@ pub(super) fn serve_fixture(
     upstream: FixtureUpstream,
     case: Case,
     expires: Instant,
+    stop: Option<&super::FixtureStop>,
 ) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(8);
     let mut rejected = accept_before(listener, deadline)?;
@@ -255,14 +256,18 @@ pub(super) fn serve_fixture(
                 }
                 Ok::<_, io::Error>(())
             })?)
-        } else if matches!(case, Case::SignedTlsExpiry) {
+        } else if matches!(case, Case::SignedTlsExpiry | Case::SignedTlsRevocation) {
             Some(std::thread::Builder::new().spawn_scoped(scope, || {
                 let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 39275));
                 let mut client = accept_before(listener, expires)?;
                 let tunnel = open_tunnel(&mut client, expires, peer, |address, timeout| {
                     TcpStream::connect_timeout(&address, timeout)
                 })?;
-                finish_expiring_relay(relay(client, tunnel, expires), expires)?;
+                if let Some(stop) = stop {
+                    relay_until_revoked(client, tunnel, deadline, stop)?;
+                } else {
+                    finish_expiring_relay(relay(client, tunnel, expires), expires)?;
+                }
                 // The signed IP revision's freshness ended. Check the next
                 // CONNECT but do not create another upstream socket.
                 let mut denied = accept_before(listener, deadline)?;
@@ -290,6 +295,34 @@ pub(super) fn serve_fixture(
                 .map_err(|_| io::Error::other("local TLS relay failed"))??;
         }
         relayed.and(exchanged)
+    })
+}
+
+fn relay_until_revoked(
+    client: TcpStream,
+    tunnel: TcpStream,
+    deadline: Instant,
+    stop: &super::FixtureStop,
+) -> io::Result<()> {
+    let client_pin = client.try_clone()?;
+    let upstream_pin = tunnel.try_clone()?;
+    std::thread::scope(|scope| {
+        let watcher = std::thread::Builder::new().spawn_scoped(scope, || {
+            while Instant::now() < deadline {
+                if stop.requested() {
+                    client_pin.shutdown(Shutdown::Both)?;
+                    upstream_pin.shutdown(Shutdown::Both)?;
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(io::Error::other("signed revocation not observed"))
+        })?;
+        let relayed = relay(client, tunnel, deadline);
+        watcher
+            .join()
+            .map_err(|_| io::Error::other("revocation watcher failed"))??;
+        relayed
     })
 }
 
@@ -580,6 +613,7 @@ with socket.create_server(("127.0.0.1", 0)) as listener:
                     FixtureUpstream::prepare(Case::Match).unwrap(),
                     Case::Match,
                     Instant::now() + Duration::from_secs(8),
+                    None,
                 )
             });
             let mut rejected = TcpStream::connect(address).unwrap();
