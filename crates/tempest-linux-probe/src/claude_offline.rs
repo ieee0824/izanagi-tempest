@@ -704,7 +704,7 @@ fn run_pty_child(
                 test "$status" = "$(printf "HTTP/1.1 403 Forbidden\r")"
             '
             /bin/busybox nc -w 1 127.0.0.1 39271 -e /bin/busybox sh -eu -c '
-                printf "CONNECT platform.claude.com:443 HTTP/1.1\r\n\r\nPING"
+                printf "CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\nPING"
                 IFS= read -r status
                 test "$status" = "$(printf "HTTP/1.1 200 Connection Established\r")"
                 IFS= read -r separator
@@ -891,7 +891,7 @@ fn run_fixture_with_config(
     namespace_reaped: &mut bool,
     diagnostic: Diagnostic,
     private_config: Option<&writable_config::Generation>,
-    local_auth_case: Option<local_auth::Case>,
+    local_auth: Option<(local_auth::Case, &File)>,
 ) -> Result<(u64, u64), Fault> {
     use super::os;
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
@@ -950,11 +950,11 @@ fn run_fixture_with_config(
     } else {
         None
     };
-    let policy = local_auth_case
-        .map(local_auth::LocalPolicy::setup)
+    let policy = local_auth
+        .map(|(case, _)| local_auth::LocalPolicy::setup(case))
         .transpose()?;
     let launch = (|| {
-        let network = if let Some(case) = local_auth_case {
+        let network = if let Some((case, _)) = local_auth {
             ChildNetwork::Verified(local_auth::request(control, case)?)
         } else {
             request_cli_start(control)?;
@@ -967,10 +967,12 @@ fn run_fixture_with_config(
         if let Some(config) = config {
             config.run(root, scratch, namespace_reaped, diagnostic)?;
         } else if let Some(events) = pty_events {
-            let gateway = policy
-                .as_ref()
-                .map(local_auth::LocalPolicy::start_gateway)
-                .transpose()?;
+            let gateway = match (&policy, local_auth) {
+                (Some(policy), Some((_, upstream_network))) => {
+                    Some(policy.start_gateway(upstream_network)?)
+                }
+                _ => None,
+            };
             run_pty_child(root, namespace_reaped, events, private_config, network)?;
             if let Some(gateway) = gateway {
                 gateway.finish()?;
@@ -1596,6 +1598,11 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         return ExitCode::FAILURE;
     }
     let result = (|| {
+        // Pin the upstream namespace before the supervisor enters the isolated client network.
+        let upstream_network = local_auth_case
+            .map(|_| File::open("/proc/thread-self/ns/net"))
+            .transpose()?;
+        let local_auth = local_auth_case.zip(upstream_network.as_ref());
         let work_path = Path::new(WORK_PARENT);
         let parent = lock_parent(work_path)?;
         let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
@@ -1620,7 +1627,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     reaped,
                     Diagnostic::Pty,
                     Some(&config),
-                    local_auth_case,
+                    local_auth,
                 )
             },
             &mut observation,

@@ -3,6 +3,7 @@ use std::{
     fs::File,
     io::{self, Read, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
+    os::fd::AsRawFd,
     os::unix::net::UnixStream,
     process::{Command, Stdio},
 };
@@ -188,20 +189,43 @@ impl LocalPolicy {
         })
     }
 
-    pub fn start_gateway(&self) -> io::Result<Gateway> {
+    pub fn start_gateway(&self, upstream_network: &File) -> io::Result<Gateway> {
+        let upstream_identity = fd_identity(upstream_network)?;
+        if namespace()? == upstream_identity {
+            return Err(io::Error::other(
+                "gateway requires distinct client and upstream networks",
+            ));
+        }
+        let (mut ready, mut sender) = UnixStream::pair()?;
+        ready.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
         let supervisor = unsafe { libc::getpid() };
         let pid = unsafe { libc::fork() };
         if pid < 0 {
             return Err(io::Error::last_os_error());
         }
         if pid == 0 {
+            drop(ready);
             let guarded = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) }
                 == 0
                 && unsafe { libc::getppid() } == supervisor;
-            let success = guarded && login_connect::serve_fixture(&self.listeners[0]).is_ok();
+            // The listener stays in the isolated client namespace. Only this
+            // gateway process moves to the pinned upstream network.
+            let entered = guarded
+                && unsafe { libc::setns(upstream_network.as_raw_fd(), libc::CLONE_NEWNET) } == 0
+                && namespace().is_ok_and(|current| current == upstream_identity);
+            let confirmed = entered && sender.write_all(b"G").is_ok();
+            drop(sender);
+            let success = confirmed && login_connect::serve_fixture(&self.listeners[0]).is_ok();
             unsafe { libc::_exit(i32::from(!success)) };
         }
-        Ok(Gateway(Some(pid)))
+        drop(sender);
+        let gateway = Gateway(Some(pid));
+        let mut acknowledgement = [0];
+        ready.read_exact(&mut acknowledgement)?;
+        if acknowledgement != *b"G" {
+            return Err(io::Error::other("fixed login gateway readiness mismatch"));
+        }
+        Ok(gateway)
     }
 
     pub fn finish(self, granted_and_completed: bool) -> io::Result<()> {

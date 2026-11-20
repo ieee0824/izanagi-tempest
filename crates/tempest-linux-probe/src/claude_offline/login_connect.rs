@@ -29,9 +29,10 @@ fn read_request(mut input: impl Read) -> io::Result<()> {
     let headers = headers.strip_suffix("\r\n\r\n").ok_or_else(rejected)?;
     let mut lines = headers.split("\r\n");
     let mut start = lines.next().unwrap_or_default().split(' ');
-    if start.next() != Some("CONNECT")
-        || start.next() != Some(AUTHORITY)
-        || !matches!(start.next(), Some("HTTP/1.0" | "HTTP/1.1"))
+    let (method, authority, version) = (start.next(), start.next(), start.next());
+    if method != Some("CONNECT")
+        || authority != Some(AUTHORITY)
+        || !matches!(version, Some("HTTP/1.0" | "HTTP/1.1"))
         || start.next().is_some()
     {
         return Err(rejected());
@@ -55,6 +56,9 @@ fn read_request(mut input: impl Read) -> io::Result<()> {
             }
             host_seen = true;
         }
+    }
+    if version == Some("HTTP/1.1") && !host_seen {
+        return Err(rejected());
     }
     Ok(())
 }
@@ -174,7 +178,10 @@ pub(super) fn serve_fixture(listener: &TcpListener) -> io::Result<()> {
     let tunnel = open_tunnel(&mut client, deadline, |timeout| {
         TcpStream::connect_timeout(&address, timeout)
     })?;
-    let (mut server, _) = upstream.accept()?;
+    let (mut server, peer) = upstream.accept()?;
+    if peer != tunnel.local_addr()? {
+        return Err(io::Error::other("login fixture upstream peer mismatch"));
+    }
     std::thread::scope(|scope| {
         let exchange = std::thread::Builder::new().spawn_scoped(scope, move || {
             server.set_read_timeout(Some(time_remaining(deadline)?))?;
@@ -217,6 +224,8 @@ mod tests {
             "CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n",
             "GET https://platform.claude.com HTTP/1.1\r\n\r\n",
             "CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: example.org\r\n\r\n",
+            "CONNECT platform.claude.com:443 HTTP/1.1\r\n\r\n",
+            "CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\nHost: platform.claude.com:443\r\n\r\n",
             "CONNECT platform.claude.com:443 HTTP/1.1\r\nContent-Length: 1\r\n\r\n",
         ] {
             assert!(read_request(request.as_bytes()).is_err(), "{request:?}");
@@ -253,7 +262,7 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         allowed
-            .write_all(b"CONNECT platform.claude.com:443 HTTP/1.1\r\n\r\nTLS")
+            .write_all(b"CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\nTLS")
             .unwrap();
         let (mut client, _) = proxy.accept().unwrap();
         let tunnel = open_tunnel(&mut client, deadline(), |timeout| {
@@ -321,7 +330,7 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
             client
-                .write_all(b"CONNECT platform.claude.com:443 HTTP/1.1\r\n\r\nPING")
+                .write_all(b"CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\nPING")
                 .unwrap();
             let expected = b"HTTP/1.1 200 Connection Established\r\n\r\nACK\n";
             let mut response = vec![0; expected.len()];
