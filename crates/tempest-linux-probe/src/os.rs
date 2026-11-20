@@ -34,6 +34,7 @@ pub(super) enum Fault {
     UntrackedChildCleanup(i32),
     ReportTimeout,
     ReportEof,
+    AdministratorStop,
     CgroupKillFailureRecovered,
     LibraryRejected(super::contract::Scenario),
 }
@@ -62,6 +63,7 @@ impl Fault {
             Self::UntrackedChildCleanup(_) => "untracked_child_cleanup",
             Self::ReportTimeout => "report_timeout",
             Self::ReportEof => "report_eof",
+            Self::AdministratorStop => "administrator_stop",
             Self::CgroupKillFailureRecovered => "cgroup_kill_failure_recovered",
             Self::LibraryRejected(_) => "library_rejected",
         }
