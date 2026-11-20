@@ -787,7 +787,7 @@ fn baseline(
                     || written.bootstrap.is_some()
                     || written.library_fault.is_some()
                     || written.rejection.is_some()
-                    || written.checks.len() != 4
+                    || written.checks.len() != 7
                     || !written
                         .checks
                         .iter()
@@ -796,6 +796,9 @@ fn baseline(
                             contract::Check::PrivateHomeReadable,
                             contract::Check::PreviousStateAbsent,
                             contract::Check::StateMarkerCreated,
+                            contract::Check::OtherRoleStateDenied,
+                            contract::Check::StateWriteLifecycle,
+                            contract::Check::StateFixedInputUnchanged,
                         ])
                         .all(|(value, check)| {
                             value.check == check

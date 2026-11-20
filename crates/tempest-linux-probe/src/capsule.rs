@@ -461,7 +461,11 @@ pub(super) fn enter(
     }
     drop_privileges(role.uid())?;
     *step = 8;
-    seccomp::install(role, true)?;
+    if matches!(scenario, Scenario::StateRun1 | Scenario::StateRun2) {
+        seccomp::install_state_fixture(role, true)?;
+    } else {
+        seccomp::install(role, true)?;
+    }
     let argv = [
         c"/probe".as_ptr(),
         c"__linux-probe-worker".as_ptr(),
