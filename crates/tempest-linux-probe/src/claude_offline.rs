@@ -1723,16 +1723,75 @@ impl ManualLoginPolicy {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum ManualLoginSettings {
+    Scoped(ScopedManualLoginPolicy),
+    Legacy(ManualLoginPolicy),
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScopedManualLoginPolicy {
+    version: u32,
+    authority: String,
+    approved_ips: ApprovedLoginIps,
+    permit: LoginPolicyScope,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovedLoginIps {
+    revision: u64,
+    addresses: Vec<std::net::IpAddr>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoginPolicyScope {
+    authority: String,
+    approved_ips_revision: u64,
+    expires_unix_seconds: u64,
+}
+
 fn validate_manual_login_policy(input: impl Read) -> io::Result<()> {
+    validate_manual_login_policy_at(input, std::time::SystemTime::now())
+}
+
+fn validate_manual_login_policy_at(input: impl Read, now: std::time::SystemTime) -> io::Result<()> {
+    use std::time::{Duration, UNIX_EPOCH};
+
     const MAX_POLICY_BYTES: u64 = 4096;
+    const MAX_PERMIT_LIFETIME: Duration = Duration::from_secs(60);
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid manual login policy");
     let mut bytes = Vec::new();
     input.take(MAX_POLICY_BYTES + 1).read_to_end(&mut bytes)?;
-    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid manual login policy");
     if bytes.len() as u64 > MAX_POLICY_BYTES {
         return Err(invalid());
     }
-    let policy: ManualLoginPolicy = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-    policy.validate()
+    let policy: ManualLoginSettings = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    let policy = match policy {
+        ManualLoginSettings::Legacy(policy) => return policy.validate(),
+        ManualLoginSettings::Scoped(policy) => policy,
+    };
+    let ips = &policy.approved_ips;
+    if policy.version != 2
+        || policy.authority != login_connect::AUTHORITY
+        || policy.permit.authority != policy.authority
+        || ips.revision == 0
+        || policy.permit.approved_ips_revision != ips.revision
+        || ips.addresses.is_empty()
+    {
+        return Err(invalid());
+    }
+    let expires = UNIX_EPOCH
+        .checked_add(Duration::from_secs(policy.permit.expires_unix_seconds))
+        .ok_or_else(invalid)?;
+    let remaining = expires.duration_since(now).map_err(|_| invalid())?;
+    if remaining.is_zero() || remaining > MAX_PERMIT_LIFETIME {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 pub(super) fn run_manual_login() -> std::process::ExitCode {
@@ -2022,6 +2081,48 @@ mod tests {
             assert_eq!(
                 validate_manual_login_policy(input).unwrap_err().kind(),
                 io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    #[test]
+    fn scoped_manual_login_policy_binds_authority_allowlist_revision_and_expiry() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let now = UNIX_EPOCH + Duration::from_secs(100);
+        let settings = serde_json::json!({
+            "version": 2,
+            "authority": "platform.claude.com:443",
+            "approved_ips": {"revision": 3, "addresses": ["192.0.2.10", "2001:db8::10"]},
+            "permit": {
+                "authority": "platform.claude.com:443",
+                "approved_ips_revision": 3,
+                "expires_unix_seconds": 160,
+            },
+        });
+        assert!(validate_manual_login_policy_at(settings.to_string().as_bytes(), now).is_ok());
+
+        for (path, value) in [
+            ("/authority", serde_json::json!("example.invalid:443")),
+            (
+                "/permit/authority",
+                serde_json::json!("platform.claude.com:8443"),
+            ),
+            ("/permit/approved_ips_revision", serde_json::json!(4)),
+            ("/approved_ips/revision", serde_json::json!(0)),
+            ("/approved_ips/addresses", serde_json::json!([])),
+            ("/approved_ips/addresses", serde_json::json!(["not-an-ip"])),
+            ("/permit/expires_unix_seconds", serde_json::json!(100)),
+            ("/permit/expires_unix_seconds", serde_json::json!(161)),
+        ] {
+            let mut invalid = settings.clone();
+            *invalid.pointer_mut(path).unwrap() = value;
+            assert_eq!(
+                validate_manual_login_policy_at(invalid.to_string().as_bytes(), now)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidData,
+                "{path}",
             );
         }
     }
