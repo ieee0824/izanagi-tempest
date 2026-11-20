@@ -1861,6 +1861,40 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a root-owned fixture under /var/lib"]
+    fn manual_login_policy_valid_file_cannot_authorize_launch() {
+        use std::os::unix::fs::DirBuilderExt;
+        let directory = Path::new("/var/lib").join(format!(
+            "tempest-manual-login-policy-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        let path = directory.join("policy.json");
+        let link = directory.join("link.json");
+        let result = (|| -> io::Result<_> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)?;
+            file.write_all(br#"{"version":1,"authority":"platform.claude.com:443"}"#)?;
+            std::os::unix::fs::symlink(&path, &link)?;
+            Ok((
+                check_manual_login_policy(&path).unwrap_err().kind(),
+                check_manual_login_policy(&link).unwrap_err().kind(),
+            ))
+        })();
+        fs::remove_dir_all(directory).unwrap();
+        assert_eq!(
+            result.unwrap(),
+            (io::ErrorKind::Unsupported, io::ErrorKind::PermissionDenied)
+        );
+    }
+
+    #[test]
     fn manual_login_policy_rejects_untrusted_paths() {
         assert_eq!(
             check_manual_login_policy(Path::new("policy.json"))
