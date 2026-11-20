@@ -2,9 +2,8 @@
 # 固定 Linux x86_64 CLI の合成設定と OS 隔離を比較する。
 set -euo pipefail
 
-claude=$(realpath "${1:?固定 Claude CLI のパスを指定してください}")
+source_claude=$(realpath "${1:?固定 Claude CLI のパスを指定してください}")
 digest=0dc4f4a9a165fc60746d7ae8489712e5fc352f1e7ad4eb22e7141bd0812eb0cf
-printf '%s  %s\n' "$digest" "$claude" | sha256sum --check
 test "$(uname -m)" = x86_64
 test "$(id -u)" -ne 0
 sudo -n true
@@ -22,7 +21,10 @@ trap cleanup EXIT
 mkdir -p "$control"/{home,config,tmp,work/.claude,probe}
 mkdir -p "$root"/{bin,home,config,tmp,work,etc,proc,dev,probe}
 chmod 1777 "$root/tmp"
-cp "$claude" "$root/bin/claude"
+claude=$root/bin/claude
+cp "$source_claude" "$claude"
+chmod 0555 "$claude"
+printf '%s  %s\n' "$digest" "$claude" | sha256sum --check
 cp /usr/bin/busybox "$root/bin/busybox"
 ldd "$claude" | awk '{for (i=1;i<=NF;i++) if ($i ~ /^\//) print $i}' |
     sort -u | while IFS= read -r library; do cp -L --parents "$library" "$root"; done

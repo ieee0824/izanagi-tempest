@@ -290,8 +290,9 @@ Linux x86_64 上で一般ユーザーから実行します。試験にはパス�
 bash integration/claude_offline_isolation.sh /absolute/path/to/claude
 ```
 
-入口は固定 Claude Code 2.1.325 の SHA-256 を上表の値と照合し、
-不一致なら起動前に終了します。正対照の user・project・local 設定はすべて
+入口は固定 Claude Code 2.1.325 を試験ディレクトリにコピーし、
+コピー先の SHA-256 を上表の値と照合します。不一致なら起動前に終了します。
+依存ライブラリの解決と両ケースの起動には同じ検証済みコピーを使います。正対照の user・project・local 設定はすべて
 試験で生成した `{}` です。プロジェクトの `.mcp.json` は固定のローカル
 stdio プローブを指定します。正対照では四つの合成設定について
 `strace` の成功した読取用 open（`O_PATH` を除く）と、プローブの
