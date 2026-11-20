@@ -226,7 +226,9 @@ def check_signed_permits(binary):
         ("wrong-closure-generation", CONFIG / f"{10:032x}",
          b"synthetic gateway closure generation mismatch"),
     )
-    closure_records = {record for _, record, _ in closure_cases}
+    missing_sync = CONFIG / f"{11:032x}"
+    failed_sync = CONFIG / f"{12:032x}"
+    closure_records = {record for _, record, _ in closure_cases} | {missing_sync, failed_sync}
     stop_request = CONFIG / ".synthetic-stop-request.json"
     pending_stop = CONFIG / ".synthetic-stop-request.pending"
 
@@ -314,7 +316,24 @@ def check_signed_permits(binary):
                     os.close(fd)
             if process is not None:
                 process.communicate(timeout=20)
-    def check_closure_quarantine(case, reason):
+    def check_recovery_evidence(stderr, record, identities, synced):
+        prefix = b"synthetic recovery evidence: "
+        lines = stderr.splitlines(keepends=True)
+        (evidence,) = [line for line in lines if line.startswith(prefix)]
+        work, config = identities.values()
+        expected = {
+            "permit_id": record.name,
+            "work_identity": list(work),
+            "config_identity": list(config),
+            "gateway_closure_confirmed": True,
+            "ledger_present": True,
+            "ledger_synced": synced,
+        }
+        if json.loads(evidence[len(prefix):]) != expected:
+            raise RuntimeError("recovery evidence does not match the active permit and generation")
+        return b"".join(line for line in lines if line != evidence)
+
+    def check_closure_quarantine(case, reason, record=None):
         identities = {}
 
         def observe():
@@ -335,6 +354,8 @@ def check_signed_permits(binary):
         try:
             fixture(
                 [binary, case], {}, complete_probe=True, before_probe=observe, quarantine=quarantine,
+                check_evidence=(lambda stderr: check_recovery_evidence(stderr, record, identities, None))
+                if record is not None else None,
                 success=POSITIVE + (
                     b"offline writable PTY fixture failed: offline supervisor failed after CLI grant; "
                     b"work retained; " + reason + b"; child and mount termination confirmed; "
@@ -362,11 +383,15 @@ def check_signed_permits(binary):
             assert_denied("signed-permit", b"invalid handoff signature", inputs)
             write_handoff(key, used, 45)
             generation = None
+            signed_identities = {}
 
             def observe_signed_generation():
                 nonlocal generation
                 (work,) = WORK.iterdir()
                 generation = CONFIG / work.name
+                for directory in (work, generation):
+                    metadata = directory.stat()
+                    signed_identities[directory] = (metadata.st_dev, metadata.st_ino)
                 settings = (generation / "settings.json").stat()
                 write_probe = (generation / "write-probe").stat()
                 for entry in (settings, write_probe):
@@ -383,6 +408,7 @@ def check_signed_permits(binary):
                 },
                 complete_probe=True, success=POSITIVE + REMOVED,
                 before_probe=observe_signed_generation, observe_child=verify_signed_child_environment,
+                check_evidence=lambda stderr: check_recovery_evidence(stderr, used, signed_identities, True),
             )
             if generation is None or generation.exists():
                 raise RuntimeError("signed fixture configuration did not disappear after disconnect")
@@ -407,6 +433,16 @@ def check_signed_permits(binary):
                 recorded.add(record)
                 assert_denied("signed-permit", b"already consumed or revoked", recorded)
                 print(f"{case}: child reaped, mount detached, both generations quarantined")
+            write_handoff(key, missing_sync, 45)
+            check_closure_quarantine("missing-consumption-sync",
+                                     b"synthetic consumption sync unconfirmed", missing_sync)
+            recorded.add(missing_sync)
+            assert_denied("signed-permit", b"already consumed or revoked", recorded)
+            write_handoff(key, failed_sync, 45)
+            recorded.add(failed_sync)
+            assert_denied("failed-consumption-sync", b"synthetic consumption sync failed", recorded)
+            assert_denied("signed-permit", b"already consumed or revoked", recorded)
+            print("consumption sync: matched receipt recovered; missing receipt quarantined; failed fsync refused")
             write_handoff(key, expired, 4)
             assert_denied("permit-expires-before-grant", b"work removed; synthetic permit expired",
                           inputs | {used, expired} | set(mismatches.values()) | closure_records, unused_gateway=True)
