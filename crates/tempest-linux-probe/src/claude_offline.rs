@@ -2437,6 +2437,181 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires root-owned fixtures under /var/lib"]
+    fn management_floor_is_durable_before_switch_and_reread_under_lock() {
+        use std::time::{Duration, Instant};
+
+        let path = Path::new("/var/lib").join(format!(
+            "tempest-publication-floor-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        let _fixture = lock_parent(&path).unwrap();
+        let authority = path.join("authority");
+        let publication = path.join("publication");
+        let ledger_path = path.join("ledger");
+        for directory in [&authority, &publication, &ledger_path] {
+            fs::create_dir(directory).unwrap();
+        }
+        let authority_fd = pin_login_path(&authority, libc::O_DIRECTORY).unwrap();
+        let publication_fd = pin_login_path(&publication, libc::O_DIRECTORY).unwrap();
+        let ledger = File::open(&ledger_path).unwrap();
+        let lock = path.join("publication-lock");
+        File::create(&lock).unwrap();
+        let acquire = || {
+            let fd = File::open(&lock).unwrap();
+            assert_eq!(unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX) }, 0);
+            fd
+        };
+        let replace_unsynced = |directory: &Path, name: &str, content: &[u8]| -> io::Result<()> {
+            let staged = directory.join("next");
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&staged)?;
+            file.write_all(content)?;
+            file.sync_all()?;
+            fs::rename(staged, directory.join(name))
+        };
+        let replace = |directory: &Path, name: &str, content: &[u8]| -> io::Result<()> {
+            replace_unsynced(directory, name, content)?;
+            File::open(directory)?.sync_all()
+        };
+        let read_revision = |parent: &File, name| -> io::Result<u64> {
+            let bytes = read_login_child(parent, name, 20)?;
+            std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|&revision| revision > 0)
+                .ok_or(io::ErrorKind::InvalidData.into())
+        };
+        let consume = |revision, id| {
+            let _lock = acquire();
+            let floor = read_revision(&authority_fd, "minimum")?;
+            let current = read_revision(&publication_fd, "current")?;
+            if revision != current || current < floor {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            match open_login_child(&publication_fd, std::ffi::OsStr::new("pending"), 0) {
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "publication unconfirmed",
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            let now = Instant::now();
+            let scope = login_permit::Scope {
+                executable_sha256: BUSYBOX.sha256,
+                arguments: &LOGIN_ARGS,
+                authority: login_connect::AUTHORITY,
+                target_id: "publication-fixture",
+                approved_ips_revision: revision,
+            };
+            login_permit::consume(
+                &ledger,
+                &login_permit::Permit {
+                    id,
+                    expires_at: now + Duration::from_secs(10),
+                    scope,
+                },
+                scope,
+                now,
+            )
+        };
+
+        replace(&authority, "minimum", b"1").unwrap();
+        replace(&publication, "current", b"1").unwrap();
+        consume(1, 1).unwrap();
+        let publish = |fail_after_floor| -> io::Result<()> {
+            let _lock = acquire();
+            let current = read_revision(&publication_fd, "current")?;
+            let floor = read_revision(&authority_fd, "minimum")?;
+            if current > 2 || floor > 2 {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            let contender = File::open(&lock)?;
+            assert_eq!(
+                unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                -1
+            );
+            assert_eq!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::EWOULDBLOCK)
+            );
+            replace(&authority, "minimum", b"2")?;
+            if fail_after_floor {
+                return Err(io::Error::other("injected interruption after floor sync"));
+            }
+            replace(&publication, "pending", b"2")?;
+            replace_unsynced(&publication, "current", b"2")?;
+            // An O_PATH descriptor pins the correct directory but cannot sync it.
+            // Inject a real fsync failure after current is already visible.
+            publication_fd.sync_all()
+        };
+        assert!(publish(true).is_err());
+        assert_eq!(read_revision(&authority_fd, "minimum").unwrap(), 2);
+        assert_eq!(read_revision(&publication_fd, "current").unwrap(), 1);
+        assert_eq!(
+            consume(1, 2).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            consume(2, 2).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(fs::read_dir(&ledger_path).unwrap().count(), 1);
+        assert_eq!(
+            publish(false).unwrap_err().raw_os_error(),
+            Some(libc::EBADF)
+        );
+        assert_eq!(read_revision(&authority_fd, "minimum").unwrap(), 2);
+        assert_eq!(read_revision(&publication_fd, "current").unwrap(), 2);
+        assert_eq!(read_revision(&publication_fd, "pending").unwrap(), 2);
+        assert_eq!(
+            consume(2, 2).unwrap_err().to_string(),
+            "publication unconfirmed"
+        );
+        assert_eq!(fs::read_dir(&ledger_path).unwrap().count(), 1);
+        {
+            let _lock = acquire();
+            let floor = read_revision(&authority_fd, "minimum").unwrap();
+            let current = read_revision(&publication_fd, "current").unwrap();
+            assert_eq!(floor, current);
+            assert_eq!(read_revision(&publication_fd, "pending").unwrap(), current);
+            let sync_fd =
+                File::open(format!("/proc/self/fd/{}", publication_fd.as_raw_fd())).unwrap();
+            assert_eq!(
+                fd_identity(&sync_fd).unwrap(),
+                fd_identity(&publication_fd).unwrap()
+            );
+            sync_fd.sync_all().unwrap();
+            let pending = c"pending";
+            assert_eq!(
+                unsafe { libc::unlinkat(publication_fd.as_raw_fd(), pending.as_ptr(), 0) },
+                0
+            );
+            sync_fd.sync_all().unwrap();
+        }
+        assert_eq!(
+            consume(1, 2).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        consume(2, 2).unwrap();
+
+        fs::remove_file(authority.join("minimum")).unwrap();
+        std::os::unix::fs::symlink(publication.join("current"), authority.join("minimum")).unwrap();
+        assert_eq!(
+            consume(2, 3).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(fs::read_dir(&ledger_path).unwrap().count(), 2);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     #[ignore = "requires a root-owned fixture under /var/lib"]
     fn staged_verified_file_keeps_identity_and_rechecks_content() {
         let directory = Path::new("/var/lib").join(format!(
