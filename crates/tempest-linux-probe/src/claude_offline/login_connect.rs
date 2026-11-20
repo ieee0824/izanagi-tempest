@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const AUTHORITY: &str = "platform.claude.com:443";
+pub(super) const AUTHORITY: &str = "platform.claude.com:443";
 const MAX_REQUEST_BYTES: usize = 4096;
 
 /// Read only through the header terminator so subsequent TLS bytes remain unread.
