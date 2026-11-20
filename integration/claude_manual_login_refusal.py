@@ -58,7 +58,8 @@ def check_signed_publication(config, ledger, check):
         handoff = b"izanagi-tempest:manual-login-handoff:fixture-v1\0" + encode({
             "permit_id": permit_id, "approval_pair_sha256": "a" * 64,
             "executable_sha256": "0dc4f4a9a165fc60746d7ae8489712e5fc352f1e7ad4eb22e7141bd0812eb0cf",
-            "arguments": ["auth", "login"], "authority": endpoint, "target_id": target,
+            "arguments": ["auth", "login"], "authority": endpoint,
+            "target_id": "different-target" if case == "target" else target,
             "approved_ips_revision": 1, "expires_unix_seconds": now + 40,
         })
         inputs = {
@@ -103,12 +104,14 @@ def check_signed_publication(config, ledger, check):
         b"manual login fixed CLI verified",
         b"manual login ledger diagnostic verified",
         b"manual login final diagnostic verified",
+        b"manual login supervisor diagnostic verified",
         b"manual login publication diagnostic verified",
     )
     cases = (
         ("normal", b"administrator policy acceptance disabled", len(stages)),
         ("generation", b"publication does not match approved generation", 0),
         ("signature", b"invalid handoff signature", 0),
+        ("target", b"handoff scope mismatch", 0),
         ("revocation", b"revocation state does not match independent commit", 1),
         ("revoked", b"permit revoked", 1),
         ("ledger", b"already consumed or revoked", 3),
@@ -122,6 +125,7 @@ def check_signed_publication(config, ledger, check):
                   "generation": ("claude-login-diagnostic-handoff", "revocation-state", FIXED_CLI,
                                  ledger.name),
                   "signature": ("revocation-state", FIXED_CLI, ledger.name),
+                  "target": ("revocation-state", FIXED_CLI, ledger.name),
                   "revocation": (FIXED_CLI, ledger.name),
                   "revoked": (FIXED_CLI, ledger.name),
               }.get(case, ()))
