@@ -51,9 +51,13 @@ def fixture(
         ) as child:
             os.close(slave)
             slave = -1
+            readiness_error = None
             try:
-                read_until(master, b"fixture-ready", timeout=startup_timeout)
-                if complete_probe:
+                try:
+                    read_until(master, b"fixture-ready", timeout=startup_timeout)
+                except (OSError, RuntimeError) as error:
+                    readiness_error = error
+                if readiness_error is None and complete_probe:
                     if before_probe is not None:
                         before_probe()
                     os.write(master, b"probe\n")
@@ -62,7 +66,18 @@ def fixture(
             finally:
                 os.close(master)
                 master = -1
-                _, result = child.communicate(timeout=20)
+                try:
+                    _, result = child.communicate(timeout=20)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    _, result = child.communicate()
+                    if readiness_error is None:
+                        raise RuntimeError(f"supervised PTY did not exit: stderr={result!r}")
+        if readiness_error is not None:
+            raise RuntimeError(
+                f"supervised PTY failed before readiness: exit={child.returncode}, "
+                f"stderr={result!r}, read_error={readiness_error!r}"
+            ) from readiness_error
         if complete_probe:
             watcher = select.poll()
             watcher.register(descendant, select.POLLIN)
