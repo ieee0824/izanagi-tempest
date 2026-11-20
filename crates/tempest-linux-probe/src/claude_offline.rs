@@ -176,6 +176,7 @@ enum Diagnostic {
     Version,
     ConfigControl,
     ConfigIsolated,
+    Pty,
 }
 
 const UID: u32 = 999;
@@ -223,7 +224,7 @@ fn run_in_pid_namespace(
     timeout: std::time::Duration,
     namespace_reaped: &mut bool,
 ) -> Result<(), Fault> {
-    run_in_pid_namespace_expecting(command, timeout, namespace_reaped, 0)
+    run_in_pid_namespace_expecting(command, timeout, namespace_reaped, 0, None)
 }
 
 fn run_in_pid_namespace_expecting(
@@ -231,6 +232,7 @@ fn run_in_pid_namespace_expecting(
     timeout: std::time::Duration,
     namespace_reaped: &mut bool,
     expected_code: i32,
+    disconnect_fd: Option<i32>,
 ) -> Result<(), Fault> {
     use std::time::{Duration, Instant};
 
@@ -244,26 +246,53 @@ fn run_in_pid_namespace_expecting(
         unsafe { libc::_exit(if success { 0 } else { 1 }) };
     }
 
-    let mut timed_out = false;
+    let mut stop_reason = None;
     loop {
         let mut status = 0;
-        let flags = if timed_out { 0 } else { libc::WNOHANG };
+        let flags = if stop_reason.is_some() {
+            0
+        } else {
+            libc::WNOHANG
+        };
         match unsafe { libc::waitpid(init, &mut status, flags) } {
             pid if pid == init => {
                 if !libc::WIFEXITED(status) && !libc::WIFSIGNALED(status) {
                     continue;
                 }
                 *namespace_reaped = true;
-                return if timed_out {
-                    Err(Fault::ReportTimeout)
+                return if let Some(reason) = stop_reason {
+                    Err(reason)
                 } else if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
                     Ok(())
                 } else {
                     Err(Fault::Identity)
                 };
             }
-            0 if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             0 => {
+                let reason = if let Some(fd) = disconnect_fd {
+                    let mut event = libc::pollfd {
+                        fd,
+                        events: 0,
+                        revents: 0,
+                    };
+                    let result = unsafe { libc::poll(&mut event, 1, 0) };
+                    if result < 0
+                        || event.revents & (libc::POLLERR | libc::POLLNVAL) != 0
+                            && event.revents & libc::POLLHUP == 0
+                    {
+                        Some(Fault::Identity)
+                    } else if event.revents & libc::POLLHUP != 0 {
+                        Some(Fault::ReportEof)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if reason.is_none() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
                 // The direct child's PID cannot be reused before waitpid reaps it.
                 if unsafe { libc::kill(init, libc::SIGKILL) } < 0 {
                     let error = io::Error::last_os_error();
@@ -271,7 +300,7 @@ fn run_in_pid_namespace_expecting(
                         return Err(error.into());
                     }
                 }
-                timed_out = true;
+                stop_reason = Some(reason.unwrap_or(Fault::ReportTimeout));
             }
             _ => {
                 let error = io::Error::last_os_error();
@@ -323,31 +352,35 @@ fn isolated_command(
                 rlim_cur: 4096,
                 rlim_max: 4096,
             };
-            if diagnostic != Diagnostic::Version
-                && libc::mount(
-                    c"proc".as_ptr(),
-                    proc_path.as_ptr(),
-                    c"proc".as_ptr(),
-                    libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
-                    std::ptr::null(),
-                ) < 0
+            if matches!(
+                diagnostic,
+                Diagnostic::ConfigControl | Diagnostic::ConfigIsolated
+            ) && libc::mount(
+                c"proc".as_ptr(),
+                proc_path.as_ptr(),
+                c"proc".as_ptr(),
+                libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+                std::ptr::null(),
+            ) < 0
             {
                 return Err(io::Error::last_os_error());
             }
-            if diagnostic != Diagnostic::Version
-                && libc::mount(
-                    c"tmpfs".as_ptr(),
-                    tmp_path.as_ptr(),
-                    c"tmpfs".as_ptr(),
-                    libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
-                    c"size=1048576,nr_inodes=64,mode=1777".as_ptr().cast(),
-                ) < 0
+            if matches!(
+                diagnostic,
+                Diagnostic::ConfigControl | Diagnostic::ConfigIsolated
+            ) && libc::mount(
+                c"tmpfs".as_ptr(),
+                tmp_path.as_ptr(),
+                c"tmpfs".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+                c"size=1048576,nr_inodes=64,mode=1777".as_ptr().cast(),
+            ) < 0
             {
                 return Err(io::Error::last_os_error());
             }
             if libc::chroot(child_root.as_ptr()) < 0
                 || libc::chdir(
-                    if diagnostic == Diagnostic::Version {
+                    if matches!(diagnostic, Diagnostic::Version | Diagnostic::Pty) {
                         c"/home/fixture"
                     } else {
                         c"/work"
@@ -416,6 +449,17 @@ while IFS= read -r line; do
 done
 "#;
 
+fn fixture_fifo(path: &Path) -> Result<File, Fault> {
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
+    super::os::syscall(unsafe { libc::mkfifo(name.as_ptr(), 0o600) })?;
+    own(path, 0o600)?;
+    Ok(OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)?)
+}
+
 struct ConfigFixture {
     events: File,
     opened: Option<(File, Vec<i32>)>,
@@ -428,15 +472,7 @@ impl ConfigFixture {
             fs::create_dir(root.join(path))?;
         }
         fs::write(root.join("probe/run"), MCP_PROBE)?;
-        let events_path = root.join("probe/events");
-        let path = CString::new(events_path.as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
-        super::os::syscall(unsafe { libc::mkfifo(path.as_ptr(), 0o600) })?;
-        own(&events_path, 0o600)?;
-        let events = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open(events_path)?;
+        let events = fixture_fifo(&root.join("probe/events"))?;
         if diagnostic == Diagnostic::ConfigIsolated {
             fs::write(root.join("probe/mcp.json"), MCP_CONFIG)?;
             for path in CONTROL_FILES {
@@ -503,6 +539,7 @@ impl ConfigFixture {
             std::time::Duration::from_secs(12),
             namespace_reaped,
             1,
+            None,
         )?;
         let output = fs::read(stdout)?;
         let errors = fs::read(stderr)?;
@@ -550,11 +587,69 @@ impl ConfigFixture {
     }
 }
 
+fn artifacts_for(diagnostic: Diagnostic) -> &'static [Artifact<'static>] {
+    if diagnostic == Diagnostic::Pty {
+        &[]
+    } else {
+        ARTIFACTS
+    }
+}
+
+fn run_pty_child(root: &Path, namespace_reaped: &mut bool, mut events: File) -> Result<(), Fault> {
+    use std::{process::Stdio, time::Duration};
+    let mut command = isolated_command(
+        root,
+        "/bin/busybox",
+        File::open("/dev/null")?,
+        File::open("/dev/null")?,
+        Diagnostic::Pty,
+    )?;
+    command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .args([
+            "sh",
+            "-eu",
+            "-c",
+            r#"
+        test "$HOME" = /home/fixture
+        test "$CLAUDE_CONFIG_DIR" = /home/fixture/config
+        test -r "$CLAUDE_CONFIG_DIR/settings.json"
+        test "$(/bin/busybox id -u)" = 999
+        test "$(/bin/busybox id -g)" = 988
+        printf 'fixture-ready\n'
+        IFS= read -r request
+        test "$request" = probe
+        printf 'R' > /pty-ready
+        printf 'fixture-response\n'
+        exec /bin/busybox sleep 60
+        "#,
+        ]);
+    match run_in_pid_namespace_expecting(
+        command,
+        Duration::from_secs(12),
+        namespace_reaped,
+        0,
+        Some(libc::STDIN_FILENO),
+    ) {
+        Err(Fault::ReportEof) => {
+            let mut buffer = [0; 2];
+            let size = events.read(&mut buffer)?;
+            if &buffer[..size] != b"R" {
+                return Err(Fault::Identity);
+            }
+            Ok(())
+        }
+        Err(error) => Err(error),
+        Ok(()) => Err(Fault::Identity),
+    }
+}
+
 fn verify_mount_table_for(root: &Path, diagnostic: Diagnostic) -> Result<(), Fault> {
     use std::collections::BTreeSet;
     let mut expected = BTreeSet::from([root.to_path_buf()]);
     expected.extend(
-        ARTIFACTS
+        artifacts_for(diagnostic)
             .iter()
             .flat_map(|entry| entry.targets)
             .map(|path| root.join(path)),
@@ -641,7 +736,7 @@ fn run_fixture(
     ] {
         fs::create_dir(root.join(dir))?;
     }
-    for (index, artifact) in ARTIFACTS.iter().enumerate() {
+    for (index, artifact) in artifacts_for(diagnostic).iter().enumerate() {
         let staged = stage_artifact(artifact, &scratch.join(format!("artifact-{index}")))?;
         mount_artifact(root, artifact, &staged)?;
     }
@@ -654,7 +749,12 @@ fn run_fixture(
     own(&root.join("home/fixture"), 0o700)?;
     own(&root.join("home/fixture/config"), 0o700)?;
     own(&settings, 0o600)?;
-    let config = if diagnostic == Diagnostic::Version {
+    let pty_events = if diagnostic == Diagnostic::Pty {
+        Some(fixture_fifo(&root.join("pty-ready"))?)
+    } else {
+        None
+    };
+    let config = if matches!(diagnostic, Diagnostic::Version | Diagnostic::Pty) {
         None
     } else {
         Some(ConfigFixture::prepare(root, diagnostic)?)
@@ -671,6 +771,8 @@ fn run_fixture(
     request_cli_start(control)?;
     if let Some(config) = config {
         config.run(root, scratch, namespace_reaped, diagnostic)?;
+    } else if let Some(events) = pty_events {
+        run_pty_child(root, namespace_reaped, events)?;
     } else {
         run_child(root, scratch, namespace_reaped)?;
     }
@@ -1133,6 +1235,40 @@ pub(super) fn run_config() -> std::process::ExitCode {
         }
         Err(error) => {
             eprintln!("offline config fixture failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+pub(super) fn run_pty() -> std::process::ExitCode {
+    use std::process::ExitCode;
+    if std::env::args_os().len() != 1
+        || unsafe { libc::geteuid() } != 0
+        || unsafe { libc::isatty(libc::STDIN_FILENO) } != 1
+        || unsafe { libc::isatty(libc::STDOUT_FILENO) } != 1
+    {
+        return ExitCode::FAILURE;
+    }
+    let parent_path = Path::new(WORK_PARENT);
+    let result = (|| {
+        let parent = lock_parent(parent_path)?;
+        let work = WorkArea::create(&parent, parent_path)?;
+        supervised_observed(
+            &parent,
+            &work,
+            |scratch, root, control, reaped| {
+                run_fixture(scratch, root, control, reaped, Diagnostic::Pty)
+            },
+            &mut None,
+        )
+    })();
+    match result {
+        Ok(_) => {
+            eprintln!("offline PTY: supervisor stopped and reaped namespace; cleanup complete");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("offline PTY fixture failed: {error}");
             ExitCode::FAILURE
         }
     }
