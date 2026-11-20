@@ -1866,6 +1866,91 @@ fn verify_approved_login_manifest(
     Ok(())
 }
 
+const REVOCATION_DOMAIN: &[u8] = b"izanagi-tempest:manual-login-revocation:fixture-v1\0";
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoginRevocationState {
+    revision: u64,
+    manifest_sha256: String,
+    permit_id: String,
+    target_id: String,
+    issued_unix_seconds: u64,
+    expires_unix_seconds: u64,
+    revoked: bool,
+}
+
+fn verify_login_revocation(
+    authority: &File,
+    revision: u64,
+    manifest_sha256: &str,
+    permit_id: u128,
+    target_id: &str,
+) -> io::Result<std::time::Instant> {
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    let payload = read_login_child(authority, "revocation-state", 4096)?;
+    let signature = read_login_child(authority, "revocation-signature", 64)?;
+    let key: [u8; 32] = read_login_child(authority, "revocation-key", 32)?
+        .try_into()
+        .map_err(|_| io::ErrorKind::InvalidData)?;
+    let monotonic = Instant::now();
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?;
+    let expires = verify_revocation_state(
+        &key,
+        &payload,
+        &signature,
+        (revision, manifest_sha256, permit_id, target_id),
+        wall.as_secs(),
+    )?;
+    monotonic
+        .checked_add(Duration::from_secs(expires) - wall)
+        .ok_or(io::ErrorKind::InvalidData.into())
+}
+
+fn verify_revocation_state(
+    key: &[u8; 32],
+    payload: &[u8],
+    signature: &[u8],
+    expected: (u64, &str, u128, &str),
+    now_unix_seconds: u64,
+) -> io::Result<u64> {
+    use ring::signature::{ED25519, UnparsedPublicKey};
+    let (revision, manifest_sha256, permit_id, target_id) = expected;
+    UnparsedPublicKey::new(&ED25519, key)
+        .verify(payload, signature)
+        .map_err(|_| io::Error::other("invalid revocation signature"))?;
+    let payload = payload
+        .strip_prefix(REVOCATION_DOMAIN)
+        .ok_or_else(|| io::Error::other("wrong revocation signature purpose"))?;
+    let state: LoginRevocationState = serde_json::from_slice(payload).map_err(io::Error::other)?;
+    if state.revision != revision
+        || state.manifest_sha256 != manifest_sha256
+        || state.permit_id != format!("{permit_id:032x}")
+        || state.target_id != target_id
+    {
+        return Err(io::Error::other("revocation scope mismatch"));
+    }
+    if state.revoked {
+        return Err(io::Error::other("permit revoked"));
+    }
+    const MAX_FIXTURE_WINDOW: u64 = 30;
+    if state.issued_unix_seconds > now_unix_seconds
+        || !matches!(
+            state
+                .expires_unix_seconds
+                .checked_sub(state.issued_unix_seconds),
+            Some(1..=MAX_FIXTURE_WINDOW)
+        )
+        || state.expires_unix_seconds <= now_unix_seconds
+    {
+        return Err(io::Error::other("invalid or expired revocation window"));
+    }
+    Ok(state.expires_unix_seconds)
+}
+
 fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> {
     use sha2::{Digest, Sha256};
 
@@ -1922,12 +2007,20 @@ fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> 
     let policy = &inputs["claude-manual-login.json"];
     let scope =
         validate_manual_login_policy(policy.as_slice())?.ok_or(io::ErrorKind::InvalidData)?;
-    diagnose_manual_login_handoff_with(parent, &scope, |name, _| {
-        inputs
-            .get(name)
-            .cloned()
-            .ok_or(io::ErrorKind::InvalidData.into())
-    })
+    let manifest_sha256 = format!("{:x}", Sha256::digest(&manifest_bytes));
+    diagnose_manual_login_handoff_with(
+        parent,
+        &scope,
+        |name, _| {
+            inputs
+                .get(name)
+                .cloned()
+                .ok_or(io::ErrorKind::InvalidData.into())
+        },
+        |id, target_id| {
+            verify_login_revocation(&authority, current, &manifest_sha256, id, target_id).map(Some)
+        },
+    )
 }
 
 fn check_manual_login_policy(path: &Path) -> io::Result<()> {
@@ -2020,15 +2113,19 @@ fn verify_login_handoff(
 }
 
 fn diagnose_manual_login_handoff(parent: &File, scope: &LoginPolicyScope) -> io::Result<()> {
-    diagnose_manual_login_handoff_with(parent, scope, |name, limit| {
-        read_login_child(parent, name, limit)
-    })
+    diagnose_manual_login_handoff_with(
+        parent,
+        scope,
+        |name, limit| read_login_child(parent, name, limit),
+        |_, _| Ok(None),
+    )
 }
 
 fn diagnose_manual_login_handoff_with(
     parent: &File,
     scope: &LoginPolicyScope,
     read: impl Fn(&str, u64) -> io::Result<Vec<u8>>,
+    revocation_deadline: impl Fn(u128, &str) -> io::Result<Option<std::time::Instant>>,
 ) -> io::Result<()> {
     let payload = match read("claude-login-diagnostic-handoff", 4096) {
         Ok(payload) => payload,
@@ -2051,19 +2148,24 @@ fn diagnose_manual_login_handoff_with(
             target_id: &target_id,
             approved_ips_revision: scope.approved_ips_revision,
         };
-        verify_login_handoff(
+        let (id, expires) = verify_login_handoff(
             key,
             &payload,
             &signature,
             expected,
             scope.expires_unix_seconds,
-        )
+        )?;
+        Ok::<_, io::Error>((id, expires, target_id))
     })();
-    let (id, expires) = result.map_err(|error| {
+    let (id, mut expires, target_id) = result.map_err(|error| {
         eprintln!("manual login handoff diagnostic refused: {error}");
         io::Error::from(io::ErrorKind::InvalidData)
     })?;
     eprintln!("manual login handoff diagnostic verified");
+    if let Some(deadline) = revocation_deadline(id, &target_id)? {
+        expires = expires.min(deadline);
+        eprintln!("manual login revocation diagnostic verified");
+    }
     let executable = verify_fixed_artifact(&ARTIFACTS[0]).map_err(|fault| {
         stage_failure("manual_login_fixed_cli", &fault);
         io::Error::new(io::ErrorKind::InvalidData, "manual login fixed CLI refused")
@@ -2561,6 +2663,46 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_revocation_state_checks_scope_and_fixed_time_boundaries() {
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        let key = Ed25519KeyPair::from_seed_unchecked(&[23; 32]).unwrap();
+        let public = key.public_key().as_ref().try_into().unwrap();
+        let expected = (2, "manifest-2", 42, "target-2");
+        let baseline = serde_json::json!({
+            "revision": 2,
+            "manifest_sha256": "manifest-2",
+            "permit_id": format!("{:032x}", 42),
+            "target_id": "target-2",
+            "issued_unix_seconds": 100,
+            "expires_unix_seconds": 130,
+            "revoked": false,
+        });
+        let verify = |state: &serde_json::Value, now| {
+            let mut payload = REVOCATION_DOMAIN.to_vec();
+            payload.extend(serde_json::to_vec(state).unwrap());
+            let signature = key.sign(&payload);
+            verify_revocation_state(public, &payload, signature.as_ref(), expected, now)
+        };
+        assert_eq!(verify(&baseline, 100).unwrap(), 130);
+        assert_eq!(verify(&baseline, 129).unwrap(), 130);
+        assert!(verify(&baseline, 130).is_err());
+        assert!(verify(&baseline, 99).is_err());
+
+        for (field, value) in [
+            ("expires_unix_seconds", serde_json::json!(100)),
+            ("expires_unix_seconds", serde_json::json!(131)),
+            ("manifest_sha256", serde_json::json!("manifest-1")),
+            ("permit_id", serde_json::json!(format!("{:032x}", 43))),
+            ("target_id", serde_json::json!("target-1")),
+        ] {
+            let mut changed = baseline.clone();
+            changed[field] = value;
+            assert!(verify(&changed, 100).is_err(), "{field}");
+        }
+    }
 
     #[test]
     fn published_manifest_must_match_the_independently_approved_revision_and_digest() {
