@@ -6,6 +6,7 @@ import os
 import socket
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -21,6 +22,20 @@ table inet tempest_synthetic {
     }
 }
 """
+MODES = (
+    "--traffic-worker",
+    "--cleanup-worker",
+    "--missing-namespace",
+    "--wrong-namespace",
+    "--missing-policy",
+    "--wrong-policy",
+)
+PREFLIGHT_ERRORS = {
+    "--missing-namespace": "namespace missing",
+    "--wrong-namespace": "namespace mismatch",
+    "--missing-policy": "policy missing",
+    "--wrong-policy": "policy mismatch",
+}
 CLIENT = """
 import socket
 import sys
@@ -39,6 +54,10 @@ with socket.socket() as connection:
     else:
         print(0)
 """
+
+
+class PreflightDenied(Exception):
+    pass
 
 
 class InjectedFailure(Exception):
@@ -101,9 +120,76 @@ def namespace_id():
     return os.stat("/proc/self/ns/net").st_ino
 
 
+def check_preflight(expected_namespace):
+    if expected_namespace is None:
+        raise PreflightDenied("namespace missing")
+    expected = os.fstat(expected_namespace.fileno())
+    current = os.stat("/proc/self/ns/net")
+    if (expected.st_dev, expected.st_ino) != (current.st_dev, current.st_ino):
+        raise PreflightDenied("namespace mismatch")
+    interfaces = json.loads(run("ip", "-j", "link", "show", capture_output=True).stdout)
+    if [link["ifname"] for link in interfaces] != ["lo"]:
+        raise PreflightDenied("expected only loopback")
+
+    policy = run("nft", "-s", "list", "ruleset", capture_output=True).stdout.split()
+    if not policy:
+        raise PreflightDenied("policy missing")
+    if policy != POLICY.replace("icmpx type ", "icmpx ").split():
+        raise PreflightDenied("policy mismatch")
+
+
+@contextmanager
+def preflight_namespace(mode):
+    if mode == "--missing-namespace":
+        yield None
+        return
+    if mode == "--wrong-namespace":
+        with subprocess.Popen(
+            ("unshare", "--net", sys.executable, "-I", "-c",
+             "print('ready', flush=True); input()"),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        ) as other:
+            try:
+                require(other.stdout.readline() == "ready\n", "missing second test namespace")
+                with open(f"/proc/{other.pid}/ns/net", "rb") as namespace:
+                    other_namespace = os.fstat(namespace.fileno()).st_ino
+                    yield namespace
+            finally:
+                other.communicate(input="done\n", timeout=2)
+            require(other.returncode == 0, "second namespace worker failed")
+        check_namespace_released(str(other_namespace))
+        return
+    with open("/proc/self/ns/net", "rb") as namespace:
+        yield namespace
+
+
+def check_launch(mode, listeners):
+    launches = 0
+    expected_error = PREFLIGHT_ERRORS.get(mode)
+    with preflight_namespace(mode) as pinned_namespace:
+        try:
+            check_preflight(pinned_namespace)
+        except PreflightDenied as error:
+            require(str(error) == expected_error, f"unexpected preflight denial: {error}")
+        else:
+            result = run(
+                sys.executable, "-I", "-c", 'print("started")',
+                user=61002, group=61002, extra_groups=[], env={}, capture_output=True,
+            )
+            require(result.stdout == "started\n", "missing synthetic launch marker")
+            launches += 1
+
+    require(launches == int(expected_error is None), "unexpected launch count")
+    require(tuple(map(accept_count, listeners)) == (0, 0), "unexpected preflight traffic")
+    print(f"{mode}: launches={launches}, denial={expected_error}")
+    if launches:
+        check_traffic(listeners)
+
+
 def worker(mode, parent_namespace):
     current_namespace = namespace_id()
-    actual_parent = os.stat(f"/proc/{os.getppid()}/ns/net").st_ino
+    parent_path = f"/proc/{os.getppid()}/ns/net"
+    actual_parent = os.stat(parent_path).st_ino
     require(actual_parent == parent_namespace, "unexpected launcher network namespace")
     require(current_namespace != actual_parent, "worker is in the caller network namespace")
     interfaces = json.loads(run("ip", "-j", "link", "show", capture_output=True).stdout)
@@ -120,14 +206,18 @@ def worker(mode, parent_namespace):
             with socket.create_connection(("127.0.0.1", port), timeout=2):
                 require(accept_count(listener) == 1, f"control did not reach port {port}")
 
-        run("nft", "-f", "-", input=POLICY)
+        policy_installed = mode != "--missing-policy"
+        if policy_installed:
+            policy = POLICY.replace("dport 39181", "dport 39182") if mode == "--wrong-policy" else POLICY
+            run("nft", "-f", "-", input=policy)
         try:
             try:
                 if mode == "--cleanup-worker":
                     raise InjectedFailure("intentional failure after applying policy")
-                check_traffic(listeners)
+                check_launch(mode, listeners)
             finally:
-                run("nft", "delete", "table", "inet", TABLE)
+                if policy_installed:
+                    run("nft", "delete", "table", "inet", TABLE)
         except InjectedFailure:
             require(mode == "--cleanup-worker", "unexpected injected failure")
         tables = run("nft", "list", "tables", capture_output=True).stdout
@@ -136,13 +226,19 @@ def worker(mode, parent_namespace):
     print("policy removed and listeners closed")
 
 
+def check_namespace_released(namespace):
+    namespaces = run("lsns", "-n", "-t", "net", "-o", "NS", capture_output=True).stdout
+    require(namespace not in namespaces.split(), f"namespace {namespace} remains")
+    print(f"netns={namespace} released")
+
+
 def main():
     require(os.geteuid() == 0, "run as root on the dedicated Linux host")
-    if len(sys.argv) == 3 and sys.argv[1] in ("--traffic-worker", "--cleanup-worker"):
+    if len(sys.argv) == 3 and sys.argv[1] in MODES:
         worker(sys.argv[1], int(sys.argv[2]))
         return
     require(len(sys.argv) == 1, "this test takes no arguments")
-    for mode in ("--traffic-worker", "--cleanup-worker"):
+    for mode in MODES:
         result = run(
             "unshare", "--net", sys.executable, str(Path(__file__).resolve()),
             mode, str(namespace_id()), stdout=subprocess.PIPE,
@@ -151,9 +247,7 @@ def main():
         first_line = result.stdout.splitlines()[0]
         used_namespace = first_line.removeprefix("netns=")
         require(used_namespace.isdecimal(), "missing worker namespace ID")
-        namespaces = run("lsns", "-n", "-t", "net", "-o", "NS", capture_output=True).stdout
-        require(used_namespace not in namespaces.split(), f"namespace {used_namespace} remains")
-        print(f"{mode}: namespace released")
+        check_namespace_released(used_namespace)
 
 
 if __name__ == "__main__":
