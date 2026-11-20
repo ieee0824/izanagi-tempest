@@ -158,6 +158,10 @@ impl Generation {
         unlink_at(parent.as_raw_fd(), name, libc::AT_REMOVEDIR)
     }
 
+    pub fn identity(&self) -> io::Result<(u64, u64)> {
+        fd_identity(&self.pinned)
+    }
+
     pub fn bind(&self, root: &Path) -> Result<(), super::Fault> {
         use super::super::os;
         let target = root.join("home/fixture/config");

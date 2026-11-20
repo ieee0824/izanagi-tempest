@@ -41,6 +41,8 @@ pub(super) enum Case {
     WrongGrantId,
     WrongGrantLedger,
     WrongGrantStage,
+    MissingClosure,
+    WrongClosureGeneration,
     WrongPermitScope,
     WrongPermitArguments,
     WrongPermitAuthority,
@@ -65,6 +67,8 @@ impl Case {
             "wrong-grant-id" => Self::WrongGrantId,
             "wrong-grant-ledger" => Self::WrongGrantLedger,
             "wrong-grant-stage" => Self::WrongGrantStage,
+            "missing-closure" => Self::MissingClosure,
+            "wrong-closure-generation" => Self::WrongClosureGeneration,
             "wrong-permit-scope" => Self::WrongPermitScope,
             "wrong-permit-arguments" => Self::WrongPermitArguments,
             "wrong-permit-authority" => Self::WrongPermitAuthority,
@@ -86,6 +90,8 @@ impl Case {
                 | Self::WrongGrantId
                 | Self::WrongGrantLedger
                 | Self::WrongGrantStage
+                | Self::MissingClosure
+                | Self::WrongClosureGeneration
         )
     }
 }
