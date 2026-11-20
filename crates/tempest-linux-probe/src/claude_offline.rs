@@ -145,6 +145,11 @@ fn verify_artifact(file: &File, artifact: &Artifact<'_>) -> Result<(), Fault> {
     )
 }
 
+fn verify_fixed_artifact(artifact: &Artifact<'_>) -> Result<(), Fault> {
+    let file = open_input(artifact)?;
+    verify_artifact(&file, artifact)
+}
+
 fn stage_failure(stage: &str, fault: &Fault) {
     if let Fault::Kernel(errno) = fault {
         eprintln!(
@@ -1832,6 +1837,11 @@ fn diagnose_manual_login_handoff(policy: &Path, scope: &LoginPolicyScope) -> io:
         return Err(io::ErrorKind::InvalidData.into());
     }
     eprintln!("manual login handoff diagnostic verified");
+    verify_fixed_artifact(&ARTIFACTS[0]).map_err(|fault| {
+        stage_failure("manual_login_fixed_cli", &fault);
+        io::Error::new(io::ErrorKind::InvalidData, "manual login fixed CLI refused")
+    })?;
+    eprintln!("manual login fixed CLI verified");
     Ok(())
 }
 
@@ -2314,6 +2324,57 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a root-owned fixture under /var/lib"]
+    fn fixed_cli_preflight_refuses_missing_wrong_and_linked_artifacts() {
+        use std::os::unix::fs::symlink;
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let directory = Path::new("/var/lib").join(format!(
+            "tempest-cli-preflight-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        let _parent = lock_parent(&directory).unwrap();
+        let path = directory.join("cli");
+        let other = directory.join("other");
+        let artifact = Artifact {
+            source: path.to_str().unwrap(),
+            bytes: 5,
+            sha256: "b5a2c96250612366ea272ffac6d9744aaf4b45aacd96aa7cfcb931ee3b558259",
+            targets: &[],
+        };
+        assert!(matches!(
+            verify_fixed_artifact(&artifact),
+            Err(Fault::Kernel(libc::ENOENT))
+        ));
+        fs::write(&path, b"dummy").unwrap();
+        verify_fixed_artifact(&artifact).unwrap();
+        fs::write(&path, b"other").unwrap();
+        assert!(matches!(
+            verify_fixed_artifact(&artifact),
+            Err(Fault::Identity)
+        ));
+        fs::remove_file(&path).unwrap();
+        fs::write(&other, b"dummy").unwrap();
+        symlink(&other, &path).unwrap();
+        assert!(matches!(
+            verify_fixed_artifact(&artifact),
+            Err(Fault::Kernel(libc::ELOOP))
+        ));
+        fs::remove_file(&path).unwrap();
+        fs::hard_link(&other, &path).unwrap();
+        assert!(matches!(
+            verify_fixed_artifact(&artifact),
+            Err(Fault::Identity)
+        ));
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            verify_fixed_artifact(&artifact),
+            Err(Fault::Identity)
+        ));
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn manual_login_policy_accepts_only_fixed_authority_and_version() {
