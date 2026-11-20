@@ -501,7 +501,9 @@ pub(super) fn run() -> i32 {
         return 3;
     }
     if state_fixture {
-        let previous_absent = state_path_denied("/state/marker");
+        let previous_absent = fs::symlink_metadata("/state/marker")
+            .is_err_and(|error| error.raw_os_error() == Some(libc::ENOENT))
+            && state_path_denied("/state/marker");
         let created = previous_absent
             && fs::OpenOptions::new()
                 .write(true)
@@ -520,22 +522,16 @@ pub(super) fn run() -> i32 {
                     role.name()
                 ))
             });
-        let state_boundary = created
-            && state_file_lifecycle().is_ok_and(|passed| passed)
-            && state_fixed_input_unchanged().is_ok_and(|passed| passed);
-        let mut values = vec![
-            observe(
-                Check::HostHomeDenied,
-                manifest.role,
-                HOME_CATEGORIES.iter().all(|category| {
-                    state_path_denied(&format!(
-                        "/run/tempest-linux-isolation-probe/host-home/{category}"
-                    ))
-                }) && other_roles_denied
-                    && unsafe { libc::fcntl(40, libc::F_GETFD) } == -1
-                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF),
-                10,
-            ),
+        let host_home_denied = HOME_CATEGORIES.iter().all(|category| {
+            state_path_denied(&format!(
+                "/run/tempest-linux-isolation-probe/host-home/{category}"
+            ))
+        }) && unsafe { libc::fcntl(40, libc::F_GETFD) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF);
+        let lifecycle = state_file_lifecycle().is_ok_and(|passed| passed);
+        let fixed_input = state_fixed_input_unchanged().is_ok_and(|passed| passed);
+        let values = vec![
+            observe(Check::HostHomeDenied, manifest.role, host_home_denied, 28),
             observe(
                 Check::PrivateHomeReadable,
                 manifest.role,
@@ -546,11 +542,32 @@ pub(super) fn run() -> i32 {
                 Check::PreviousStateAbsent,
                 manifest.role,
                 previous_absent,
+                4,
+            ),
+            observe(Check::StateMarkerCreated, manifest.role, created, 0),
+            observe(
+                Check::OtherRoleStateDenied,
+                manifest.role,
+                other_roles_denied,
+                6,
+            ),
+            observe(Check::StateWriteLifecycle, manifest.role, lifecycle, 0),
+            observe(
+                Check::StateFixedInputUnchanged,
+                manifest.role,
+                fixed_input,
                 1,
             ),
-            observe(Check::StateMarkerCreated, manifest.role, state_boundary, 0),
         ];
-        values[0].attempts = 10;
+        let attempts = [28, 1, 4, 1, 6, 3, 3];
+        let values: Vec<_> = values
+            .into_iter()
+            .zip(attempts)
+            .map(|(mut value, attempts)| {
+                value.attempts = attempts;
+                value
+            })
+            .collect();
         let passed = values.iter().all(|value| value.passed);
         if !event(&manifest, Phase::StateWritten, values) || !wait() {
             return 3;

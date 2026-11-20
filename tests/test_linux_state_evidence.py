@@ -9,9 +9,11 @@ def report():
     for run in ['state_run1', 'state_run2']:
         for role in ['a', 'b', 'guard']:
             for check, attempts, denials in [
-                ('host_home_denied', 10, 10), ('private_home_readable', 1, 0),
-                ('previous_state_absent', 1, 1), ('state_marker_created', 1, 0),
+                ('host_home_denied', 28, 28), ('private_home_readable', 1, 0),
+                ('previous_state_absent', 4, 4), ('state_marker_created', 1, 0),
                 ('state_marker_created', 1, 0), ('state_marker_observed', 1, 0),
+                ('other_role_state_denied', 6, 6), ('state_write_lifecycle', 3, 0),
+                ('state_fixed_input_unchanged', 3, 1),
             ]:
                 checks.append(dict(scenario=run, role=role, check=check,
                                    attempts=attempts, denials=denials, passed=True))
@@ -30,7 +32,9 @@ def report():
 
 class StateEvidenceTests(unittest.TestCase):
     def test_exact_dummy_report_does_not_authorize_production(self):
-        self.assertIs(validate_probe(report())['production_authorized'], False)
+        projection = validate_probe(report())
+        self.assertIs(projection['production_authorized'], False)
+        self.assertEqual(projection['dummy_checks_per_run'], 30)
 
     def test_missing_extra_failed_or_inexact_checks_are_rejected(self):
         for mutation in ['missing', 'extra', 'failed', 'count', 'bool_count']:

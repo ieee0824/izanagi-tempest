@@ -73,7 +73,8 @@ try:
                   sort_keys=True)
     success = {'status':'passed', 'scope':'dummy_independent_home_only',
         'production_authorized':False, 'binary_sha256':digest,
-        'captures':len(captures), 'host_reads':18, 'checks_per_run':21,
+        'captures':len(captures), 'host_reads':18,
+        'checks_per_run':projection['dummy_checks_per_run'],
         'probe_status':report['status'], 'audit_basename':Path(audit).name}
 except BaseException as exception:
     failure = exception

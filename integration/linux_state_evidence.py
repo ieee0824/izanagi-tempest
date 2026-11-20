@@ -15,12 +15,15 @@ def validate_probe(report):
     expected = Counter()
     for role in ['a', 'b', 'guard']:
         for name, attempts, denials in [
-            ('host_home_denied', 10, 10),
+            ('host_home_denied', 28, 28),
             ('private_home_readable', 1, 0),
-            ('previous_state_absent', 1, 1),
+            ('previous_state_absent', 4, 4),
             ('state_marker_created', 1, 0),
             ('state_marker_created', 1, 0),
             ('state_marker_observed', 1, 0),
+            ('other_role_state_denied', 6, 6),
+            ('state_write_lifecycle', 3, 0),
+            ('state_fixed_input_unchanged', 3, 1),
         ]:
             expected[(name, role, attempts, denials)] += 1
     for name, attempts in [('state_generation_bound', 3),
@@ -57,5 +60,5 @@ def validate_probe(report):
                    ['registry_total', 'unattached', 'reap_unconfirmed'])
             or counts.get('unconfirmed_reason') is not None):
         raise ValueError('cleanup_unconfirmed')
-    return {'dummy_checks_per_run': 21, 'production_authorized': False,
+    return {'dummy_checks_per_run': sum(expected.values()), 'production_authorized': False,
             'binary_sha256': digest}
