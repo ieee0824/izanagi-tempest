@@ -117,6 +117,114 @@ mod tests {
     };
 
     #[test]
+    fn revocation_and_consumption_order_preserves_failed_records() {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::process::Command;
+
+        let tmp = Ledger::new();
+        let pending = tmp.0.join("pending");
+        let ledger_path = tmp.0.join("records");
+        fs::create_dir(&ledger_path).unwrap();
+        let ledger = File::open(&ledger_path).unwrap();
+        let lock_file = tmp.0.join("lock");
+        File::create(&lock_file).unwrap();
+        let lock = || {
+            let fd = File::open(&lock_file).unwrap();
+            assert_eq!(unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX) }, 0);
+            fd
+        };
+        let permit = |id| Permit {
+            id,
+            expires_at: Instant::now() + Duration::from_secs(30),
+            scope: SCOPE,
+        };
+        let consume_locked = |id| {
+            let _guard = lock();
+            if pending.try_exists()? {
+                return Err(refused("revocation update pending"));
+            }
+            consume(&ledger, &permit(id), SCOPE, Instant::now())
+        };
+        let revoke_locked = |ledger_fd: &File, id| -> io::Result<()> {
+            let _guard = lock();
+            let marker = File::create_new(&pending)?;
+            marker.sync_all()?;
+            File::open(&tmp.0)?.sync_all()?;
+            let result = revoke(ledger_fd, id);
+            if result.is_ok()
+                || result.as_ref().is_err_and(|error| {
+                    error.to_string() == "manual login permit already consumed or revoked"
+                })
+            {
+                fs::remove_file(&pending)?;
+                File::open(&tmp.0)?.sync_all()?;
+            }
+            result
+        };
+
+        revoke_locked(&ledger, 21).unwrap();
+        assert!(!pending.exists());
+        assert_eq!(
+            consume_locked(21).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+
+        consume_locked(22).unwrap();
+        let mut child = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let closure = revoke_locked(&ledger, 22);
+        let still_running = child.try_wait().unwrap().is_none();
+        if still_running {
+            child.kill().unwrap();
+        }
+        child.wait().unwrap();
+        assert_eq!(closure.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert!(
+            still_running,
+            "a ledger collision must not terminate the child"
+        );
+        assert!(!pending.exists());
+        assert_eq!(
+            consume_locked(22).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+
+        let unsyncable = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(&ledger_path)
+            .unwrap();
+        assert_eq!(
+            revoke_locked(&unsyncable, 23).unwrap_err().raw_os_error(),
+            Some(libc::EBADF)
+        );
+        assert!(pending.is_file());
+        let record = ledger_path.join(format!("{:032x}", 23));
+        assert!(record.is_file());
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            let denied =
+                consume_locked(23).is_err_and(|e| e.to_string() == "revocation update pending");
+            let ledger_closed = {
+                let _guard = lock();
+                consume(
+                    &File::open(&ledger_path).unwrap(),
+                    &permit(23),
+                    SCOPE,
+                    Instant::now(),
+                )
+                .is_err_and(|e| e.kind() == io::ErrorKind::PermissionDenied)
+            };
+            unsafe { libc::_exit(i32::from(!(denied && ledger_closed && record.is_file()))) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+        assert_eq!(fs::read_dir(&ledger_path).unwrap().count(), 3);
+    }
+
+    #[test]
     fn unavailable_or_stale_revocation_state_does_not_consume() {
         #[derive(Clone, Copy)]
         struct Status<'a> {
