@@ -116,6 +116,158 @@ mod tests {
         approved_ips_revision: 1,
     };
 
+    fn check_revocation_pending(path: &std::path::Path) -> io::Result<()> {
+        if path.try_exists()? {
+            return Err(refused("revocation update pending"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn revocation_and_consumption_order_preserves_failed_records() {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::process::Command;
+
+        let tmp = Ledger::new();
+        let pending = tmp.0.join("pending");
+        let ledger_path = tmp.0.join("records");
+        fs::create_dir(&ledger_path).unwrap();
+        let ledger = File::open(&ledger_path).unwrap();
+        let lock_file = tmp.0.join("lock");
+        File::create(&lock_file).unwrap();
+        let lock = || {
+            let fd = File::open(&lock_file).unwrap();
+            assert_eq!(unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX) }, 0);
+            fd
+        };
+        let permit = |id| Permit {
+            id,
+            expires_at: Instant::now() + Duration::from_secs(30),
+            scope: SCOPE,
+        };
+        let consume_locked = |id| {
+            let _guard = lock();
+            check_revocation_pending(&pending)?;
+            consume(&ledger, &permit(id), SCOPE, Instant::now())
+        };
+        let revoke_locked = |ledger_fd: &File, id| -> io::Result<()> {
+            let _guard = lock();
+            let marker = File::create_new(&pending)?;
+            marker.sync_all()?;
+            File::open(&tmp.0)?.sync_all()?;
+            let result = revoke(ledger_fd, id);
+            if result.is_ok()
+                || result.as_ref().is_err_and(|error| {
+                    error.to_string() == "manual login permit already consumed or revoked"
+                })
+            {
+                fs::remove_file(&pending)?;
+                File::open(&tmp.0)?.sync_all()?;
+            }
+            result
+        };
+
+        revoke_locked(&ledger, 21).unwrap();
+        assert!(!pending.exists());
+        assert_eq!(
+            consume_locked(21).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+
+        consume_locked(22).unwrap();
+        let mut child = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let closure = revoke_locked(&ledger, 22);
+        let still_running = child.try_wait().unwrap().is_none();
+        if still_running {
+            child.kill().unwrap();
+        }
+        child.wait().unwrap();
+        assert_eq!(closure.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert!(
+            still_running,
+            "a ledger collision must not terminate the child"
+        );
+        assert!(!pending.exists());
+        assert_eq!(
+            consume_locked(22).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+
+        let unsyncable = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(&ledger_path)
+            .unwrap();
+        assert_eq!(
+            revoke_locked(&unsyncable, 23).unwrap_err().raw_os_error(),
+            Some(libc::EBADF)
+        );
+        assert!(pending.is_file());
+        let record = ledger_path.join(format!("{:032x}", 23));
+        assert!(record.is_file());
+        assert_eq!(
+            consume_locked(23).unwrap_err().to_string(),
+            "revocation update pending"
+        );
+        let mut checker = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "claude_offline::login_permit::tests::check_failed_revocation_from_fresh_process",
+                "--ignored",
+            ])
+            .env("TEMPEST_TEST_FAILED_REVOCATION_FIXTURE", &tmp.0)
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = checker.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = checker.kill();
+                checker.wait().unwrap();
+                panic!("revocation checker timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.success(), "revocation checker failed: {status}");
+        assert!(pending.is_file());
+        assert!(record.is_file());
+        assert_eq!(fs::read_dir(&ledger_path).unwrap().count(), 3);
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture driven by revocation_and_consumption_order_preserves_failed_records"]
+    fn check_failed_revocation_from_fresh_process() {
+        let Some(path) = std::env::var_os("TEMPEST_TEST_FAILED_REVOCATION_FIXTURE") else {
+            return;
+        };
+        let path = PathBuf::from(path);
+        let lock = File::open(path.join("lock")).unwrap();
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let pending = path.join("pending");
+        assert_eq!(
+            check_revocation_pending(&pending).unwrap_err().to_string(),
+            "revocation update pending"
+        );
+        let ledger_path = path.join("records");
+        let ledger = File::open(&ledger_path).unwrap();
+        let now = Instant::now();
+        let permit = Permit {
+            id: 23,
+            expires_at: now + Duration::from_secs(30),
+            scope: SCOPE,
+        };
+        assert_eq!(
+            consume(&ledger, &permit, SCOPE, now)
+                .unwrap_err()
+                .to_string(),
+            "manual login permit already consumed or revoked"
+        );
+        let record = ledger_path.join(format!("{:032x}", permit.id));
+        assert!(record.is_file(), "record must remain closed");
+    }
+
     #[test]
     fn unavailable_or_stale_revocation_state_does_not_consume() {
         #[derive(Clone, Copy)]
