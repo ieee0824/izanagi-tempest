@@ -42,7 +42,7 @@ def live_descendant(supervisor: int) -> int:
 def fixture(
     command: list[str], env: dict[str, str], complete_probe: bool, success: bytes = SUCCESS,
     *, startup_timeout: float = 3, before_probe=None, observe_child=None,
-    quarantine=None,
+    quarantine=None, check_evidence=None,
 ) -> None:
     master, slave = pty.openpty()
     descendant = -1
@@ -86,6 +86,8 @@ def fixture(
             watcher.register(descendant, select.POLLIN)
             if not watcher.poll(0):
                 raise RuntimeError("fixed descendant survived the PTY disconnect")
+            if check_evidence is not None:
+                result = check_evidence(result)
             expected_exit = 0 if quarantine is None else 1
             if child.returncode != expected_exit or result != success:
                 raise RuntimeError(f"disconnect and recovery failed: {result!r}")

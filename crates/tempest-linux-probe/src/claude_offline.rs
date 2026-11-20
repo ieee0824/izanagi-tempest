@@ -735,6 +735,21 @@ struct FixtureGrant {
 }
 
 impl FixtureGrant {
+    // This descriptor comes only from consume, after it synced both objects.
+    fn verify_consumed_record(&self) -> io::Result<()> {
+        let current = open_login_child(
+            &self.ledger,
+            std::ffi::OsStr::new(&format!("{:032x}", self.id)),
+            libc::O_PATH,
+        )?;
+        if fd_identity(&current)? != fd_identity(&self.record)? {
+            return Err(io::Error::other(
+                "synthetic consumed record identity mismatch",
+            ));
+        }
+        Ok(())
+    }
+
     fn claim(&self, stage: &File) -> io::Result<[u8; 48]> {
         let mut claim = [0; 48];
         claim[..16].copy_from_slice(&self.id.to_be_bytes());
@@ -752,13 +767,9 @@ impl FixtureGrant {
     fn verify(&self, control: &mut UnixStream, work: &WorkArea) -> io::Result<()> {
         let mut claim = [0; 48];
         control.read_exact(&mut claim)?;
-        let record = open_login_child(
-            &self.ledger,
-            std::ffi::OsStr::new(&format!("{:032x}", self.id)),
-            libc::O_PATH,
-        )?;
+        self.verify_consumed_record()?;
         let stage = open_login_child(&work.pinned, std::ffi::OsStr::new("artifact-busybox"), 0)?;
-        if fd_identity(&record)? != fd_identity(&self.record)? || claim != self.claim(&stage)? {
+        if claim != self.claim(&stage)? {
             return Err(io::Error::other("synthetic grant identity mismatch"));
         }
         if !stage.metadata()?.is_file() {
@@ -774,6 +785,9 @@ impl FixtureGrant {
 struct FixtureClosure {
     case: local_auth::Case,
     generation: [u8; 48],
+    permit_id: Option<u128>,
+    work_identity: (u64, u64),
+    config_identity: (u64, u64),
 }
 
 impl FixtureClosure {
@@ -795,7 +809,13 @@ impl FixtureClosure {
         ]) {
             chunk.copy_from_slice(&value.to_be_bytes());
         }
-        Ok(Self { case, generation })
+        Ok(Self {
+            case,
+            generation,
+            permit_id,
+            work_identity: (work_device, work_inode),
+            config_identity: (config_device, config_inode),
+        })
     }
 
     fn report(&self, control: &mut UnixStream) -> io::Result<()> {
@@ -808,7 +828,7 @@ impl FixtureClosure {
         control.write_all(&generation)
     }
 
-    fn verify(&self, control: &mut UnixStream) -> io::Result<()> {
+    fn verify(&self, control: &mut UnixStream, consumed: Option<&FixtureGrant>) -> io::Result<()> {
         let mut generation = [0; 48];
         control.read_exact(&mut generation).map_err(|error| {
             io::Error::other(format!("synthetic gateway closure unconfirmed: {error}"))
@@ -817,6 +837,35 @@ impl FixtureClosure {
             return Err(io::Error::other(
                 "synthetic gateway closure generation mismatch",
             ));
+        }
+        if let Some(id) = self.permit_id {
+            let receipt = consumed.filter(|receipt| receipt.id == id);
+            let ledger_present = receipt
+                .map(|receipt| receipt.verify_consumed_record())
+                .transpose()?
+                .is_some();
+            let ledger_synced = receipt
+                .filter(|_| !matches!(self.case, local_auth::Case::MissingConsumptionSync))
+                .map(|_| true);
+            if matches!(
+                self.case,
+                local_auth::Case::SignedPermit | local_auth::Case::MissingConsumptionSync
+            ) {
+                eprintln!(
+                    "synthetic recovery evidence: {}",
+                    serde_json::json!({
+                        "permit_id": format!("{id:032x}"),
+                        "work_identity": self.work_identity,
+                        "config_identity": self.config_identity,
+                        "gateway_closure_confirmed": true,
+                        "ledger_present": ledger_present,
+                        "ledger_synced": ledger_synced,
+                    })
+                );
+            }
+            if ledger_synced != Some(true) {
+                return Err(io::Error::other("synthetic consumption sync unconfirmed"));
+            }
         }
         Ok(())
     }
@@ -1699,7 +1748,10 @@ fn supervised_with_network(
         outside.read_exact(&mut report)?;
         termination_reported = true;
         if let Some(closure) = closure {
-            closure.verify(&mut outside)?;
+            closure.verify(
+                &mut outside,
+                permit.and_then(|permit| permit.grant.as_ref()),
+            )?;
         }
         Ok(())
     })();
@@ -2692,6 +2744,8 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     | local_auth::Case::WrongGrantStage
                     | local_auth::Case::MissingClosure
                     | local_auth::Case::WrongClosureGeneration
+                    | local_auth::Case::MissingConsumptionSync
+                    | local_auth::Case::FailedConsumptionSync
             )
         ) {
             use std::time::Instant;
@@ -2756,8 +2810,22 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     permit.verified_executable = Some(inputs.executable);
                     (inputs.id, inputs.expires, inputs.ledger)
                 };
+            // O_PATH still allows openat on the pinned directory but cannot
+            // fsync it. Exercise a real sync failure after record creation.
+            let unsyncable = if matches!(
+                local_auth_case,
+                Some(local_auth::Case::FailedConsumptionSync)
+            ) {
+                Some(open_login_child(
+                    &ledger,
+                    std::ffi::OsStr::new("."),
+                    libc::O_DIRECTORY,
+                )?)
+            } else {
+                None
+            };
             let record = login_permit::consume(
-                &ledger,
+                unsyncable.as_ref().unwrap_or(&ledger),
                 &login_permit::Permit {
                     id,
                     expires_at: expiry,
@@ -2765,7 +2833,14 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                 },
                 expected,
                 Instant::now(),
-            )?;
+            )
+            .map_err(|error| {
+                if unsyncable.is_some() && error.raw_os_error() == Some(libc::EBADF) {
+                    io::Error::other(format!("synthetic consumption sync failed: {error}"))
+                } else {
+                    error
+                }
+            })?;
             if permit.verified_executable.is_some() {
                 permit.grant = Some(FixtureGrant { id, ledger, record });
             }

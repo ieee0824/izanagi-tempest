@@ -43,6 +43,8 @@ pub(super) enum Case {
     WrongGrantStage,
     MissingClosure,
     WrongClosureGeneration,
+    MissingConsumptionSync,
+    FailedConsumptionSync,
     WrongPermitScope,
     WrongPermitArguments,
     WrongPermitAuthority,
@@ -69,6 +71,8 @@ impl Case {
             "wrong-grant-stage" => Self::WrongGrantStage,
             "missing-closure" => Self::MissingClosure,
             "wrong-closure-generation" => Self::WrongClosureGeneration,
+            "missing-consumption-sync" => Self::MissingConsumptionSync,
+            "failed-consumption-sync" => Self::FailedConsumptionSync,
             "wrong-permit-scope" => Self::WrongPermitScope,
             "wrong-permit-arguments" => Self::WrongPermitArguments,
             "wrong-permit-authority" => Self::WrongPermitAuthority,
@@ -92,6 +96,7 @@ impl Case {
                 | Self::WrongGrantStage
                 | Self::MissingClosure
                 | Self::WrongClosureGeneration
+                | Self::MissingConsumptionSync
         )
     }
 }
