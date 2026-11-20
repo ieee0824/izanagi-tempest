@@ -427,3 +427,27 @@ root 管理下に世代ごとの UID/GID 999:988・0700 を作り、空ファイ
 
 これは合成ファイル専用の入口です。実資格情報・SSH・外部通信は使用しません。
 実運用の保持期限、廃棄担当、付随ファイルの許容範囲は #36 の判断項目です。
+
+### 専用 PTY とローカル認証相当の通信制限を同じ起動で検証する
+
+#125・#129 の固定 PTY と専用設定領域を、#127 の合成ポートと
+同じ起動に結びます。専用 Linux で両方の作業親を空にし、固定 BusyBox、
+iproute2、nftables、Python 3.11+ を用意して実行します。
+
+```bash
+cargo build --locked -p tempest-linux-probe --bin tempest-claude-offline-local-auth-pty
+sudo python3 integration/claude_local_auth_pty_smoke.py target/debug/tempest-claude-offline-local-auth-pty
+```
+
+監督は待機プロセスの netns FD を保持し、独立した検査子から
+ループバックと nftables のルールセットを確認します。待機側が申告した
+dev/inode を照合して許可を返し、PID 名前空間内の固定子は同じ
+netns にいることを実行直前に確認します。正対照では認証相当の TCP
+接続だけ受理され、他の3宛先は nftables の拒否カウンタに記録されます。
+切断後に固定子孫の終了、リスナーとルールの閉鎖、作業領域と設定世代の
+回収を確認します。netns 申告の欠落・不一致、ポリシーの欠落・不一致は
+起動前に停止し、固定子の出力なし、追加受理なし、回収を確認します。
+
+実端末を使う場合は、既存の端末で管理者が同席して固定入口を起動する
+想定です。ここで動くのは BusyBox による合成クライアントです。実認証、
+実サービスとの通信、SSH 設定や権限の変更は含みません。

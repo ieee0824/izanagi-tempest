@@ -1,5 +1,6 @@
 //! Fixed inputs for dedicated Linux Claude offline diagnostics.
 use super::os::Fault;
+mod local_auth;
 mod writable_config;
 use sha2::{Digest, Sha256};
 use std::{
@@ -226,7 +227,41 @@ fn run_in_pid_namespace(
     timeout: std::time::Duration,
     namespace_reaped: &mut bool,
 ) -> Result<(), Fault> {
-    run_in_pid_namespace_expecting(command, timeout, namespace_reaped, 0, None)
+    run_in_pid_namespace_expecting(
+        command,
+        timeout,
+        namespace_reaped,
+        0,
+        None,
+        ChildNetwork::NewOffline,
+    )
+}
+
+enum ChildNetwork {
+    NewOffline,
+    Verified((u64, u64)),
+}
+
+impl ChildNetwork {
+    fn create_namespace(&self) -> bool {
+        match self {
+            Self::NewOffline => true,
+            Self::Verified(_) => false,
+        }
+    }
+
+    fn verify_before_spawn(&self) -> io::Result<()> {
+        match self {
+            Self::NewOffline => Ok(()),
+            Self::Verified(expected) => {
+                let current = File::open("/proc/thread-self/ns/net")?;
+                if fd_identity(&current)? != *expected {
+                    return Err(io::Error::other("fixed child network namespace mismatch"));
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 fn run_in_pid_namespace_expecting(
@@ -235,15 +270,17 @@ fn run_in_pid_namespace_expecting(
     namespace_reaped: &mut bool,
     expected_code: i32,
     disconnect_fd: Option<i32>,
+    network: ChildNetwork,
 ) -> Result<(), Fault> {
     use std::time::{Duration, Instant};
 
     let deadline = Instant::now() + timeout;
-    let init = super::os::clone_isolated()?;
+    let init = super::os::clone_pid_and_mount(network.create_namespace())?;
     if init == 0 {
-        let success = command
-            .status()
-            .is_ok_and(|status| status.code() == Some(expected_code));
+        let success = network.verify_before_spawn().is_ok()
+            && command
+                .status()
+                .is_ok_and(|status| status.code() == Some(expected_code));
         // Linux kills and reaps remaining namespace members when PID 1 exits.
         unsafe { libc::_exit(if success { 0 } else { 1 }) };
     }
@@ -550,6 +587,7 @@ impl ConfigFixture {
             namespace_reaped,
             1,
             None,
+            ChildNetwork::NewOffline,
         )?;
         let output = fs::read(stdout)?;
         let errors = fs::read(stderr)?;
@@ -610,6 +648,7 @@ fn run_pty_child(
     namespace_reaped: &mut bool,
     mut events: File,
     private_config: Option<&writable_config::Generation>,
+    network: ChildNetwork,
 ) -> Result<(), Fault> {
     use std::{process::Stdio, time::Duration};
     let mut command = isolated_command(
@@ -640,6 +679,12 @@ fn run_pty_child(
             : > "$CLAUDE_CONFIG_DIR/write-probe"
             if (: > "$HOME/outside-probe"); then exit 1; fi
         fi
+        if test "$3" = local-auth; then
+            /bin/busybox nc -w 1 127.0.0.1 39271 -e /bin/busybox true
+            for port in 39272 39273 39274; do
+                if /bin/busybox nc -w 1 127.0.0.1 "$port" -e /bin/busybox true; then exit 1; fi
+            done
+        fi
         printf 'fixture-ready\n'
         IFS= read -r request
         test "$request" = probe
@@ -657,13 +702,18 @@ fn run_pty_child(
         } else {
             "readonly"
         })
-        .arg(private_config.map_or(Path::new("/"), |config| &config.path));
+        .arg(private_config.map_or(Path::new("/"), |config| &config.path))
+        .arg(match network {
+            ChildNetwork::NewOffline => "offline",
+            ChildNetwork::Verified(_) => "local-auth",
+        });
     match run_in_pid_namespace_expecting(
         command,
         Duration::from_secs(12),
         namespace_reaped,
         0,
         Some(libc::STDIN_FILENO),
+        network,
     ) {
         Err(Fault::ReportEof) => {
             let mut buffer = [0; 2];
@@ -789,7 +839,15 @@ fn run_fixture(
     namespace_reaped: &mut bool,
     diagnostic: Diagnostic,
 ) -> Result<(u64, u64), Fault> {
-    run_fixture_with_config(scratch, root, control, namespace_reaped, diagnostic, None)
+    run_fixture_with_config(
+        scratch,
+        root,
+        control,
+        namespace_reaped,
+        diagnostic,
+        None,
+        None,
+    )
 }
 
 fn run_fixture_with_config(
@@ -799,6 +857,7 @@ fn run_fixture_with_config(
     namespace_reaped: &mut bool,
     diagnostic: Diagnostic,
     private_config: Option<&writable_config::Generation>,
+    local_auth_case: Option<local_auth::Case>,
 ) -> Result<(u64, u64), Fault> {
     use super::os;
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
@@ -857,18 +916,38 @@ fn run_fixture_with_config(
     } else {
         None
     };
-    request_cli_start(control)?;
-    if private_config.is_some() {
-        verify_other_uid_denied(root, namespace_reaped)?;
-        *namespace_reaped = false;
+    let policy = local_auth_case
+        .map(local_auth::LocalPolicy::setup)
+        .transpose()?;
+    let launch = (|| {
+        let network = if let Some(case) = local_auth_case {
+            ChildNetwork::Verified(local_auth::request(control, case)?)
+        } else {
+            request_cli_start(control)?;
+            ChildNetwork::NewOffline
+        };
+        if private_config.is_some() {
+            verify_other_uid_denied(root, namespace_reaped)?;
+            *namespace_reaped = false;
+        }
+        if let Some(config) = config {
+            config.run(root, scratch, namespace_reaped, diagnostic)?;
+        } else if let Some(events) = pty_events {
+            run_pty_child(root, namespace_reaped, events, private_config, network)?;
+        } else {
+            run_child(root, scratch, namespace_reaped)?;
+        }
+        Ok::<_, Fault>(())
+    })();
+    if let Some(policy) = policy {
+        policy.finish(launch.is_ok())?;
+        if launch.is_ok() {
+            eprintln!("local auth: accepts=1,0,0,0 denied=3; listeners and policy closed");
+        } else {
+            eprintln!("local auth: accepts=0,0,0,0 denied=0; listeners and policy closed");
+        }
     }
-    if let Some(config) = config {
-        config.run(root, scratch, namespace_reaped, diagnostic)?;
-    } else if let Some(events) = pty_events {
-        run_pty_child(root, namespace_reaped, events, private_config)?;
-    } else {
-        run_child(root, scratch, namespace_reaped)?;
-    }
+    launch?;
     if let Some(before) = before
         && audit_settings(root)? != before
     {
@@ -1095,7 +1174,11 @@ fn fd_identity(namespace: &File) -> io::Result<(u64, u64)> {
     Ok((metadata.dev(), metadata.ino()))
 }
 
+#[cfg(test)]
 fn verify_waiting_network(pid: libc::pid_t) -> io::Result<File> {
+    verify_waiting_network_for(pid, false)
+}
+fn verify_waiting_network_for(pid: libc::pid_t, local_auth: bool) -> io::Result<File> {
     // The direct child is unreaped, so its PID cannot identify a replacement.
     let path = format!("/proc/{pid}/ns/net");
     let namespace = File::open(&path)?;
@@ -1113,12 +1196,21 @@ fn verify_waiting_network(pid: libc::pid_t) -> io::Result<File> {
     }
     if inspector == 0 {
         let entered = unsafe { libc::setns(namespace.as_raw_fd(), libc::CLONE_NEWNET) } == 0;
-        let verified = entered && confirm_offline_network().is_ok();
+        let verified = entered
+            && if local_auth {
+                local_auth::verify_policy().is_ok()
+            } else {
+                confirm_offline_network().is_ok()
+            };
         unsafe { libc::_exit(i32::from(!verified)) };
     }
     let status = wait_for_supervisor(inspector)?;
     if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
-        return Err(io::Error::other("offline network inspection failed"));
+        return Err(io::Error::other(if local_auth {
+            "fixed login policy or loopback inspection failed"
+        } else {
+            "offline network inspection failed"
+        }));
     }
     if identity != fd_identity(&File::open(path)?)? {
         return Err(io::Error::other(
@@ -1160,6 +1252,16 @@ fn supervised_observed(
     work: &WorkArea,
     execute: impl FnOnce(&Path, &Path, &mut UnixStream, &mut bool) -> Result<(u64, u64), Fault>,
     observation: &mut Option<OfflineObservation>,
+) -> io::Result<(u64, u64)> {
+    supervised_with_network(parent, work, execute, observation, false)
+}
+
+fn supervised_with_network(
+    parent: &File,
+    work: &WorkArea,
+    execute: impl FnOnce(&Path, &Path, &mut UnixStream, &mut bool) -> Result<(u64, u64), Fault>,
+    observation: &mut Option<OfflineObservation>,
+    local_auth: bool,
 ) -> io::Result<(u64, u64)> {
     const RECOVERABLE_FAILURE: i32 = 2;
     let (mut outside, mut inside) = UnixStream::pair().or_else(|error| {
@@ -1209,10 +1311,17 @@ fn supervised_observed(
         if message != *b"C" {
             return Err(io::Error::other("invalid offline start request"));
         }
-        let verified_namespace = verify_waiting_network(pid)?;
-        verified_network = fd_identity(&verified_namespace).ok();
+        let verified_namespace = verify_waiting_network_for(pid, local_auth)?;
+        let identity = fd_identity(&verified_namespace)?;
+        if local_auth {
+            local_auth::read_claim(&mut outside, identity)?;
+        }
+        verified_network = Some(identity);
         cli_granted = true;
         outside.write_all(b"G")?;
+        if local_auth {
+            local_auth::grant(&mut outside, identity)?;
+        }
         outside.read_exact(&mut report)
     })();
     drop(outside);
@@ -1252,6 +1361,14 @@ fn supervised_observed(
         } else {
             0
         };
+        if local_auth
+            && !cli_granted
+            && let Err(cause) = received
+        {
+            return Err(io::Error::other(format!(
+                "{outcome}; {cause}; signal={signal}"
+            )));
+        }
         return Err(io::Error::other(format!("{outcome}; signal={signal}")));
     }
     Ok((
@@ -1370,9 +1487,30 @@ pub(super) fn run_pty() -> std::process::ExitCode {
 }
 
 pub(super) fn run_writable_pty() -> std::process::ExitCode {
+    run_writable_pty_for(None)
+}
+
+pub(super) fn run_local_auth_pty() -> std::process::ExitCode {
+    let mut args = std::env::args_os().skip(1);
+    let Some(case) = args.next().as_deref().and_then(local_auth::Case::parse) else {
+        return std::process::ExitCode::FAILURE;
+    };
+    if args.next().is_some() {
+        return std::process::ExitCode::FAILURE;
+    }
+    run_writable_pty_for(Some(case))
+}
+
+fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::process::ExitCode {
     use std::process::ExitCode;
     let mut args = std::env::args_os().skip(1);
-    let retain = match args.next().as_deref() {
+    let retain = match if local_auth_case.is_none() {
+        args.next()
+    } else {
+        None
+    }
+    .as_deref()
+    {
         None => false,
         Some(flag) if flag == "--retain-fixture" && args.next().is_none() => true,
         _ => return ExitCode::FAILURE,
@@ -1397,7 +1535,7 @@ pub(super) fn run_writable_pty() -> std::process::ExitCode {
                 }
             })?;
         let mut observation = None;
-        let run = supervised_observed(
+        let run = supervised_with_network(
             &parent,
             &work,
             |scratch, root, control, reaped| {
@@ -1408,9 +1546,11 @@ pub(super) fn run_writable_pty() -> std::process::ExitCode {
                     reaped,
                     Diagnostic::Pty,
                     Some(&config),
+                    local_auth_case,
                 )
             },
             &mut observation,
+            local_auth_case.is_some(),
         );
         let action = writable_config::disposition(
             observation.map(|item| item.recovery),
@@ -1440,6 +1580,44 @@ pub(super) fn run_writable_pty() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires root and private mount and PID namespaces"]
+    fn fixed_child_requires_verified_network_identity_before_spawn() {
+        use std::{process::Command, time::Duration};
+        let worker = unsafe { libc::fork() };
+        assert!(worker >= 0);
+        if worker == 0 {
+            let current = File::open("/proc/thread-self/ns/net").unwrap();
+            let identity = fd_identity(&current).unwrap();
+            let mut good = Command::new("/usr/bin/true");
+            good.env_clear();
+            let mut good_reaped = false;
+            let good = run_in_pid_namespace_expecting(
+                good,
+                Duration::from_secs(2),
+                &mut good_reaped,
+                0,
+                None,
+                ChildNetwork::Verified(identity),
+            );
+            let mut refused = Command::new("/usr/bin/true");
+            refused.env_clear();
+            let mut refused_reaped = false;
+            let refused = run_in_pid_namespace_expecting(
+                refused,
+                Duration::from_secs(2),
+                &mut refused_reaped,
+                0,
+                None,
+                ChildNetwork::Verified((identity.0, identity.1 ^ 1)),
+            );
+            let success = good.is_ok() && good_reaped && refused.is_err() && refused_reaped;
+            unsafe { libc::_exit(i32::from(!success)) };
+        }
+        let status = wait_for_supervisor(worker).unwrap();
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+    }
 
     #[test]
     fn loader_aliases_share_one_artifact_and_all_targets_are_unique() {
