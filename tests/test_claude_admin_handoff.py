@@ -6,6 +6,7 @@ import unittest
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
+from threading import Lock
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,61 @@ class AdminHandoffTest(unittest.TestCase):
         refreshed = replace(snapshot, revision=2, checked_at=104)
         published.append(handoff_candidate(pair, refreshed, 104, current_revision=2))
         self.assertEqual(published, [expected])
+
+
+class IssuanceFixture:
+    """Serialize management updates with the final publication check."""
+
+    def __init__(self):
+        self.lock = Lock()
+        self.revision = 1
+        self.artifact = None
+
+    def update(self):
+        with self.lock:
+            self.revision += 1
+
+    def issue(self, pair, snapshot, clock, sign):
+        with self.lock:
+            candidate = handoff_candidate(
+                pair, snapshot, clock(), current_revision=self.revision
+            )
+        signed = sign(candidate)
+        with self.lock:
+            handoff_candidate(pair, snapshot, clock(), current_revision=self.revision)
+            self.artifact = signed
+
+    def retrieve(self):
+        with self.lock:
+            return self.artifact
+
+
+class IssuanceRaceTest(unittest.TestCase):
+    def test_update_before_signing_prevents_signing(self):
+        issuer = IssuanceFixture()
+        issuer.update()
+        with self.assertRaisesRegex(ValueError, "changed since lookup"):
+            issuer.issue(VerifiedPair(), RegistrySnapshot(), lambda: 100, self.fail)
+        self.assertIsNone(issuer.retrieve())
+
+    def test_update_after_signing_prevents_publication(self):
+        issuer = IssuanceFixture()
+        signing_completed = []
+
+        def sign(candidate):
+            artifact = sha256(json.dumps(candidate, sort_keys=True).encode()).digest()
+            signing_completed.append(True)
+            issuer.update()
+            return artifact
+
+        with self.assertRaisesRegex(ValueError, "changed since lookup"):
+            issuer.issue(VerifiedPair(), RegistrySnapshot(), lambda: 100, sign)
+        self.assertEqual(signing_completed, [True])
+        self.assertIsNone(issuer.retrieve())
+
+        snapshot = RegistrySnapshot(revision=2, checked_at=101)
+        issuer.issue(VerifiedPair(), snapshot, lambda: 101, lambda _: b"new fixture")
+        self.assertEqual(issuer.retrieve(), b"new fixture")
 
 
 def pair_from_client_detail(detail: dict, target_id: str) -> VerifiedPair:
