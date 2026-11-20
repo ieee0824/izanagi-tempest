@@ -43,6 +43,19 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 
 ### 固定 CLI のオフライン起動に使ったファイル
 
+固定 Linux x86_64 版 2.1.325 は、経路のないネットワーク名前空間、
+空の環境、新規 HOME、空の専用設定で版確認とヘルプ表示に成功した。
+ヘルプは `--strict-mcp-config` が明示した MCP 設定だけを使用することと、
+`--setting-sources` が設定の読み込み元を指定することを説明する。
+起動時に空の読み込み元指定が設定探索を抑止するか、実際にどの MCP が
+選ばれるかは別途実測する。
+[固定版の測定記録](https://github.com/ieee0824/izanagi-tempest/issues/36#issuecomment-7034854488)
+
+既存 relay の起動引数には `--bare` がある。Anthropic の公式文書では
+このモードはサブスクリプションのログイン状態を使用しないため、
+直結の起動引数は別に検証する。
+[Claude Code の bare モード](https://code.claude.com/docs/en/headless#start-faster-with-bare-mode)
+
 [Issue #36 の測定記録](https://github.com/ieee0824/izanagi-tempest/issues/36#issuecomment-7010159462)と
 cc-sakura 投稿 17357 に基づく Linux x86_64 の `--version` 用の一覧です。
 固定 CLI を専用設定とともに新規 root に配置し、下記の読み取り専用入力で起動できました。
