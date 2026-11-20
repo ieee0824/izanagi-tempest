@@ -2,7 +2,7 @@ use super::{GID, OfflineRecovery, UID, WorkArea, fd_identity, unlink_at};
 use std::{
     ffi::CString,
     fs::{self, File, OpenOptions},
-    io,
+    io::{self, Write},
     os::{
         fd::AsRawFd,
         unix::{
@@ -14,6 +14,7 @@ use std::{
 };
 
 const SETTINGS: &str = "settings.json";
+const INITIAL_SETTINGS: &[u8] = b"{}\n";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Disposition {
@@ -103,8 +104,10 @@ impl Generation {
                 .mode(0o600)
                 .open(directory.join(SETTINGS))?;
             settings = Some(file);
+            let mut file = settings.as_ref().unwrap();
+            file.write_all(INITIAL_SETTINGS)?;
             before(SetupStage::ConfigurePermissions, &path)?;
-            configure(settings.as_ref().unwrap(), 0o600)?;
+            configure(file, 0o600)?;
             configure(&pinned, 0o700)?;
             Ok(pinned)
         })();
@@ -166,7 +169,8 @@ impl Generation {
             libc::MS_BIND | libc::MS_REMOUNT | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
             None,
         )?;
-        if fd_identity(&File::open(target)?)? != fd_identity(&self.pinned)? {
+        let mounted = File::open(target)?;
+        if fd_identity(&mounted)? != fd_identity(&self.pinned)? || self.audit_entries(false)? {
             return Err(super::Fault::Identity);
         }
         Ok(())
@@ -174,11 +178,18 @@ impl Generation {
 
     pub fn audit(&self, parent: &File, require_probe: bool) -> io::Result<bool> {
         let current = WorkArea::open_at(parent, &self.name)?;
-        let directory = self.pinned.metadata()?;
-        if fd_identity(&current)? != fd_identity(&self.pinned)?
-            || (directory.uid(), directory.gid(), directory.mode() & 0o7777) != (UID, GID, 0o700)
-        {
+        if fd_identity(&current)? != fd_identity(&self.pinned)? {
             return Err(io::Error::other("private configuration identity changed"));
+        }
+        self.audit_entries(require_probe)
+    }
+
+    fn audit_entries(&self, require_probe: bool) -> io::Result<bool> {
+        let directory = self.pinned.metadata()?;
+        if (directory.uid(), directory.gid(), directory.mode() & 0o7777) != (UID, GID, 0o700) {
+            return Err(io::Error::other(
+                "private configuration permissions changed",
+            ));
         }
         let mut settings = false;
         let mut probe = false;
@@ -187,7 +198,6 @@ impl Generation {
             let metadata = item.path().symlink_metadata()?;
             if !metadata.is_file()
                 || (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777) != (UID, GID, 0o600)
-                || metadata.len() != 0
                 || metadata.nlink() != 1
             {
                 return Err(io::Error::other(
@@ -195,8 +205,23 @@ impl Generation {
                 ));
             }
             match item.file_name().as_bytes() {
-                b"settings.json" => settings = true,
-                b"write-probe" => probe = true,
+                b"settings.json" if metadata.len() == INITIAL_SETTINGS.len() as u64 => {
+                    let mut settings_file = OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                        .open(item.path())?;
+                    let mut contents = [0; INITIAL_SETTINGS.len()];
+                    use std::io::Read;
+                    if fd_identity(&settings_file)? != (metadata.dev(), metadata.ino()) {
+                        return Err(io::Error::other("private settings identity changed"));
+                    }
+                    settings_file.read_exact(&mut contents)?;
+                    if contents != INITIAL_SETTINGS || settings_file.read(&mut [0])? != 0 {
+                        return Err(io::Error::other("private settings contents changed"));
+                    }
+                    settings = true;
+                }
+                b"write-probe" if metadata.len() == 0 => probe = true,
                 _ => return Err(io::Error::other("unexpected private configuration entry")),
             }
         }

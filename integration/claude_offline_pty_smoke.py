@@ -20,8 +20,8 @@ input()
 """
 
 
-def read_until(fd: int, marker: bytes) -> None:
-    deadline = time.monotonic() + 3
+def read_until(fd: int, marker: bytes, timeout: float = 3) -> None:
+    deadline = time.monotonic() + timeout
     output = bytearray()
     while marker not in output:
         remaining = deadline - time.monotonic()

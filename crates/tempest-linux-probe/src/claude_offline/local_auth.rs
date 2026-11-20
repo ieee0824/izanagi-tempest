@@ -1,14 +1,16 @@
-use super::{Fault, fd_identity};
+use super::{Fault, fd_identity, login_connect, wait_for_supervisor};
 use std::{
     fs::File,
     io::{self, Read, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
+    os::fd::AsRawFd,
     os::unix::net::UnixStream,
     process::{Command, Stdio},
 };
 
 const IP: &str = "/usr/sbin/ip";
 const NFT: &str = "/usr/sbin/nft";
+pub(super) const PROXY_URL: &str = "http://127.0.0.1:39271";
 const PORTS: [u16; 4] = [39271, 39272, 39273, 39274];
 const TABLE: &str = "tempest_local_auth";
 const POLICY: &str = "
@@ -28,6 +30,7 @@ pub(super) enum Case {
     WrongNamespace,
     MissingPolicy,
     WrongPolicy,
+    MissingGateway,
 }
 
 impl Case {
@@ -38,8 +41,13 @@ impl Case {
             "wrong-namespace" => Self::WrongNamespace,
             "missing-policy" => Self::MissingPolicy,
             "wrong-policy" => Self::WrongPolicy,
+            "missing-gateway" => Self::MissingGateway,
             _ => return None,
         })
+    }
+
+    pub fn needs_gateway(self) -> bool {
+        matches!(self, Self::Match | Self::MissingGateway)
     }
 }
 
@@ -129,6 +137,29 @@ pub(super) struct LocalPolicy {
     installed: bool,
 }
 
+pub(super) struct Gateway(Option<libc::pid_t>);
+
+impl Gateway {
+    pub fn finish(mut self) -> io::Result<()> {
+        let pid = self.0.unwrap();
+        let status = wait_for_supervisor(pid)?;
+        self.0 = None;
+        if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+            return Err(io::Error::other("fixed login gateway exchange failed"));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Gateway {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            let _ = wait_for_supervisor(pid);
+        }
+    }
+}
+
 impl LocalPolicy {
     pub fn setup(case: Case) -> io::Result<Self> {
         output(IP, &["link", "set", "lo", "up"])?;
@@ -162,6 +193,48 @@ impl LocalPolicy {
             listeners,
             installed,
         })
+    }
+
+    pub fn start_gateway(&self, case: Case, upstream_network: &File) -> io::Result<Gateway> {
+        if matches!(case, Case::MissingGateway) {
+            return Err(io::Error::other("fixed gateway unavailable"));
+        }
+        let upstream_identity = fd_identity(upstream_network)?;
+        if namespace()? == upstream_identity {
+            return Err(io::Error::other(
+                "gateway requires distinct client and upstream networks",
+            ));
+        }
+        let (mut ready, mut sender) = UnixStream::pair()?;
+        ready.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+        let supervisor = unsafe { libc::getpid() };
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if pid == 0 {
+            drop(ready);
+            let guarded = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) }
+                == 0
+                && unsafe { libc::getppid() } == supervisor;
+            // The listener stays in the isolated client namespace. Only this
+            // gateway process moves to the pinned upstream network.
+            let entered = guarded
+                && unsafe { libc::setns(upstream_network.as_raw_fd(), libc::CLONE_NEWNET) } == 0
+                && namespace().is_ok_and(|current| current == upstream_identity);
+            let confirmed = entered && sender.write_all(b"G").is_ok();
+            drop(sender);
+            let success = confirmed && login_connect::serve_fixture(&self.listeners[0]).is_ok();
+            unsafe { libc::_exit(i32::from(!success)) };
+        }
+        drop(sender);
+        let gateway = Gateway(Some(pid));
+        let mut acknowledgement = [0];
+        ready.read_exact(&mut acknowledgement)?;
+        if acknowledgement != *b"G" {
+            return Err(io::Error::other("fixed login gateway readiness mismatch"));
+        }
+        Ok(gateway)
     }
 
     pub fn finish(self, granted_and_completed: bool) -> io::Result<()> {
@@ -210,7 +283,7 @@ impl LocalPolicy {
             counters.is_empty()
         };
         if !output(NFT, &["-s", "list", "ruleset"])?.trim().is_empty()
-            || observed? != [usize::from(granted_and_completed), 0, 0, 0]
+            || observed? != [0, 0, 0, 0]
             || !expected_counters
         {
             return Err(io::Error::other("fixed login traffic or cleanup mismatch"));

@@ -1,6 +1,7 @@
 //! Fixed inputs for dedicated Linux Claude offline diagnostics.
 use super::os::Fault;
 mod local_auth;
+mod login_connect;
 mod writable_config;
 use sha2::{Digest, Sha256};
 use std::{
@@ -179,6 +180,7 @@ enum Diagnostic {
     ConfigControl,
     ConfigIsolated,
     Pty,
+    PtyWithLoginArtifacts,
     PtyOtherUid,
 }
 
@@ -426,7 +428,10 @@ fn isolated_command(
                 || libc::chdir(
                     if matches!(
                         diagnostic,
-                        Diagnostic::Version | Diagnostic::Pty | Diagnostic::PtyOtherUid
+                        Diagnostic::Version
+                            | Diagnostic::Pty
+                            | Diagnostic::PtyWithLoginArtifacts
+                            | Diagnostic::PtyOtherUid
                     ) {
                         c"/home/fixture"
                     } else {
@@ -643,6 +648,37 @@ fn artifacts_for(diagnostic: Diagnostic) -> &'static [Artifact<'static>] {
     }
 }
 
+const LOGIN_EXECUTABLE: &str = "/bin/claude";
+const LOGIN_ARGS: [&str; 2] = ["auth", "login"];
+
+fn configure_login_command(command: &mut std::process::Command) {
+    command
+        .args(LOGIN_ARGS)
+        .env("HTTPS_PROXY", local_auth::PROXY_URL)
+        .env("HTTP_PROXY", local_auth::PROXY_URL)
+        .env("NO_PROXY", "");
+}
+
+fn fixed_login_command(root: &Path) -> Result<std::process::Command, Fault> {
+    use std::process::Stdio;
+    // Send diagnostics to the same already-verified terminal as stdout.
+    let diagnostic_fd = unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_DUPFD_CLOEXEC, 3) };
+    if diagnostic_fd < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    let diagnostic_output = unsafe { File::from_raw_fd(diagnostic_fd) };
+    let mut command = isolated_command(
+        root,
+        LOGIN_EXECUTABLE,
+        OpenOptions::new().write(true).open("/dev/null")?,
+        diagnostic_output,
+        Diagnostic::PtyWithLoginArtifacts,
+    )?;
+    configure_login_command(&mut command);
+    command.stdin(Stdio::inherit()).stdout(Stdio::inherit());
+    Ok(command)
+}
+
 fn run_pty_child(
     root: &Path,
     namespace_reaped: &mut bool,
@@ -680,7 +716,34 @@ fn run_pty_child(
             if (: > "$HOME/outside-probe"); then exit 1; fi
         fi
         if test "$3" = local-auth; then
-            /bin/busybox nc -w 1 127.0.0.1 39271 -e /bin/busybox true
+            shift 3
+            test "$#" = 2
+            test "$1" = auth
+            test "$2" = login
+            test "$HTTPS_PROXY" = http://127.0.0.1:39271
+            test "$HTTP_PROXY" = "$HTTPS_PROXY"
+            test -z "$NO_PROXY"
+            /bin/busybox nc -w 1 127.0.0.1 39271 -e /bin/busybox sh -eu -c '
+                printf "CONNECT invalid.example:443 HTTP/1.1\r\n\r\n"
+                IFS= read -r status
+                test "$status" = "$(printf "HTTP/1.1 403 Forbidden\r")"
+            '
+            /bin/busybox nc -w 1 127.0.0.1 39271 -e /bin/busybox sh -eu -c '
+                printf "CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\nPING"
+                IFS= read -r status
+                test "$status" = "$(printf "HTTP/1.1 200 Connection Established\r")"
+                IFS= read -r separator
+                test "$separator" = "$(printf "\r")"
+                IFS= read -r answer
+                test "$answer" = ACK
+                printf "ready\n" > /tunnel-ready
+                IFS= read -r unexpected
+                exit 1
+            ' &
+            tunnel=$!
+            IFS= read -r established < /tunnel-ready
+            test "$established" = ready
+            kill -0 "$tunnel"
             for port in 39272 39273 39274; do
                 if /bin/busybox nc -w 1 127.0.0.1 "$port" -e /bin/busybox true; then exit 1; fi
             done
@@ -688,6 +751,7 @@ fn run_pty_child(
         printf 'fixture-ready\n'
         IFS= read -r request
         test "$request" = probe
+        if test -n "${tunnel:-}"; then kill -0 "$tunnel"; fi
         /bin/busybox sleep 60 &
         descendant=$!
         kill -0 "$descendant"
@@ -707,6 +771,9 @@ fn run_pty_child(
             ChildNetwork::NewOffline => "offline",
             ChildNetwork::Verified(_) => "local-auth",
         });
+    if matches!(network, ChildNetwork::Verified(_)) {
+        configure_login_command(&mut command);
+    }
     match run_in_pid_namespace_expecting(
         command,
         Duration::from_secs(12),
@@ -857,7 +924,7 @@ fn run_fixture_with_config(
     namespace_reaped: &mut bool,
     diagnostic: Diagnostic,
     private_config: Option<&writable_config::Generation>,
-    local_auth_case: Option<local_auth::Case>,
+    local_auth: Option<(local_auth::Case, &File)>,
 ) -> Result<(u64, u64), Fault> {
     use super::os;
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
@@ -890,15 +957,24 @@ fn run_fixture_with_config(
         own(&root.join("home/fixture/config"), 0o700)?;
         own(&settings, 0o600)?;
     }
-    let pty_events = if diagnostic == Diagnostic::Pty {
+    let pty_events = if matches!(
+        diagnostic,
+        Diagnostic::Pty | Diagnostic::PtyWithLoginArtifacts
+    ) {
         // BusyBox ash opens /dev/null for a background job's stdin.
         fs::create_dir(root.join("dev"))?;
         File::create(root.join("dev/null"))?;
+        if local_auth.is_some() {
+            fixture_fifo(&root.join("tunnel-ready"))?;
+        }
         Some(fixture_fifo(&root.join("pty-ready"))?)
     } else {
         None
     };
-    let config = if matches!(diagnostic, Diagnostic::Version | Diagnostic::Pty) {
+    let config = if matches!(
+        diagnostic,
+        Diagnostic::Version | Diagnostic::Pty | Diagnostic::PtyWithLoginArtifacts
+    ) {
         None
     } else {
         Some(ConfigFixture::prepare(root, diagnostic)?)
@@ -911,16 +987,42 @@ fn run_fixture_with_config(
         None,
     )?;
     verify_mount_table_for(root, diagnostic, private_config.is_some())?;
+    if diagnostic == Diagnostic::PtyWithLoginArtifacts {
+        // Build the production invocation after validating the mount table.
+        // The fixture exercises the same arguments and environment with BusyBox.
+        let command = fixed_login_command(root)?;
+        if !root
+            .join(
+                Path::new(command.get_program())
+                    .strip_prefix("/")
+                    .map_err(|_| Fault::Path)?,
+            )
+            .is_file()
+        {
+            return Err(Fault::Identity);
+        }
+    }
     let before = if private_config.is_none() {
         Some(audit_settings(root)?)
     } else {
         None
     };
-    let policy = local_auth_case
-        .map(local_auth::LocalPolicy::setup)
+    let policy = local_auth
+        .map(|(case, _)| local_auth::LocalPolicy::setup(case))
         .transpose()?;
     let launch = (|| {
-        let network = if let Some(case) = local_auth_case {
+        let gateway = match (&policy, local_auth) {
+            (Some(policy), Some((case, upstream_network))) if case.needs_gateway() => Some(
+                policy
+                    .start_gateway(case, upstream_network)
+                    .map_err(|error| {
+                        eprintln!("local auth gateway refused before grant: {error}");
+                        error
+                    })?,
+            ),
+            _ => None,
+        };
+        let network = if let Some((case, _)) = local_auth {
             ChildNetwork::Verified(local_auth::request(control, case)?)
         } else {
             request_cli_start(control)?;
@@ -934,6 +1036,9 @@ fn run_fixture_with_config(
             config.run(root, scratch, namespace_reaped, diagnostic)?;
         } else if let Some(events) = pty_events {
             run_pty_child(root, namespace_reaped, events, private_config, network)?;
+            if let Some(gateway) = gateway {
+                gateway.finish()?;
+            }
         } else {
             run_child(root, scratch, namespace_reaped)?;
         }
@@ -942,7 +1047,9 @@ fn run_fixture_with_config(
     if let Some(policy) = policy {
         policy.finish(launch.is_ok())?;
         if launch.is_ok() {
-            eprintln!("local auth: accepts=1,0,0,0 denied=3; listeners and policy closed");
+            eprintln!(
+                "local auth: tunnel accepted, other host refused, three direct ports denied; listeners and policy closed"
+            );
         } else {
             eprintln!("local auth: accepts=0,0,0,0 denied=0; listeners and policy closed");
         }
@@ -1452,6 +1559,38 @@ pub(super) fn run_config() -> std::process::ExitCode {
     }
 }
 
+fn verify_shared_terminal(input: libc::c_int, output: libc::c_int) -> io::Result<()> {
+    fn identity(fd: libc::c_int) -> io::Result<(libc::dev_t, libc::ino_t, libc::dev_t)> {
+        if unsafe { libc::isatty(fd) } != 1 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        if unsafe { libc::fstatfs(fd, filesystem.as_mut_ptr()) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        const DEVPTS_MAGIC: libc::c_long = 0x1cd1;
+        let mut master_index: libc::c_uint = 0;
+        if unsafe { filesystem.assume_init() }.f_type != DEVPTS_MAGIC
+            || unsafe { libc::ioctl(fd, libc::TIOCGPTN, &mut master_index) } == 0
+        {
+            return Err(io::Error::other("login requires a PTY slave"));
+        }
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let stat = unsafe { stat.assume_init() };
+        Ok((stat.st_dev, stat.st_ino, stat.st_rdev))
+    }
+
+    if identity(input)? != identity(output)? {
+        return Err(io::Error::other(
+            "login input and output use different terminals",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn run_pty() -> std::process::ExitCode {
     use std::process::ExitCode;
     if std::env::args_os().len() != 1
@@ -1516,12 +1655,16 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         _ => return ExitCode::FAILURE,
     };
     if unsafe { libc::geteuid() } != 0
-        || unsafe { libc::isatty(libc::STDIN_FILENO) } != 1
-        || unsafe { libc::isatty(libc::STDOUT_FILENO) } != 1
+        || verify_shared_terminal(libc::STDIN_FILENO, libc::STDOUT_FILENO).is_err()
     {
         return ExitCode::FAILURE;
     }
     let result = (|| {
+        // Pin the upstream namespace before the supervisor enters the isolated client network.
+        let upstream_network = local_auth_case
+            .map(|_| File::open("/proc/thread-self/ns/net"))
+            .transpose()?;
+        let local_auth = local_auth_case.zip(upstream_network.as_ref());
         let work_path = Path::new(WORK_PARENT);
         let parent = lock_parent(work_path)?;
         let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
@@ -1544,9 +1687,13 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     root,
                     control,
                     reaped,
-                    Diagnostic::Pty,
+                    if matches!(local_auth_case, Some(local_auth::Case::Match)) {
+                        Diagnostic::PtyWithLoginArtifacts
+                    } else {
+                        Diagnostic::Pty
+                    },
                     Some(&config),
-                    local_auth_case,
+                    local_auth,
                 )
             },
             &mut observation,
@@ -1580,6 +1727,61 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_login_invocation_uses_configured_artifact_and_proxy() {
+        let command = fixed_login_command(Path::new("/unused")).unwrap();
+        assert_eq!(command.get_program(), LOGIN_EXECUTABLE);
+        assert_eq!(command.get_args().collect::<Vec<_>>(), LOGIN_ARGS);
+        let environment = command
+            .get_envs()
+            .map(|(key, value)| (key.to_str().unwrap(), value.unwrap().to_str().unwrap()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            environment,
+            std::collections::BTreeMap::from([
+                ("CLAUDE_CONFIG_DIR", "/home/fixture/config"),
+                ("HOME", "/home/fixture"),
+                ("HTTPS_PROXY", local_auth::PROXY_URL),
+                ("HTTP_PROXY", local_auth::PROXY_URL),
+                ("NO_PROXY", ""),
+            ])
+        );
+        assert_eq!(
+            ARTIFACTS[0].targets[0],
+            LOGIN_EXECUTABLE.trim_start_matches('/')
+        );
+    }
+
+    #[test]
+    fn dedicated_terminal_rejects_split_or_redirected_stdio() {
+        fn terminals() -> (File, File) {
+            let mut master = -1;
+            let mut slave = -1;
+            assert_eq!(
+                unsafe {
+                    libc::openpty(
+                        &mut master,
+                        &mut slave,
+                        std::ptr::null_mut(),
+                        std::ptr::null(),
+                        std::ptr::null(),
+                    )
+                },
+                0
+            );
+            unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) }
+        }
+
+        let (master, slave) = terminals();
+        let identical = slave.try_clone().unwrap();
+        let (_other_master, other_slave) = terminals();
+        let redirected = File::open("/dev/null").unwrap();
+        assert!(verify_shared_terminal(slave.as_raw_fd(), identical.as_raw_fd()).is_ok());
+        assert!(verify_shared_terminal(slave.as_raw_fd(), other_slave.as_raw_fd()).is_err());
+        assert!(verify_shared_terminal(slave.as_raw_fd(), redirected.as_raw_fd()).is_err());
+        assert!(verify_shared_terminal(master.as_raw_fd(), master.as_raw_fd()).is_err());
+    }
 
     #[test]
     #[ignore = "requires root and private mount and PID namespaces"]
