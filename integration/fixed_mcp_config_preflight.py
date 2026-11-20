@@ -35,7 +35,8 @@ def unique_object(pairs):
 
 def prepare_args(directory, expected_digest):
     details = os.fstat(directory)
-    if details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) != 0o700:
+    owner = (os.geteuid(), os.getegid())
+    if (details.st_uid, details.st_gid) != owner or stat.S_IMODE(details.st_mode) != 0o700:
         raise Rejected("directory metadata")
     try:
         fd = os.open(NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -45,7 +46,7 @@ def prepare_args(directory, expected_digest):
         raise Rejected("unreadable config") from error
     with os.fdopen(fd, "rb") as stream:
         before = os.fstat(stream.fileno())
-        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+        if (not stat.S_ISREG(before.st_mode) or (before.st_uid, before.st_gid) != owner
                 or stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1):
             raise Rejected("file metadata")
         raw = stream.read(LIMIT + 1)
@@ -114,11 +115,13 @@ def main():
     if os.geteuid() != 0:
         raise SystemExit("run as root to exercise the synthetic owner mismatch")
     os.umask(0o077)
+    other_gid = 65534 if os.getegid() != 65534 else 65533
     with tempfile.TemporaryDirectory(prefix="tempest-fixed-mcp-config-") as directory:
         root = Path(directory)
         result = [
             case(root, "fixed", FIXED_BYTES, None),
             case(root, "missing", None, "missing config"),
+            structural_case(root, "empty_servers", b'{"mcpServers":{}}'),
             structural_case(root, "extra",
                             FIXED_BYTES.replace(b'"izanagi":', b'"extra":{},"izanagi":')),
             structural_case(root, "duplicate",
@@ -133,6 +136,10 @@ def main():
             case(root, "oversized", b" " * (LIMIT + 1), "config too large"),
             case(root, "permission", FIXED_BYTES, "file metadata", lambda path: path.chmod(0o644)),
             case(root, "owner", FIXED_BYTES, "file metadata", lambda path: os.chown(path, 65534, -1)),
+            case(root, "file_gid", FIXED_BYTES, "file metadata",
+                 lambda path: os.chown(path, -1, other_gid)),
+            case(root, "directory_gid", FIXED_BYTES, "directory metadata",
+                 lambda path: os.chown(path.parent, -1, other_gid)),
             case(root, "symlink", None, "unreadable config",
                  lambda path: path.symlink_to(root / "digest" / NAME)),
         ]
