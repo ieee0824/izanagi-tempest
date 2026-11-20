@@ -2543,19 +2543,65 @@ mod tests {
             target_id: "synthetic-recovery",
             approved_ips_revision: 1,
         };
-        let consume = |id| {
-            let now = std::time::Instant::now();
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        use std::time::{Duration, Instant};
+        let key = Ed25519KeyPair::from_seed_unchecked(&[5; 32]).unwrap();
+        let public_key = key.public_key().as_ref().try_into().unwrap();
+        let consume_signed = |ledger: &File, signed: &[u8], signature: &[u8]| {
+            let now = Instant::now();
+            let id = login_handoff::verify_handoff(public_key, signed, signature, scope, 130, 100)?;
             login_permit::consume(
-                &parent,
+                ledger,
                 &login_permit::Permit {
                     id,
-                    expires_at: now + std::time::Duration::from_secs(30),
+                    expires_at: now + Duration::from_secs(30),
                     scope,
                 },
                 scope,
                 now,
             )
         };
+        let consume = |id| {
+            let (signed, signature) = login_handoff::signed_fixture(&key, id, scope, 140);
+            consume_signed(&parent, &signed, signature.as_ref())
+        };
+        let entries_before = fs::read_dir(&path).unwrap().count();
+        let (mut altered, signature) = login_handoff::signed_fixture(&key, 5, scope, 140);
+        altered.push(b' ');
+        assert_eq!(
+            consume_signed(&parent, &altered, signature.as_ref())
+                .unwrap_err()
+                .to_string(),
+            "invalid handoff signature"
+        );
+        let wrong_target = login_permit::Scope {
+            target_id: "different-target",
+            ..scope
+        };
+        let (signed, signature) = login_handoff::signed_fixture(&key, 6, wrong_target, 140);
+        assert_eq!(
+            consume_signed(&parent, &signed, signature.as_ref())
+                .unwrap_err()
+                .to_string(),
+            "handoff scope mismatch"
+        );
+        assert_eq!(fs::read_dir(&path).unwrap().count(), entries_before);
+        let unsyncable = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(&path)
+            .unwrap();
+        let (signed, signature) = login_handoff::signed_fixture(&key, 7, scope, 140);
+        assert_eq!(
+            consume_signed(&unsyncable, &signed, signature.as_ref())
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EBADF)
+        );
+        assert_eq!(
+            consume(7).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
         consume(1).unwrap();
         let retained = WorkArea::create(&parent, &path).unwrap();
         let error = supervised(&parent, &retained, |scratch, _, control, _| {

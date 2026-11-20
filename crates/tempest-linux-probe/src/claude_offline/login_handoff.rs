@@ -85,6 +85,31 @@ pub(super) fn verify_handoff(
     Ok(permit_id)
 }
 
+#[cfg(test)]
+pub(super) fn signed_fixture(
+    key: &ring::signature::Ed25519KeyPair,
+    permit_id: u128,
+    scope: Scope<'_>,
+    expires_unix_seconds: u64,
+) -> (Vec<u8>, ring::signature::Signature) {
+    let arguments = scope.arguments.try_into().expect("fixed login arguments");
+    let [first, second]: [&str; 2] = arguments;
+    let handoff = Handoff {
+        permit_id: format!("{permit_id:032x}"),
+        approval_pair_sha256: "a".repeat(64),
+        expires_unix_seconds,
+        target_id: scope.target_id.into(),
+        executable_sha256: scope.executable_sha256.into(),
+        arguments: [first.into(), second.into()],
+        authority: scope.authority.into(),
+        approved_ips_revision: scope.approved_ips_revision,
+    };
+    let mut signed = DOMAIN.to_vec();
+    signed.extend(serde_json::to_vec(&handoff).unwrap());
+    let signature = key.sign(&signed);
+    (signed, signature)
+}
+
 #[test]
 fn offline_handoff_checks_signature_expiry_and_scope() {
     use ring::signature::{Ed25519KeyPair, KeyPair};
