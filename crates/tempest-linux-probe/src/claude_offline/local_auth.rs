@@ -36,6 +36,7 @@ pub(super) enum Case {
     ExpiredPermit,
     SingleUsePermit,
     SignedPermit,
+    SignedTls,
     SignedAdministratorStop,
     PermitExpiresBeforeGrant,
     WrongGrantId,
@@ -64,6 +65,7 @@ impl Case {
             "expired-permit" => Self::ExpiredPermit,
             "single-use-permit" => Self::SingleUsePermit,
             "signed-permit" => Self::SignedPermit,
+            "signed-tls" => Self::SignedTls,
             "signed-administrator-stop" => Self::SignedAdministratorStop,
             "permit-expires-before-grant" => Self::PermitExpiresBeforeGrant,
             "wrong-grant-id" => Self::WrongGrantId,
@@ -89,6 +91,7 @@ impl Case {
                 | Self::UnapprovedResolution
                 | Self::SingleUsePermit
                 | Self::SignedPermit
+                | Self::SignedTls
                 | Self::SignedAdministratorStop
                 | Self::PermitExpiresBeforeGrant
                 | Self::WrongGrantId
@@ -294,8 +297,13 @@ impl LocalPolicy {
                 };
                 sender.write_all(b"G")?;
                 drop(sender);
-                login_connect::serve_fixture(&self.listeners[0], upstream)
+                login_connect::serve_fixture(&self.listeners[0], upstream, case)
             })()
+            .inspect_err(|error| {
+                if matches!(case, Case::SignedTls) {
+                    eprintln!("synthetic TLS gateway: {error}");
+                }
+            })
             .is_ok();
             unsafe { libc::_exit(i32::from(!success)) };
         }

@@ -1,5 +1,6 @@
 """Exercise the integrated synthetic local-auth PTY and the pre-grant failures."""
 
+from concurrent.futures import ThreadPoolExecutor
 import errno
 import json
 import time
@@ -8,6 +9,8 @@ from pathlib import Path
 import pty
 import select
 import shutil
+import socket
+import ssl
 import subprocess
 import tempfile
 import sys
@@ -205,13 +208,99 @@ def verify_signed_child_environment(supervisor):
             actual = (proc / "environ").read_bytes().rstrip(b"\0").split(b"\0")
             if len(actual) != len(expected) or set(actual) != expected:
                 raise RuntimeError("signed child environment was not the fixed set")
-            return
+            return pid
         except (FileNotFoundError, ProcessLookupError):
             continue
     raise RuntimeError("could not find the fixed signed PTY child")
 
 
-def check_signed_permits(binary):
+def probe_local_tls(cert_pem):
+    context = ssl.create_default_context(cadata=cert_pem)
+    for name, expected in (("platform.claude.com", True), ("mismatch.invalid", False)):
+        with socket.create_connection(("127.0.0.1", 39271), timeout=3) as proxy:
+            proxy.sendall(b"CONNECT platform.claude.com:443 HTTP/1.1\r\n"
+                          b"Host: platform.claude.com:443\r\n\r\n")
+            response = bytearray()
+            while not response.endswith(b"\r\n\r\n") and len(response) < 256:
+                chunk = proxy.recv(1)
+                if not chunk:
+                    break
+                response.extend(chunk)
+            if response != b"HTTP/1.1 200 Connection Established\r\n\r\n":
+                raise RuntimeError("fixed TLS CONNECT did not open")
+            try:
+                with context.wrap_socket(proxy, server_hostname=name) as tls:
+                    if not expected or tls.getpeercert(binary_form=True) != ssl.PEM_cert_to_DER_cert(cert_pem):
+                        raise RuntimeError("unexpected TLS certificate or accepted wrong name")
+                    tls.sendall(b"PING")
+                    if tls.recv(1) != b"K":
+                        raise RuntimeError("missing TLS fixture response")
+                    tls.unwrap().close()
+            except ssl.SSLCertVerificationError as error:
+                if expected or error.verify_code != 62:
+                    raise
+
+
+def check_signed_tls(binary, temporary, record, check_evidence):
+    if any(subprocess.check_output(["ip", family, "route", "show"]).strip()
+           for family in ("-4", "-6")):
+        raise RuntimeError("signed TLS requires an outer namespace without routes")
+    cert = Path(temporary) / "tls-cert.pem"
+    private_key = Path(temporary) / "tls-key.pem"
+    subprocess.run([
+        "/usr/bin/openssl", "req", "-x509", "-newkey", "ed25519", "-nodes", "-days", "1",
+        "-subj", "/CN=platform.claude.com", "-addext", "subjectAltName=DNS:platform.claude.com",
+        "-keyout", private_key, "-out", cert,
+    ], check=True, capture_output=True)
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(cert, private_key)
+    cert_pem = cert.read_text()
+    identities = {}
+
+    def exchanges(listener):
+        for expected in (True, False):
+            client, _ = listener.accept()
+            with client:
+                client.settimeout(4)
+                try:
+                    with server_context.wrap_socket(client, server_side=True) as tls:
+                        with tls.makefile("rb") as incoming:
+                            if not expected or incoming.read(4) != b"PING":
+                                raise RuntimeError("unexpected exchange with the TLS fixture")
+                        tls.sendall(b"K")
+                        tls.unwrap().close()
+                except ssl.SSLError as error:
+                    if expected or error.reason != "SSLV3_ALERT_BAD_CERTIFICATE":
+                        raise
+
+    def observe_and_probe(pid):
+        child = verify_signed_child_environment(pid)
+        (work,) = WORK.iterdir()
+        for directory in (work, CONFIG / work.name):
+            metadata = directory.stat()
+            identities[directory] = (metadata.st_dev, metadata.st_ino)
+        subprocess.run([
+            "/usr/bin/nsenter", "--net=" + str(Path(f"/proc/{child}/ns/net")), "--",
+            "/usr/bin/setpriv", "--reuid", "999", "--regid", "988", "--clear-groups",
+            sys.executable, str(Path(__file__).resolve()), "--probe-local-tls",
+        ], input=cert_pem, text=True, timeout=5, check=True, env={})
+
+    with socket.create_server(("127.0.0.1", 39275)) as listener, ThreadPoolExecutor(1) as pool:
+        listener.settimeout(8)
+        served = pool.submit(exchanges, listener)
+        fixture(
+            [binary, "signed-tls"], {}, complete_probe=True, success=POSITIVE + REMOVED,
+            observe_child=observe_and_probe,
+            check_evidence=lambda stderr: check_evidence(stderr, record, identities, True),
+        )
+        served.result()
+    if any(directory.exists() for directory in identities):
+        raise RuntimeError("TLS fixture generation was not recovered")
+    print("signed TLS: same permit and generation, exact certificate, wrong name refused, "
+          "direct ports denied, child and gateway reaped, both generations recovered")
+
+
+def check_signed_permits(binary, tls=False):
     policy = CONFIG / ".synthetic-login-policy.json"
     payload = CONFIG / ".synthetic-handoff"
     signature = CONFIG / ".synthetic-handoff-signature"
@@ -228,6 +317,7 @@ def check_signed_permits(binary):
     )
     missing_sync = CONFIG / f"{11:032x}"
     failed_sync = CONFIG / f"{12:032x}"
+    tls_record = CONFIG / f"{13:032x}"
     closure_records = {record for _, record, _ in closure_cases} | {missing_sync, failed_sync}
     stop_request = CONFIG / ".synthetic-stop-request.json"
     pending_stop = CONFIG / ".synthetic-stop-request.pending"
@@ -319,7 +409,10 @@ def check_signed_permits(binary):
     def check_recovery_evidence(stderr, record, identities, synced):
         prefix = b"synthetic recovery evidence: "
         lines = stderr.splitlines(keepends=True)
-        (evidence,) = [line for line in lines if line.startswith(prefix)]
+        evidence_lines = [line for line in lines if line.startswith(prefix)]
+        if len(evidence_lines) != 1:
+            raise RuntimeError(f"expected one recovery evidence record: {stderr!r}")
+        (evidence,) = evidence_lines
         work, config = identities.values()
         expected = {
             "permit_id": record.name,
@@ -455,14 +548,22 @@ def check_signed_permits(binary):
             # Leave the previous stop in place while the successor reaches readiness.
             write_handoff(key, later, 45)
             check_administrator_stop(later)
+            if tls:
+                write_handoff(key, tls_record, 45)
+                check_signed_tls(binary, tmp, tls_record, check_recovery_evidence)
     finally:
-        for path in inputs | {used, expired, stopped, later, stop_request, pending_stop} | set(mismatches.values()) | closure_records:
+        for path in inputs | {used, expired, stopped, later, stop_request, pending_stop, tls_record} | set(mismatches.values()) | closure_records:
             path.unlink(missing_ok=True)
     assert_empty()
 
 
 def main():
-    if sys.platform != "linux" or os.geteuid() != 0 or len(sys.argv) != 2:
+    if sys.argv[1:] == ["--probe-local-tls"] and os.geteuid() == 999:
+        probe_local_tls(sys.stdin.read())
+        return 0
+    if sys.platform != "linux" or os.geteuid() != 0:
+        return 2
+    if len(sys.argv) < 2 or sys.argv[2:] not in ([], ["--signed-tls"]):
         return 2
     binary = str(Path(sys.argv[1]).resolve(strict=True))
     assert_empty()
@@ -481,7 +582,7 @@ def main():
     )
     assert_empty()
     check_permit_replay(binary)
-    check_signed_permits(binary)
+    check_signed_permits(binary, tls=sys.argv[2:] == ["--signed-tls"])
     print("configured permit: missing, expired and replayed settings refused; late expiry recovered without traffic")
     print("concurrent launch: refused before staging")
     print("match: auth accepted, other host and three direct ports denied; disconnect reaped, active tunnel and listeners closed, generation removed")

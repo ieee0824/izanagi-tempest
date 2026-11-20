@@ -386,6 +386,20 @@ TLS クライアントが拒否すること、別の CONNECT 宛先は上流へ�
 必要です。ループバックだけを有効にした名前空間で、Rust テストバイナリの
 `fixed_connect_relays_tls_certificate_for_client_validation --ignored` を実行します。
 
+署名付き PTY と TLS を同一世代で確認する場合は、外向き経路のない
+mount/net 名前空間でループバックを有効にし、専用の作業・設定親を
+空の tmpfs にしたうえで、次のスモークを実行します。Python の TLS
+プローブは固定合成子と同じ netns と UID で動作します。固定子の
+CONNECT と直接接続拒否、プローブの証明書一致と名前不一致拒否、
+同じ許可 ID・世代の切断後の回収を照合します。OpenSSL、nsenter、
+setpriv を使用し、上流はローカルの試験サーバーです。
+
+```sh
+cargo build --offline --locked -p tempest-linux-probe
+sudo -n python3 integration/claude_local_auth_pty_smoke.py \
+  target/debug/tempest-claude-offline-local-auth-pty --signed-tls
+```
+
 公開 CLI の拒否だけを確認するには、Linux で `strace` と `ip` を用意し、
 次の試験を実行します。試験は外向き経路のない専用 mount/net 名前空間で
 ダミー設定と空の台帳を使用します。
