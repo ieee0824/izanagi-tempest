@@ -143,6 +143,17 @@ fn verify_artifact(file: &File, artifact: &Artifact<'_>) -> Result<(), Fault> {
     )
 }
 
+fn stage_failure(stage: &str, fault: &Fault) {
+    if let Fault::Kernel(errno) = fault {
+        eprintln!(
+            "offline staging: stage={stage} reason={} errno={errno}",
+            fault.reason()
+        );
+    } else {
+        eprintln!("offline staging: stage={stage} reason={}", fault.reason());
+    }
+}
+
 fn stage_artifact(artifact: &Artifact<'_>, destination: &Path) -> Result<File, Fault> {
     use std::os::unix::fs::PermissionsExt;
     let input = open_input(artifact)?;
@@ -962,11 +973,14 @@ fn run_fixture_with_config(
         fs::create_dir(root.join(dir))?;
     }
     for (index, artifact) in artifacts_for(diagnostic).iter().enumerate() {
-        let staged = stage_artifact(artifact, &scratch.join(format!("artifact-{index}")))?;
-        mount_artifact(root, artifact, &staged)?;
+        let staged = stage_artifact(artifact, &scratch.join(format!("artifact-{index}")))
+            .inspect_err(|fault| stage_failure(artifact.source, fault))?;
+        mount_artifact(root, artifact, &staged)
+            .inspect_err(|fault| stage_failure("artifact_mount", fault))?;
     }
     if diagnostic != Diagnostic::Version {
-        let staged = stage_artifact(&BUSYBOX, &scratch.join("artifact-busybox"))?;
+        let staged = stage_artifact(&BUSYBOX, &scratch.join("artifact-busybox"))
+            .inspect_err(|fault| stage_failure("busybox", fault))?;
         mount_artifact(root, &BUSYBOX, &staged)?;
     }
     if let Some(config) = private_config {
@@ -1031,7 +1045,9 @@ fn run_fixture_with_config(
     };
     let policy = local_auth
         .map(|(case, _, _)| local_auth::LocalPolicy::setup(case))
-        .transpose()?;
+        .transpose()
+        .map_err(Fault::from)
+        .inspect_err(|fault| stage_failure("local_policy", fault))?;
     let launch = (|| {
         let gateway = match (&policy, local_auth) {
             (Some(policy), Some((case, upstream_network, _))) if case.needs_gateway() => Some(
@@ -1130,12 +1146,14 @@ fn trial_with_detach<T>(
 ) -> Result<T, Fault> {
     use super::{capsule, os};
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    os::syscall(unsafe { libc::unshare(libc::CLONE_NEWNS | libc::CLONE_NEWNET) })?;
-    confirm_offline_network()?;
-    capsule::make_mounts_private()?;
+    os::syscall(unsafe { libc::unshare(libc::CLONE_NEWNS | libc::CLONE_NEWNET) })
+        .inspect_err(|fault| stage_failure("namespace", fault))?;
+    confirm_offline_network().inspect_err(|fault| stage_failure("offline_network", fault))?;
+    capsule::make_mounts_private()
+        .inspect_err(|fault| stage_failure("mount_propagation", fault))?;
     let root = scratch.join("root");
     fs::create_dir(&root)?;
-    capsule::mount_root(&root)?;
+    capsule::mount_root(&root).inspect_err(|fault| stage_failure("root_mount", fault))?;
     let result = execute(scratch, &root);
     // Detach the complete private mount tree before touching staging files.
     let path = CString::new(root.as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
