@@ -78,3 +78,49 @@ def collect(invoke, boot_ids):
     if record["receivers_closed"] != [True, True]:
         raise RuntimeError("fixed HTTP receiver recovery failed")
     return record
+
+
+def require_control_directory(path):
+    details = path.lstat()
+    if not stat.S_ISDIR(details.st_mode) or details.st_uid != 0 or stat.S_IMODE(details.st_mode) != 0o700:
+        raise ValueError("control directory must be root-private")
+
+
+def publish(path, value):
+    import json
+
+    temporary = path.with_suffix(".pending")
+    with temporary.open("x") as output:
+        json.dump(value, output)
+    temporary.rename(path)
+
+
+def serve_commands(control, execute, binding, process, guest):
+    import json
+    import re
+    import time
+
+    forward, fingerprint = binding()
+    publish(control / "ready.json", {"guest": guest, "qemu": forward,
+                                     "session_fingerprint": fingerprint.hex()})
+    for position in range(30):
+        command = control / f"command-{position}.json"
+        deadline = time.monotonic() + 90
+        while not command.exists():
+            if (control / "release").exists():
+                return
+            if time.monotonic() >= deadline or process.poll() is not None:
+                raise RuntimeError("HTTP fixture coordination interrupted")
+            time.sleep(0.025)
+        mode, nonce = json.loads(command.read_text())
+        if mode not in ("start", "snapshot", "request", "stop") or re.fullmatch(r"[0-9a-f]{32}", nonce) is None:
+            raise ValueError("unexpected HTTP fixture command")
+        if binding() != (forward, fingerprint):
+            raise RuntimeError("HTTP fixture session changed")
+        result = execute(*guest_argv(mode, nonce), timeout=12)
+        if result.returncode != 0 or len(result.stdout) > 4096:
+            raise RuntimeError(f"fixed HTTP guest operation failed: {mode}")
+        if binding() != (forward, fingerprint):
+            raise RuntimeError("HTTP fixture session changed")
+        publish(control / f"reply-{position}.json", json.loads(result.stdout))
+    raise RuntimeError("HTTP fixture operation limit exhausted")
