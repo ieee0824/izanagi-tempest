@@ -64,3 +64,9 @@ pub use claude_offline::{OfflineObservation, OfflineRecovery};
 pub fn claude_offline_version_observed() -> (std::process::ExitCode, Option<OfflineObservation>) {
     claude_offline::run()
 }
+
+/// Run the fixed offline Claude configuration isolation fixture.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn claude_offline_config() -> std::process::ExitCode {
+    claude_offline::run_config()
+}

@@ -311,3 +311,30 @@ stdio プローブを指定します。正対照では四つの合成設定に�
 この比較が検証するのは OS 隔離による通常設定の非公開、設定ファイルの open、
 および明示プローブの初期化です。CLI による設定値の適用、本番ランチャーへの
 統合、認証後の挙動は未検証です。
+
+### 固定オフライン監督下での設定診断
+
+専用 Linux x86_64 ホストで、既存の版確認と同じ固定 Claude CLI・共有
+ライブラリ・作業領域を用意します。設定診断にはさらに固定 BusyBox
+（`/usr/bin/busybox`、SHA-256
+`dbac288c29ba568459550a2da9e7ae0ded6b1fc728ee9fad3044c44e62d6ac14`）
+が必要です。
+
+```bash
+cargo build --locked -p tempest-linux-probe --bins
+sudo target/debug/tempest-claude-offline-config
+sudo target/debug/tempest-claude-offline-version
+```
+
+設定診断は合成設定の正対照と隔離側を連続して監督します。両方とも
+実体の検証、独立したネットワーク名前空間の起動前照合、
+固定 UID/GID、実行期限、PID 名前空間の終了とマウント解除の確認を
+経ます。正対照には合成 user/project/local 設定と暗黙 MCP 定義を置き、
+inotify の `IN_OPEN` と固定プローブの起動を確認します。隔離側では
+その四つのファイルを配置せず、専用の空設定と明示 MCP 定義から起動し、
+プローブの `initialize` と `initialized` を順に確認します。
+イベントは固定 FIFO から上限付きで読み取ります。
+
+CLI の終了コード 1 と固定の未ログイン出力、両側の観測、回収がそろえば
+診断は成功です。公開結果は固定項目だけです。実資格情報や外部通信を
+使わず、設定値の適用、本番ランチャーの統合、認証後の挙動は未検証です。
