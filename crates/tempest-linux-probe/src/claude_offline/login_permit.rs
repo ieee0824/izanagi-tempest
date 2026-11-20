@@ -116,6 +116,13 @@ mod tests {
         approved_ips_revision: 1,
     };
 
+    fn check_revocation_pending(path: &std::path::Path) -> io::Result<()> {
+        if path.try_exists()? {
+            return Err(refused("revocation update pending"));
+        }
+        Ok(())
+    }
+
     #[test]
     fn revocation_and_consumption_order_preserves_failed_records() {
         use std::os::unix::fs::OpenOptionsExt;
@@ -140,9 +147,7 @@ mod tests {
         };
         let consume_locked = |id| {
             let _guard = lock();
-            if pending.try_exists()? {
-                return Err(refused("revocation update pending"));
-            }
+            check_revocation_pending(&pending)?;
             consume(&ledger, &permit(id), SCOPE, Instant::now())
         };
         let revoke_locked = |ledger_fd: &File, id| -> io::Result<()> {
@@ -200,28 +205,67 @@ mod tests {
         assert!(pending.is_file());
         let record = ledger_path.join(format!("{:032x}", 23));
         assert!(record.is_file());
-        let pid = unsafe { libc::fork() };
-        assert!(pid >= 0);
-        if pid == 0 {
-            let denied =
-                consume_locked(23).is_err_and(|e| e.to_string() == "revocation update pending");
-            let ledger_closed = {
-                let _guard = lock();
-                consume(
-                    &File::open(&ledger_path).unwrap(),
-                    &permit(23),
-                    SCOPE,
-                    Instant::now(),
-                )
-                .is_err_and(|e| e.kind() == io::ErrorKind::PermissionDenied)
-            };
-            unsafe { libc::_exit(i32::from(!(denied && ledger_closed && record.is_file()))) };
-        }
-        let mut status = 0;
-        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
-        assert!(libc::WIFEXITED(status));
-        assert_eq!(libc::WEXITSTATUS(status), 0);
+        assert_eq!(
+            consume_locked(23).unwrap_err().to_string(),
+            "revocation update pending"
+        );
+        let mut checker = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "claude_offline::login_permit::tests::check_failed_revocation_from_fresh_process",
+                "--ignored",
+            ])
+            .env("TEMPEST_TEST_FAILED_REVOCATION_FIXTURE", &tmp.0)
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = checker.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = checker.kill();
+                checker.wait().unwrap();
+                panic!("revocation checker timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.success(), "revocation checker failed: {status}");
+        assert!(pending.is_file());
+        assert!(record.is_file());
         assert_eq!(fs::read_dir(&ledger_path).unwrap().count(), 3);
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture driven by revocation_and_consumption_order_preserves_failed_records"]
+    fn check_failed_revocation_from_fresh_process() {
+        let Some(path) = std::env::var_os("TEMPEST_TEST_FAILED_REVOCATION_FIXTURE") else {
+            return;
+        };
+        let path = PathBuf::from(path);
+        let lock = File::open(path.join("lock")).unwrap();
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let pending = path.join("pending");
+        assert_eq!(
+            check_revocation_pending(&pending).unwrap_err().to_string(),
+            "revocation update pending"
+        );
+        let ledger_path = path.join("records");
+        let ledger = File::open(&ledger_path).unwrap();
+        let now = Instant::now();
+        let permit = Permit {
+            id: 23,
+            expires_at: now + Duration::from_secs(30),
+            scope: SCOPE,
+        };
+        assert_eq!(
+            consume(&ledger, &permit, SCOPE, now)
+                .unwrap_err()
+                .to_string(),
+            "manual login permit already consumed or revoked"
+        );
+        let record = ledger_path.join(format!("{:032x}", permit.id));
+        assert!(record.is_file(), "record must remain closed");
     }
 
     #[test]
