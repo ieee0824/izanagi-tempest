@@ -123,3 +123,21 @@ tmpfs 使用量 4096 B・17 inode、exit 0。16 MiB／128 inode の tmpfs に
 表示するテスト実行ファイルを root で起動し、
 `--ignored --exact claude_offline::tests::synthetic_loader_aliases_are_read_only_binds_of_the_same_inode`
 を指定する。
+
+配置段階の回収では、外側の root プロセスが固定の
+`/var/lib/tempest-claude-version-work`（0700）を開いて排他ロックを保持し、
+世代ごとに作成した子ディレクトリの FD と dev/inode を保持する。
+監督の終了を waitpid で確認後、外側だけが親 FD から候補名を再照合し、
+固定名の通常ファイルと空の root を FD 相対で削除する。
+再照合から削除までの間は、同じ root 私有親を変更するすべての特権処理が
+このロックに従うことを前提とする。
+
+CLI の起動許可は送信試行前に記録する。送信結果が不明、または許可後に
+監督が異常終了して CLI 側の終了を確認できない場合は、対象領域を保持する。
+正常結果は専用 PID 名前空間の PID 1 の回収と一時マウントの detach 後に
+監督から返る。外側のプロセス自体の異常終了や、他の特権プロセスが
+対象 mount namespace の参照を保持する試験は対象外。
+
+配置回収の合成試験には、同じテスト実行ファイルを root で起動し、
+`--ignored --exact claude_offline::tests::outer_recovery_is_limited_to_the_confirmed_staging_generation`
+を指定する。

@@ -4,8 +4,15 @@ use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::Path,
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::{
+            ffi::OsStrExt,
+            fs::{MetadataExt, OpenOptionsExt},
+            net::UnixStream,
+        },
+    },
+    path::{Path, PathBuf},
 };
 
 struct Artifact<'a> {
@@ -352,7 +359,7 @@ fn mount_artifact(root: &Path, artifact: &Artifact<'_>, staged: &File) -> Result
     Ok(())
 }
 
-fn run_in_root(scratch: &Path, root: &Path) -> Result<(u64, u64), Fault> {
+fn run_in_root(scratch: &Path, root: &Path, control: &mut UnixStream) -> Result<(u64, u64), Fault> {
     use super::os;
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     for dir in [
@@ -384,6 +391,7 @@ fn run_in_root(scratch: &Path, root: &Path) -> Result<(u64, u64), Fault> {
     )?;
     verify_mount_table(root)?;
     let before = audit_settings(root)?;
+    request_cli_start(control)?;
     run_child(root, scratch)?;
     if audit_settings(root)? != before {
         return Err(Fault::Identity);
@@ -445,6 +453,7 @@ fn trial<T>(
     result
 }
 
+#[cfg(test)]
 fn cleanup_trial(scratch: &Path) -> io::Result<()> {
     // Retain a mounted tree on unmount failure. Its private namespace
     // vanishes at process exit, and an error cannot be reported as success.
@@ -460,34 +469,241 @@ fn cleanup_trial(scratch: &Path) -> io::Result<()> {
     })
 }
 
+const WORK_PARENT: &str = "/var/lib/tempest-claude-version-work";
+
+fn directory(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+}
+
+struct WorkArea {
+    path: PathBuf,
+    name: std::ffi::CString,
+    pinned: File,
+}
+
+impl WorkArea {
+    fn create(parent: &File, parent_path: &Path) -> io::Result<Self> {
+        let name = format!("trial-{}", super::private_io::random_hex()?);
+        let name = std::ffi::CString::new(name)?;
+        if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let path = parent_path.join(std::ffi::OsStr::from_bytes(name.as_bytes()));
+        Ok(Self {
+            pinned: Self::open_at(parent, &name)?,
+            path,
+            name,
+        })
+    }
+
+    fn open_at(parent: &File, name: &std::ffi::CStr) -> io::Result<File> {
+        let fd = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+
+    fn remove(&self, parent: &File) -> io::Result<()> {
+        let expected = self.pinned.metadata()?;
+        let current = Self::open_at(parent, &self.name)?.metadata()?;
+        if (expected.dev(), expected.ino()) != (current.dev(), current.ino())
+            || current.uid() != 0
+            || current.mode() & 0o7777 != 0o700
+        {
+            return Err(io::Error::other("offline work area identity changed"));
+        }
+        let path = self.path.as_os_str().as_bytes();
+        for row in fs::read("/proc/thread-self/mountinfo")?.split(|&byte| byte == b'\n') {
+            if let Some(mount) = row.split(|&byte| byte == b' ').nth(4)
+                && (mount == path
+                    || mount
+                        .strip_prefix(path)
+                        .is_some_and(|tail| tail.starts_with(b"/")))
+            {
+                return Err(io::Error::other("offline work mounts remain"));
+            }
+        }
+
+        // The root-only parent lock spans identity validation and removal.
+        // Other privileged writers must honor the same lock.
+        let fd = self.pinned.as_raw_fd();
+        let mut entries = Vec::new();
+        for item in fs::read_dir(format!("/proc/self/fd/{fd}"))? {
+            let item = item?;
+            let name = item.file_name();
+            let file_type = item.file_type()?;
+            let flags = match name.as_bytes() {
+                b"root" if file_type.is_dir() => {
+                    if fs::read_dir(item.path())?.next().is_some() {
+                        return Err(io::Error::other("offline root is not empty"));
+                    }
+                    libc::AT_REMOVEDIR
+                }
+                b"stdout" | b"stderr" if file_type.is_file() => 0,
+                name if file_type.is_file()
+                    && (0..ARTIFACTS.len())
+                        .any(|index| name == format!("artifact-{index}").as_bytes()) =>
+                {
+                    0
+                }
+                _ => return Err(io::Error::other("unexpected offline work entry")),
+            };
+            entries.push((std::ffi::CString::new(name.as_bytes())?, flags));
+        }
+        for (name, flags) in entries {
+            unlink_at(fd, &name, flags)?;
+        }
+        unlink_at(parent.as_raw_fd(), &self.name, libc::AT_REMOVEDIR)
+    }
+}
+
+fn unlink_at(fd: i32, name: &std::ffi::CStr, flags: i32) -> io::Result<()> {
+    if unsafe { libc::unlinkat(fd, name.as_ptr(), flags) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn lock_parent(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::DirBuilderExt;
+    match fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let parent = directory(path)?;
+    let metadata = parent.metadata()?;
+    if metadata.uid() != 0 || metadata.mode() & 0o7777 != 0o700 {
+        return Err(io::Error::other("offline work parent must be root-private"));
+    }
+    if unsafe { libc::flock(parent.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(parent)
+}
+
+fn request_cli_start(control: &mut UnixStream) -> Result<(), Fault> {
+    control.write_all(b"C")?;
+    let mut grant = [0];
+    control.read_exact(&mut grant)?;
+    if grant != *b"G" {
+        return Err(Fault::Identity);
+    }
+    Ok(())
+}
+
+fn supervised(
+    parent: &File,
+    work: &WorkArea,
+    execute: impl FnOnce(&Path, &Path, &mut UnixStream) -> Result<(u64, u64), Fault>,
+) -> io::Result<(u64, u64)> {
+    let (mut outside, mut inside) = UnixStream::pair().or_else(|error| {
+        work.remove(parent)?;
+        Err(error)
+    })?;
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        let error = io::Error::last_os_error();
+        work.remove(parent)?;
+        return Err(error);
+    }
+    if pid == 0 {
+        drop(outside);
+        let result = trial(&work.path, |scratch, root| {
+            execute(scratch, root, &mut inside)
+        });
+        if let Ok((bytes, inodes)) = result {
+            let mut report = [0; 16];
+            report[..8].copy_from_slice(&bytes.to_ne_bytes());
+            report[8..].copy_from_slice(&inodes.to_ne_bytes());
+            if inside.write_all(&report).is_ok() {
+                unsafe { libc::_exit(0) };
+            }
+        }
+        unsafe { libc::_exit(1) };
+    }
+    drop(inside);
+    let mut message = [0];
+    let mut report = [0; 16];
+    let mut cli_granted = false;
+    let received = (|| -> io::Result<()> {
+        // Treat the grant as issued before attempting delivery.
+        outside.read_exact(&mut message)?;
+        if message != *b"C" {
+            return Err(io::Error::other("invalid offline start request"));
+        }
+        cli_granted = true;
+        outside.write_all(b"G")?;
+        outside.read_exact(&mut report)
+    })();
+    drop(outside);
+    let status = wait_for_supervisor(pid)?;
+    let completed = received.is_ok() && libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0;
+    if !cli_granted || completed {
+        work.remove(parent)?;
+    }
+    if !completed {
+        let outcome = if cli_granted {
+            "offline supervisor failed after CLI grant; work retained"
+        } else {
+            "offline supervisor failed during staging; work removed"
+        };
+        let signal = if libc::WIFSIGNALED(status) {
+            libc::WTERMSIG(status)
+        } else {
+            0
+        };
+        return Err(io::Error::other(format!("{outcome}; signal={signal}")));
+    }
+    Ok((
+        u64::from_ne_bytes(report[..8].try_into().unwrap()),
+        u64::from_ne_bytes(report[8..].try_into().unwrap()),
+    ))
+}
+
+fn wait_for_supervisor(pid: libc::pid_t) -> io::Result<i32> {
+    let mut status = 0;
+    loop {
+        if unsafe { libc::waitpid(pid, &mut status, 0) } == pid {
+            return Ok(status);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
 pub(super) fn run() -> std::process::ExitCode {
-    use std::{ffi::CStr, os::unix::ffi::OsStrExt, process::ExitCode};
+    use std::process::ExitCode;
     if std::env::args_os().len() != 1 || unsafe { libc::geteuid() } != 0 {
         return ExitCode::FAILURE;
     }
-    let mut name = b"/var/lib/tempest-claude-version-XXXXXX\0".to_vec();
-    let path = unsafe { libc::mkdtemp(name.as_mut_ptr().cast()) };
-    if path.is_null() {
-        return ExitCode::FAILURE;
-    }
-    let scratch = Path::new(std::ffi::OsStr::from_bytes(
-        unsafe { CStr::from_ptr(path) }.to_bytes(),
-    ));
-    let result = trial(scratch, run_in_root);
-    let cleanup = cleanup_trial(scratch);
-    match (result, cleanup) {
-        (Ok((bytes, inodes)), Ok(())) => {
+    let parent_path = Path::new(WORK_PARENT);
+    let result = (|| {
+        let parent = lock_parent(parent_path)?;
+        let work = WorkArea::create(&parent, parent_path)?;
+        supervised(&parent, &work, run_in_root)
+    })();
+    match result {
+        Ok((bytes, inodes)) => {
             println!(
                 "{{\"version\":\"2.1.325\",\"uid\":{UID},\"gid\":{GID},\"tmpfs_bytes\":{bytes},\"tmpfs_inodes\":{inodes},\"offline_network_verified\":true,\"cleanup\":true}}"
             );
             ExitCode::SUCCESS
         }
-        (result, cleanup) => {
-            eprintln!(
-                "offline fixture failed: {:?}; cleanup={}",
-                result.err(),
-                cleanup.is_ok()
-            );
+        Err(error) => {
+            eprintln!("offline fixture failed: {error}");
             ExitCode::FAILURE
         }
     }
@@ -561,6 +777,92 @@ mod tests {
         fs::remove_dir(scratch.join("root")).unwrap();
         fs::remove_dir(&scratch).unwrap();
         result.unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires root and private mount/network namespaces"]
+    fn outer_recovery_is_limited_to_the_confirmed_staging_generation() {
+        let path = Path::new("/var/lib").join(format!(
+            "tempest-offline-recovery-test-{}",
+            super::super::private_io::random_hex().unwrap()
+        ));
+        let parent = lock_parent(&path).unwrap();
+        assert!(lock_parent(&path).is_err());
+        let other = WorkArea::create(&parent, &path).unwrap();
+        fs::write(other.path.join("artifact-0"), b"other").unwrap();
+
+        let input = path.join("input");
+        fs::write(&input, b"dummy").unwrap();
+        let artifact = Artifact {
+            source: input.to_str().unwrap(),
+            bytes: 5,
+            sha256: "b5a2c96250612366ea272ffac6d9744aaf4b45aacd96aa7cfcb931ee3b558259",
+            targets: &["first"],
+        };
+        let stopped = WorkArea::create(&parent, &path).unwrap();
+        let stopped_path = stopped.path.clone();
+        let error = supervised(&parent, &stopped, |scratch, root, _| {
+            let staged = stage_artifact(&artifact, &scratch.join("artifact-0"))?;
+            mount_artifact(root, &artifact, &staged)?;
+            if !fs::read_to_string("/proc/thread-self/mountinfo")?
+                .lines()
+                .any(|row| row.split_whitespace().nth(4) == root.join("first").to_str())
+            {
+                return Err(Fault::Identity);
+            }
+            fs::write(scratch.join("artifact-1"), b"second")?;
+            unsafe { libc::raise(libc::SIGKILL) };
+            unreachable!()
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "offline supervisor failed during staging; work removed; signal=9"
+        );
+        assert!(!stopped_path.exists());
+        assert_eq!(fs::read(other.path.join("artifact-0")).unwrap(), b"other");
+
+        let replaced = WorkArea::create(&parent, &path).unwrap();
+        let original = path.join("original");
+        fs::rename(&replaced.path, &original).unwrap();
+        fs::create_dir(&replaced.path).unwrap();
+        fs::write(replaced.path.join("artifact-0"), b"replacement").unwrap();
+        assert!(replaced.remove(&parent).is_err());
+        assert!(original.is_dir());
+        assert_eq!(
+            fs::read(replaced.path.join("artifact-0")).unwrap(),
+            b"replacement"
+        );
+
+        let retained = WorkArea::create(&parent, &path).unwrap();
+        let error = supervised(&parent, &retained, |scratch, _, control| {
+            fs::write(scratch.join("artifact-0"), b"retained")?;
+            request_cli_start(control)?;
+            unsafe { libc::raise(libc::SIGKILL) };
+            unreachable!()
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "offline supervisor failed after CLI grant; work retained; signal=9"
+        );
+        assert_eq!(
+            fs::read(retained.path.join("artifact-0")).unwrap(),
+            b"retained"
+        );
+
+        let restarted = WorkArea::create(&parent, &path).unwrap();
+        assert_eq!(
+            supervised(&parent, &restarted, |scratch, _, control| {
+                fs::write(scratch.join("artifact-0"), b"control")?;
+                request_cli_start(control)?;
+                Ok((1, 2))
+            })
+            .unwrap(),
+            (1, 2)
+        );
+        assert!(!restarted.path.exists());
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
