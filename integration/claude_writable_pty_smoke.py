@@ -25,7 +25,9 @@ def verify_retained(path: Path) -> tuple[int, int]:
     for entry in path.iterdir():
         info = entry.lstat()
         assert stat.S_ISREG(info.st_mode)
-        assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), info.st_size) == (999, 988, 0o600, 0)
+        assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), info.st_nlink) == (999, 988, 0o600, 1)
+        expected = b"{}\n" if entry.name == "settings.json" else b""
+        assert entry.read_bytes() == expected
     return directory.st_dev, directory.st_ino
 
 
