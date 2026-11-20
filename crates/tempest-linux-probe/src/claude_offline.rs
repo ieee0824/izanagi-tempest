@@ -127,27 +127,30 @@ fn open_input(artifact: &Artifact<'_>) -> Result<File, Fault> {
     Ok(file)
 }
 
-fn verify_artifact(file: &File, artifact: &Artifact<'_>) -> Result<(), Fault> {
-    use std::os::unix::fs::FileExt;
-    struct FromStart<'a>(&'a File, u64);
-    impl Read for FromStart<'_> {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            let count = self.0.read_at(buf, self.1)?;
-            self.1 += count as u64;
-            Ok(count)
-        }
+struct ArtifactReader<'a>(&'a File, u64);
+
+impl Read for ArtifactReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        let count = self.0.read_at(buf, self.1)?;
+        self.1 += count as u64;
+        Ok(count)
     }
+}
+
+fn verify_artifact(file: &File, artifact: &Artifact<'_>) -> Result<(), Fault> {
     copy_checked(
-        FromStart(file, 0),
+        ArtifactReader(file, 0),
         io::sink(),
         artifact.bytes,
         artifact.sha256,
     )
 }
 
-fn verify_fixed_artifact(artifact: &Artifact<'_>) -> Result<(), Fault> {
+fn verify_fixed_artifact(artifact: &Artifact<'_>) -> Result<File, Fault> {
     let file = open_input(artifact)?;
-    verify_artifact(&file, artifact)
+    verify_artifact(&file, artifact)?;
+    Ok(file)
 }
 
 fn stage_failure(stage: &str, fault: &Fault) {
@@ -162,14 +165,26 @@ fn stage_failure(stage: &str, fault: &Fault) {
 }
 
 fn stage_artifact(artifact: &Artifact<'_>, destination: &Path) -> Result<File, Fault> {
+    stage_pinned_artifact(&open_input(artifact)?, artifact, destination)
+}
+
+fn stage_pinned_artifact(
+    input: &File,
+    artifact: &Artifact<'_>,
+    destination: &Path,
+) -> Result<File, Fault> {
     use std::os::unix::fs::PermissionsExt;
-    let input = open_input(artifact)?;
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(destination)?;
-    copy_checked(input, &mut output, artifact.bytes, artifact.sha256)?;
+    copy_checked(
+        ArtifactReader(input, 0),
+        &mut output,
+        artifact.bytes,
+        artifact.sha256,
+    )?;
     output.set_permissions(fs::Permissions::from_mode(0o555))?;
     let written = output.metadata()?;
     drop(output);
@@ -714,6 +729,7 @@ impl FixtureStop {
 }
 
 struct FixturePermit {
+    verified_executable: Option<File>,
     administrator_stop: Option<FixtureStop>,
     expires: std::time::Instant,
     executable_digest: &'static str,
@@ -1036,7 +1052,12 @@ fn run_fixture_with_config(
             .inspect_err(|fault| stage_failure("artifact_mount", fault))?;
     }
     if diagnostic != Diagnostic::Version {
-        let staged = stage_artifact(&BUSYBOX, &scratch.join("artifact-busybox"))
+        let destination = scratch.join("artifact-busybox");
+        let staged =
+            match local_auth.and_then(|(_, _, permit)| permit.verified_executable.as_ref()) {
+                Some(input) => stage_pinned_artifact(input, &BUSYBOX, &destination),
+                None => stage_artifact(&BUSYBOX, &destination),
+            }
             .inspect_err(|fault| stage_failure("busybox", fault))?;
         mount_artifact(root, &BUSYBOX, &staged)?;
     }
@@ -1751,7 +1772,10 @@ fn pin_login_path(path: &Path, flags: libc::c_int) -> io::Result<File> {
 }
 
 fn open_manual_login_policy(path: &Path) -> io::Result<File> {
-    let pinned = pin_login_path(path, 0)?;
+    open_pinned_login_policy(pin_login_path(path, 0)?)
+}
+
+fn open_pinned_login_policy(pinned: File) -> io::Result<File> {
     let metadata = pinned.metadata()?;
     if !metadata.is_file()
         || (
@@ -1773,8 +1797,12 @@ fn open_manual_login_policy(path: &Path) -> io::Result<File> {
     Ok(input)
 }
 
-fn diagnose_login_ledger(path: &Path, permit_id: u128) -> io::Result<()> {
-    let ledger = pin_login_path(path, libc::O_DIRECTORY)?;
+fn open_login_ledger(parent: &File) -> io::Result<File> {
+    let ledger = open_login_child(
+        parent,
+        std::ffi::OsStr::new("claude-login-diagnostic-ledger"),
+        libc::O_DIRECTORY,
+    )?;
     let metadata = ledger.metadata()?;
     if (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777) != (0, 0, 0o700) {
         return Err(io::Error::new(
@@ -1782,8 +1810,12 @@ fn diagnose_login_ledger(path: &Path, permit_id: u128) -> io::Result<()> {
             "invalid ledger ownership or mode",
         ));
     }
+    Ok(ledger)
+}
+
+fn check_unused_login_permit(ledger: &File, permit_id: u128) -> io::Result<()> {
     let name = format!("{permit_id:032x}");
-    match open_login_child(&ledger, std::ffi::OsStr::new(&name), 0) {
+    match open_login_child(ledger, std::ffi::OsStr::new(&name), 0) {
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "permit already consumed or revoked",
@@ -1794,9 +1826,19 @@ fn diagnose_login_ledger(path: &Path, permit_id: u128) -> io::Result<()> {
 }
 
 fn check_manual_login_policy(path: &Path) -> io::Result<()> {
-    let scope = validate_manual_login_policy(open_manual_login_policy(path)?)?;
+    let parent = pin_login_path(
+        path.parent().ok_or(io::ErrorKind::InvalidInput)?,
+        libc::O_DIRECTORY,
+    )?;
+    let metadata = parent.metadata()?;
+    if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+    let policy = open_pinned_login_policy(open_login_child(&parent, name, 0)?)?;
+    let scope = validate_manual_login_policy(policy)?;
     if let Some(scope) = scope {
-        diagnose_manual_login_handoff(path, &scope)?;
+        diagnose_manual_login_handoff(&parent, &scope)?;
     }
     // A valid file describes the design. It does not authorize a live login.
     Err(io::Error::new(
@@ -1806,20 +1848,62 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
 }
 
 fn read_login_input(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+    read_bounded_login_input(open_manual_login_policy(path)?, limit)
+}
+
+fn read_login_child(parent: &File, name: &str, limit: u64) -> io::Result<Vec<u8>> {
+    let pinned = open_login_child(parent, std::ffi::OsStr::new(name), 0)?;
+    read_bounded_login_input(open_pinned_login_policy(pinned)?, limit)
+}
+
+fn read_bounded_login_input(input: File, limit: u64) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    open_manual_login_policy(path)?
-        .take(limit + 1)
-        .read_to_end(&mut bytes)?;
+    input.take(limit + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > limit {
         return Err(io::ErrorKind::InvalidData.into());
     }
     Ok(bytes)
 }
 
-fn diagnose_manual_login_handoff(policy: &Path, scope: &LoginPolicyScope) -> io::Result<()> {
-    use std::time::{SystemTime, UNIX_EPOCH};
+struct VerifiedLoginInputs {
+    id: u128,
+    expires: std::time::Instant,
+    executable: File,
+    ledger: File,
+}
 
-    let read = |name, limit| read_login_input(&policy.with_file_name(name), limit);
+fn verify_login_handoff(
+    key: &[u8; 32],
+    payload: &[u8],
+    signature: &[u8],
+    scope: login_permit::Scope<'_>,
+    policy_expires: u64,
+) -> io::Result<(u128, std::time::Instant)> {
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    let monotonic = Instant::now();
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?;
+    let (id, expires) = login_handoff::verify_handoff(
+        key,
+        payload,
+        signature,
+        scope,
+        policy_expires,
+        wall.as_secs(),
+    )?;
+    let remaining = Duration::from_secs(expires)
+        .checked_sub(wall)
+        .ok_or(io::ErrorKind::PermissionDenied)?;
+    let deadline = monotonic
+        .checked_add(remaining)
+        .ok_or(io::ErrorKind::InvalidData)?;
+    Ok((id, deadline))
+}
+
+fn diagnose_manual_login_handoff(parent: &File, scope: &LoginPolicyScope) -> io::Result<()> {
+    let read = |name, limit| read_login_child(parent, name, limit);
     let payload = match read("claude-login-diagnostic-handoff", 4096) {
         Ok(payload) => payload,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -1841,35 +1925,39 @@ fn diagnose_manual_login_handoff(policy: &Path, scope: &LoginPolicyScope) -> io:
             target_id: &target_id,
             approved_ips_revision: scope.approved_ips_revision,
         };
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_secs();
-        let (permit_id, _) = login_handoff::verify_handoff(
+        verify_login_handoff(
             key,
             &payload,
             &signature,
             expected,
             scope.expires_unix_seconds,
-            now,
-        )?;
-        Ok::<_, io::Error>(permit_id)
+        )
     })();
-    let permit_id = result.map_err(|error| {
+    let (id, expires) = result.map_err(|error| {
         eprintln!("manual login handoff diagnostic refused: {error}");
         io::Error::from(io::ErrorKind::InvalidData)
     })?;
     eprintln!("manual login handoff diagnostic verified");
-    verify_fixed_artifact(&ARTIFACTS[0]).map_err(|fault| {
+    let executable = verify_fixed_artifact(&ARTIFACTS[0]).map_err(|fault| {
         stage_failure("manual_login_fixed_cli", &fault);
         io::Error::new(io::ErrorKind::InvalidData, "manual login fixed CLI refused")
     })?;
     eprintln!("manual login fixed CLI verified");
-    diagnose_login_ledger(
-        &policy.with_file_name("claude-login-diagnostic-ledger"),
-        permit_id,
-    )
-    .map_err(|error| {
+    let ledger = open_login_ledger(parent);
+    let ledger_result = (|| {
+        let inputs = VerifiedLoginInputs {
+            id,
+            expires,
+            executable,
+            ledger: ledger?,
+        };
+        check_unused_login_permit(&inputs.ledger, inputs.id)?;
+        if std::time::Instant::now() >= inputs.expires {
+            return Err(io::Error::other("handoff expired during preflight"));
+        }
+        Ok::<_, io::Error>(())
+    })();
+    ledger_result.map_err(|error| {
         eprintln!("manual login ledger diagnostic refused: {error}");
         io::Error::from(io::ErrorKind::InvalidData)
     })?;
@@ -2094,21 +2182,16 @@ struct FixtureApproval {
     expires_unix_seconds: u64,
 }
 
-fn read_fixture_permit(path: &Path) -> io::Result<(FixtureApproval, std::time::Instant)> {
+fn read_fixture_permit(parent: &File) -> io::Result<(FixtureApproval, std::time::Instant)> {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-    let file = open_manual_login_policy(path)?;
-    let mut bytes = Vec::new();
-    file.take(4097).read_to_end(&mut bytes)?;
+    let bytes = read_login_child(parent, ".synthetic-login-policy.json", 4096)?;
     let invalid = || {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid synthetic login settings",
         )
     };
-    if bytes.len() > 4096 {
-        return Err(invalid());
-    }
     let fixture: FixtureApproval = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
     fixture.policy.validate()?;
     let now = Instant::now();
@@ -2153,6 +2236,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         let mut permit = local_auth_case.map(|case| {
             let now = std::time::Instant::now();
             FixturePermit {
+                verified_executable: None,
                 administrator_stop: None,
                 expires: if matches!(case, local_auth::Case::ExpiredPermit) {
                     now
@@ -2196,13 +2280,12 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     | local_auth::Case::PermitExpiresBeforeGrant
             )
         ) {
-            use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+            use std::time::Instant;
 
             let permit = permit
                 .as_mut()
                 .ok_or_else(|| io::Error::other("synthetic permit missing"))?;
-            let (approval, policy_expiry) =
-                read_fixture_permit(&config_path.join(".synthetic-login-policy.json"))?;
+            let (approval, policy_expiry) = read_fixture_permit(&config_parent)?;
             let expected = login_permit::Scope {
                 executable_sha256: BUSYBOX.sha256,
                 arguments: &LOGIN_ARGS,
@@ -2218,53 +2301,49 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                 target_id: &approval.target_id,
                 approved_ips_revision: approval.approved_ips_revision,
             };
-            let (id, expiry) = if matches!(local_auth_case, Some(local_auth::Case::SingleUsePermit))
-            {
-                // Preserve refusal of a permit consumed by an earlier fixture build.
-                match config_path
-                    .join(".used-synthetic-login-permit")
-                    .symlink_metadata()
-                {
-                    Ok(_) => {
-                        return Err(io::Error::other(
-                            "manual login permit already consumed or revoked",
-                        ));
+            let (id, expiry, ledger) =
+                if matches!(local_auth_case, Some(local_auth::Case::SingleUsePermit)) {
+                    // Preserve refusal of a permit consumed by an earlier fixture build.
+                    match config_path
+                        .join(".used-synthetic-login-permit")
+                        .symlink_metadata()
+                    {
+                        Ok(_) => {
+                            return Err(io::Error::other(
+                                "manual login permit already consumed or revoked",
+                            ));
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error),
                     }
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error),
-                }
-                (1, policy_expiry)
-            } else {
-                let read = |name, limit| read_login_input(&config_path.join(name), limit);
-                let payload = read(".synthetic-handoff", 4096)?;
-                let signature = read(".synthetic-handoff-signature", 64)?;
-                let key: [u8; 32] = read(".synthetic-handoff-key", 32)?
-                    .try_into()
-                    .map_err(|_| io::ErrorKind::InvalidData)?;
-                let monotonic = Instant::now();
-                let wall = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(io::Error::other)?;
-                let (id, expiry) = login_handoff::verify_handoff(
-                    &key,
-                    &payload,
-                    &signature,
-                    expected,
-                    approval.expires_unix_seconds,
-                    wall.as_secs(),
-                )?;
-                let remaining = Duration::from_secs(expiry)
-                    .checked_sub(wall)
-                    .ok_or_else(|| io::Error::other("synthetic permit expired"))?;
-                let expiry = policy_expiry.min(
-                    monotonic
-                        .checked_add(remaining)
-                        .ok_or(io::ErrorKind::InvalidData)?,
-                );
-                (id, expiry)
-            };
+                    (1, policy_expiry, config_parent.try_clone()?)
+                } else {
+                    let read = |name, limit| read_login_child(&config_parent, name, limit);
+                    let payload = read(".synthetic-handoff", 4096)?;
+                    let signature = read(".synthetic-handoff-signature", 64)?;
+                    let key: [u8; 32] = read(".synthetic-handoff-key", 32)?
+                        .try_into()
+                        .map_err(|_| io::ErrorKind::InvalidData)?;
+                    let (id, expiry) = verify_login_handoff(
+                        &key,
+                        &payload,
+                        &signature,
+                        expected,
+                        approval.expires_unix_seconds,
+                    )?;
+                    let inputs = VerifiedLoginInputs {
+                        id,
+                        expires: policy_expiry.min(expiry),
+                        executable: verify_fixed_artifact(&BUSYBOX)
+                            .map_err(|fault| io::Error::other(fault.reason()))?,
+                        ledger: config_parent.try_clone()?,
+                    };
+                    check_unused_login_permit(&inputs.ledger, inputs.id)?;
+                    permit.verified_executable = Some(inputs.executable);
+                    (inputs.id, inputs.expires, inputs.ledger)
+                };
             login_permit::consume(
-                &config_parent,
+                &ledger,
                 &login_permit::Permit {
                     id,
                     expires_at: expiry,
@@ -2356,6 +2435,92 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a root-owned fixture under /var/lib"]
+    fn staged_verified_file_keeps_identity_and_rechecks_content() {
+        let directory = Path::new("/var/lib").join(format!(
+            "tempest-pinned-executable-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        let _parent = lock_parent(&directory).unwrap();
+        let executable = directory.join("executable");
+        let original = directory.join("original");
+        fs::write(&executable, b"dummy").unwrap();
+        let artifact = Artifact {
+            source: executable.to_str().unwrap(),
+            bytes: 5,
+            sha256: "b5a2c96250612366ea272ffac6d9744aaf4b45aacd96aa7cfcb931ee3b558259",
+            targets: &[],
+        };
+        let pinned = verify_fixed_artifact(&artifact).unwrap();
+        fs::rename(&executable, &original).unwrap();
+        fs::write(&executable, b"other").unwrap();
+        let staged = directory.join("staged");
+        stage_pinned_artifact(&pinned, &artifact, &staged).unwrap();
+        assert_eq!(fs::read(staged).unwrap(), b"dummy");
+        fs::write(original, b"other").unwrap();
+        assert!(matches!(
+            stage_pinned_artifact(&pinned, &artifact, &directory.join("modified")),
+            Err(Fault::Identity)
+        ));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a root-owned fixture under /var/lib"]
+    fn unused_ledger_diagnostic_does_not_reserve_a_permit() {
+        let directory = Path::new("/var/lib").join(format!(
+            "tempest-ledger-race-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        let ledger = lock_parent(&directory).unwrap();
+        let now = std::time::Instant::now();
+        let scope = login_permit::Scope {
+            executable_sha256: BUSYBOX.sha256,
+            arguments: &LOGIN_ARGS,
+            authority: login_connect::AUTHORITY,
+            target_id: "fixture",
+            approved_ips_revision: 1,
+        };
+        let permit = login_permit::Permit {
+            id: 10,
+            scope,
+            expires_at: now + std::time::Duration::from_secs(10),
+        };
+        check_unused_login_permit(&ledger, permit.id).unwrap();
+        let mut original = directory.clone();
+        original.set_extension("original");
+        let settings = "policy";
+        let write_settings = |parent: &Path, data: &[u8]| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(parent.join(settings))
+                .unwrap();
+            file.write_all(data).unwrap();
+        };
+        write_settings(&directory, b"original");
+        fs::rename(&directory, &original).unwrap();
+        fs::create_dir(&directory).unwrap();
+        write_settings(&directory, b"replacement");
+        assert_eq!(
+            read_login_child(&ledger, settings, 32).unwrap(),
+            b"original"
+        );
+        let competitor = File::open(&original).unwrap();
+        login_permit::consume(&competitor, &permit, scope, now).unwrap();
+        assert_eq!(
+            login_permit::consume(&ledger, &permit, scope, now)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(!directory.join(format!("{:032x}", permit.id)).exists());
+        fs::remove_dir_all(original).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     #[ignore = "requires a root-owned fixture under /var/lib"]
