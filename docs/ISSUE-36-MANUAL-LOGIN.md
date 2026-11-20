@@ -74,3 +74,13 @@ owner の操作範囲に依存します。ネットワークで操作単位ま�
 cargo build -p tempest-linux-probe --locked --bin tempest-claude-manual-login --bin tempest-claude-offline-local-auth-pty
 sudo python3 integration/claude_local_auth_pty_smoke.py target/debug/tempest-claude-offline-local-auth-pty
 ```
+
+cc-sakura #17589 への承認 #17590 は、認証ホストとポートを制限する設計の
+実装を進める判断です。TLS の検証は固定 CLI が行い、透過ゲートウェイでは
+許可ホスト内の HTTPS 操作を区別できません。実ログイン、外向き認証通信、
+認証情報の保持には、それぞれ該当する実施判断が必要です。
+
+ゲートウェイは CONNECT の宛先を確認してから、事前に照合した IP とポートへ
+接続します。接続済みのソケットの相手がこの組と一致した場合にだけ成功を返し、
+以後はバイト列をそのまま中継します。現行試験では上流の応答をループバックに
+置き、宛先不一致時に成功応答や中継を行わないことを確認します。

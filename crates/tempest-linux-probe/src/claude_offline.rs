@@ -1594,9 +1594,44 @@ fn verify_shared_terminal(input: libc::c_int, output: libc::c_int) -> io::Result
 const MANUAL_LOGIN_POLICY: &str = "/etc/tempest/claude-manual-login.json";
 
 fn check_manual_login_policy(path: &Path) -> io::Result<()> {
+    use std::ffi::CString;
     // Inspect metadata only. Until the operational policy is agreed, even a
     // correctly placed file cannot authorize an invocation or external access.
-    let metadata = path.symlink_metadata()?;
+    fn open_child(parent: &File, name: &std::ffi::OsStr, flags: libc::c_int) -> io::Result<File> {
+        let name = CString::new(name.as_bytes())?;
+        let fd = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                flags | libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+
+    let mut components = path.components();
+    if components.next() != Some(std::path::Component::RootDir) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let mut directory = File::open("/")?;
+    let mut components = components.peekable();
+    let metadata = loop {
+        let Some(std::path::Component::Normal(name)) = components.next() else {
+            return Err(io::ErrorKind::InvalidInput.into());
+        };
+        if components.peek().is_none() {
+            break open_child(&directory, name, 0)?.metadata()?;
+        }
+        let next = open_child(&directory, name, libc::O_DIRECTORY)?;
+        let metadata = next.metadata()?;
+        if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        directory = next;
+    };
     if !metadata.is_file()
         || (
             metadata.uid(),
@@ -1774,6 +1809,28 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_login_policy_rejects_untrusted_paths() {
+        assert_eq!(
+            check_manual_login_policy(Path::new("policy.json"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            check_manual_login_policy(Path::new("/tmp/policy.json"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            check_manual_login_policy(Path::new("/etc/passwd"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
 
     #[test]
     fn fixed_login_invocation_uses_configured_artifact_and_proxy() {

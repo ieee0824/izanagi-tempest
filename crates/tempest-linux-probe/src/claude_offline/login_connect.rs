@@ -1,6 +1,6 @@
 use std::{
     io::{self, Read, Write},
-    net::{Ipv4Addr, Shutdown, TcpListener, TcpStream},
+    net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream},
     os::fd::AsRawFd,
     time::{Duration, Instant},
 };
@@ -68,10 +68,17 @@ fn read_request(mut input: impl Read) -> io::Result<()> {
 fn open_tunnel(
     client: &mut TcpStream,
     deadline: Instant,
-    dial_fixed_upstream: impl FnOnce(Duration) -> io::Result<TcpStream>,
+    expected_peer: SocketAddr,
+    dial_fixed_upstream: impl FnOnce(SocketAddr, Duration) -> io::Result<TcpStream>,
 ) -> io::Result<TcpStream> {
     read_request(DeadlineReader { client, deadline })?;
-    let upstream = dial_fixed_upstream(time_remaining(deadline)?)?;
+    let upstream = dial_fixed_upstream(expected_peer, time_remaining(deadline)?)?;
+    if upstream.peer_addr()? != expected_peer {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "login upstream peer does not match the approved address",
+        ));
+    }
     client.set_write_timeout(Some(time_remaining(deadline)?))?;
     client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     Ok(upstream)
@@ -175,7 +182,7 @@ pub(super) fn serve_fixture(listener: &TcpListener) -> io::Result<()> {
     let mut client = accept_before(listener, deadline)?;
     let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let address = upstream.local_addr()?;
-    let tunnel = open_tunnel(&mut client, deadline, |timeout| {
+    let tunnel = open_tunnel(&mut client, deadline, address, |address, timeout| {
         TcpStream::connect_timeout(&address, timeout)
     })?;
     let (mut server, peer) = upstream.accept()?;
@@ -249,7 +256,7 @@ mod tests {
             .unwrap();
         let (mut client, _) = proxy.accept().unwrap();
         assert_eq!(
-            open_tunnel(&mut client, deadline(), |_| panic!(
+            open_tunnel(&mut client, deadline(), upstream_address, |_, _| panic!(
                 "unexpected upstream dial"
             ))
             .unwrap_err()
@@ -265,9 +272,12 @@ mod tests {
             .write_all(b"CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\nTLS")
             .unwrap();
         let (mut client, _) = proxy.accept().unwrap();
-        let tunnel = open_tunnel(&mut client, deadline(), |timeout| {
-            TcpStream::connect_timeout(&upstream_address, timeout)
-        })
+        let tunnel = open_tunnel(
+            &mut client,
+            deadline(),
+            upstream_address,
+            |address, timeout| TcpStream::connect_timeout(&address, timeout),
+        )
         .unwrap();
         let (mut server, _) = upstream.accept().unwrap();
         server
@@ -299,9 +309,12 @@ mod tests {
         let _peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (mut client, _) = listener.accept().unwrap();
         assert_eq!(
-            open_tunnel(&mut client, Instant::now(), |_| panic!(
-                "unexpected upstream dial"
-            ))
+            open_tunnel(
+                &mut client,
+                Instant::now(),
+                listener.local_addr().unwrap(),
+                |_, _| panic!("unexpected upstream dial")
+            )
             .unwrap_err()
             .kind(),
             io::ErrorKind::TimedOut
@@ -339,5 +352,36 @@ mod tests {
             drop(client);
             responder.join().unwrap().unwrap();
         });
+    }
+
+    #[test]
+    fn unexpected_upstream_peer_is_closed_before_connect_success() {
+        let proxy = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let allowed = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let wrong = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut caller = TcpStream::connect(proxy.local_addr().unwrap()).unwrap();
+        caller
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        caller
+            .write_all(b"CONNECT platform.claude.com:443 HTTP/1.0\r\n\r\n")
+            .unwrap();
+        let (mut client, _) = proxy.accept().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let refused = open_tunnel(
+            &mut client,
+            deadline,
+            allowed.local_addr().unwrap(),
+            |_, timeout| TcpStream::connect_timeout(&wrong.local_addr()?, timeout),
+        )
+        .unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
+        drop(client);
+        assert_eq!(caller.read(&mut [0]).unwrap(), 0);
+        let (mut wrong_peer, _) = wrong.accept().unwrap();
+        wrong_peer
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        assert_eq!(wrong_peer.read(&mut [0]).unwrap(), 0);
     }
 }
