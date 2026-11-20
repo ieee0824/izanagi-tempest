@@ -622,7 +622,7 @@ fn request_cli_start(control: &mut UnixStream) -> Result<(), Fault> {
     Ok(())
 }
 
-fn network_identity(namespace: &File) -> io::Result<(u64, u64)> {
+fn fd_identity(namespace: &File) -> io::Result<(u64, u64)> {
     let metadata = namespace.metadata()?;
     Ok((metadata.dev(), metadata.ino()))
 }
@@ -631,9 +631,9 @@ fn verify_waiting_network(pid: libc::pid_t) -> io::Result<File> {
     // The direct child is unreaped, so its PID cannot identify a replacement.
     let path = format!("/proc/{pid}/ns/net");
     let namespace = File::open(&path)?;
-    let identity = network_identity(&namespace)?;
+    let identity = fd_identity(&namespace)?;
     let original = File::open("/proc/thread-self/ns/net")?;
-    if identity == network_identity(&original)? {
+    if identity == fd_identity(&original)? {
         return Err(io::Error::other(
             "offline supervisor shares the grant issuer network",
         ));
@@ -652,7 +652,7 @@ fn verify_waiting_network(pid: libc::pid_t) -> io::Result<File> {
     if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
         return Err(io::Error::other("offline network inspection failed"));
     }
-    if identity != network_identity(&File::open(path)?)? {
+    if identity != fd_identity(&File::open(path)?)? {
         return Err(io::Error::other(
             "offline supervisor network changed during inspection",
         ));
@@ -660,10 +660,38 @@ fn verify_waiting_network(pid: libc::pid_t) -> io::Result<File> {
     Ok(namespace)
 }
 
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OfflineRecovery {
+    RemovedBeforeGrant,
+    RemovedAfterTermination,
+    RetainedAfterGrant,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct OfflineObservation {
+    pub expected_binary_sha256: &'static str,
+    pub work_identity: (u64, u64),
+    pub verified_network: Option<(u64, u64)>,
+    pub grant_attempted: bool,
+    pub supervisor_wait_status: i32,
+    pub recovery: OfflineRecovery,
+}
+
+#[cfg(test)]
 fn supervised(
     parent: &File,
     work: &WorkArea,
     execute: impl FnOnce(&Path, &Path, &mut UnixStream, &mut bool) -> Result<(u64, u64), Fault>,
+) -> io::Result<(u64, u64)> {
+    supervised_observed(parent, work, execute, &mut None)
+}
+
+fn supervised_observed(
+    parent: &File,
+    work: &WorkArea,
+    execute: impl FnOnce(&Path, &Path, &mut UnixStream, &mut bool) -> Result<(u64, u64), Fault>,
+    observation: &mut Option<OfflineObservation>,
 ) -> io::Result<(u64, u64)> {
     const RECOVERABLE_FAILURE: i32 = 2;
     let (mut outside, mut inside) = UnixStream::pair().or_else(|error| {
@@ -706,13 +734,15 @@ fn supervised(
     let mut message = [0];
     let mut report = [0; 16];
     let mut cli_granted = false;
+    let mut verified_network = None;
     let received = (|| -> io::Result<()> {
         // Treat the grant as issued before attempting delivery.
         outside.read_exact(&mut message)?;
         if message != *b"C" {
             return Err(io::Error::other("invalid offline start request"));
         }
-        let _verified_namespace = verify_waiting_network(pid)?;
+        let verified_namespace = verify_waiting_network(pid)?;
+        verified_network = fd_identity(&verified_namespace).ok();
         cli_granted = true;
         outside.write_all(b"G")?;
         outside.read_exact(&mut report)
@@ -724,6 +754,22 @@ fn supervised(
     let recoverable_failure = exit_status == Some(RECOVERABLE_FAILURE);
     if !cli_granted || completed || recoverable_failure {
         work.remove(parent)?;
+    }
+    if let Ok(work_identity) = fd_identity(&work.pinned) {
+        *observation = Some(OfflineObservation {
+            expected_binary_sha256: ARTIFACTS[0].sha256,
+            work_identity,
+            verified_network,
+            grant_attempted: cli_granted,
+            supervisor_wait_status: status,
+            recovery: if !cli_granted {
+                OfflineRecovery::RemovedBeforeGrant
+            } else if completed || recoverable_failure {
+                OfflineRecovery::RemovedAfterTermination
+            } else {
+                OfflineRecovery::RetainedAfterGrant
+            },
+        });
     }
     if !completed {
         let outcome = if recoverable_failure {
@@ -759,18 +805,19 @@ fn wait_for_supervisor(pid: libc::pid_t) -> io::Result<i32> {
     }
 }
 
-pub(super) fn run() -> std::process::ExitCode {
+pub(super) fn run() -> (std::process::ExitCode, Option<OfflineObservation>) {
     use std::process::ExitCode;
     if std::env::args_os().len() != 1 || unsafe { libc::geteuid() } != 0 {
-        return ExitCode::FAILURE;
+        return (ExitCode::FAILURE, None);
     }
+    let mut observation = None;
     let parent_path = Path::new(WORK_PARENT);
     let result = (|| {
         let parent = lock_parent(parent_path)?;
         let work = WorkArea::create(&parent, parent_path)?;
-        supervised(&parent, &work, run_in_root)
+        supervised_observed(&parent, &work, run_in_root, &mut observation)
     })();
-    match result {
+    let exit = match result {
         Ok((bytes, inodes)) => {
             println!(
                 "{{\"version\":\"2.1.325\",\"uid\":{UID},\"gid\":{GID},\"tmpfs_bytes\":{bytes},\"tmpfs_inodes\":{inodes},\"offline_network_verified\":true,\"cleanup\":true}}"
@@ -781,7 +828,8 @@ pub(super) fn run() -> std::process::ExitCode {
             eprintln!("offline fixture failed: {error}");
             ExitCode::FAILURE
         }
-    }
+    };
+    (exit, observation)
 }
 
 #[cfg(test)]
@@ -992,34 +1040,53 @@ mod tests {
         ));
         let parent = lock_parent(&path).unwrap();
         let original = File::open("/proc/thread-self/ns/net").unwrap();
-        let issuer_identity = network_identity(&original).unwrap();
+        let issuer_identity = fd_identity(&original).unwrap();
         assert!(verify_waiting_network(0).is_err());
 
         for case in ["offline", "issuer-network", "loopback-up"] {
             let work = WorkArea::create(&parent, &path).unwrap();
             let marker = path.join(case);
             let ready = path.join("ready");
-            let result = supervised(&parent, &work, |scratch, _, control, reaped| {
-                fs::write(scratch.join("artifact-0"), b"fixed dummy")?;
-                if case == "issuer-network" {
-                    super::super::os::syscall(unsafe {
-                        libc::setns(original.as_raw_fd(), libc::CLONE_NEWNET)
-                    })?;
-                }
-                if case == "loopback-up"
-                    && !Command::new("/usr/sbin/ip")
-                        .args(["link", "set", "lo", "up"])
-                        .status()?
-                        .success()
-                {
-                    return Err(Fault::Identity);
-                }
-                fs::write(&ready, b"ready")?;
-                request_cli_start(control)?;
-                fs::write(&marker, b"G")?;
-                run_in_pid_namespace(Command::new("/bin/true"), Duration::from_secs(2), reaped)?;
-                Ok((1, 2))
-            });
+            let mut observation = None;
+            let result = supervised_observed(
+                &parent,
+                &work,
+                |scratch, _, control, reaped| {
+                    fs::write(scratch.join("artifact-0"), b"fixed dummy")?;
+                    if case == "issuer-network" {
+                        super::super::os::syscall(unsafe {
+                            libc::setns(original.as_raw_fd(), libc::CLONE_NEWNET)
+                        })?;
+                    }
+                    if case == "loopback-up"
+                        && !Command::new("/usr/sbin/ip")
+                            .args(["link", "set", "lo", "up"])
+                            .status()?
+                            .success()
+                    {
+                        return Err(Fault::Identity);
+                    }
+                    fs::write(&ready, b"ready")?;
+                    request_cli_start(control)?;
+                    fs::write(&marker, b"G")?;
+                    run_in_pid_namespace(
+                        Command::new("/bin/true"),
+                        Duration::from_secs(2),
+                        reaped,
+                    )?;
+                    Ok((1, 2))
+                },
+                &mut observation,
+            );
+            let observation = observation.unwrap();
+            assert_eq!(observation.grant_attempted, case == "offline");
+            assert_eq!(observation.verified_network.is_some(), case == "offline");
+            assert!(
+                matches!(
+                    observation.recovery,
+                    OfflineRecovery::RemovedAfterTermination
+                ) == (case == "offline")
+            );
             assert_eq!(fs::read(&ready).unwrap(), b"ready");
             fs::remove_file(ready).unwrap();
             if case == "offline" {
@@ -1035,7 +1102,7 @@ mod tests {
             }
             assert!(!work.path.exists());
             assert_eq!(
-                network_identity(&File::open("/proc/thread-self/ns/net").unwrap()).unwrap(),
+                fd_identity(&File::open("/proc/thread-self/ns/net").unwrap()).unwrap(),
                 issuer_identity
             );
         }

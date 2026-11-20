@@ -55,5 +55,12 @@ mod private_io;
 
 /// Run only the pinned offline Claude version fixture.
 pub fn claude_offline_version() -> std::process::ExitCode {
+    claude_offline::run().0
+}
+
+pub use claude_offline::{OfflineObservation, OfflineRecovery};
+
+/// Run the fixed version fixture and return the outer supervisor's observations.
+pub fn claude_offline_version_observed() -> (std::process::ExitCode, Option<OfflineObservation>) {
     claude_offline::run()
 }
