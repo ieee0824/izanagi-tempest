@@ -385,3 +385,18 @@ TLS クライアントが拒否すること、別の CONNECT 宛先は上流へ�
 拒否されることを確認します。試験には OpenSSL、Python 3、timeout が
 必要です。ループバックだけを有効にした名前空間で、Rust テストバイナリの
 `fixed_connect_relays_tls_certificate_for_client_validation --ignored` を実行します。
+
+公開 CLI の拒否だけを確認するには、Linux で `strace` と `ip` を用意し、
+次の試験を実行します。試験は外向き経路のない専用 mount/net 名前空間で
+ダミー設定と空の台帳を使用します。
+
+```sh
+cargo build --offline --locked -p tempest-linux-probe
+sudo -n python3 integration/claude_manual_login_refusal.py \
+  target/debug/tempest-claude-manual-login
+```
+
+余分な引数、入力のリダイレクト、出力・標準エラーが別 PTY の場合、PTY
+マスターを拒否します。同一 PTY と有効な設定に対しても、HOME・設定先・
+プロキシ・PATH を変更した場合を含め起動を拒否します。全ケースで、子の
+生成・通信・設定や台帳の変更がないことを確認します。
