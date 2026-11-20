@@ -271,3 +271,17 @@ sudo -n unshare -n -- "$probe" \
   management_floor_is_durable_before_switch_and_reread_under_lock --ignored
 cargo clippy -j2 --offline --locked -p tempest-linux-probe --all-targets -- -D warnings
 ```
+
+実入口の読み取り専用診断では、管理ディレクトリ内の
+`claude-login-publication` が存在するときに公開世代を参照します。
+その中の root:root・0600 の `lock` を読み取りで開き、共有ロックを
+確保します。保留がなく、`current` が独立した
+`claude-login-authority/minimum` 以上の場合に限り、現在版のディレクトリを
+固定します。版は正規の正整数表記とし、台帳は世代外に置きます。
+
+世代の `manifest` は設定、署名入力、署名、対象登録、信頼鍵の各ファイル名を
+SHA-256 に対応付ける JSON です。信頼鍵は独立した管理側の
+`claude-login-authority/trust-key` とも照合し、読み取った同じバイト列を
+署名診断に渡します。ディレクトリは root:root・0700、管理ファイルは
+root:root・0600・単一リンクとします。公開ディレクトリが存在しない場合
+は従来の診断入力を参照します。どちらの経路も起動を拒否します。
