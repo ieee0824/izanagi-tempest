@@ -1390,9 +1390,11 @@ pub(super) fn run_writable_pty() -> std::process::ExitCode {
         let config_parent = lock_parent(config_path)?;
         let work = WorkArea::create(&parent, work_path)?;
         let config = writable_config::Generation::create(&config_parent, config_path, &work)
-            .or_else(|error| {
-                work.remove(&parent)?;
-                Err(error)
+            .map_err(|error| match work.remove(&parent) {
+                Ok(()) => error,
+                Err(cleanup) => {
+                    io::Error::other(format!("{error}; work cleanup failed: {cleanup}"))
+                }
             })?;
         let mut observation = None;
         let run = supervised_observed(

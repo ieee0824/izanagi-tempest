@@ -1,4 +1,4 @@
-use super::{GID, OfflineRecovery, UID, WorkArea, fd_identity, own, unlink_at};
+use super::{GID, OfflineRecovery, UID, WorkArea, fd_identity, unlink_at};
 use std::{
     ffi::CString,
     fs::{self, File, OpenOptions},
@@ -7,7 +7,7 @@ use std::{
         fd::AsRawFd,
         unix::{
             ffi::OsStrExt,
-            fs::{MetadataExt, OpenOptionsExt},
+            fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
         },
     },
     path::{Path, PathBuf},
@@ -44,23 +44,115 @@ pub(super) struct Generation {
     pinned: File,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SetupStage {
+    OpenDirectory,
+    CreateSettings,
+    ConfigurePermissions,
+}
+
+fn configure(file: &File, mode: u32) -> io::Result<()> {
+    if unsafe { libc::fchown(file.as_raw_fd(), UID, GID) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    file.set_permissions(fs::Permissions::from_mode(mode))
+}
+
 impl Generation {
     pub fn create(parent: &File, parent_path: &Path, work: &WorkArea) -> io::Result<Self> {
-        // mkdirat with the current work name refuses a stale generation.
+        Self::create_with(parent, parent_path, work, |_, _| Ok(()))
+    }
+
+    fn create_with(
+        parent: &File,
+        parent_path: &Path,
+        work: &WorkArea,
+        mut before: impl FnMut(SetupStage, &Path) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        // An existing generation prevents mkdirat from succeeding and is never recovered here.
         let name = work.name.clone();
         if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } < 0 {
             return Err(io::Error::last_os_error());
         }
         let path = parent_path.join(std::ffi::OsStr::from_bytes(name.as_bytes()));
-        let pinned = WorkArea::open_at(parent, &name)?;
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path.join(SETTINGS))?;
-        own(&path.join(SETTINGS), 0o600).map_err(|fault| io::Error::other(fault.reason()))?;
-        own(&path, 0o700).map_err(|fault| io::Error::other(fault.reason()))?;
-        Ok(Self { path, name, pinned })
+        let mut identity = None;
+        let mut settings = None;
+        let result = (|| {
+            let metadata = fs::symlink_metadata(
+                PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd()))
+                    .join(std::ffi::OsStr::from_bytes(name.as_bytes())),
+            )?;
+            if !metadata.is_dir() || metadata.uid() != 0 {
+                return Err(io::Error::other(
+                    "new configuration directory identity unavailable",
+                ));
+            }
+            identity = Some((metadata.dev(), metadata.ino()));
+            before(SetupStage::OpenDirectory, &path)?;
+            let pinned = WorkArea::open_at(parent, &name)?;
+            if Some(fd_identity(&pinned)?) != identity {
+                return Err(io::Error::other(
+                    "new configuration directory identity changed",
+                ));
+            }
+            before(SetupStage::CreateSettings, &path)?;
+            let directory = PathBuf::from(format!("/proc/self/fd/{}", pinned.as_raw_fd()));
+            let file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(directory.join(SETTINGS))?;
+            settings = Some(file);
+            before(SetupStage::ConfigurePermissions, &path)?;
+            configure(settings.as_ref().unwrap(), 0o600)?;
+            configure(&pinned, 0o700)?;
+            Ok(pinned)
+        })();
+
+        match result {
+            Ok(pinned) => Ok(Self { path, name, pinned }),
+            Err(setup) => match Self::rollback_setup(parent, &name, identity, settings.as_ref()) {
+                Ok(()) => Err(io::Error::other(format!(
+                    "private configuration setup failed; new generation removed: {setup}"
+                ))),
+                Err(cleanup) => Err(io::Error::other(format!(
+                    "private configuration setup failed; generation retained or removal unconfirmed: {setup}; cleanup: {cleanup}"
+                ))),
+            },
+        }
+    }
+
+    fn rollback_setup(
+        parent: &File,
+        name: &std::ffi::CStr,
+        identity: Option<(u64, u64)>,
+        settings: Option<&File>,
+    ) -> io::Result<()> {
+        let pinned = WorkArea::open_at(parent, name)?;
+        if Some(fd_identity(&pinned)?) != identity {
+            return Err(io::Error::other(
+                "private configuration rollback identity mismatch",
+            ));
+        }
+        let directory = PathBuf::from(format!("/proc/self/fd/{}", pinned.as_raw_fd()));
+        for item in fs::read_dir(directory)? {
+            let item = item?;
+            let metadata = item.path().symlink_metadata()?;
+            if item.file_name() != SETTINGS
+                || !metadata.is_file()
+                || metadata.nlink() != 1
+                || Some((metadata.dev(), metadata.ino()))
+                    != settings.map(fd_identity).transpose()?
+            {
+                return Err(io::Error::other(
+                    "unexpected entry during private configuration rollback",
+                ));
+            }
+        }
+        if settings.is_some() {
+            unlink_at(pinned.as_raw_fd(), c"settings.json", 0)?;
+        }
+        unlink_at(parent.as_raw_fd(), name, libc::AT_REMOVEDIR)
     }
 
     pub fn bind(&self, root: &Path) -> Result<(), super::Fault> {
@@ -139,7 +231,91 @@ impl Generation {
 
 #[cfg(test)]
 mod tests {
+    use super::super::own;
     use super::*;
+    use std::os::unix::fs::DirBuilderExt;
+
+    #[test]
+    #[ignore = "requires root to create fixed UID/GID configuration fixtures"]
+    fn partial_setup_recovers_only_the_new_generation() {
+        use super::super::directory;
+        let fixture = Path::new("/var/lib").join(format!(
+            "tempest-writable-rollback-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&fixture).unwrap();
+        let work_root = fixture.join("work");
+        let config_root = fixture.join("config");
+        fs::create_dir(&work_root).unwrap();
+        fs::create_dir(&config_root).unwrap();
+        let work_parent = directory(&work_root).unwrap();
+        let config_parent = directory(&config_root).unwrap();
+        let prior_work = WorkArea::create(&work_parent, &work_root).unwrap();
+        let prior = Generation::create(&config_parent, &config_root, &prior_work).unwrap();
+        let prior_identity = fd_identity(&prior.pinned).unwrap();
+        let duplicate = Generation::create(&config_parent, &config_root, &prior_work);
+        assert_eq!(
+            duplicate.err().unwrap().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+
+        let work = WorkArea::create(&work_parent, &work_root).unwrap();
+        for injected in [
+            SetupStage::OpenDirectory,
+            SetupStage::CreateSettings,
+            SetupStage::ConfigurePermissions,
+        ] {
+            let result =
+                Generation::create_with(&config_parent, &config_root, &work, |stage, _| {
+                    if stage == injected {
+                        return Err(io::Error::other("injected setup failure"));
+                    }
+                    Ok(())
+                });
+            assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("new generation removed")
+            );
+            assert_eq!(fs::read_dir(&config_root).unwrap().count(), 1);
+            assert!(!prior.audit(&config_parent, false).unwrap());
+            assert_eq!(fd_identity(&prior.pinned).unwrap(), prior_identity);
+        }
+
+        let result = Generation::create_with(&config_parent, &config_root, &work, |stage, path| {
+            if stage == SetupStage::ConfigurePermissions {
+                fs::write(path.join("unexpected"), b"")?;
+                return Err(io::Error::other("injected failure with unexpected entry"));
+            }
+            Ok(())
+        });
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("generation retained or removal unconfirmed")
+        );
+        let retained = config_root.join(std::ffi::OsStr::from_bytes(work.name.as_bytes()));
+        assert!(retained.join(SETTINGS).is_file());
+        assert!(retained.join("unexpected").is_file());
+        assert!(!prior.audit(&config_parent, false).unwrap());
+        assert_eq!(fd_identity(&prior.pinned).unwrap(), prior_identity);
+
+        fs::remove_file(retained.join("unexpected")).unwrap();
+        fs::remove_file(retained.join(SETTINGS)).unwrap();
+        fs::remove_dir(retained).unwrap();
+        work.remove(&work_parent).unwrap();
+        prior
+            .finish(&config_parent, Disposition::Remove, false)
+            .unwrap();
+        prior_work.remove(&work_parent).unwrap();
+        fs::remove_dir(work_root).unwrap();
+        fs::remove_dir(config_root).unwrap();
+        fs::remove_dir(fixture).unwrap();
+    }
 
     #[test]
     #[ignore = "requires root and private network and mount namespaces"]
