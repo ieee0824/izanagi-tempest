@@ -127,27 +127,30 @@ fn open_input(artifact: &Artifact<'_>) -> Result<File, Fault> {
     Ok(file)
 }
 
-fn verify_artifact(file: &File, artifact: &Artifact<'_>) -> Result<(), Fault> {
-    use std::os::unix::fs::FileExt;
-    struct FromStart<'a>(&'a File, u64);
-    impl Read for FromStart<'_> {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            let count = self.0.read_at(buf, self.1)?;
-            self.1 += count as u64;
-            Ok(count)
-        }
+struct ArtifactReader<'a>(&'a File, u64);
+
+impl Read for ArtifactReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        let count = self.0.read_at(buf, self.1)?;
+        self.1 += count as u64;
+        Ok(count)
     }
+}
+
+fn verify_artifact(file: &File, artifact: &Artifact<'_>) -> Result<(), Fault> {
     copy_checked(
-        FromStart(file, 0),
+        ArtifactReader(file, 0),
         io::sink(),
         artifact.bytes,
         artifact.sha256,
     )
 }
 
-fn verify_fixed_artifact(artifact: &Artifact<'_>) -> Result<(), Fault> {
+fn verify_fixed_artifact(artifact: &Artifact<'_>) -> Result<File, Fault> {
     let file = open_input(artifact)?;
-    verify_artifact(&file, artifact)
+    verify_artifact(&file, artifact)?;
+    Ok(file)
 }
 
 fn stage_failure(stage: &str, fault: &Fault) {
@@ -162,14 +165,26 @@ fn stage_failure(stage: &str, fault: &Fault) {
 }
 
 fn stage_artifact(artifact: &Artifact<'_>, destination: &Path) -> Result<File, Fault> {
+    stage_pinned_artifact(&open_input(artifact)?, artifact, destination)
+}
+
+fn stage_pinned_artifact(
+    input: &File,
+    artifact: &Artifact<'_>,
+    destination: &Path,
+) -> Result<File, Fault> {
     use std::os::unix::fs::PermissionsExt;
-    let input = open_input(artifact)?;
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(destination)?;
-    copy_checked(input, &mut output, artifact.bytes, artifact.sha256)?;
+    copy_checked(
+        ArtifactReader(input, 0),
+        &mut output,
+        artifact.bytes,
+        artifact.sha256,
+    )?;
     output.set_permissions(fs::Permissions::from_mode(0o555))?;
     let written = output.metadata()?;
     drop(output);
@@ -714,6 +729,7 @@ impl FixtureStop {
 }
 
 struct FixturePermit {
+    verified_executable: Option<File>,
     administrator_stop: Option<FixtureStop>,
     expires: std::time::Instant,
     executable_digest: &'static str,
@@ -1036,7 +1052,12 @@ fn run_fixture_with_config(
             .inspect_err(|fault| stage_failure("artifact_mount", fault))?;
     }
     if diagnostic != Diagnostic::Version {
-        let staged = stage_artifact(&BUSYBOX, &scratch.join("artifact-busybox"))
+        let destination = scratch.join("artifact-busybox");
+        let staged =
+            match local_auth.and_then(|(_, _, permit)| permit.verified_executable.as_ref()) {
+                Some(input) => stage_pinned_artifact(input, &BUSYBOX, &destination),
+                None => stage_artifact(&BUSYBOX, &destination),
+            }
             .inspect_err(|fault| stage_failure("busybox", fault))?;
         mount_artifact(root, &BUSYBOX, &staged)?;
     }
@@ -1782,8 +1803,13 @@ fn diagnose_login_ledger(path: &Path, permit_id: u128) -> io::Result<()> {
             "invalid ledger ownership or mode",
         ));
     }
+    check_unused_login_permit(&ledger, permit_id)?;
+    Ok(())
+}
+
+fn check_unused_login_permit(ledger: &File, permit_id: u128) -> io::Result<()> {
     let name = format!("{permit_id:032x}");
-    match open_login_child(&ledger, std::ffi::OsStr::new(&name), 0) {
+    match open_login_child(ledger, std::ffi::OsStr::new(&name), 0) {
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "permit already consumed or revoked",
@@ -2153,6 +2179,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         let mut permit = local_auth_case.map(|case| {
             let now = std::time::Instant::now();
             FixturePermit {
+                verified_executable: None,
                 administrator_stop: None,
                 expires: if matches!(case, local_auth::Case::ExpiredPermit) {
                     now
@@ -2261,6 +2288,11 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                         .checked_add(remaining)
                         .ok_or(io::ErrorKind::InvalidData)?,
                 );
+                check_unused_login_permit(&config_parent, id)?;
+                permit.verified_executable = Some(
+                    verify_fixed_artifact(&BUSYBOX)
+                        .map_err(|fault| io::Error::other(fault.reason()))?,
+                );
                 (id, expiry)
             };
             login_permit::consume(
@@ -2356,6 +2388,70 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a root-owned fixture under /var/lib"]
+    fn staged_verified_file_keeps_identity_and_rechecks_content() {
+        let directory = Path::new("/var/lib").join(format!(
+            "tempest-pinned-executable-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        let _parent = lock_parent(&directory).unwrap();
+        let executable = directory.join("executable");
+        let original = directory.join("original");
+        fs::write(&executable, b"dummy").unwrap();
+        let artifact = Artifact {
+            source: executable.to_str().unwrap(),
+            bytes: 5,
+            sha256: "b5a2c96250612366ea272ffac6d9744aaf4b45aacd96aa7cfcb931ee3b558259",
+            targets: &[],
+        };
+        let pinned = verify_fixed_artifact(&artifact).unwrap();
+        fs::rename(&executable, &original).unwrap();
+        fs::write(&executable, b"other").unwrap();
+        let staged = directory.join("staged");
+        stage_pinned_artifact(&pinned, &artifact, &staged).unwrap();
+        assert_eq!(fs::read(staged).unwrap(), b"dummy");
+        fs::write(original, b"other").unwrap();
+        assert!(matches!(
+            stage_pinned_artifact(&pinned, &artifact, &directory.join("modified")),
+            Err(Fault::Identity)
+        ));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a root-owned fixture under /var/lib"]
+    fn unused_ledger_diagnostic_does_not_reserve_a_permit() {
+        let directory = Path::new("/var/lib").join(format!(
+            "tempest-ledger-race-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        let ledger = lock_parent(&directory).unwrap();
+        let now = std::time::Instant::now();
+        let scope = login_permit::Scope {
+            executable_sha256: BUSYBOX.sha256,
+            arguments: &LOGIN_ARGS,
+            authority: login_connect::AUTHORITY,
+            target_id: "fixture",
+            approved_ips_revision: 1,
+        };
+        let permit = login_permit::Permit {
+            id: 10,
+            scope,
+            expires_at: now + std::time::Duration::from_secs(10),
+        };
+        check_unused_login_permit(&ledger, permit.id).unwrap();
+        let competitor = File::open(&directory).unwrap();
+        login_permit::consume(&competitor, &permit, scope, now).unwrap();
+        assert_eq!(
+            login_permit::consume(&ledger, &permit, scope, now)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     #[ignore = "requires a root-owned fixture under /var/lib"]
