@@ -179,6 +179,37 @@ def check_permit_replay(binary):
     assert_empty()
 
 
+def verify_signed_child_environment(supervisor):
+    pending = [supervisor]
+    while pending:
+        pid = pending.pop()
+        proc = Path(f"/proc/{pid}")
+        try:
+            pending.extend(map(int, (proc / f"task/{pid}/children").read_text().split()))
+            args = (proc / "cmdline").read_bytes().rstrip(b"\0").split(b"\0")
+            if args[:4] != [b"/bin/busybox", b"sh", b"-eu", b"-c"]:
+                continue
+            if len(args) != 11 or args[5:7] != [b"fixed-pty", b"writable"]:
+                continue
+            (work,) = WORK.iterdir()
+            if args[7:] != [
+                os.fsencode(CONFIG / work.name), b"local-auth", b"auth", b"login",
+            ]:
+                raise RuntimeError("signed child did not receive the exact fixed arguments")
+            expected = {
+                b"HOME=/home/fixture", b"CLAUDE_CONFIG_DIR=/home/fixture/config",
+                b"HTTPS_PROXY=http://127.0.0.1:39271", b"HTTP_PROXY=http://127.0.0.1:39271",
+                b"NO_PROXY=",
+            }
+            actual = (proc / "environ").read_bytes().rstrip(b"\0").split(b"\0")
+            if len(actual) != len(expected) or set(actual) != expected:
+                raise RuntimeError("signed child environment was not the fixed set")
+            return
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    raise RuntimeError("could not find the fixed signed PTY child")
+
+
 def check_signed_permits(binary):
     policy = CONFIG / ".synthetic-login-policy.json"
     payload = CONFIG / ".synthetic-handoff"
@@ -299,13 +330,20 @@ def check_signed_permits(binary):
                         raise RuntimeError("signed fixture configuration was not owner-private")
 
             fixture(
-                [binary, "signed-permit"], {}, complete_probe=True, success=POSITIVE + REMOVED,
-                before_probe=observe_signed_generation,
+                [binary, "signed-permit"],
+                {
+                    "HOME": "/dummy-parent-home", "CLAUDE_CONFIG_DIR": "/dummy-parent-config",
+                    "HTTPS_PROXY": "http://127.0.0.1:1", "HTTP_PROXY": "http://127.0.0.1:2",
+                    "NO_PROXY": "*", "PATH": "/dummy-parent-path",
+                    "TEMPEST_SYNTHETIC_PARENT_SENTINEL": "must-not-inherit",
+                },
+                complete_probe=True, success=POSITIVE + REMOVED,
+                before_probe=observe_signed_generation, observe_child=verify_signed_child_environment,
             )
             if generation is None or generation.exists():
                 raise RuntimeError("signed fixture configuration did not disappear after disconnect")
             print(
-                "signed PTY: owner-private settings and write probe; fixed local ACK; "
+                "signed PTY: exact child environment and arguments; owner-private settings and write probe; fixed local ACK; "
                 "other host and three direct ports denied; descendant, tunnel and generations recovered"
             )
             assert_denied("signed-permit", b"already consumed or revoked", inputs | {used})
