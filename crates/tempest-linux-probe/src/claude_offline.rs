@@ -1881,15 +1881,19 @@ pub(super) fn run_local_auth_pty() -> std::process::ExitCode {
     run_writable_pty_for(Some(case))
 }
 
-fn read_fixture_permit(path: &Path) -> io::Result<std::time::Instant> {
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureApproval {
+    policy: ManualLoginPolicy,
+    executable_sha256: String,
+    arguments: [String; 2],
+    target_id: String,
+    approved_ips_revision: u64,
+    expires_unix_seconds: u64,
+}
 
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct FixturePolicy {
-        policy: ManualLoginPolicy,
-        expires_unix_seconds: u64,
-    }
+fn read_fixture_permit(path: &Path) -> io::Result<(FixtureApproval, std::time::Instant)> {
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     let file = open_manual_login_policy(path)?;
     let mut bytes = Vec::new();
@@ -1903,7 +1907,7 @@ fn read_fixture_permit(path: &Path) -> io::Result<std::time::Instant> {
     if bytes.len() > 4096 {
         return Err(invalid());
     }
-    let fixture: FixturePolicy = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    let fixture: FixtureApproval = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
     fixture.policy.validate()?;
     let now = Instant::now();
     let expires = UNIX_EPOCH
@@ -1917,7 +1921,7 @@ fn read_fixture_permit(path: &Path) -> io::Result<std::time::Instant> {
     if remaining > Duration::from_secs(60) {
         return Err(invalid());
     }
-    now.checked_add(remaining).ok_or_else(invalid)
+    Ok((fixture, now.checked_add(remaining).ok_or_else(invalid)?))
 }
 
 fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::process::ExitCode {
@@ -1983,21 +1987,26 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
             let permit = permit
                 .as_mut()
                 .ok_or_else(|| io::Error::other("synthetic permit missing"))?;
-            permit.expires =
+            let (approval, expiry) =
                 read_fixture_permit(&config_path.join(".synthetic-login-policy.json"))?;
-            permit.validate()?;
-            let scope = login_permit::Scope {
+            permit.expires = expiry;
+            let expected = login_permit::Scope {
                 executable_sha256: BUSYBOX.sha256,
                 arguments: &LOGIN_ARGS,
                 authority: login_connect::AUTHORITY,
+                target_id: "synthetic-target",
+                approved_ips_revision: 1,
             };
+            let arguments = approval.arguments.each_ref().map(String::as_str);
             let record = login_permit::Permit {
                 id: 1,
-                expires_at: permit.expires,
+                expires_at: expiry,
                 scope: login_permit::Scope {
-                    executable_sha256: permit.executable_digest,
-                    arguments: &permit.arguments,
-                    authority: permit.authority,
+                    executable_sha256: &approval.executable_sha256,
+                    arguments: &arguments,
+                    authority: &approval.policy.authority,
+                    target_id: &approval.target_id,
+                    approved_ips_revision: approval.approved_ips_revision,
                 },
             };
             // Preserve refusal of a permit consumed by an earlier fixture build.
@@ -2013,7 +2022,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
             }
-            login_permit::consume(&config_parent, &record, scope, std::time::Instant::now())?;
+            login_permit::consume(&config_parent, &record, expected, std::time::Instant::now())?;
         }
         let local_auth = local_auth_case
             .zip(upstream_network.as_ref())
