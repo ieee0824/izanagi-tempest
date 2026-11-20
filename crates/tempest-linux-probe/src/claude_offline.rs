@@ -180,6 +180,7 @@ enum Diagnostic {
     ConfigControl,
     ConfigIsolated,
     Pty,
+    PtyWithLoginArtifacts,
     PtyOtherUid,
 }
 
@@ -427,7 +428,10 @@ fn isolated_command(
                 || libc::chdir(
                     if matches!(
                         diagnostic,
-                        Diagnostic::Version | Diagnostic::Pty | Diagnostic::PtyOtherUid
+                        Diagnostic::Version
+                            | Diagnostic::Pty
+                            | Diagnostic::PtyWithLoginArtifacts
+                            | Diagnostic::PtyOtherUid
                     ) {
                         c"/home/fixture"
                     } else {
@@ -932,7 +936,10 @@ fn run_fixture_with_config(
         own(&root.join("home/fixture/config"), 0o700)?;
         own(&settings, 0o600)?;
     }
-    let pty_events = if diagnostic == Diagnostic::Pty {
+    let pty_events = if matches!(
+        diagnostic,
+        Diagnostic::Pty | Diagnostic::PtyWithLoginArtifacts
+    ) {
         // BusyBox ash opens /dev/null for a background job's stdin.
         fs::create_dir(root.join("dev"))?;
         File::create(root.join("dev/null"))?;
@@ -943,7 +950,10 @@ fn run_fixture_with_config(
     } else {
         None
     };
-    let config = if matches!(diagnostic, Diagnostic::Version | Diagnostic::Pty) {
+    let config = if matches!(
+        diagnostic,
+        Diagnostic::Version | Diagnostic::Pty | Diagnostic::PtyWithLoginArtifacts
+    ) {
         None
     } else {
         Some(ConfigFixture::prepare(root, diagnostic)?)
@@ -1641,7 +1651,11 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     root,
                     control,
                     reaped,
-                    Diagnostic::Pty,
+                    if matches!(local_auth_case, Some(local_auth::Case::Match)) {
+                        Diagnostic::PtyWithLoginArtifacts
+                    } else {
+                        Diagnostic::Pty
+                    },
                     Some(&config),
                     local_auth,
                 )

@@ -74,6 +74,7 @@ def main():
         {"HTTPS_PROXY": "http://127.0.0.1:1", "NO_PROXY": "*"},
         complete_probe=True,
         success=POSITIVE + REMOVED,
+        startup_timeout=20,
     )
     assert_empty()
     print("match: auth accepted, other host and three direct ports denied; disconnect reaped, active tunnel and listeners closed, generation removed")
