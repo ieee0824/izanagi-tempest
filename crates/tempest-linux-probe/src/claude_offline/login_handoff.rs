@@ -1,14 +1,15 @@
 //! Offline handoff verification fixture. The manual login entry remains disabled.
 use super::login_permit::Scope;
 use ring::signature::{ED25519, UnparsedPublicKey};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::io;
 
 const DOMAIN: &[u8] = b"izanagi-tempest:manual-login-handoff:fixture-v1\0";
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
 #[serde(deny_unknown_fields)]
-struct Handoff {
+pub(super) struct Handoff {
     permit_id: String,
     approval_pair_sha256: String,
     expires_unix_seconds: u64,
@@ -19,7 +20,7 @@ struct Handoff {
     approved_ips_revision: u64,
 }
 
-fn verify_handoff(
+pub(super) fn verify_handoff(
     trusted_key: &[u8; 32],
     signed: &[u8],
     signature: &[u8],
@@ -42,6 +43,18 @@ fn verify_handoff(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "wrong handoff purpose"))?;
     let handoff: Handoff = serde_json::from_slice(payload)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid handoff payload"))?;
+    if handoff.permit_id.is_empty()
+        || handoff.approval_pair_sha256.len() != 64
+        || !handoff
+            .approval_pair_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid handoff identifiers",
+        ));
+    }
     if handoff.expires_unix_seconds <= now_unix_seconds {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
