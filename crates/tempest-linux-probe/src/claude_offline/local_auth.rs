@@ -37,6 +37,7 @@ pub(super) enum Case {
     SingleUsePermit,
     SignedPermit,
     SignedTls,
+    SignedTlsExpiry,
     SignedAdministratorStop,
     PermitExpiresBeforeGrant,
     WrongGrantId,
@@ -66,6 +67,7 @@ impl Case {
             "single-use-permit" => Self::SingleUsePermit,
             "signed-permit" => Self::SignedPermit,
             "signed-tls" => Self::SignedTls,
+            "signed-tls-expiry" => Self::SignedTlsExpiry,
             "signed-administrator-stop" => Self::SignedAdministratorStop,
             "permit-expires-before-grant" => Self::PermitExpiresBeforeGrant,
             "wrong-grant-id" => Self::WrongGrantId,
@@ -92,6 +94,7 @@ impl Case {
                 | Self::SingleUsePermit
                 | Self::SignedPermit
                 | Self::SignedTls
+                | Self::SignedTlsExpiry
                 | Self::SignedAdministratorStop
                 | Self::PermitExpiresBeforeGrant
                 | Self::WrongGrantId
@@ -255,7 +258,12 @@ impl LocalPolicy {
         })
     }
 
-    pub fn start_gateway(&self, case: Case, upstream_network: &File) -> io::Result<Gateway> {
+    pub fn start_gateway(
+        &self,
+        case: Case,
+        upstream_network: &File,
+        expires: std::time::Instant,
+    ) -> io::Result<Gateway> {
         if matches!(case, Case::MissingGateway) {
             return Err(io::Error::other("fixed gateway unavailable"));
         }
@@ -297,7 +305,7 @@ impl LocalPolicy {
                 };
                 sender.write_all(b"G")?;
                 drop(sender);
-                login_connect::serve_fixture(&self.listeners[0], upstream, case)
+                login_connect::serve_fixture(&self.listeners[0], upstream, case, expires)
             })()
             .inspect_err(|error| {
                 if matches!(case, Case::SignedTls) {

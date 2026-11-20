@@ -214,19 +214,26 @@ def verify_signed_child_environment(supervisor):
     raise RuntimeError("could not find the fixed signed PTY child")
 
 
-def probe_local_tls(cert_pem):
+def connect_response(proxy):
+    proxy.sendall(b"CONNECT platform.claude.com:443 HTTP/1.1\r\n"
+                  b"Host: platform.claude.com:443\r\n\r\n")
+    response = bytearray()
+    while not response.endswith(b"\r\n\r\n") and len(response) < 256:
+        chunk = proxy.recv(1)
+        if not chunk:
+            break
+        response.extend(chunk)
+    return response
+
+
+def probe_local_tls(cert_pem, expire=False):
     context = ssl.create_default_context(cadata=cert_pem)
-    for name, expected in (("platform.claude.com", True), ("mismatch.invalid", False)):
-        with socket.create_connection(("127.0.0.1", 39271), timeout=3) as proxy:
-            proxy.sendall(b"CONNECT platform.claude.com:443 HTTP/1.1\r\n"
-                          b"Host: platform.claude.com:443\r\n\r\n")
-            response = bytearray()
-            while not response.endswith(b"\r\n\r\n") and len(response) < 256:
-                chunk = proxy.recv(1)
-                if not chunk:
-                    break
-                response.extend(chunk)
-            if response != b"HTTP/1.1 200 Connection Established\r\n\r\n":
+    names = (("platform.claude.com", True),)
+    if not expire:
+        names += (("mismatch.invalid", False),)
+    for name, expected in names:
+        with socket.create_connection(("127.0.0.1", 39271), timeout=6 if expire else 3) as proxy:
+            if connect_response(proxy) != b"HTTP/1.1 200 Connection Established\r\n\r\n":
                 raise RuntimeError("fixed TLS CONNECT did not open")
             try:
                 with context.wrap_socket(proxy, server_hostname=name) as tls:
@@ -235,13 +242,22 @@ def probe_local_tls(cert_pem):
                     tls.sendall(b"PING")
                     if tls.recv(1) != b"K":
                         raise RuntimeError("missing TLS fixture response")
-                    tls.unwrap().close()
+                    if expire:
+                        if tls.recv(1) != b"":
+                            raise RuntimeError("TLS tunnel survived signed freshness expiry")
+                    else:
+                        tls.unwrap().close()
             except ssl.SSLCertVerificationError as error:
                 if expected or error.verify_code != 62:
                     raise
 
+    if expire:
+        with socket.create_connection(("127.0.0.1", 39271), timeout=3) as proxy:
+            if connect_response(proxy) != b"HTTP/1.1 403 Forbidden\r\n\r\n":
+                raise RuntimeError("new CONNECT was not rejected after expiry")
 
-def check_signed_tls(binary, temporary, record, check_evidence):
+
+def check_signed_tls(binary, temporary, record, check_evidence, expire=False):
     if any(subprocess.check_output(["ip", family, "route", "show"]).strip()
            for family in ("-4", "-6")):
         raise RuntimeError("signed TLS requires an outer namespace without routes")
@@ -258,17 +274,21 @@ def check_signed_tls(binary, temporary, record, check_evidence):
     identities = {}
 
     def exchanges(listener):
-        for expected in (True, False):
+        for expected in ((True,) if expire else (True, False)):
             client, _ = listener.accept()
             with client:
-                client.settimeout(4)
+                client.settimeout(6 if expire else 4)
                 try:
                     with server_context.wrap_socket(client, server_side=True) as tls:
                         with tls.makefile("rb") as incoming:
                             if not expected or incoming.read(4) != b"PING":
                                 raise RuntimeError("unexpected exchange with the TLS fixture")
                         tls.sendall(b"K")
-                        tls.unwrap().close()
+                        if expire:
+                            if tls.recv(1) != b"":
+                                raise RuntimeError("TLS upstream survived signed freshness expiry")
+                        else:
+                            tls.unwrap().close()
                 except ssl.SSLError as error:
                     if expected or error.reason != "SSLV3_ALERT_BAD_CERTIFICATE":
                         raise
@@ -282,20 +302,35 @@ def check_signed_tls(binary, temporary, record, check_evidence):
         subprocess.run([
             "/usr/bin/nsenter", "--net=" + str(Path(f"/proc/{child}/ns/net")), "--",
             "/usr/bin/setpriv", "--reuid", "999", "--regid", "988", "--clear-groups",
-            sys.executable, str(Path(__file__).resolve()), "--probe-local-tls",
-        ], input=cert_pem, text=True, timeout=5, check=True, env={})
+            sys.executable, str(Path(__file__).resolve()),
+            "--probe-expiring-tls" if expire else "--probe-local-tls",
+        ], input=cert_pem, text=True, timeout=8 if expire else 5, check=True, env={})
 
     with socket.create_server(("127.0.0.1", 39275)) as listener, ThreadPoolExecutor(1) as pool:
         listener.settimeout(8)
         served = pool.submit(exchanges, listener)
         fixture(
-            [binary, "signed-tls"], {}, complete_probe=True, success=POSITIVE + REMOVED,
-            observe_child=observe_and_probe,
+            [binary, "signed-tls-expiry" if expire else "signed-tls"],
+            {}, complete_probe=True, success=POSITIVE + REMOVED,
+            observe_child=None if expire else observe_and_probe,
+            after_probe=observe_and_probe if expire else None,
             check_evidence=lambda stderr: check_evidence(stderr, record, identities, True),
         )
         served.result()
+        listener.setblocking(False)
+        try:
+            unexpected, _ = listener.accept()
+        except BlockingIOError:
+            pass
+        else:
+            unexpected.close()
+            raise RuntimeError("unexpected TLS upstream connection")
     if any(directory.exists() for directory in identities):
         raise RuntimeError("TLS fixture generation was not recovered")
+    if expire:
+        print("signed TLS freshness: both TLS peers closed; next CONNECT denied without upstream; "
+              "same permit and generations recovered")
+        return
     print("signed TLS: same permit and generation, exact certificate, wrong name refused, "
           "direct ports denied, child and gateway reaped, both generations recovered")
 
@@ -318,6 +353,7 @@ def check_signed_permits(binary, tls=False):
     missing_sync = CONFIG / f"{11:032x}"
     failed_sync = CONFIG / f"{12:032x}"
     tls_record = CONFIG / f"{13:032x}"
+    tls_expiry_record = CONFIG / f"{14:032x}"
     closure_records = {record for _, record, _ in closure_cases} | {missing_sync, failed_sync}
     stop_request = CONFIG / ".synthetic-stop-request.json"
     pending_stop = CONFIG / ".synthetic-stop-request.pending"
@@ -551,15 +587,19 @@ def check_signed_permits(binary, tls=False):
             if tls:
                 write_handoff(key, tls_record, 45)
                 check_signed_tls(binary, tmp, tls_record, check_recovery_evidence)
+                write_handoff(key, tls_expiry_record, 5)
+                check_signed_tls(binary, tmp, tls_expiry_record, check_recovery_evidence, expire=True)
     finally:
-        for path in inputs | {used, expired, stopped, later, stop_request, pending_stop, tls_record} | set(mismatches.values()) | closure_records:
+        for path in inputs | {used, expired, stopped, later, stop_request, pending_stop, tls_record, tls_expiry_record} | set(mismatches.values()) | closure_records:
             path.unlink(missing_ok=True)
     assert_empty()
 
 
 def main():
-    if sys.argv[1:] == ["--probe-local-tls"] and os.geteuid() == 999:
-        probe_local_tls(sys.stdin.read())
+    if len(sys.argv) == 2 and sys.argv[1] in (
+        "--probe-local-tls", "--probe-expiring-tls"
+    ) and os.geteuid() == 999:
+        probe_local_tls(sys.stdin.read(), expire=sys.argv[1] == "--probe-expiring-tls")
         return 0
     if sys.platform != "linux" or os.geteuid() != 0:
         return 2

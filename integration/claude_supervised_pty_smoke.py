@@ -42,7 +42,7 @@ def live_descendant(supervisor: int) -> int:
 def fixture(
     command: list[str], env: dict[str, str], complete_probe: bool, success: bytes = SUCCESS,
     *, startup_timeout: float = 3, before_probe=None, observe_child=None,
-    quarantine=None, check_evidence=None,
+    quarantine=None, check_evidence=None, after_probe=None,
 ) -> None:
     master, slave = pty.openpty()
     descendant = -1
@@ -66,6 +66,8 @@ def fixture(
                     os.write(master, b"probe\n")
                     read_until(master, b"fixture-response")
                     descendant = live_descendant(child.pid)
+                    if after_probe is not None:
+                        after_probe(child.pid)
             finally:
                 os.close(master)
                 master = -1
