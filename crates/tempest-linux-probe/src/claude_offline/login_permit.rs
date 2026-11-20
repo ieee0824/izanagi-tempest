@@ -144,18 +144,19 @@ mod tests {
         };
         // Model an authenticated snapshot read under the same management
         // lock that orders the current revision and final ledger consumption.
-        let consume_with_status = |snapshot: Option<Status<'_>>, current_revision: Option<u64>| {
-            let status = snapshot.ok_or_else(|| refused("revocation state unavailable"))?;
-            if status.permit_id != permit.id
-                || status.target_id != SCOPE.target_id
-                || Some(status.revision) != current_revision
-                || status.valid_until <= 100
-                || status.revoked
-            {
-                return Err(refused("revocation state does not permit consumption"));
-            }
-            consume(&ledger, &permit, SCOPE, now)
-        };
+        let consume_with_status =
+            |ledger: &File, snapshot: Option<Status<'_>>, current_revision: Option<u64>| {
+                let status = snapshot.ok_or_else(|| refused("revocation state unavailable"))?;
+                if status.permit_id != permit.id
+                    || status.target_id != SCOPE.target_id
+                    || Some(status.revision) != current_revision
+                    || status.valid_until <= 100
+                    || status.revoked
+                {
+                    return Err(refused("revocation state does not permit consumption"));
+                }
+                consume(ledger, &permit, SCOPE, now)
+            };
         for (snapshot, current_revision) in [
             (None, Some(7)),
             (Some(status), None),
@@ -190,7 +191,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                consume_with_status(snapshot, current_revision)
+                consume_with_status(&ledger, snapshot, current_revision)
                     .unwrap_err()
                     .kind(),
                 io::ErrorKind::PermissionDenied
@@ -198,9 +199,20 @@ mod tests {
             assert_eq!(fs::read_dir(&tmp.0).unwrap().count(), 0);
         }
 
+        let eligible = Ledger::new();
+        let eligible_fd = File::open(&eligible.0).unwrap();
+        consume_with_status(&eligible_fd, Some(status), Some(7)).unwrap();
+        assert_eq!(
+            consume_with_status(&eligible_fd, Some(status), Some(7))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(fs::read_dir(&eligible.0).unwrap().count(), 1);
+
         revoke(&ledger, permit.id).unwrap();
         assert_eq!(
-            consume_with_status(Some(status), Some(7))
+            consume_with_status(&ledger, Some(status), Some(7))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::PermissionDenied
