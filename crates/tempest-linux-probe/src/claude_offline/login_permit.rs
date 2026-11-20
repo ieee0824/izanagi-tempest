@@ -176,6 +176,36 @@ mod tests {
     }
 
     #[test]
+    fn failed_directory_sync_preserves_the_closed_permit() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let tmp = Ledger::new();
+        let unsyncable = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(&tmp.0)
+            .unwrap();
+        let now = Instant::now();
+        let permit = Permit {
+            id: 4,
+            expires_at: now + Duration::from_secs(60),
+            scope: SCOPE,
+        };
+        assert_eq!(
+            consume(&unsyncable, &permit, SCOPE, now)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EBADF)
+        );
+        assert!(tmp.0.join(format!("{:032x}", permit.id)).is_file());
+        let ledger = File::open(&tmp.0).unwrap();
+        assert_eq!(
+            consume(&ledger, &permit, SCOPE, now).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
     fn commits_before_start_and_rejects_concurrent_reuse() {
         let tmp = Ledger::new();
         let ledger = File::open(&tmp.0).unwrap();

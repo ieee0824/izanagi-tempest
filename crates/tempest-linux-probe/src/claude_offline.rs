@@ -2536,6 +2536,73 @@ mod tests {
             b"replacement"
         );
 
+        let scope = login_permit::Scope {
+            executable_sha256: BUSYBOX.sha256,
+            arguments: &LOGIN_ARGS,
+            authority: login_connect::AUTHORITY,
+            target_id: "synthetic-recovery",
+            approved_ips_revision: 1,
+        };
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        use std::time::{Duration, Instant};
+        let key = Ed25519KeyPair::from_seed_unchecked(&[5; 32]).unwrap();
+        let public_key = key.public_key().as_ref().try_into().unwrap();
+        let consume_signed = |ledger: &File, signed: &[u8], signature: &[u8]| {
+            let now = Instant::now();
+            let id = login_handoff::verify_handoff(public_key, signed, signature, scope, 130, 100)?;
+            login_permit::consume(
+                ledger,
+                &login_permit::Permit {
+                    id,
+                    expires_at: now + Duration::from_secs(30),
+                    scope,
+                },
+                scope,
+                now,
+            )
+        };
+        let consume = |id| {
+            let (signed, signature) = login_handoff::signed_fixture(&key, id, scope, 140);
+            consume_signed(&parent, &signed, signature.as_ref())
+        };
+        let entries_before = fs::read_dir(&path).unwrap().count();
+        let (mut altered, signature) = login_handoff::signed_fixture(&key, 5, scope, 140);
+        altered.push(b' ');
+        assert_eq!(
+            consume_signed(&parent, &altered, signature.as_ref())
+                .unwrap_err()
+                .to_string(),
+            "invalid handoff signature"
+        );
+        let wrong_target = login_permit::Scope {
+            target_id: "different-target",
+            ..scope
+        };
+        let (signed, signature) = login_handoff::signed_fixture(&key, 6, wrong_target, 140);
+        assert_eq!(
+            consume_signed(&parent, &signed, signature.as_ref())
+                .unwrap_err()
+                .to_string(),
+            "handoff scope mismatch"
+        );
+        assert_eq!(fs::read_dir(&path).unwrap().count(), entries_before);
+        let unsyncable = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(&path)
+            .unwrap();
+        let (signed, signature) = login_handoff::signed_fixture(&key, 7, scope, 140);
+        assert_eq!(
+            consume_signed(&unsyncable, &signed, signature.as_ref())
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EBADF)
+        );
+        assert_eq!(
+            consume(7).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        consume(1).unwrap();
         let retained = WorkArea::create(&parent, &path).unwrap();
         let error = supervised(&parent, &retained, |scratch, _, control, _| {
             fs::write(scratch.join("artifact-0"), b"retained")?;
@@ -2553,16 +2620,22 @@ mod tests {
             b"retained"
         );
 
-        for timeout_case in [false, true] {
+        assert_eq!(
+            consume(1).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+
+        for (permit_id, timeout_case) in [(2, false), (3, true)] {
             use std::{process::Command, time::Duration};
+            consume(permit_id).unwrap();
             let failed = WorkArea::create(&parent, &path).unwrap();
             let error = supervised(&parent, &failed, |scratch, _, control, reaped| {
                 fs::write(scratch.join("artifact-0"), b"dummy-failure")?;
                 request_cli_start(control)?;
                 let mut command = Command::new(if timeout_case {
-                    "/bin/sleep"
+                    std::path::PathBuf::from("/bin/sleep")
                 } else {
-                    "/bin/false"
+                    scratch.join("absent-executable")
                 });
                 let deadline = if timeout_case {
                     command.arg("60");
@@ -2586,9 +2659,15 @@ mod tests {
                 "offline CLI diagnostic failed; work removed after verified termination; signal=0"
             );
             assert!(!failed.path.exists());
+            assert_eq!(
+                consume(permit_id).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
         }
 
+        consume(4).unwrap();
         let restarted = WorkArea::create(&parent, &path).unwrap();
+        assert_ne!(retained.path, restarted.path);
         assert_eq!(
             supervised(&parent, &restarted, |scratch, _, control, reaped| {
                 fs::write(scratch.join("artifact-0"), b"control")?;
@@ -2604,6 +2683,10 @@ mod tests {
             (1, 2)
         );
         assert!(!restarted.path.exists());
+        assert_eq!(
+            fs::read(retained.path.join("artifact-0")).unwrap(),
+            b"retained"
+        );
         fs::remove_dir_all(path).unwrap();
     }
 
