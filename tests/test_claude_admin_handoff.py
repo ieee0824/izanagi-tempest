@@ -24,7 +24,8 @@ class VerifiedPair:
 
 @dataclass(frozen=True)
 class RegistrySnapshot:
-    checked_at: int = 100
+    checked_at: int | None = 100
+    revision: int | None = 1
     approver_key_id: str = "fixture-approver"
     authorized: bool = True
     revoked: bool | None = False
@@ -32,8 +33,12 @@ class RegistrySnapshot:
 
 
 def handoff_candidate(
-    pair: VerifiedPair, registry: RegistrySnapshot, now: int,
+    pair: VerifiedPair,
+    registry: RegistrySnapshot,
+    now: int,
     approved_choice: str = "fixture-approve",
+    *,
+    current_revision: int | None,
 ) -> dict[str, str]:
     if not (pair.request_verified and pair.decision_verified and pair.target_verified):
         raise ValueError("unverified approval pair")
@@ -53,8 +58,14 @@ def handoff_candidate(
         or not registry.authorized
     ):
         raise ValueError("unauthorized approver")
-    if registry.checked_at != now or registry.revoked is not False:
+    if registry.revoked is not False or registry.checked_at is None:
         raise ValueError("revocation state unavailable or revoked")
+    if registry.revision is None or current_revision is None:
+        raise ValueError("registry revision unavailable")
+    if registry.revision != current_revision:
+        raise ValueError("registry changed since lookup")
+    if not 0 <= now - registry.checked_at < 5:
+        raise ValueError("registry lookup outside freshness window")
     return {"target_id": registry.target_id, "request_digest": pair.request_digest}
 
 
@@ -63,7 +74,7 @@ class AdminHandoffTest(unittest.TestCase):
         pair = VerifiedPair()
         registry = RegistrySnapshot()
         self.assertEqual(
-            handoff_candidate(pair, registry, 100),
+            handoff_candidate(pair, registry, 100, current_revision=1),
             {"target_id": registry.target_id, "request_digest": pair.request_digest},
         )
 
@@ -78,19 +89,46 @@ class AdminHandoffTest(unittest.TestCase):
             ("decision_request_digest", "0" * 64, "approval request mismatch"),
         ]:
             with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, error):
-                handoff_candidate(replace(pair, **{field: value}), registry, 100)
+                handoff_candidate(replace(pair, **{field: value}), registry, 100, current_revision=1)
 
         for field, value, error in [
             ("target_id", "", "unregistered target"),
             ("target_id", "another-target", "unregistered target"),
             ("approver_key_id", "another-key", "unauthorized approver"),
             ("authorized", False, "unauthorized approver"),
-            ("checked_at", 99, "revocation state unavailable"),
+            ("checked_at", None, "revocation state unavailable"),
             ("revoked", None, "revocation state unavailable"),
             ("revoked", True, "revocation state unavailable"),
         ]:
             with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, error):
-                handoff_candidate(pair, replace(registry, **{field: value}), 100)
+                handoff_candidate(pair, replace(registry, **{field: value}), 100, current_revision=1)
+
+
+    def test_requires_fresh_lookup_at_current_revision(self):
+        pair = VerifiedPair()
+        snapshot = RegistrySnapshot()
+        expected = {"target_id": snapshot.target_id, "request_digest": pair.request_digest}
+        self.assertEqual(handoff_candidate(pair, snapshot, 104, current_revision=1), expected)
+
+        published = []
+        for lookup, now, revision, error in [
+            (snapshot, 105, 1, "outside freshness window"),
+            (snapshot, 99, 1, "outside freshness window"),
+            (snapshot, 104, 2, "changed since lookup"),
+            (snapshot, 104, None, "revision unavailable"),
+            (replace(snapshot, revision=None), 104, 1, "revision unavailable"),
+            (replace(snapshot, checked_at=None), 104, 1, "state unavailable"),
+        ]:
+            with self.subTest(now=now, revision=revision, lookup=lookup):
+                with self.assertRaisesRegex(ValueError, error):
+                    published.append(
+                        handoff_candidate(pair, lookup, now, current_revision=revision)
+                    )
+                self.assertEqual(published, [])
+
+        refreshed = replace(snapshot, revision=2, checked_at=104)
+        published.append(handoff_candidate(pair, refreshed, 104, current_revision=2))
+        self.assertEqual(published, [expected])
 
 
 def pair_from_client_detail(detail: dict, target_id: str) -> VerifiedPair:
@@ -124,13 +162,13 @@ class FixedClientHandoffTest(unittest.TestCase):
         # First option in the client's pinned test vector, independent of the response.
         choice = "85f4ded4-025d-4b71-b44b-298bbca40ad1"
         pair = pair_from_client_detail(fixture["detail"], registry.target_id)
-        result = handoff_candidate(pair, registry, 100, choice)
+        result = handoff_candidate(pair, registry, 100, choice, current_revision=1)
         self.assertEqual(result["request_digest"], pair.decision_request_digest)
         for invalid in (
             replace(registry, authorized=False),
-            replace(registry, checked_at=99),
+            replace(registry, checked_at=95),
             replace(registry, revoked=None),
             replace(registry, revoked=True),
         ):
             with self.assertRaises(ValueError):
-                handoff_candidate(pair, invalid, 100, choice)
+                handoff_candidate(pair, invalid, 100, choice, current_revision=1)
