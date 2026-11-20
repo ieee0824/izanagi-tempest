@@ -2243,7 +2243,7 @@ fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> 
     let scope =
         validate_manual_login_policy(policy.as_slice())?.ok_or(io::ErrorKind::InvalidData)?;
     let manifest_sha256 = format!("{:x}", Sha256::digest(&manifest_bytes));
-    diagnose_manual_login_handoff_with(
+    let inputs = diagnose_manual_login_handoff_with(
         parent,
         &scope,
         |name, _| {
@@ -2255,6 +2255,56 @@ fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> 
         |id, target_id| {
             verify_login_revocation(&authority, current, &manifest_sha256, id, target_id).map(Some)
         },
+    )?
+    .ok_or_else(|| io::Error::other("publication handoff missing"))?;
+    recheck_login_generation(
+        publication,
+        &authority,
+        current,
+        &generation,
+        &manifest_bytes,
+    )?;
+    // The publication lock remains held through this final read-only check.
+    let revocation = verify_login_revocation(
+        &authority,
+        current,
+        &manifest_sha256,
+        inputs.id,
+        &inputs.target_id,
+    )?;
+    inputs.recheck(parent, &ARTIFACTS[0], revocation)?;
+    eprintln!("manual login final diagnostic verified");
+    Ok(())
+}
+
+fn recheck_login_generation(
+    publication: &File,
+    authority: &File,
+    revision: u64,
+    generation: &File,
+    manifest: &[u8],
+) -> io::Result<()> {
+    match open_login_child(publication, std::ffi::OsStr::new("pending"), 0) {
+        Ok(_) => return Err(io::Error::other("publication unconfirmed")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    if read_login_revision(publication, "current")? != revision
+        || read_login_revision(authority, "minimum")? > revision
+        || fd_identity(&open_private_login_directory(
+            publication,
+            &revision.to_string(),
+        )?)? != fd_identity(generation)?
+        || read_login_child(generation, "manifest", 4096)? != manifest
+    {
+        return Err(io::Error::other(
+            "publication changed during final diagnostic",
+        ));
+    }
+    verify_approved_login_manifest(
+        &read_login_child(authority, "approved-generation", 4096)?,
+        revision,
+        manifest,
     )
 }
 
@@ -2312,9 +2362,35 @@ fn read_bounded_login_input(input: File, limit: u64) -> io::Result<Vec<u8>> {
 
 struct VerifiedLoginInputs {
     id: u128,
+    target_id: String,
     expires: std::time::Instant,
     executable: File,
     ledger: File,
+}
+
+impl VerifiedLoginInputs {
+    fn recheck(
+        &self,
+        parent: &File,
+        artifact: &Artifact<'_>,
+        revocation_deadline: std::time::Instant,
+    ) -> io::Result<()> {
+        let current = open_input(artifact).map_err(|fault| io::Error::other(fault.reason()))?;
+        if fd_identity(&self.executable)? != fd_identity(&current)?
+            || fd_identity(&self.ledger)? != fd_identity(&open_login_ledger(parent)?)?
+        {
+            return Err(io::Error::other(
+                "pinned login input changed during final diagnostic",
+            ));
+        }
+        verify_artifact(&self.executable, artifact)
+            .map_err(|fault| io::Error::other(fault.reason()))?;
+        check_unused_login_permit(&self.ledger, self.id)?;
+        if std::time::Instant::now() >= self.expires.min(revocation_deadline) {
+            return Err(io::Error::other("handoff expired during final diagnostic"));
+        }
+        Ok(())
+    }
 }
 
 fn verify_login_handoff(
@@ -2354,6 +2430,7 @@ fn diagnose_manual_login_handoff(parent: &File, scope: &LoginPolicyScope) -> io:
         |name, limit| read_login_child(parent, name, limit),
         |_, _| Ok(None),
     )
+    .map(drop)
 }
 
 fn diagnose_manual_login_handoff_with(
@@ -2361,10 +2438,10 @@ fn diagnose_manual_login_handoff_with(
     scope: &LoginPolicyScope,
     read: impl Fn(&str, u64) -> io::Result<Vec<u8>>,
     revocation_deadline: impl Fn(u128, &str) -> io::Result<Option<std::time::Instant>>,
-) -> io::Result<()> {
+) -> io::Result<Option<VerifiedLoginInputs>> {
     let payload = match read("claude-login-diagnostic-handoff", 4096) {
         Ok(payload) => payload,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
     let result = (|| {
@@ -2410,6 +2487,7 @@ fn diagnose_manual_login_handoff_with(
     let ledger_result = (|| {
         let inputs = VerifiedLoginInputs {
             id,
+            target_id,
             expires,
             executable,
             ledger: ledger?,
@@ -2418,14 +2496,14 @@ fn diagnose_manual_login_handoff_with(
         if std::time::Instant::now() >= inputs.expires {
             return Err(io::Error::other("handoff expired during preflight"));
         }
-        Ok::<_, io::Error>(())
+        Ok::<_, io::Error>(inputs)
     })();
-    ledger_result.map_err(|error| {
+    let inputs = ledger_result.map_err(|error| {
         eprintln!("manual login ledger diagnostic refused: {error}");
         io::Error::from(io::ErrorKind::InvalidData)
     })?;
     eprintln!("manual login ledger diagnostic verified");
-    Ok(())
+    Ok(Some(inputs))
 }
 
 fn registered_diagnostic_target(record: &[u8], hostname: &str) -> io::Result<String> {
@@ -2806,6 +2884,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     )?;
                     let inputs = VerifiedLoginInputs {
                         id,
+                        target_id: configured.target_id.to_owned(),
                         expires: policy_expiry.min(expiry),
                         executable: verify_fixed_artifact(&BUSYBOX)
                             .map_err(|fault| io::Error::other(fault.reason()))?,
@@ -3058,6 +3137,103 @@ mod tests {
         verify_approved_login_manifest(&new_approval, 2, new_manifest).unwrap();
         assert!(verify_approved_login_manifest(&old_approval, 2, old_manifest).is_err());
         assert!(verify_approved_login_manifest(&new_approval, 2, old_manifest).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires a root-owned fixture under /var/lib"]
+    fn final_login_diagnostic_rejects_replaced_inputs_and_expiry() {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+
+        let path = Path::new("/var/lib").join(format!(
+            "tempest-final-login-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        let parent = lock_parent(&path).unwrap();
+        let ledger_path = path.join("claude-login-diagnostic-ledger");
+        let publication_path = path.join("publication");
+        let authority_path = path.join("authority");
+        let generation_path = publication_path.join("1");
+        for dir in [
+            &ledger_path,
+            &publication_path,
+            &authority_path,
+            &generation_path,
+        ] {
+            fs::create_dir(dir).unwrap();
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let write = |file: &Path, bytes: &[u8]| {
+            let mut output = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(file)
+                .unwrap();
+            output.write_all(bytes).unwrap();
+        };
+        let artifact_path = path.join("artifact");
+        write(&artifact_path, b"dummy");
+        let artifact = Artifact {
+            source: artifact_path.to_str().unwrap(),
+            bytes: 5,
+            sha256: "b5a2c96250612366ea272ffac6d9744aaf4b45aacd96aa7cfcb931ee3b558259",
+            targets: &[],
+        };
+        let inputs = VerifiedLoginInputs {
+            id: 7,
+            target_id: "synthetic-final-diagnostic".into(),
+            expires: Instant::now() + Duration::from_secs(10),
+            executable: verify_fixed_artifact(&artifact).unwrap(),
+            ledger: open_login_ledger(&parent).unwrap(),
+        };
+        let fresh = inputs.expires;
+        inputs.recheck(&parent, &artifact, fresh).unwrap();
+        assert!(inputs.recheck(&parent, &artifact, Instant::now()).is_err());
+        fs::write(&artifact_path, b"wrong").unwrap();
+        assert!(inputs.recheck(&parent, &artifact, fresh).is_err());
+        fs::write(&artifact_path, b"dummy").unwrap();
+        let saved_artifact = path.join("original-artifact");
+        fs::rename(&artifact_path, &saved_artifact).unwrap();
+        write(&artifact_path, b"dummy");
+        assert!(inputs.recheck(&parent, &artifact, fresh).is_err());
+        fs::rename(&saved_artifact, &artifact_path).unwrap();
+        let saved_ledger = path.join("original-ledger");
+        fs::rename(&ledger_path, &saved_ledger).unwrap();
+        fs::create_dir(&ledger_path).unwrap();
+        fs::set_permissions(&ledger_path, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(inputs.recheck(&parent, &artifact, fresh).is_err());
+        fs::rename(&saved_ledger, &ledger_path).unwrap();
+        let marker = ledger_path.join(format!("{:032x}", inputs.id));
+        write(&marker, b"");
+        assert!(inputs.recheck(&parent, &artifact, fresh).is_err());
+        assert_eq!(fs::read_dir(&ledger_path).unwrap().count(), 1);
+
+        let publication = File::open(&publication_path).unwrap();
+        let authority = File::open(&authority_path).unwrap();
+        let generation = File::open(&generation_path).unwrap();
+        let manifest = b"dummy manifest";
+        write(&publication_path.join("current"), b"1");
+        write(&authority_path.join("minimum"), b"1");
+        write(&generation_path.join("manifest"), manifest);
+        write(
+            &authority_path.join("approved-generation"),
+            format!(
+                r#"{{"revision":1,"manifest_sha256":"{:x}"}}"#,
+                Sha256::digest(manifest)
+            )
+            .as_bytes(),
+        );
+        recheck_login_generation(&publication, &authority, 1, &generation, manifest).unwrap();
+        fs::rename(&generation_path, publication_path.join("former")).unwrap();
+        fs::create_dir(&generation_path).unwrap();
+        fs::set_permissions(&generation_path, fs::Permissions::from_mode(0o700)).unwrap();
+        write(&generation_path.join("manifest"), manifest);
+        assert!(
+            recheck_login_generation(&publication, &authority, 1, &generation, manifest).is_err()
+        );
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
