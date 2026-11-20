@@ -271,17 +271,17 @@ class RevocationPublication:
         self.authority = authority
 
     @staticmethod
-    def replace(directory, name, content):
+    def replace(directory, name, content, sync_parent=Publication.sync):
         staged = directory / "next"
         Publication.write(staged, content)
         staged.replace(directory / name)
-        Publication.sync(directory)
+        sync_parent(directory)
 
-    def commit_record(self, revision, payload):
+    def commit_record(self, revision, payload, sync_parent=Publication.sync):
         record = {"revision": revision, "sha256": hashlib.sha256(payload).hexdigest()}
-        self.replace(self.authority, "committed", json.dumps(record).encode())
+        self.replace(self.authority, "committed", json.dumps(record).encode(), sync_parent)
 
-    def publish(self, sync_after_removal):
+    def publish(self, sync_after_removal, *, sync_authority=Publication.sync):
         with self.publication.exclusive():
             root = self.publication.root
             Publication.write(root / "revocation-pending", b"2")
@@ -291,9 +291,9 @@ class RevocationPublication:
             self.replace(root, "revocation-state", payload)
             (root / "revocation-pending").unlink()
             sync_after_removal(root)
-            self.commit_record(2, payload)
+            self.commit_record(2, payload, sync_authority)
 
-    def inspect(self, payload=None):
+    def inspect(self, payload=None, *, confirm_authority=Publication.sync):
         root = self.publication.root
         with self.publication.lock.open("rb") as lock:
             fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
@@ -310,6 +310,9 @@ class RevocationPublication:
                 or hashlib.sha256(payload).hexdigest() != committed["sha256"]
             ):
                 raise ValueError("revocation update unconfirmed")
+            # Visibility of the renamed record does not prove its durability.
+            # The reader holds the shared lock while confirming the parent.
+            confirm_authority(self.authority)
             return payload
 
     def confirm_fixture(self):
@@ -380,3 +383,52 @@ class RevocationPublicationTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "revocation update unconfirmed"):
                     reopened.inspect(candidate)
             self.assertEqual(list(publication.ledger.iterdir()), [publication.ledger / "used"])
+
+    def test_visible_commit_requires_successful_independent_parent_sync(self):
+        import multiprocessing
+
+        with tempfile.TemporaryDirectory() as storage:
+            root = Path(storage) / "publication"
+            authority = Path(storage) / "authority"
+            root.mkdir()
+            authority.mkdir()
+            publication = Publication(root)
+            publication.ledger.mkdir()
+            Publication.write(publication.lock, b"")
+            before = publication.ledger.stat().st_ctime_ns
+            updater = RevocationPublication(publication, authority)
+            updater.replace(authority, "revocation-minimum", b"1")
+            updater.replace(root, "revocation-state", b"1:allowed")
+            updater.commit_record(1, b"1:allowed")
+
+            def fail_sync(_):
+                raise OSError(errno.EIO, "independent parent sync failed")
+
+            def write_then_exit():
+                def stop_on_sync_failure(directory):
+                    try:
+                        fail_sync(directory)
+                    except OSError as error:
+                        os._exit(37 if error.errno == errno.EIO else 38)
+
+                updater.publish(Publication.sync, sync_authority=stop_on_sync_failure)
+
+            writer = multiprocessing.get_context("fork").Process(target=write_then_exit)
+            writer.start()
+            writer.join(timeout=5)
+            if writer.is_alive():
+                writer.kill()
+                writer.join()
+                self.fail("publication writer did not exit")
+            self.assertEqual(writer.exitcode, 37)
+            self.assertFalse((root / "revocation-pending").exists())
+            self.assertEqual(json.loads((authority / "committed").read_bytes())["revision"], 2)
+
+            reopened = RevocationPublication(Publication(root), authority)
+            with self.assertRaisesRegex(OSError, "independent parent sync failed"):
+                reopened.inspect(confirm_authority=fail_sync)
+            self.assertEqual(publication.ledger.stat().st_ctime_ns, before)
+            self.assertEqual(list(publication.ledger.iterdir()), [])
+            self.assertEqual(reopened.inspect(), b"2:revoked")
+            with self.assertRaisesRegex(ValueError, "revocation update unconfirmed"):
+                reopened.inspect(b"1:allowed")
