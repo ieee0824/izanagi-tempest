@@ -89,7 +89,7 @@ def check_signed_publication(config, ledger, check):
         revocation = b"izanagi-tempest:manual-login-revocation:fixture-v1\0" + encode({
             "revision": 1, "revocation_revision": 1, "manifest_sha256": digest(manifest),
             "permit_id": permit_id, "target_id": target, "issued_unix_seconds": now,
-            "expires_unix_seconds": now + 25, "revoked": False,
+            "expires_unix_seconds": now + 25, "revoked": case == "revoked",
         })
         write(authority / "revocation-state", revocation)
         write(authority / "revocation-signature", revocation_key.sign(revocation))
@@ -102,6 +102,7 @@ def check_signed_publication(config, ledger, check):
         b"manual login revocation diagnostic verified",
         b"manual login fixed CLI verified",
         b"manual login ledger diagnostic verified",
+        b"manual login final diagnostic verified",
         b"manual login publication diagnostic verified",
     )
     cases = (
@@ -109,6 +110,7 @@ def check_signed_publication(config, ledger, check):
         ("generation", b"publication does not match approved generation", 0),
         ("signature", b"invalid handoff signature", 0),
         ("revocation", b"revocation state does not match independent commit", 1),
+        ("revoked", b"permit revoked", 1),
         ("ledger", b"already consumed or revoked", 3),
     )
     for case, expected, completed in cases:
@@ -121,6 +123,7 @@ def check_signed_publication(config, ledger, check):
                                  ledger.name),
                   "signature": ("revocation-state", FIXED_CLI, ledger.name),
                   "revocation": (FIXED_CLI, ledger.name),
+                  "revoked": (FIXED_CLI, ledger.name),
               }.get(case, ()))
 
 
@@ -151,7 +154,7 @@ def exercise(binary, root, signed=False):
                     ["/usr/bin/strace", "-f", "-qq", "-o", trace, "-e",
                      "trace=%process,%network,%file", binary, *args],
                     stdin=fds[endpoints[0]], stdout=fds[endpoints[1]], stderr=fds[endpoints[2]],
-                    env={} if env is None else env, timeout=5,
+                    env={} if env is None else env, timeout=15 if stages else 5,
                 )
                 os.set_blocking(master, False)
                 os.set_blocking(other_master, False)
