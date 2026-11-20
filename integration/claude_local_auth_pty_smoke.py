@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import errno
+import hashlib
 import json
 import time
 import os
@@ -226,13 +227,13 @@ def connect_response(proxy):
     return response
 
 
-def probe_local_tls(cert_pem, expire=False):
+def probe_local_tls(cert_pem, expire=False, revoke=False):
     context = ssl.create_default_context(cadata=cert_pem)
     names = (("platform.claude.com", True),)
-    if not expire:
+    if not (expire or revoke):
         names += (("mismatch.invalid", False),)
     for name, expected in names:
-        with socket.create_connection(("127.0.0.1", 39271), timeout=6 if expire else 3) as proxy:
+        with socket.create_connection(("127.0.0.1", 39271), timeout=6 if (expire or revoke) else 3) as proxy:
             if connect_response(proxy) != b"HTTP/1.1 200 Connection Established\r\n\r\n":
                 raise RuntimeError("fixed TLS CONNECT did not open")
             try:
@@ -242,22 +243,34 @@ def probe_local_tls(cert_pem, expire=False):
                     tls.sendall(b"PING")
                     if tls.recv(1) != b"K":
                         raise RuntimeError("missing TLS fixture response")
-                    if expire:
+                    if revoke:
+                        print("ready", flush=True)
+                        if sys.stdin.readline() != "probe\n":
+                            raise RuntimeError("missing stale-notice probe")
+                        tls.sendall(b"PING")
+                        if tls.recv(1) != b"K":
+                            raise RuntimeError("old revocation closed the active tunnel")
+                        print("live", flush=True)
+                    if expire or revoke:
                         if tls.recv(1) != b"":
-                            raise RuntimeError("TLS tunnel survived signed freshness expiry")
+                            raise RuntimeError("TLS tunnel survived the signed stop")
                     else:
                         tls.unwrap().close()
             except ssl.SSLCertVerificationError as error:
                 if expected or error.verify_code != 62:
                     raise
 
-    if expire:
+    if expire or revoke:
         with socket.create_connection(("127.0.0.1", 39271), timeout=3) as proxy:
             if connect_response(proxy) != b"HTTP/1.1 403 Forbidden\r\n\r\n":
                 raise RuntimeError("new CONNECT was not rejected after expiry")
 
 
-def check_signed_tls(binary, temporary, record, check_evidence, expire=False):
+def check_signed_tls(binary, temporary, record, check_evidence, expire=False, signing_key=None):
+    revoke = signing_key is not None
+    terminal_case = expire or revoke
+    notice = CONFIG / ".synthetic-live-revocation.json"
+    pending = CONFIG / ".synthetic-live-revocation.pending"
     if any(subprocess.check_output(["ip", family, "route", "show"]).strip()
            for family in ("-4", "-6")):
         raise RuntimeError("signed TLS requires an outer namespace without routes")
@@ -274,17 +287,18 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False):
     identities = {}
 
     def exchanges(listener):
-        for expected in ((True,) if expire else (True, False)):
+        for expected in ((True,) if terminal_case else (True, False)):
             client, _ = listener.accept()
             with client:
-                client.settimeout(6 if expire else 4)
+                client.settimeout(6 if terminal_case else 4)
                 try:
                     with server_context.wrap_socket(client, server_side=True) as tls:
                         with tls.makefile("rb") as incoming:
-                            if not expected or incoming.read(4) != b"PING":
-                                raise RuntimeError("unexpected exchange with the TLS fixture")
-                        tls.sendall(b"K")
-                        if expire:
+                            for _ in range(2 if revoke else 1):
+                                if not expected or incoming.read(4) != b"PING":
+                                    raise RuntimeError("unexpected exchange with the TLS fixture")
+                                tls.sendall(b"K")
+                        if terminal_case:
                             if tls.recv(1) != b"":
                                 raise RuntimeError("TLS upstream survived signed freshness expiry")
                         else:
@@ -293,27 +307,78 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False):
                     if expected or error.reason != "SSLV3_ALERT_BAD_CERTIFICATE":
                         raise
 
+    def send_notice(generation):
+        now = int(time.time())
+        payload = "izanagi-tempest:manual-login-revocation:fixture-v1\0" + json.dumps({
+            "revision": 1, "revocation_revision": 1,
+            "manifest_sha256": hashlib.sha256(generation.encode()).hexdigest(),
+            "permit_id": record.name, "target_id": "synthetic-target",
+            "issued_unix_seconds": now, "expires_unix_seconds": now + 15, "revoked": True,
+        })
+        signed = Path(temporary) / "live-revocation-payload"
+        signed.write_bytes(payload.encode())
+        signature = subprocess.check_output([
+            "/usr/bin/openssl", "pkeyutl", "-sign", "-rawin", "-inkey", signing_key, "-in", signed,
+        ])
+        with os.fdopen(os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as out:
+            json.dump({"payload": payload, "signature": list(signature)}, out)
+        pending.replace(notice)
+
     def observe_and_probe(pid):
         child = verify_signed_child_environment(pid)
         (work,) = WORK.iterdir()
         for directory in (work, CONFIG / work.name):
             metadata = directory.stat()
             identities[directory] = (metadata.st_dev, metadata.st_ino)
-        subprocess.run([
+        probe = "--probe-revoked-tls" if revoke else (
+            "--probe-expiring-tls" if expire else "--probe-local-tls"
+        )
+        command = [
             "/usr/bin/nsenter", "--net=" + str(Path(f"/proc/{child}/ns/net")), "--",
             "/usr/bin/setpriv", "--reuid", "999", "--regid", "988", "--clear-groups",
-            sys.executable, str(Path(__file__).resolve()),
-            "--probe-expiring-tls" if expire else "--probe-local-tls",
-        ], input=cert_pem, text=True, timeout=8 if expire else 5, check=True, env={})
+            sys.executable, str(Path(__file__).resolve()), probe,
+        ]
+        if not revoke:
+            subprocess.run(command, input=cert_pem, text=True, timeout=8 if expire else 5,
+                           check=True, env={})
+            return
+
+        def observe_line(process, line):
+            if not select.select([process.stdout], [], [], 3)[0] or process.stdout.readline() != line:
+                raise RuntimeError(f"TLS revocation probe did not report {line.strip()}")
+
+        work_id, config_id = identities.values()
+        generation = ":".join(str(value) for value in (*work_id, *config_id))
+        stale = ":".join(str(value) for value in (*work_id, config_id[0], config_id[1] + 1))
+        with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              text=True, env={}) as process:
+            try:
+                process.stdin.write(json.dumps(cert_pem) + "\n")
+                process.stdin.flush()
+                observe_line(process, "ready\n")
+                send_notice(stale)
+                time.sleep(0.2)
+                process.stdin.write("probe\n")
+                process.stdin.flush()
+                observe_line(process, "live\n")
+                send_notice(generation)
+                if process.wait(timeout=5) != 0:
+                    raise RuntimeError("active-generation signed revocation did not close TLS")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+
 
     with socket.create_server(("127.0.0.1", 39275)) as listener, ThreadPoolExecutor(1) as pool:
         listener.settimeout(8)
         served = pool.submit(exchanges, listener)
         fixture(
-            [binary, "signed-tls-expiry" if expire else "signed-tls"],
-            {}, complete_probe=True, success=POSITIVE + REMOVED,
-            observe_child=None if expire else observe_and_probe,
-            after_probe=observe_and_probe if expire else None,
+            [binary, "signed-tls-revocation" if revoke else ("signed-tls-expiry" if expire else "signed-tls")],
+            {}, complete_probe=True,
+            success=(b"synthetic administrator stop: PID namespace reaped\n" if revoke else b"")
+            + POSITIVE + REMOVED,
+            observe_child=None if terminal_case else observe_and_probe,
+            after_probe=observe_and_probe if terminal_case else None,
             check_evidence=lambda stderr: check_evidence(stderr, record, identities, True),
         )
         served.result()
@@ -327,6 +392,10 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False):
             raise RuntimeError("unexpected TLS upstream connection")
     if any(directory.exists() for directory in identities):
         raise RuntimeError("TLS fixture generation was not recovered")
+    if revoke:
+        print("signed TLS revocation: stale notice ignored; active notice closed both TLS peers; "
+              "next CONNECT denied without upstream; same permit and generations recovered")
+        return
     if expire:
         print("signed TLS freshness: both TLS peers closed; next CONNECT denied without upstream; "
               "same permit and generations recovered")
@@ -354,6 +423,9 @@ def check_signed_permits(binary, tls=False):
     failed_sync = CONFIG / f"{12:032x}"
     tls_record = CONFIG / f"{13:032x}"
     tls_expiry_record = CONFIG / f"{14:032x}"
+    tls_revoked_record = CONFIG / f"{15:032x}"
+    revocation_files = {CONFIG / ".synthetic-live-revocation.json",
+                        CONFIG / ".synthetic-live-revocation.pending"}
     closure_records = {record for _, record, _ in closure_cases} | {missing_sync, failed_sync}
     stop_request = CONFIG / ".synthetic-stop-request.json"
     pending_stop = CONFIG / ".synthetic-stop-request.pending"
@@ -589,13 +661,18 @@ def check_signed_permits(binary, tls=False):
                 check_signed_tls(binary, tmp, tls_record, check_recovery_evidence)
                 write_handoff(key, tls_expiry_record, 5)
                 check_signed_tls(binary, tmp, tls_expiry_record, check_recovery_evidence, expire=True)
+                write_handoff(key, tls_revoked_record, 45)
+                check_signed_tls(binary, tmp, tls_revoked_record, check_recovery_evidence, signing_key=key)
     finally:
-        for path in inputs | {used, expired, stopped, later, stop_request, pending_stop, tls_record, tls_expiry_record} | set(mismatches.values()) | closure_records:
+        for path in inputs | {used, expired, stopped, later, stop_request, pending_stop, tls_record, tls_expiry_record, tls_revoked_record} | revocation_files | set(mismatches.values()) | closure_records:
             path.unlink(missing_ok=True)
     assert_empty()
 
 
 def main():
+    if sys.argv[1:] == ["--probe-revoked-tls"] and os.geteuid() == 999:
+        probe_local_tls(json.loads(sys.stdin.readline()), revoke=True)
+        return 0
     if len(sys.argv) == 2 and sys.argv[1] in (
         "--probe-local-tls", "--probe-expiring-tls"
     ) and os.geteuid() == 999:

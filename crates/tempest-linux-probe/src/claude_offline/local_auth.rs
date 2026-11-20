@@ -38,6 +38,7 @@ pub(super) enum Case {
     SignedPermit,
     SignedTls,
     SignedTlsExpiry,
+    SignedTlsRevocation,
     SignedAdministratorStop,
     PermitExpiresBeforeGrant,
     WrongGrantId,
@@ -68,6 +69,7 @@ impl Case {
             "signed-permit" => Self::SignedPermit,
             "signed-tls" => Self::SignedTls,
             "signed-tls-expiry" => Self::SignedTlsExpiry,
+            "signed-tls-revocation" => Self::SignedTlsRevocation,
             "signed-administrator-stop" => Self::SignedAdministratorStop,
             "permit-expires-before-grant" => Self::PermitExpiresBeforeGrant,
             "wrong-grant-id" => Self::WrongGrantId,
@@ -95,6 +97,7 @@ impl Case {
                 | Self::SignedPermit
                 | Self::SignedTls
                 | Self::SignedTlsExpiry
+                | Self::SignedTlsRevocation
                 | Self::SignedAdministratorStop
                 | Self::PermitExpiresBeforeGrant
                 | Self::WrongGrantId
@@ -263,6 +266,7 @@ impl LocalPolicy {
         case: Case,
         upstream_network: &File,
         expires: std::time::Instant,
+        stop: Option<&super::FixtureStop>,
     ) -> io::Result<Gateway> {
         if matches!(case, Case::MissingGateway) {
             return Err(io::Error::other("fixed gateway unavailable"));
@@ -305,7 +309,7 @@ impl LocalPolicy {
                 };
                 sender.write_all(b"G")?;
                 drop(sender);
-                login_connect::serve_fixture(&self.listeners[0], upstream, case, expires)
+                login_connect::serve_fixture(&self.listeners[0], upstream, case, expires, stop)
             })()
             .inspect_err(|error| {
                 if matches!(case, Case::SignedTls) {

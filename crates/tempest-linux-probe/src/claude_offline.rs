@@ -717,10 +717,52 @@ struct FixtureStopTarget {
 struct FixtureStop {
     request: std::path::PathBuf,
     target: FixtureStopTarget,
+    signed: Option<FixtureRevocation>,
+}
+
+struct FixtureRevocation {
+    key: [u8; 32],
+    id: u128,
+    target_id: String,
+    manifest: String,
+    revision: u64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureRevocationNotice {
+    payload: String,
+    signature: Vec<u8>,
 }
 
 impl FixtureStop {
     fn requested(&self) -> bool {
+        if let Some(signed) = &self.signed {
+            let verified = (|| -> io::Result<()> {
+                let notice: FixtureRevocationNotice =
+                    serde_json::from_slice(&read_login_input(&self.request, 4096)?)
+                        .map_err(io::Error::other)?;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(io::Error::other)?
+                    .as_secs();
+                verify_revocation_state_with_disposition(
+                    &signed.key,
+                    notice.payload.as_bytes(),
+                    &notice.signature,
+                    (
+                        signed.revision,
+                        &signed.manifest,
+                        signed.id,
+                        &signed.target_id,
+                    ),
+                    now,
+                    true,
+                )?;
+                Ok(())
+            })();
+            return verified.is_ok();
+        }
         read_login_input(&self.request, 512)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<FixtureStopTarget>(&bytes).ok())
@@ -852,6 +894,7 @@ impl FixtureClosure {
                 local_auth::Case::SignedPermit
                     | local_auth::Case::SignedTls
                     | local_auth::Case::SignedTlsExpiry
+                    | local_auth::Case::SignedTlsRevocation
                     | local_auth::Case::MissingConsumptionSync
             ) {
                 eprintln!(
@@ -1281,7 +1324,12 @@ fn run_fixture_with_config(
         let gateway = match (&policy, local_auth) {
             (Some(policy), Some((case, upstream_network, permit))) if case.needs_gateway() => Some(
                 policy
-                    .start_gateway(case, upstream_network, permit.expires)
+                    .start_gateway(
+                        case,
+                        upstream_network,
+                        permit.expires,
+                        permit.administrator_stop.as_ref(),
+                    )
                     .map_err(|error| {
                         eprintln!("local auth gateway refused before grant: {error}");
                         error
@@ -2161,6 +2209,24 @@ fn verify_revocation_state(
     expected: (u64, &str, u128, &str),
     now_unix_seconds: u64,
 ) -> io::Result<(u64, u64)> {
+    verify_revocation_state_with_disposition(
+        key,
+        payload,
+        signature,
+        expected,
+        now_unix_seconds,
+        false,
+    )
+}
+
+fn verify_revocation_state_with_disposition(
+    key: &[u8; 32],
+    payload: &[u8],
+    signature: &[u8],
+    expected: (u64, &str, u128, &str),
+    now_unix_seconds: u64,
+    revoked: bool,
+) -> io::Result<(u64, u64)> {
     use ring::signature::{ED25519, UnparsedPublicKey};
     let (revision, manifest_sha256, permit_id, target_id) = expected;
     UnparsedPublicKey::new(&ED25519, key)
@@ -2178,8 +2244,12 @@ fn verify_revocation_state(
     {
         return Err(io::Error::other("revocation scope mismatch"));
     }
-    if state.revoked {
-        return Err(io::Error::other("permit revoked"));
+    if state.revoked != revoked {
+        return Err(io::Error::other(if state.revoked {
+            "permit revoked"
+        } else {
+            "permit is not revoked"
+        }));
     }
     const MAX_FIXTURE_WINDOW: u64 = 30;
     if state.issued_unix_seconds > now_unix_seconds
@@ -2815,6 +2885,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
         let config_parent = lock_parent(config_path)?;
         let mut signed_permit_id = None;
+        let mut signed_revocation_key = None;
         if matches!(
             local_auth_case,
             Some(
@@ -2822,6 +2893,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     | local_auth::Case::SignedPermit
                     | local_auth::Case::SignedTls
                     | local_auth::Case::SignedTlsExpiry
+                    | local_auth::Case::SignedTlsRevocation
                     | local_auth::Case::SignedAdministratorStop
                     | local_auth::Case::PermitExpiresBeforeGrant
                     | local_auth::Case::WrongGrantId
@@ -2877,6 +2949,9 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     let key: [u8; 32] = read(".synthetic-handoff-key", 32)?
                         .try_into()
                         .map_err(|_| io::ErrorKind::InvalidData)?;
+                    if matches!(local_auth_case, Some(local_auth::Case::SignedTlsRevocation)) {
+                        signed_revocation_key = Some(key);
+                    }
                     let (id, expiry) = verify_login_handoff(
                         &key,
                         &payload,
@@ -2946,6 +3021,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                 eprintln!("synthetic stop target: {permit_id} {device} {inode}");
                 permit.administrator_stop = Some(FixtureStop {
                     request: config_path.join(".synthetic-stop-request.json"),
+                    signed: None,
                     target: FixtureStopTarget {
                         permit_id,
                         device,
@@ -2960,6 +3036,28 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
             Err(cleanup) => io::Error::other(format!("{error}; work cleanup failed: {cleanup}")),
         })?;
         if let Some((case, permit)) = local_auth_case.zip(permit.as_mut()) {
+            if matches!(case, local_auth::Case::SignedTlsRevocation) {
+                use sha2::{Digest, Sha256};
+                let id = permit.grant.as_ref().ok_or(io::ErrorKind::InvalidData)?.id;
+                let (device, inode) = fd_identity(&work.pinned)?;
+                let (config_dev, config_ino) = config.identity()?;
+                let generation = format!("{device}:{inode}:{config_dev}:{config_ino}");
+                permit.administrator_stop = Some(FixtureStop {
+                    request: config_path.join(".synthetic-live-revocation.json"),
+                    target: FixtureStopTarget {
+                        permit_id: format!("{id:032x}"),
+                        device,
+                        inode,
+                    },
+                    signed: Some(FixtureRevocation {
+                        key: signed_revocation_key.ok_or(io::ErrorKind::InvalidData)?,
+                        id,
+                        target_id: "synthetic-target".into(),
+                        manifest: format!("{:x}", Sha256::digest(generation.as_bytes())),
+                        revision: 1,
+                    }),
+                });
+            }
             permit.closure = Some(FixtureClosure::new(
                 case,
                 &work,
