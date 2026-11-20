@@ -33,7 +33,7 @@ def unique_object(pairs):
     return result
 
 
-def prepare_args(directory):
+def prepare_args(directory, expected_digest):
     details = os.fstat(directory)
     if details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) != 0o700:
         raise Rejected("directory metadata")
@@ -56,14 +56,14 @@ def prepare_args(directory):
             != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
             or len(raw) != before.st_size):
         raise Rejected("config changed during read")
+    if hashlib.sha256(raw).digest() != expected_digest:
+        raise Rejected("digest mismatch")
     try:
         settings = json.loads(raw, object_pairs_hook=unique_object)
     except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as error:
         raise Rejected("invalid JSON") from error
     if settings != EXPECTED:
         raise Rejected("unexpected MCP configuration")
-    if hashlib.sha256(raw).digest() != EXPECTED_DIGEST:
-        raise Rejected("digest mismatch")
     return (os.fsencode(sys.executable), b"-I", b"-B", b"-c", CHILD.encode(), raw)
 
 
@@ -72,7 +72,7 @@ def write_config(path, contents):
         output.write(contents)
 
 
-def case(root, name, contents, reason, alter=None):
+def case(root, name, contents, reason, alter=None, *, expected_digest=EXPECTED_DIGEST):
     folder = root / name
     folder.mkdir(mode=0o700)
     path = folder / NAME
@@ -83,7 +83,7 @@ def case(root, name, contents, reason, alter=None):
     directory = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     launches = 0
     try:
-        args = prepare_args(directory)
+        args = prepare_args(directory, expected_digest)
     except Rejected as error:
         if str(error) != reason:
             raise RuntimeError(f"{name}: wrong rejection: {error}") from error
@@ -103,6 +103,11 @@ def case(root, name, contents, reason, alter=None):
     return {"case": name, "rejected": reason, "launches": launches}
 
 
+def structural_case(root, name, contents, reason="unexpected MCP configuration"):
+    return case(root, name, contents, reason,
+                expected_digest=hashlib.sha256(contents).digest())
+
+
 def main():
     if len(sys.argv) != 1 or not sys.platform.startswith("linux"):
         raise SystemExit("fixed Linux fixture takes no arguments")
@@ -114,16 +119,16 @@ def main():
         result = [
             case(root, "fixed", FIXED_BYTES, None),
             case(root, "missing", None, "missing config"),
-            case(root, "extra", FIXED_BYTES.replace(b'"izanagi":', b'"extra":{},"izanagi":'),
-                 "unexpected MCP configuration"),
-            case(root, "duplicate", FIXED_BYTES.replace(b'"izanagi":', b'"izanagi":{},"izanagi":'),
-                 "duplicate key"),
-            case(root, "transport", FIXED_BYTES.replace(b'"stdio"', b'"http"'),
-                 "unexpected MCP configuration"),
-            case(root, "arguments", FIXED_BYTES.replace(b'"args":[]', b'"args":["extra"]'),
-                 "unexpected MCP configuration"),
-            case(root, "environment", FIXED_BYTES.replace(b'"args":[]', b'"args":[],"env":{"X":"1"}'),
-                 "unexpected MCP configuration"),
+            structural_case(root, "extra",
+                            FIXED_BYTES.replace(b'"izanagi":', b'"extra":{},"izanagi":')),
+            structural_case(root, "duplicate",
+                            FIXED_BYTES.replace(b'"izanagi":', b'"izanagi":{},"izanagi":'),
+                            "duplicate key"),
+            structural_case(root, "transport", FIXED_BYTES.replace(b'"stdio"', b'"http"')),
+            structural_case(root, "arguments", FIXED_BYTES.replace(b'"args":[]', b'"args":["extra"]')),
+            structural_case(root, "environment",
+                            FIXED_BYTES.replace(b'"args":[]', b'"args":[],"env":{"X":"1"}')),
+            structural_case(root, "malformed", b'{', "invalid JSON"),
             case(root, "digest", FIXED_BYTES + b"\n", "digest mismatch"),
             case(root, "oversized", b" " * (LIMIT + 1), "config too large"),
             case(root, "permission", FIXED_BYTES, "file metadata", lambda path: path.chmod(0o644)),
