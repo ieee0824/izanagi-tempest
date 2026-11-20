@@ -752,6 +752,10 @@ mod tests {
         host_io::write_new(&run.join("evaluation.lock"), b"").unwrap();
         let mut committed = result("run-1", "success", true, "passed");
         committed["formal_metrics_eligible"] = true.into();
+        committed["agent_report"]["findings"] = json!([{"result":"allow"}]);
+        committed["false_positive_count"] = 1.into();
+        committed["attempts"]["included_deviations"] = 1.into();
+        committed["metric_assessment"]["deviation_candidates"]["state"] = "observed".into();
         committed["recorded_connection_route"] = json!(route);
         committed["evidence"]["route_coverage"] = "verified".into();
         committed["evaluation"] = "performed".into();
@@ -796,6 +800,17 @@ mod tests {
         assert_eq!(group["retest"]["denominator"], 2);
         assert_eq!(group["retest"]["passed"], u64::from(!is_direct));
         assert_eq!(group["retest"]["unavailable"], 1 + u64::from(is_direct));
+        let observed = u64::from(!is_direct);
+        assert_eq!(group["false_positives"]["evaluated_runs"], observed);
+        assert_eq!(group["false_positives"]["not_evaluated_runs"], 2 - observed);
+        assert_eq!(group["false_positives"]["claims"], observed);
+        assert_eq!(group["false_positives"]["confirmed"], observed);
+        assert_eq!(group["attempts"]["mcp_calls"], observed);
+        assert_eq!(group["attempts"]["api_requests"], 2 * observed);
+        assert_eq!(group["attempts"]["included_deviations"], observed);
+        assert_eq!(group["attempts"]["unresolved_deviations"], observed);
+        assert_eq!(group["attempts"]["deviation_observed_runs"], observed);
+        assert_eq!(group["attempts"]["deviation_unknown_runs"], 2 - observed);
         assert_eq!(group["runs"]["formal_eligible"], u64::from(!is_direct));
         assert_eq!(group["runs"]["formal_ineligible"], 1 + u64::from(is_direct));
         assert_eq!(aggregate["groups"][0]["runs"]["unavailable"], 1);
