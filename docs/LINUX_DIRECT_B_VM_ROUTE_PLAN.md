@@ -537,7 +537,7 @@ starttime、サービス cgroup、loopback 転送の所有者、同一セッシ�
 正常停止、資源回収、共有の読み取り専用ベースの SHA-256 不変を確認した。
 開始前のホスト MemAvailable は 7,204,396 KiB、100 ms 間隔の最低観測値は
 6,295,364 KiB、各 tmpfs の観測ピークは 11,759,616 B と 11,776,000 B だった。
-この容量試験で確認した負荷は固定ヘルスチェックまでで、別 VM への接続拒否は未測定。
+この容量試験の負荷は両台の固定ヘルスチェックに限定した。
 [Issue #106 の実測記録](https://github.com/ieee0824/izanagi-tempest/issues/106#issuecomment-7033458137)
 
 初回はホストの事前試験で退役済みだった拒否側の台帳名と衝突した。
@@ -553,6 +553,33 @@ cargo build --locked --manifest-path integration/izanagi-bootstrap/Cargo.toml --
 固定イメージ・Izanagi・入力定義を指定する preflight の引数に加え、
 専用 systemd unit 内で root から `integration/image_smoke.py` に
 `--fixed-vm-relay-trial UNIT CLIENT ALLOW_ENTRY DENY_ENTRY` を渡す。
+
+#### 2台の実 VM での管理接続の許可と拒否（#36）
+
+専用 Linux ホストの単一 loopback-only network namespace で、2 vCPU・
+2 GiB の VM 2台を起動し、各 VM に独立した上限512 MiBの tmpfs を使用した。
+各 QEMU の管理転送で成功した accept 系システムコールを独立に集計した。
+
+| 区間 | A の受理増分 | B の受理増分 | 結果 |
+| --- | ---: | ---: | --- |
+| B の制限前 | 0 | 1 | B が認証済み応答 |
+| 制限中に A へ接続 | 1 | 0 | A が認証済み応答 |
+| 制限中に B へ接続 | 0 | 0 | B 向け接続が errno 113 で失敗 |
+| B の制限解除後 | 0 | 1 | B が認証済み応答 |
+
+拒否区間では、試験 UID の B 向け新規 SYN の拒否カウンタが1増えた。
+応答が成功した各区間で boot ID、セッション指紋、QEMU の PID と
+starttime を再照合した。初回試験はパケット数のアサーション不一致で
+中止し、両台の正常停止と資源回収を確認した。再試行では拒否差分の
+集計対象を新規 SYN に絞った。
+
+ホストの MemAvailable は開始時 7,220,328 KiB、最低 6,230,592 KiB。
+tmpfs の観測ピークは A が 11,759,616 B、B が 11,812,864 B だった。
+両台の起動・停止は exit 0。QEMU、転送ポート、cgroup、HMAC ファイルの
+不在、tmpfs の解除、共有ベースの SHA-256 不変を確認した。
+この試験の対象はローカルの固定管理経路。Claude サブスクリプションの
+通信経路と MCP は別途検証する。
+[Issue #36 の実測記録](https://github.com/ieee0824/izanagi-tempest/issues/36#issuecomment-7033578954)
 
 #### 実 VM 稼働中の監督強制終了と回収（#79）
 
