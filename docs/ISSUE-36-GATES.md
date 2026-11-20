@@ -361,3 +361,38 @@ sudo python3 integration/claude_supervised_pty_smoke.py target/debug/tempest-cla
 これは owner が操作する入口の事前試験です。実施用の入口でも環境変数は
 起動処理が設定する想定です。owner に求める実認証操作、SSH の接続設定・鍵登録、
 認証通信は #36 の別判断です。
+
+### 手動ログイン向け通信制限の合成試験
+
+[Issue #127](https://github.com/ieee0824/izanagi-tempest/issues/127) の試験を
+専用 Linux で実行します。Python 3.11+、iproute2、nftables、util-linux
+が必要です。
+
+```bash
+sudo -n python3 integration/linux_login_egress_smoke.py
+```
+
+ループバックだけの新規ネットワーク名前空間に四つのリスナーを作り、
+すべてに届く正対照を取ります。名前空間 FD と nftables の全ルールセットを
+既存の起動前検査で照合し、合成 UID の固定クライアントだけを起動します。
+
+| 合成 TCP ポート | 役割 | 許可 |
+| --- | --- | --- |
+| 39271 | CLI の OAuth 交換相当 | あり |
+| 39272 | モデル API 相当 | なし |
+| 39273 | MCP 相当 | なし |
+| 39274 | 未許可先 | なし |
+
+整合時は認証相当だけ受理1件、他は受理0件と接続拒否です。
+ポリシーの欠落と許可ポートの置換はそれぞれ起動前に拒否し、起動・受理は
+全て0件です。整合時は固定 PTY の応答を確認して切断し、監督が hangup を
+検知して固定クライアントを停止・回収します。各試行でルール、リスナー、
+作業領域、ネットワーク名前空間の消失を確認します。ここでの監督は
+合成試験の Python ドライバーです。既存 Rust 監督の PID 名前空間ごとの
+切断回収は #125 の専用試験で検証し、認証用通信とは未結線です。
+
+実施前にはブラウザーのサインインと CLI の OAuth 交換の必要宛先を別に確認します。
+公式文書上の候補はブラウザーが `claude.com` と `claude.ai`、CLI の OAuth
+交換が `platform.claude.com` です。固定版の最小宛先は未測定です。
+モデル API・MCP・実認証・実サービスとの通信は試験に含めません。
+[Claude Code のネットワーク要件](https://code.claude.com/docs/en/network-config#network-access-requirements)
