@@ -2602,6 +2602,69 @@ mod tests {
             consume(7).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
         );
+        let starts = std::cell::Cell::new(0);
+        let start = |ledger: &File, id, signed: &[u8], signature: &[u8]| {
+            consume_signed(ledger, signed, signature)?;
+            starts.set(starts.get() + 1);
+            let work = WorkArea::create(&parent, &path)?;
+            let result = supervised(&parent, &work, |_, _, control, reaped| {
+                request_cli_start(control)?;
+                if !login_permit::revoke(&parent, id)
+                    .is_err_and(|error| error.kind() == io::ErrorKind::PermissionDenied)
+                {
+                    return Err(Fault::Identity);
+                }
+                let mut child = std::process::Command::new("/bin/sleep");
+                child.arg("60");
+                match run_in_pid_namespace(child, Duration::from_millis(200), reaped) {
+                    Err(Fault::ReportTimeout) => Err(Fault::ReportTimeout),
+                    _ => {
+                        *reaped = false;
+                        Err(Fault::Identity)
+                    }
+                }
+            });
+            assert!(
+                !work.path.exists(),
+                "verified stop must remove the generation"
+            );
+            result
+        };
+
+        // The handoff has already been signed when management closes its ID.
+        let (published, signature) = login_handoff::signed_fixture(&key, 8, scope, 140);
+        login_permit::revoke(&parent, 8).unwrap();
+        let before_denials = fs::read_dir(&path).unwrap().count();
+        assert_eq!(
+            start(&parent, 8, &published, signature.as_ref())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        let unusable = File::open(&input).unwrap();
+        let (published, signature) = login_handoff::signed_fixture(&key, 9, scope, 140);
+        assert_eq!(
+            start(&unusable, 9, &published, signature.as_ref())
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOTDIR)
+        );
+        assert_eq!(starts.get(), 0);
+        assert_eq!(fs::read_dir(&path).unwrap().count(), before_denials);
+
+        let error = start(&parent, 9, &published, signature.as_ref()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "offline CLI diagnostic failed; work removed after verified termination; signal=0"
+        );
+        assert_eq!(
+            start(&parent, 9, &published, signature.as_ref())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(starts.get(), 1);
+
         consume(1).unwrap();
         let retained = WorkArea::create(&parent, &path).unwrap();
         let error = supervised(&parent, &retained, |scratch, _, control, _| {
@@ -2687,6 +2750,118 @@ mod tests {
             fs::read(retained.path.join("artifact-0")).unwrap(),
             b"retained"
         );
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires root and private mount/network namespaces"]
+    fn synthetic_admin_stop_matches_generation_and_reaps_descendants() {
+        use std::{
+            net::Shutdown,
+            process::Command,
+            time::{Duration, Instant},
+        };
+
+        let path = Path::new("/var/lib").join(format!(
+            "tempest-admin-stop-test-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        let parent = lock_parent(&path).unwrap();
+        let unrelated = WorkArea::create(&parent, &path).unwrap();
+        let work = WorkArea::create(&parent, &path).unwrap();
+        let mut observation = None;
+        let result = supervised_observed(
+            &parent,
+            &work,
+            |scratch, _, control, reaped| {
+                request_cli_start(control)?;
+                let ready = scratch.join("artifact-0");
+                let alive_after_wrong_target = scratch.join("artifact-1");
+                let (receiver, sender) = UnixStream::pair()?;
+                let mut child = Command::new("/bin/sh");
+                child.args(["-c", r#"sleep 60 & descendant=$!; printf '%s %s' "$$" "$descendant" > "$1"; while kill -0 "$descendant"; do : > "$2"; sleep 0.02; done"#, "fixture"])
+                .arg(&ready)
+                .arg(&alive_after_wrong_target);
+                // Keep the namespace supervisor single-threaded. The synthetic
+                // sender closes only the channel bound to this generation.
+                let sender_pid = unsafe { libc::fork() };
+                if sender_pid < 0 {
+                    return Err(io::Error::last_os_error().into());
+                }
+                if sender_pid == 0 {
+                    let stop = (|| -> io::Result<()> {
+                        let wait_until = |condition: &dyn Fn() -> bool| {
+                            let deadline = Instant::now() + Duration::from_secs(2);
+                            while !condition() {
+                                if Instant::now() >= deadline {
+                                    return Err(io::ErrorKind::TimedOut.into());
+                                }
+                                std::thread::sleep(Duration::from_millis(10));
+                            }
+                            Ok::<_, io::Error>(())
+                        };
+                        let request_stop = |target: &Path| -> io::Result<bool> {
+                            if target != work.path {
+                                return Ok(false);
+                            }
+                            sender.shutdown(Shutdown::Both)?;
+                            Ok(true)
+                        };
+                        wait_until(&|| {
+                            fs::read_to_string(&ready)
+                                .is_ok_and(|text| text.split_whitespace().count() == 2)
+                        })?;
+                        let heartbeat = fs::metadata(&alive_after_wrong_target)
+                            .and_then(|metadata| metadata.modified())
+                            .ok();
+                        if request_stop(&unrelated.path)? {
+                            return Err(io::Error::other("stop accepted for another generation"));
+                        }
+                        wait_until(&|| {
+                            fs::metadata(&alive_after_wrong_target)
+                                .and_then(|metadata| metadata.modified())
+                                .is_ok_and(|time| heartbeat.is_none_or(|before| time > before))
+                        })?;
+                        if !request_stop(&work.path)? {
+                            return Err(io::Error::other(
+                                "stop rejected for the matching generation",
+                            ));
+                        }
+                        Ok(())
+                    })();
+                    unsafe { libc::_exit(if stop.is_ok() { 0 } else { 1 }) };
+                }
+                let outcome = run_in_pid_namespace_expecting(
+                    child,
+                    Duration::from_secs(8),
+                    reaped,
+                    0,
+                    Some(receiver.as_raw_fd()),
+                    ChildNetwork::NewOffline,
+                );
+                let status = wait_for_supervisor(sender_pid)?;
+                match outcome {
+                    Err(Fault::ReportEof)
+                        if *reaped && libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 =>
+                    {
+                        Ok((1, 2))
+                    }
+                    _ => {
+                        *reaped = false;
+                        Err(Fault::Identity)
+                    }
+                }
+            },
+            &mut observation,
+        );
+        assert_eq!(result.unwrap(), (1, 2));
+        assert!(matches!(
+            observation.unwrap().recovery,
+            OfflineRecovery::RemovedAfterTermination
+        ));
+        assert!(!work.path.exists());
+        assert!(unrelated.path.is_dir());
+        unrelated.remove(&parent).unwrap();
         fs::remove_dir_all(path).unwrap();
     }
 
