@@ -468,14 +468,15 @@ mod tests {
         fs::remove_dir(fixture).unwrap();
     }
 
-    #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
     struct FixtureGeneration {
         permit_id: u64,
         work: (u64, u64),
         config: (u64, u64),
     }
 
-    #[derive(serde::Serialize)]
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct RecoveryRecord {
         generation: FixtureGeneration,
         child_terminated: Option<FixtureGeneration>,
@@ -485,7 +486,7 @@ mod tests {
         ledger_synced: Option<bool>,
         supervisor_wait_status: i32,
         decision_unix_seconds: u64,
-        reviewer: &'static str,
+        reviewer: String,
     }
 
     impl RecoveryRecord {
@@ -500,6 +501,107 @@ mod tests {
                 .iter()
                 .all(|evidence| *evidence == Some(self.generation))
         }
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct RecoveryReceipt {
+        file_identity: (u64, u64),
+        digest: String,
+    }
+
+    // A receipt is handed to the independent reader only after both syncs
+    // succeed. A visible JSON file alone can remain after a failed sync.
+    fn save_recovery_record(
+        record: &RecoveryRecord,
+        path: &Path,
+        parent: &File,
+    ) -> io::Result<RecoveryReceipt> {
+        use sha2::{Digest, Sha256};
+        let bytes = serde_json::to_vec(record).map_err(io::Error::other)?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)?;
+        output.write_all(&bytes)?;
+        output.sync_all()?;
+        parent.sync_all()?;
+        Ok(RecoveryReceipt {
+            file_identity: fd_identity(&output)?,
+            digest: format!("{:x}", Sha256::digest(&bytes)),
+        })
+    }
+
+    fn assert_recovery_reread(
+        path: &Path,
+        receipt: Option<&RecoveryReceipt>,
+        generation: FixtureGeneration,
+        expected: bool,
+    ) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "claude_offline::writable_config::tests::reread_saved_synthetic_recovery",
+            ])
+            .env("TEMPEST_TEST_RECOVERY_RECORD", path)
+            .env(
+                "TEMPEST_TEST_RECOVERY_RECEIPT",
+                serde_json::to_string(&receipt).unwrap(),
+            )
+            .env(
+                "TEMPEST_TEST_RECOVERY_GENERATION",
+                serde_json::to_string(&generation).unwrap(),
+            )
+            .env(
+                "TEMPEST_TEST_RECOVERY_EXPECTED",
+                if expected { "1" } else { "0" },
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
+    #[test]
+    #[ignore = "subprocess of the synthetic recovery fixture"]
+    fn reread_saved_synthetic_recovery() {
+        use sha2::{Digest, Sha256};
+        let Some(path) = std::env::var_os("TEMPEST_TEST_RECOVERY_RECORD") else {
+            return;
+        };
+        let expected: FixtureGeneration =
+            serde_json::from_str(&std::env::var("TEMPEST_TEST_RECOVERY_GENERATION").unwrap())
+                .unwrap();
+        let receipt: Option<RecoveryReceipt> =
+            serde_json::from_str(&std::env::var("TEMPEST_TEST_RECOVERY_RECEIPT").unwrap()).unwrap();
+        let allowed = receipt.is_some_and(|receipt| {
+            use std::io::Read;
+            let reread = (|| -> io::Result<bool> {
+                let mut file = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(path)?;
+                if fd_identity(&file)? != receipt.file_identity {
+                    return Ok(false);
+                }
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                Ok(format!("{:x}", Sha256::digest(&bytes)) == receipt.digest
+                    && serde_json::from_slice::<RecoveryRecord>(&bytes).is_ok_and(|record| {
+                        record.generation == expected && record.permits_recovery()
+                    }))
+            })();
+            reread.unwrap_or(false)
+        });
+        assert_eq!(
+            allowed,
+            std::env::var("TEMPEST_TEST_RECOVERY_EXPECTED").unwrap() == "1"
+        );
     }
 
     #[test]
@@ -539,7 +641,16 @@ mod tests {
             target_id: "synthetic-recovery-record",
             approved_ips_revision: 1,
         };
+        let records_root = root.join("records");
+        fs::create_dir(&records_root).unwrap();
+        let records_parent = File::open(&records_root).unwrap();
+        let unsyncable_records = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(&records_root)
+            .unwrap();
         let mut normal_generation = None;
+        let mut normal_record = None;
 
         for (id, confirm_exit) in [(1, true), (2, false)] {
             let work = WorkArea::create(&work_parent, &work_root).unwrap();
@@ -611,7 +722,7 @@ mod tests {
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_secs(),
-                reviewer: "synthetic-integration-test",
+                reviewer: "synthetic-integration-test".into(),
             };
             let recovery_allowed = record.permits_recovery();
             assert_eq!(recovery_allowed, confirm_exit);
@@ -625,7 +736,29 @@ mod tests {
                 io::ErrorKind::PermissionDenied
             );
 
+            let save_path = records_root.join(format!("{permit_id}.json"));
+            let receipt = save_recovery_record(&record, &save_path, &records_parent).unwrap();
+            assert_recovery_reread(&save_path, Some(&receipt), generation, recovery_allowed);
+
             if recovery_allowed {
+                // A complete-looking file already exists, but the failed attempt
+                // did not establish a receipt that the reader can trust.
+                let already_exists =
+                    save_recovery_record(&record, &save_path, &records_parent).unwrap_err();
+                assert_eq!(already_exists.kind(), io::ErrorKind::AlreadyExists);
+                assert_recovery_reread(&save_path, None, generation, false);
+                let failed_path = records_root.join("failed-sync.json");
+                let failure =
+                    save_recovery_record(&record, &failed_path, &unsyncable_records).unwrap_err();
+                assert_eq!(failure.raw_os_error(), Some(libc::EBADF));
+                assert_eq!(
+                    fs::read(&failed_path).unwrap(),
+                    fs::read(&save_path).unwrap()
+                );
+                assert_recovery_reread(&failed_path, None, generation, false);
+                assert_recovery_reread(&failed_path, Some(&receipt), generation, false);
+                normal_record = Some((save_path, receipt));
+
                 for field in ["child", "communication", "mounts"] {
                     let evidence = match field {
                         "child" => &mut record.child_terminated,
@@ -655,6 +788,9 @@ mod tests {
                 assert!(config.path.is_dir() && work.path.is_dir());
                 let other = normal_generation.unwrap();
                 assert_ne!(generation, other);
+                let (other_path, other_receipt) = normal_record.as_ref().unwrap();
+                assert_recovery_reread(other_path, Some(other_receipt), generation, false);
+
                 for (child, communication, mounts) in [
                     (other, generation, generation),
                     (generation, other, generation),
@@ -664,6 +800,7 @@ mod tests {
                         child_terminated: Some(child),
                         communication_closed: Some(communication),
                         mounts_detached: Some(mounts),
+                        reviewer: record.reviewer.clone(),
                         ..record
                     };
                     assert!(!mismatched.permits_recovery());
