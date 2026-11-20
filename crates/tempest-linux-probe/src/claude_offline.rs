@@ -2755,6 +2755,118 @@ mod tests {
 
     #[test]
     #[ignore = "requires root and private mount/network namespaces"]
+    fn synthetic_admin_stop_matches_generation_and_reaps_descendants() {
+        use std::{
+            net::Shutdown,
+            process::Command,
+            time::{Duration, Instant},
+        };
+
+        let path = Path::new("/var/lib").join(format!(
+            "tempest-admin-stop-test-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        let parent = lock_parent(&path).unwrap();
+        let unrelated = WorkArea::create(&parent, &path).unwrap();
+        let work = WorkArea::create(&parent, &path).unwrap();
+        let mut observation = None;
+        let result = supervised_observed(
+            &parent,
+            &work,
+            |scratch, _, control, reaped| {
+                request_cli_start(control)?;
+                let ready = scratch.join("artifact-0");
+                let alive_after_wrong_target = scratch.join("artifact-1");
+                let (receiver, sender) = UnixStream::pair()?;
+                let mut child = Command::new("/bin/sh");
+                child.args(["-c", r#"sleep 60 & descendant=$!; printf '%s %s' "$$" "$descendant" > "$1"; while kill -0 "$descendant"; do : > "$2"; sleep 0.02; done"#, "fixture"])
+                .arg(&ready)
+                .arg(&alive_after_wrong_target);
+                // Keep the namespace supervisor single-threaded. The synthetic
+                // sender closes only the channel bound to this generation.
+                let sender_pid = unsafe { libc::fork() };
+                if sender_pid < 0 {
+                    return Err(io::Error::last_os_error().into());
+                }
+                if sender_pid == 0 {
+                    let stop = (|| -> io::Result<()> {
+                        let wait_until = |condition: &dyn Fn() -> bool| {
+                            let deadline = Instant::now() + Duration::from_secs(2);
+                            while !condition() {
+                                if Instant::now() >= deadline {
+                                    return Err(io::ErrorKind::TimedOut.into());
+                                }
+                                std::thread::sleep(Duration::from_millis(10));
+                            }
+                            Ok::<_, io::Error>(())
+                        };
+                        let request_stop = |target: &Path| -> io::Result<bool> {
+                            if target != work.path {
+                                return Ok(false);
+                            }
+                            sender.shutdown(Shutdown::Both)?;
+                            Ok(true)
+                        };
+                        wait_until(&|| {
+                            fs::read_to_string(&ready)
+                                .is_ok_and(|text| text.split_whitespace().count() == 2)
+                        })?;
+                        let heartbeat = fs::metadata(&alive_after_wrong_target)
+                            .and_then(|metadata| metadata.modified())
+                            .ok();
+                        if request_stop(&unrelated.path)? {
+                            return Err(io::Error::other("stop accepted for another generation"));
+                        }
+                        wait_until(&|| {
+                            fs::metadata(&alive_after_wrong_target)
+                                .and_then(|metadata| metadata.modified())
+                                .is_ok_and(|time| heartbeat.is_none_or(|before| time > before))
+                        })?;
+                        if !request_stop(&work.path)? {
+                            return Err(io::Error::other(
+                                "stop rejected for the matching generation",
+                            ));
+                        }
+                        Ok(())
+                    })();
+                    unsafe { libc::_exit(if stop.is_ok() { 0 } else { 1 }) };
+                }
+                let outcome = run_in_pid_namespace_expecting(
+                    child,
+                    Duration::from_secs(8),
+                    reaped,
+                    0,
+                    Some(receiver.as_raw_fd()),
+                    ChildNetwork::NewOffline,
+                );
+                let status = wait_for_supervisor(sender_pid)?;
+                match outcome {
+                    Err(Fault::ReportEof)
+                        if *reaped && libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 =>
+                    {
+                        Ok((1, 2))
+                    }
+                    _ => {
+                        *reaped = false;
+                        Err(Fault::Identity)
+                    }
+                }
+            },
+            &mut observation,
+        );
+        assert_eq!(result.unwrap(), (1, 2));
+        assert!(matches!(
+            observation.unwrap().recovery,
+            OfflineRecovery::RemovedAfterTermination
+        ));
+        assert!(!work.path.exists());
+        assert!(unrelated.path.is_dir());
+        unrelated.remove(&parent).unwrap();
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires root and private mount/network namespaces"]
     fn offline_grant_requires_independent_network_verification() {
         use std::{process::Command, time::Duration};
 
