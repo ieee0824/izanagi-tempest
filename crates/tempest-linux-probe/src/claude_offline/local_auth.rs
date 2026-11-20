@@ -38,6 +38,9 @@ pub(super) enum Case {
     SignedPermit,
     SignedAdministratorStop,
     PermitExpiresBeforeGrant,
+    WrongGrantId,
+    WrongGrantLedger,
+    WrongGrantStage,
     WrongPermitScope,
     WrongPermitArguments,
     WrongPermitAuthority,
@@ -59,6 +62,9 @@ impl Case {
             "signed-permit" => Self::SignedPermit,
             "signed-administrator-stop" => Self::SignedAdministratorStop,
             "permit-expires-before-grant" => Self::PermitExpiresBeforeGrant,
+            "wrong-grant-id" => Self::WrongGrantId,
+            "wrong-grant-ledger" => Self::WrongGrantLedger,
+            "wrong-grant-stage" => Self::WrongGrantStage,
             "wrong-permit-scope" => Self::WrongPermitScope,
             "wrong-permit-arguments" => Self::WrongPermitArguments,
             "wrong-permit-authority" => Self::WrongPermitAuthority,
@@ -77,6 +83,9 @@ impl Case {
                 | Self::SignedPermit
                 | Self::SignedAdministratorStop
                 | Self::PermitExpiresBeforeGrant
+                | Self::WrongGrantId
+                | Self::WrongGrantLedger
+                | Self::WrongGrantStage
         )
     }
 }
@@ -145,7 +154,11 @@ pub(super) fn grant(control: &mut UnixStream, pinned: (u64, u64)) -> io::Result<
     control.write_all(&encode(pinned))
 }
 
-pub(super) fn request(control: &mut UnixStream, case: Case) -> Result<(u64, u64), Fault> {
+pub(super) fn request(
+    control: &mut UnixStream,
+    case: Case,
+    grant_claim: Option<&[u8; 48]>,
+) -> Result<(u64, u64), Fault> {
     let identity = namespace()?;
     let claimed = match case {
         Case::MissingNamespace => (0, 0),
@@ -154,6 +167,9 @@ pub(super) fn request(control: &mut UnixStream, case: Case) -> Result<(u64, u64)
     };
     control.write_all(b"C")?;
     control.write_all(&encode(claimed))?;
+    if let Some(claim) = grant_claim {
+        control.write_all(claim)?;
+    }
     let mut answer = [0; 17];
     control.read_exact(&mut answer)?;
     if answer[0] != b'G' || answer[1..] != encode(identity) {
