@@ -23,14 +23,22 @@ fn jump(value: u32, yes: u8, no: u8) -> libc::sock_filter {
 }
 
 pub(super) fn install(role: Role, bootstrap_exec: bool) -> Result<(), Fault> {
-    install_filter(Some(role), bootstrap_exec)
+    install_filter(Some(role), bootstrap_exec, false)
+}
+
+pub(super) fn install_state_fixture(role: Role, bootstrap_exec: bool) -> Result<(), Fault> {
+    install_filter(Some(role), bootstrap_exec, true)
 }
 
 pub(super) fn install_mcp_stdio() -> Result<(), Fault> {
-    install_filter(None, true)
+    install_filter(None, true, false)
 }
 
-fn install_filter(role: Option<Role>, bootstrap_exec: bool) -> Result<(), Fault> {
+fn install_filter(
+    role: Option<Role>,
+    bootstrap_exec: bool,
+    state_fixture: bool,
+) -> Result<(), Fault> {
     if !cfg!(target_arch = "x86_64") {
         return Err(Fault::Kernel(libc::ENOTSUP));
     }
@@ -101,6 +109,12 @@ fn install_filter(role: Option<Role>, bootstrap_exec: bool) -> Result<(), Fault>
     ] {
         program.push(jump(number as u32, 0, 1));
         program.push(statement(ret, libc::SECCOMP_RET_ALLOW));
+    }
+    if state_fixture {
+        for number in [libc::SYS_unlink, libc::SYS_unlinkat] {
+            program.push(jump(number as u32, 0, 1));
+            program.push(statement(ret, libc::SECCOMP_RET_ALLOW));
+        }
     }
     // Only the guard receives ancillary data. A/B cannot receive a late fd
     // behind its back. No role may create a new socket, connect, mount or trace.

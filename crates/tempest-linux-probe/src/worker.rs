@@ -410,6 +410,57 @@ fn checks(manifest: &Manifest) -> Vec<Observation> {
     values
 }
 
+fn state_path_denied(path: &str) -> bool {
+    let denied = |error: std::io::Error| {
+        matches!(
+            error.raw_os_error(),
+            Some(libc::ENOENT | libc::EACCES | libc::EPERM)
+        )
+    };
+    fs::File::open(path).is_err_and(denied)
+        && fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .is_err_and(denied)
+        && fs::remove_file(path).is_err_and(denied)
+}
+
+fn state_file_lifecycle() -> std::io::Result<bool> {
+    let path = "/state/lifecycle";
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(b"created")?;
+    if fs::read(path)? != b"created" {
+        return Ok(false);
+    }
+    fs::write(path, b"updated")?;
+    if fs::read(path)? != b"updated" {
+        return Ok(false);
+    }
+    fs::remove_file(path)?;
+    Ok(fs::symlink_metadata(path).is_err_and(|error| error.raw_os_error() == Some(libc::ENOENT)))
+}
+
+fn state_fixed_input_unchanged() -> std::io::Result<bool> {
+    use sha2::{Digest, Sha256};
+
+    let path = "/lib/x86_64-linux-gnu/libc.so.6";
+    let before = Sha256::digest(fs::read(path)?);
+    let write_denied = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .is_err_and(|error| {
+            matches!(
+                error.raw_os_error(),
+                Some(libc::EROFS | libc::EACCES | libc::EPERM)
+            )
+        });
+    Ok(write_denied && before == Sha256::digest(fs::read(path)?))
+}
+
 pub(super) fn run() -> i32 {
     if unsafe { libc::getpid() } != 1 {
         return 2;
@@ -434,7 +485,13 @@ pub(super) fn run() -> i32 {
     if unsafe { libc::geteuid() } != manifest.role.uid() {
         return 2;
     }
-    if seccomp::install(manifest.role, false).is_err() {
+    let state_fixture = matches!(manifest.scenario, Scenario::StateRun1 | Scenario::StateRun2);
+    let filter = if state_fixture {
+        seccomp::install_state_fixture(manifest.role, false)
+    } else {
+        seccomp::install(manifest.role, false)
+    };
+    if filter.is_err() {
         return 2;
     }
     if !event(&manifest, Phase::Ready, Vec::new()) || !wait() {
@@ -443,9 +500,8 @@ pub(super) fn run() -> i32 {
     if !event(&manifest, Phase::Entered, Vec::new()) {
         return 3;
     }
-    if matches!(manifest.scenario, Scenario::StateRun1 | Scenario::StateRun2) {
-        let previous_absent = fs::symlink_metadata("/state/marker")
-            .is_err_and(|error| error.raw_os_error() == Some(libc::ENOENT));
+    if state_fixture {
+        let previous_absent = state_path_denied("/state/marker");
         let created = previous_absent
             && fs::OpenOptions::new()
                 .write(true)
@@ -455,16 +511,28 @@ pub(super) fn run() -> i32 {
                 .and_then(|mut file| file.write_all(&manifest.nonce))
                 .is_ok()
             && fs::read("/state/marker").is_ok_and(|bytes| bytes == manifest.nonce);
+        let other_roles_denied = [Role::A, Role::B, Role::Guard]
+            .into_iter()
+            .filter(|role| *role != manifest.role)
+            .all(|role| {
+                state_path_denied(&format!(
+                    "/run/tempest-linux-isolation-probe/{}/home/private.canary",
+                    role.name()
+                ))
+            });
+        let state_boundary = created
+            && state_file_lifecycle().is_ok_and(|passed| passed)
+            && state_fixed_input_unchanged().is_ok_and(|passed| passed);
         let mut values = vec![
             observe(
                 Check::HostHomeDenied,
                 manifest.role,
                 HOME_CATEGORIES.iter().all(|category| {
-                    fs::symlink_metadata(format!(
+                    state_path_denied(&format!(
                         "/run/tempest-linux-isolation-probe/host-home/{category}"
                     ))
-                    .is_err_and(|error| error.raw_os_error() == Some(libc::ENOENT))
-                }) && unsafe { libc::fcntl(40, libc::F_GETFD) } == -1
+                }) && other_roles_denied
+                    && unsafe { libc::fcntl(40, libc::F_GETFD) } == -1
                     && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF),
                 10,
             ),
@@ -480,7 +548,7 @@ pub(super) fn run() -> i32 {
                 previous_absent,
                 1,
             ),
-            observe(Check::StateMarkerCreated, manifest.role, created, 0),
+            observe(Check::StateMarkerCreated, manifest.role, state_boundary, 0),
         ];
         values[0].attempts = 10;
         let passed = values.iter().all(|value| value.passed);
