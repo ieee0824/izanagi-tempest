@@ -1872,12 +1872,50 @@ const REVOCATION_DOMAIN: &[u8] = b"izanagi-tempest:manual-login-revocation:fixtu
 #[serde(deny_unknown_fields)]
 struct LoginRevocationState {
     revision: u64,
+    revocation_revision: u64,
     manifest_sha256: String,
     permit_id: String,
     target_id: String,
     issued_unix_seconds: u64,
     expires_unix_seconds: u64,
     revoked: bool,
+}
+
+fn verify_revocation_commit(
+    minimum: u64,
+    committed: &[u8],
+    revision: u64,
+    payload: &[u8],
+    sync_authority: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct CommittedState {
+        revision: u64,
+        state_sha256: String,
+    }
+
+    let committed: CommittedState = serde_json::from_slice(committed).map_err(io::Error::other)?;
+    if revision < minimum
+        || revision != committed.revision
+        || committed.state_sha256 != format!("{:x}", Sha256::digest(payload))
+    {
+        return Err(io::Error::other(
+            "revocation state does not match independent commit",
+        ));
+    }
+    sync_authority()
+        .map_err(|error| io::Error::other(format!("revocation authority sync failed: {error}")))
+}
+
+fn read_login_revision(directory: &File, name: &str) -> io::Result<u64> {
+    let bytes = read_login_child(directory, name, 20)?;
+    let value = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
+    let number: u64 = value.parse().map_err(io::Error::other)?;
+    if number == 0 || number.to_string() != value {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok(number)
 }
 
 fn verify_login_revocation(
@@ -1889,6 +1927,13 @@ fn verify_login_revocation(
 ) -> io::Result<std::time::Instant> {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+    match open_login_child(authority, std::ffi::OsStr::new("revocation-pending"), 0) {
+        Ok(_) => return Err(io::Error::other("revocation update pending")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let minimum = read_login_revision(authority, "revocation-minimum")?;
+    let committed = read_login_child(authority, "revocation-committed", 4096)?;
     let payload = read_login_child(authority, "revocation-state", 4096)?;
     let signature = read_login_child(authority, "revocation-signature", 64)?;
     let key: [u8; 32] = read_login_child(authority, "revocation-key", 32)?
@@ -1898,13 +1943,20 @@ fn verify_login_revocation(
     let wall = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?;
-    let expires = verify_revocation_state(
+    let (revocation_revision, expires) = verify_revocation_state(
         &key,
         &payload,
         &signature,
         (revision, manifest_sha256, permit_id, target_id),
         wall.as_secs(),
     )?;
+    verify_revocation_commit(minimum, &committed, revocation_revision, &payload, || {
+        let sync_fd = File::open(format!("/proc/self/fd/{}", authority.as_raw_fd()))?;
+        if fd_identity(&sync_fd)? != fd_identity(authority)? {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        sync_fd.sync_all()
+    })?;
     monotonic
         .checked_add(Duration::from_secs(expires) - wall)
         .ok_or(io::ErrorKind::InvalidData.into())
@@ -1916,7 +1968,7 @@ fn verify_revocation_state(
     signature: &[u8],
     expected: (u64, &str, u128, &str),
     now_unix_seconds: u64,
-) -> io::Result<u64> {
+) -> io::Result<(u64, u64)> {
     use ring::signature::{ED25519, UnparsedPublicKey};
     let (revision, manifest_sha256, permit_id, target_id) = expected;
     UnparsedPublicKey::new(&ED25519, key)
@@ -1926,7 +1978,8 @@ fn verify_revocation_state(
         .strip_prefix(REVOCATION_DOMAIN)
         .ok_or_else(|| io::Error::other("wrong revocation signature purpose"))?;
     let state: LoginRevocationState = serde_json::from_slice(payload).map_err(io::Error::other)?;
-    if state.revision != revision
+    if state.revocation_revision == 0
+        || state.revision != revision
         || state.manifest_sha256 != manifest_sha256
         || state.permit_id != format!("{permit_id:032x}")
         || state.target_id != target_id
@@ -1948,7 +2001,7 @@ fn verify_revocation_state(
     {
         return Err(io::Error::other("invalid or expired revocation window"));
     }
-    Ok(state.expires_unix_seconds)
+    Ok((state.revocation_revision, state.expires_unix_seconds))
 }
 
 fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> {
@@ -1968,17 +2021,8 @@ fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> 
         Err(error) => return Err(error),
     }
     let authority = open_private_login_directory(parent, "claude-login-authority")?;
-    let revision = |directory: &File, name| -> io::Result<u64> {
-        let bytes = read_login_child(directory, name, 20)?;
-        let value = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
-        let number: u64 = value.parse().map_err(io::Error::other)?;
-        if number == 0 || number.to_string() != value {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        Ok(number)
-    };
-    let floor = revision(&authority, "minimum")?;
-    let current = revision(publication, "current")?;
+    let floor = read_login_revision(&authority, "minimum")?;
+    let current = read_login_revision(publication, "current")?;
     if current < floor {
         return Err(io::Error::other("publication below management floor"));
     }
@@ -2665,6 +2709,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn committed_revocation_state_rejects_signed_replay_and_failed_sync() {
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        let key = Ed25519KeyPair::from_seed_unchecked(&[31; 32]).unwrap();
+        let public = key.public_key().as_ref().try_into().unwrap();
+        let payload = |revision| {
+            let mut bytes = REVOCATION_DOMAIN.to_vec();
+            bytes.extend(
+                serde_json::to_vec(&serde_json::json!({
+                    "revision": 2,
+                    "revocation_revision": revision,
+                    "manifest_sha256": "manifest",
+                    "permit_id": format!("{:032x}", 42),
+                    "target_id": "fixture",
+                    "issued_unix_seconds": 100,
+                    "expires_unix_seconds": 120,
+                    "revoked": false,
+                }))
+                .unwrap(),
+            );
+            bytes
+        };
+        let current = payload(7);
+        let committed = serde_json::to_vec(&serde_json::json!({
+            "revision": 7,
+            "state_sha256": format!("{:x}", Sha256::digest(&current)),
+        }))
+        .unwrap();
+        let verify = |payload: &[u8], sync: fn() -> io::Result<()>| {
+            let signature = key.sign(payload);
+            let (revision, _) = verify_revocation_state(
+                public,
+                payload,
+                signature.as_ref(),
+                (2, "manifest", 42, "fixture"),
+                110,
+            )?;
+            verify_revocation_commit(7, &committed, revision, payload, sync)
+        };
+        assert_eq!(
+            verify(&payload(6), || panic!("replay must fail before sync"))
+                .unwrap_err()
+                .to_string(),
+            "revocation state does not match independent commit"
+        );
+        assert!(
+            verify(&current, || Err(io::Error::from_raw_os_error(libc::EIO)))
+                .unwrap_err()
+                .to_string()
+                .contains("sync failed")
+        );
+        verify(&current, || Ok(())).unwrap();
+    }
+
+    #[test]
     fn signed_revocation_state_checks_scope_and_fixed_time_boundaries() {
         use ring::signature::{Ed25519KeyPair, KeyPair};
 
@@ -2673,6 +2772,7 @@ mod tests {
         let expected = (2, "manifest-2", 42, "target-2");
         let baseline = serde_json::json!({
             "revision": 2,
+            "revocation_revision": 7,
             "manifest_sha256": "manifest-2",
             "permit_id": format!("{:032x}", 42),
             "target_id": "target-2",
@@ -2686,8 +2786,8 @@ mod tests {
             let signature = key.sign(&payload);
             verify_revocation_state(public, &payload, signature.as_ref(), expected, now)
         };
-        assert_eq!(verify(&baseline, 100).unwrap(), 130);
-        assert_eq!(verify(&baseline, 129).unwrap(), 130);
+        assert_eq!(verify(&baseline, 100).unwrap(), (7, 130));
+        assert_eq!(verify(&baseline, 129).unwrap(), (7, 130));
         assert!(verify(&baseline, 130).is_err());
         assert!(verify(&baseline, 99).is_err());
 
