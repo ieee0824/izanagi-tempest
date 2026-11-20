@@ -1500,6 +1500,17 @@ fn verify_shared_terminal(input: libc::c_int, output: libc::c_int) -> io::Result
         if unsafe { libc::isatty(fd) } != 1 {
             return Err(io::Error::last_os_error());
         }
+        let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        if unsafe { libc::fstatfs(fd, filesystem.as_mut_ptr()) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        const DEVPTS_MAGIC: libc::c_long = 0x1cd1;
+        let mut master_index: libc::c_uint = 0;
+        if unsafe { filesystem.assume_init() }.f_type != DEVPTS_MAGIC
+            || unsafe { libc::ioctl(fd, libc::TIOCGPTN, &mut master_index) } == 0
+        {
+            return Err(io::Error::other("login requires a PTY slave"));
+        }
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
         if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } < 0 {
             return Err(io::Error::last_os_error());
@@ -1664,13 +1675,14 @@ mod tests {
             unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) }
         }
 
-        let (_master, slave) = terminals();
+        let (master, slave) = terminals();
         let identical = slave.try_clone().unwrap();
         let (_other_master, other_slave) = terminals();
         let redirected = File::open("/dev/null").unwrap();
         assert!(verify_shared_terminal(slave.as_raw_fd(), identical.as_raw_fd()).is_ok());
         assert!(verify_shared_terminal(slave.as_raw_fd(), other_slave.as_raw_fd()).is_err());
         assert!(verify_shared_terminal(slave.as_raw_fd(), redirected.as_raw_fd()).is_err());
+        assert!(verify_shared_terminal(master.as_raw_fd(), master.as_raw_fd()).is_err());
     }
 
     #[test]
