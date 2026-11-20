@@ -8,14 +8,14 @@ use std::{
     path::Path,
 };
 
-struct Artifact {
-    source: &'static str,
+struct Artifact<'a> {
+    source: &'a str,
     bytes: u64,
-    sha256: &'static str,
+    sha256: &'a str,
     targets: &'static [&'static str],
 }
 
-const ARTIFACTS: &[Artifact] = &[
+const ARTIFACTS: &[Artifact<'static>] = &[
     Artifact {
         source: "/var/lib/tempest-claude-offline/claude",
         bytes: 365842960,
@@ -91,7 +91,7 @@ fn copy_checked(
     Ok(())
 }
 
-fn open_input(artifact: &Artifact) -> Result<File, Fault> {
+fn open_input(artifact: &Artifact<'_>) -> Result<File, Fault> {
     let source = Path::new(artifact.source);
     for parent in source.parent().ok_or(Fault::Path)?.ancestors() {
         let metadata = parent.symlink_metadata()?;
@@ -115,7 +115,7 @@ fn open_input(artifact: &Artifact) -> Result<File, Fault> {
     Ok(file)
 }
 
-fn verify_artifact(file: &File, artifact: &Artifact) -> Result<(), Fault> {
+fn verify_artifact(file: &File, artifact: &Artifact<'_>) -> Result<(), Fault> {
     use std::os::unix::fs::FileExt;
     struct FromStart<'a>(&'a File, u64);
     impl Read for FromStart<'_> {
@@ -133,7 +133,7 @@ fn verify_artifact(file: &File, artifact: &Artifact) -> Result<(), Fault> {
     )
 }
 
-fn stage_artifact(artifact: &Artifact, destination: &Path) -> Result<File, Fault> {
+fn stage_artifact(artifact: &Artifact<'_>, destination: &Path) -> Result<File, Fault> {
     use std::os::unix::fs::PermissionsExt;
     let input = open_input(artifact)?;
     let mut output = OpenOptions::new()
@@ -333,7 +333,7 @@ fn verify_mount_table(root: &Path) -> Result<(), Fault> {
     Ok(())
 }
 
-fn mount_artifact(root: &Path, artifact: &Artifact, staged: &File) -> Result<(), Fault> {
+fn mount_artifact(root: &Path, artifact: &Artifact<'_>, staged: &File) -> Result<(), Fault> {
     use super::capsule;
     let identity = capsule::library_identity(staged)?;
     for target in artifact.targets {
@@ -445,6 +445,21 @@ fn trial<T>(
     result
 }
 
+fn cleanup_trial(scratch: &Path) -> io::Result<()> {
+    // Retain a mounted tree on unmount failure. Its private namespace
+    // vanishes at process exit, and an error cannot be reported as success.
+    fs::read_to_string("/proc/thread-self/mountinfo").and_then(|table| {
+        if table.lines().any(|row| {
+            row.split_whitespace()
+                .nth(4)
+                .is_some_and(|p| p.starts_with(scratch.to_str().unwrap()))
+        }) {
+            return Err(io::Error::other("trial mounts remain"));
+        }
+        fs::remove_dir_all(scratch)
+    })
+}
+
 pub(super) fn run() -> std::process::ExitCode {
     use std::{ffi::CStr, os::unix::ffi::OsStrExt, process::ExitCode};
     if std::env::args_os().len() != 1 || unsafe { libc::geteuid() } != 0 {
@@ -459,18 +474,7 @@ pub(super) fn run() -> std::process::ExitCode {
         unsafe { CStr::from_ptr(path) }.to_bytes(),
     ));
     let result = trial(scratch, run_in_root);
-    // Retain a mounted tree on unmount failure. Its private namespace
-    // vanishes at process exit, and an error cannot be reported as success.
-    let cleanup = fs::read_to_string("/proc/self/mountinfo").and_then(|table| {
-        if table.lines().any(|row| {
-            row.split_whitespace()
-                .nth(4)
-                .is_some_and(|p| p.starts_with(scratch.to_str().unwrap()))
-        }) {
-            return Err(io::Error::other("trial mounts remain"));
-        }
-        fs::remove_dir_all(scratch)
-    });
+    let cleanup = cleanup_trial(scratch);
     match (result, cleanup) {
         (Ok((bytes, inodes)), Ok(())) => {
             println!(
@@ -557,6 +561,66 @@ mod tests {
         fs::remove_dir(scratch.join("root")).unwrap();
         fs::remove_dir(&scratch).unwrap();
         result.unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires root and private mount/network namespaces"]
+    fn staging_failure_cleans_up_before_next_trial() {
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let fixture = Path::new("/var/lib").join(format!(
+            "tempest-claude-staging-test-{}",
+            super::super::private_io::random_hex().unwrap()
+        ));
+        fs::create_dir(&fixture).unwrap();
+        let input = fixture.join("input");
+        fs::write(&input, b"dummy").unwrap();
+        let digest = format!("{:x}", Sha256::digest(b"dummy"));
+        let artifact = Artifact {
+            source: input.to_str().unwrap(),
+            bytes: 5,
+            sha256: &digest,
+            targets: &["first"],
+        };
+
+        for valid in [false, true] {
+            let scratch = fixture.join("trial");
+            fs::create_dir(&scratch).unwrap();
+            let result = trial(&scratch, |scratch, root| {
+                let first = stage_artifact(&artifact, &scratch.join("artifact-0"))?;
+                mount_artifact(root, &artifact, &first)?;
+                assert_eq!(fs::read(root.join("first"))?, b"dummy");
+                assert!(
+                    fs::read_to_string("/proc/thread-self/mountinfo")?
+                        .lines()
+                        .any(|row| {
+                            row.split_whitespace().nth(4) == root.join("first").to_str()
+                        })
+                );
+
+                let second = Artifact {
+                    sha256: if valid { &digest } else { "invalid-digest" },
+                    targets: &["second"],
+                    ..artifact
+                };
+                let path = scratch.join("artifact-1");
+                let staged = stage_artifact(&second, &path);
+                if !valid {
+                    assert!(matches!(staged, Err(Fault::Identity)));
+                    assert_eq!(fs::read(path)?, b"dummy");
+                }
+                mount_artifact(root, &second, &staged?)?;
+                assert_eq!(fs::read(root.join("second"))?, b"dummy");
+                Ok(())
+            });
+            assert!(if valid {
+                result.is_ok()
+            } else {
+                matches!(result, Err(Fault::Identity))
+            });
+            cleanup_trial(&scratch).unwrap();
+            assert!(!scratch.exists());
+        }
+        fs::remove_dir_all(fixture).unwrap();
     }
 
     #[test]
