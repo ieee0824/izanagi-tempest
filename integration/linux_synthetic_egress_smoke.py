@@ -1,12 +1,16 @@
 """Exercise fixed loopback egress rules in a disposable Linux network namespace."""
 
 import errno
+import hashlib
 import json
 import os
+import secrets
+import select
 import socket
 import subprocess
 import sys
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -195,6 +199,8 @@ def worker(mode, parent_namespace):
     interfaces = json.loads(run("ip", "-j", "link", "show", capture_output=True).stdout)
     require([link["ifname"] for link in interfaces] == ["lo"], "expected only loopback")
     print(f"netns={current_namespace}", flush=True)
+    if mode == "--traffic-worker":
+        require(input() == "record", "missing parent recording acknowledgement")
     run("ip", "link", "set", "lo", "up")
 
     with socket.socket() as allowed, socket.socket() as denied:
@@ -232,17 +238,92 @@ def check_namespace_released(namespace):
     print(f"netns={namespace} released")
 
 
+@dataclass(frozen=True)
+class RunRecord:
+    run_id: str
+    target: tuple[int, int]
+    sha256: bytes
+
+
+def verify_evidence(expected, observed, payload):
+    if expected is None or observed is None or not payload:
+        raise PreflightDenied("evidence missing")
+    if observed.run_id != expected.run_id:
+        raise PreflightDenied("run mismatch")
+    if observed.target != expected.target:
+        raise PreflightDenied("target mismatch")
+    if hashlib.sha256(payload).digest() != expected.sha256 or observed.sha256 != expected.sha256:
+        raise PreflightDenied("digest mismatch")
+
+
+def worker_command(mode):
+    return ("unshare", "--net", sys.executable, str(Path(__file__).resolve()),
+            mode, str(namespace_id()))
+
+
+def record_traffic(stack):
+    run_id = secrets.token_hex(16)
+    with subprocess.Popen(
+        worker_command("--traffic-worker"), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    ) as worker_process:
+        try:
+            readable, _, _ = select.select([worker_process.stdout], [], [], 10)
+            require(readable, "missing traffic worker readiness")
+            header = worker_process.stdout.readline()
+            namespace = stack.enter_context(open(f"/proc/{worker_process.pid}/ns/net", "rb"))
+            identity = os.fstat(namespace.fileno())
+            require(header == f"netns={identity.st_ino}\n".encode(), "unexpected worker namespace")
+            payload, _ = worker_process.communicate(input=b"record\n", timeout=10)
+        except BaseException:
+            worker_process.kill()
+            worker_process.wait()
+            raise
+        require(worker_process.returncode == 0 and payload, "traffic observation failed")
+
+    print(header.decode() + payload.decode(), end="")
+    return RunRecord(
+        run_id, (identity.st_dev, identity.st_ino), hashlib.sha256(payload).digest(),
+    ), payload
+
+
+def check_run_evidence():
+    # Keep both namespaces pinned so the kernel cannot reuse the first identity.
+    with ExitStack() as stack:
+        first, payload = record_traffic(stack)
+        second, other_payload = record_traffic(stack)
+        require(first.run_id != second.run_id and first.target != second.target,
+                "expected two independent fixture runs")
+        verify_evidence(first, first, payload)
+        verify_evidence(second, second, other_payload)
+        for expected, observed, contents, reason in (
+            (first, second, other_payload, "run mismatch"),
+            (first, replace(first, target=second.target), payload, "target mismatch"),
+            (first, first, payload + b"extra", "digest mismatch"),
+            (first, replace(first, sha256=bytes(32)), payload, "digest mismatch"),
+            (first, None, payload, "evidence missing"),
+            (None, first, payload, "evidence missing"),
+            (first, first, None, "evidence missing"),
+        ):
+            try:
+                verify_evidence(expected, observed, contents)
+            except PreflightDenied as error:
+                require(str(error) == reason, f"unexpected evidence rejection: {error}")
+            else:
+                raise RuntimeError(f"accepted negative control: {reason}")
+    for record in (first, second):
+        check_namespace_released(str(record.target[1]))
+    print("run evidence: two accepted, seven rejected")
+
+
 def main():
     require(os.geteuid() == 0, "run as root on the dedicated Linux host")
     if len(sys.argv) == 3 and sys.argv[1] in MODES:
         worker(sys.argv[1], int(sys.argv[2]))
         return
     require(len(sys.argv) == 1, "this test takes no arguments")
-    for mode in MODES:
-        result = run(
-            "unshare", "--net", sys.executable, str(Path(__file__).resolve()),
-            mode, str(namespace_id()), stdout=subprocess.PIPE,
-        )
+    check_run_evidence()
+    for mode in MODES[1:]:
+        result = run(*worker_command(mode), stdout=subprocess.PIPE)
         print(result.stdout, end="")
         first_line = result.stdout.splitlines()[0]
         used_namespace = first_line.removeprefix("netns=")
