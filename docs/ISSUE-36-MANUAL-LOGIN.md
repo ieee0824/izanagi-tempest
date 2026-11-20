@@ -167,8 +167,12 @@ Linux ホスト名と照合し、認証先と許可 IP 一覧の版も照合し�
 
 実入口のオフライン診断では、有効な v2 設定と同じ管理ディレクトリに
 `claude-login-diagnostic-handoff`、`claude-login-diagnostic-signature`、
-`claude-login-diagnostic-trust-key` を用意します。各ファイルは root 所有・
+`claude-login-diagnostic-trust-key`、`claude-login-diagnostic-target-registration`
+を用意します。各ファイルは root 所有・
 0600・単一リンクとし、信頼鍵には独立して配置したテスト公開鍵の
 生32バイト、署名には Ed25519 署名の生64バイトを使います。
-入力の対象 ID は `registered-fixture` に固定しています。
+管理側が独立に配置する診断用登録 JSON の `target_hostname` を検証済み設定の
+ホスト名と照合し、登録の `target_id` を署名済み入力と照合します。ID は
+1〜128 バイトの ASCII 英数字、ハイフン、アンダースコアを使用できます。
+診断時刻が設定と署名済み入力のうち早い方の期限に達した場合は拒否します。
 正しい署名を照合できても実入口は終了コード1で起動を拒否します。
