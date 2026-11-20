@@ -2753,11 +2753,31 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    struct SyntheticStopTarget {
+        run_id: u128,
+        generation: (u64, u64),
+    }
+
+    fn request_synthetic_stop(
+        active: &mut Option<(SyntheticStopTarget, &UnixStream)>,
+        requested: SyntheticStopTarget,
+    ) -> io::Result<bool> {
+        let Some((target, sender)) = *active else {
+            return Ok(false);
+        };
+        if target != requested {
+            return Ok(false);
+        }
+        sender.shutdown(std::net::Shutdown::Both)?;
+        *active = None;
+        Ok(true)
+    }
+
     #[test]
     #[ignore = "requires root and private mount/network namespaces"]
     fn synthetic_admin_stop_matches_generation_and_reaps_descendants() {
         use std::{
-            net::Shutdown,
             process::Command,
             time::{Duration, Instant},
         };
@@ -2769,6 +2789,14 @@ mod tests {
         let parent = lock_parent(&path).unwrap();
         let unrelated = WorkArea::create(&parent, &path).unwrap();
         let work = WorkArea::create(&parent, &path).unwrap();
+        let target = SyntheticStopTarget {
+            run_id: 10,
+            generation: fd_identity(&work.pinned).unwrap(),
+        };
+        let alternate = SyntheticStopTarget {
+            run_id: 11,
+            generation: fd_identity(&unrelated.pinned).unwrap(),
+        };
         let mut observation = None;
         let result = supervised_observed(
             &parent,
@@ -2800,13 +2828,7 @@ mod tests {
                             }
                             Ok::<_, io::Error>(())
                         };
-                        let request_stop = |target: &Path| -> io::Result<bool> {
-                            if target != work.path {
-                                return Ok(false);
-                            }
-                            sender.shutdown(Shutdown::Both)?;
-                            Ok(true)
-                        };
+                        let mut active = Some((target, &sender));
                         wait_until(&|| {
                             fs::read_to_string(&ready)
                                 .is_ok_and(|text| text.split_whitespace().count() == 2)
@@ -2814,18 +2836,35 @@ mod tests {
                         let heartbeat = fs::metadata(&alive_after_wrong_target)
                             .and_then(|metadata| metadata.modified())
                             .ok();
-                        if request_stop(&unrelated.path)? {
-                            return Err(io::Error::other("stop accepted for another generation"));
+                        for wrong in [
+                            alternate,
+                            SyntheticStopTarget {
+                                run_id: 12,
+                                ..target
+                            },
+                            SyntheticStopTarget {
+                                generation: alternate.generation,
+                                ..target
+                            },
+                        ] {
+                            if request_synthetic_stop(&mut active, wrong)? {
+                                return Err(io::Error::other(
+                                    "stop accepted for a mismatched execution",
+                                ));
+                            }
                         }
                         wait_until(&|| {
                             fs::metadata(&alive_after_wrong_target)
                                 .and_then(|metadata| metadata.modified())
                                 .is_ok_and(|time| heartbeat.is_none_or(|before| time > before))
                         })?;
-                        if !request_stop(&work.path)? {
+                        if !request_synthetic_stop(&mut active, target)? {
                             return Err(io::Error::other(
                                 "stop rejected for the matching generation",
                             ));
+                        }
+                        if request_synthetic_stop(&mut active, target)? {
+                            return Err(io::Error::other("duplicate stop accepted"));
                         }
                         Ok(())
                     })();
@@ -2861,6 +2900,13 @@ mod tests {
         ));
         assert!(!work.path.exists());
         assert!(unrelated.path.is_dir());
+        let (reader, sender) = UnixStream::pair().unwrap();
+        let mut active = Some((alternate, &sender));
+        assert!(!request_synthetic_stop(&mut active, target).unwrap());
+        (&sender).write_all(b"still active").unwrap();
+        let mut message = [0; 12];
+        (&reader).read_exact(&mut message).unwrap();
+        assert_eq!(&message, b"still active");
         unrelated.remove(&parent).unwrap();
         fs::remove_dir_all(path).unwrap();
     }
