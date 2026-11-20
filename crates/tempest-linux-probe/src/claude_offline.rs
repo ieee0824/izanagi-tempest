@@ -2667,6 +2667,7 @@ mod tests {
 
         consume(4).unwrap();
         let restarted = WorkArea::create(&parent, &path).unwrap();
+        assert_ne!(retained.path, restarted.path);
         assert_eq!(
             supervised(&parent, &restarted, |scratch, _, control, reaped| {
                 fs::write(scratch.join("artifact-0"), b"control")?;
@@ -2682,6 +2683,10 @@ mod tests {
             (1, 2)
         );
         assert!(!restarted.path.exists());
+        assert_eq!(
+            fs::read(retained.path.join("artifact-0")).unwrap(),
+            b"retained"
+        );
         fs::remove_dir_all(path).unwrap();
     }
 
