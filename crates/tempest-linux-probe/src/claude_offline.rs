@@ -620,9 +620,12 @@ fn run_pty_child(root: &Path, namespace_reaped: &mut bool, mut events: File) -> 
         printf 'fixture-ready\n'
         IFS= read -r request
         test "$request" = probe
+        /bin/busybox sleep 60 &
+        descendant=$!
+        kill -0 "$descendant"
         printf 'R' > /pty-ready
         printf 'fixture-response\n'
-        exec /bin/busybox sleep 60
+        wait "$descendant"
         "#,
         ]);
     match run_in_pid_namespace_expecting(
@@ -750,6 +753,9 @@ fn run_fixture(
     own(&root.join("home/fixture/config"), 0o700)?;
     own(&settings, 0o600)?;
     let pty_events = if diagnostic == Diagnostic::Pty {
+        // BusyBox ash opens /dev/null for a background job's stdin.
+        fs::create_dir(root.join("dev"))?;
+        File::create(root.join("dev/null"))?;
         Some(fixture_fifo(&root.join("pty-ready"))?)
     } else {
         None
