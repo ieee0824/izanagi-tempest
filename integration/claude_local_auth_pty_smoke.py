@@ -6,11 +6,12 @@ import time
 import os
 from pathlib import Path
 import pty
+import select
 import subprocess
 import tempfile
 import sys
 
-from claude_supervised_pty_smoke import WORK, fixture
+from claude_supervised_pty_smoke import WORK, fixture, live_descendant, read_until
 from claude_writable_pty_smoke import CONFIG, REMOVED
 
 POSITIVE = (
@@ -184,7 +185,10 @@ def check_signed_permits(binary):
     signature = CONFIG / ".synthetic-handoff-signature"
     trust = CONFIG / ".synthetic-handoff-key"
     inputs = {policy, payload, signature, trust}
-    used, expired = [CONFIG / f"{value:032x}" for value in (2, 3)]
+    used, expired, stopped, later = [CONFIG / f"{value:032x}" for value in (2, 3, 4, 5)]
+    stop_request = CONFIG / ".synthetic-stop-request.json"
+    pending_stop = CONFIG / ".synthetic-stop-request.pending"
+
     scope = {
         "executable_sha256": "dbac288c29ba568459550a2da9e7ae0ded6b1fc728ee9fad3044c44e62d6ac14",
         "arguments": ["auth", "login"],
@@ -225,6 +229,50 @@ def check_signed_permits(binary):
             os.close(master)
             os.close(slave)
 
+    def check_administrator_stop(record):
+        master, slave = pty.openpty()
+        descendant = -1
+        process = None
+        try:
+            process = subprocess.Popen(
+                [binary, "signed-administrator-stop"], stdin=slave, stdout=slave,
+                stderr=subprocess.PIPE, env={},
+            )
+            os.close(slave)
+            slave = -1
+            read_until(master, b"fixture-ready", timeout=3)
+            prefix, permit_id, device, inode = process.stderr.readline().decode().strip().rsplit(" ", 3)
+            if prefix != "synthetic stop target:" or permit_id != record.name:
+                raise RuntimeError("supervisor announced an unexpected stop target")
+            target = dict(permit_id=permit_id, device=int(device), inode=int(inode))
+
+            def request(fields):
+                write_private(pending_stop, json.dumps(fields).encode())
+                pending_stop.replace(stop_request)
+
+            for wrong in (dict(target, permit_id=used.name), dict(target, inode=target["inode"] + 1)):
+                request(wrong)
+                time.sleep(0.1)
+                if process.poll() is not None:
+                    raise RuntimeError("wrong stop target ended the active run")
+            os.write(master, b"probe\n")
+            read_until(master, b"fixture-response")
+            descendant = live_descendant(process.pid)
+            request(target)
+            _, result = process.communicate(timeout=6)
+            watcher = select.poll()
+            watcher.register(descendant, select.POLLIN)
+            expected = b"synthetic administrator stop: PID namespace reaped\n" + POSITIVE + REMOVED
+            if process.returncode != 0 or result != expected or not watcher.poll(0):
+                raise RuntimeError(f"administrator stop and recovery failed: {result!r}")
+            if any(WORK.iterdir()):
+                raise RuntimeError("work generation remains after administrator stop")
+        finally:
+            for fd in (master, slave, descendant):
+                if fd >= 0:
+                    os.close(fd)
+            if process is not None:
+                process.communicate(timeout=20)
     assert_empty()
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -245,8 +293,15 @@ def check_signed_permits(binary):
                           inputs | {used, expired}, unused_gateway=True)
             write_handoff(key, expired, 45)
             assert_denied("signed-permit", b"already consumed or revoked", inputs | {used, expired})
+            write_handoff(key, stopped, 45)
+            check_administrator_stop(stopped)
+            assert_denied("signed-administrator-stop", b"already consumed or revoked",
+                          inputs | {used, expired, stopped, stop_request})
+            # Leave the previous stop in place while the successor reaches readiness.
+            write_handoff(key, later, 45)
+            check_administrator_stop(later)
     finally:
-        for path in inputs | {used, expired}:
+        for path in inputs | {used, expired, stopped, later, stop_request, pending_stop}:
             path.unlink(missing_ok=True)
     assert_empty()
 

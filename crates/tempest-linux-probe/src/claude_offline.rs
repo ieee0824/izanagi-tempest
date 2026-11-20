@@ -280,12 +280,32 @@ impl ChildNetwork {
 }
 
 fn run_in_pid_namespace_expecting(
+    command: std::process::Command,
+    timeout: std::time::Duration,
+    namespace_reaped: &mut bool,
+    expected_code: i32,
+    disconnect_fd: Option<i32>,
+    network: ChildNetwork,
+) -> Result<(), Fault> {
+    supervise_pid_namespace(
+        command,
+        timeout,
+        namespace_reaped,
+        expected_code,
+        disconnect_fd,
+        network,
+        || false,
+    )
+}
+
+fn supervise_pid_namespace(
     mut command: std::process::Command,
     timeout: std::time::Duration,
     namespace_reaped: &mut bool,
     expected_code: i32,
     disconnect_fd: Option<i32>,
     network: ChildNetwork,
+    administrator_stop: impl Fn() -> bool,
 ) -> Result<(), Fault> {
     use std::time::{Duration, Instant};
 
@@ -323,7 +343,9 @@ fn run_in_pid_namespace_expecting(
                 };
             }
             0 => {
-                let reason = if let Some(fd) = disconnect_fd {
+                let reason = if administrator_stop() {
+                    Some(Fault::AdministratorStop)
+                } else if let Some(fd) = disconnect_fd {
                     let mut event = libc::pollfd {
                         fd,
                         events: 0,
@@ -664,7 +686,30 @@ fn artifacts_for(diagnostic: Diagnostic) -> &'static [Artifact<'static>] {
 const LOGIN_EXECUTABLE: &str = "/bin/claude";
 const LOGIN_ARGS: [&str; 2] = ["auth", "login"];
 
+#[derive(serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct FixtureStopTarget {
+    permit_id: String,
+    device: u64,
+    inode: u64,
+}
+
+struct FixtureStop {
+    request: std::path::PathBuf,
+    target: FixtureStopTarget,
+}
+
+impl FixtureStop {
+    fn requested(&self) -> bool {
+        read_login_input(&self.request, 512)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<FixtureStopTarget>(&bytes).ok())
+            .is_some_and(|request| request == self.target)
+    }
+}
+
 struct FixturePermit {
+    administrator_stop: Option<FixtureStop>,
     expires: std::time::Instant,
     executable_digest: &'static str,
     arguments: [&'static str; 2],
@@ -720,6 +765,7 @@ fn run_pty_child(
     mut events: File,
     private_config: Option<&writable_config::Generation>,
     network: ChildNetwork,
+    administrator_stop: Option<&FixtureStop>,
 ) -> Result<(), Fault> {
     use std::{process::Stdio, time::Duration};
     let mut command = isolated_command(
@@ -809,19 +855,23 @@ fn run_pty_child(
     if matches!(network, ChildNetwork::Verified(_)) {
         configure_login_command(&mut command);
     }
-    match run_in_pid_namespace_expecting(
+    match supervise_pid_namespace(
         command,
         Duration::from_secs(12),
         namespace_reaped,
         0,
         Some(libc::STDIN_FILENO),
         network,
+        || administrator_stop.is_some_and(FixtureStop::requested),
     ) {
-        Err(Fault::ReportEof) => {
+        Err(reason @ (Fault::ReportEof | Fault::AdministratorStop)) => {
             let mut buffer = [0; 2];
             let size = events.read(&mut buffer)?;
             if &buffer[..size] != b"R" {
                 return Err(Fault::Identity);
+            }
+            if matches!(reason, Fault::AdministratorStop) {
+                eprintln!("synthetic administrator stop: PID namespace reaped");
             }
             Ok(())
         }
@@ -1086,7 +1136,14 @@ fn run_fixture_with_config(
         if let Some(config) = config {
             config.run(root, scratch, namespace_reaped, diagnostic)?;
         } else if let Some(events) = pty_events {
-            run_pty_child(root, namespace_reaped, events, private_config, network)?;
+            run_pty_child(
+                root,
+                namespace_reaped,
+                events,
+                private_config,
+                network,
+                local_auth.and_then(|(_, _, permit)| permit.administrator_stop.as_ref()),
+            )?;
             if let Some(gateway) = gateway {
                 gateway.finish()?;
             }
@@ -2054,6 +2111,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         let mut permit = local_auth_case.map(|case| {
             let now = std::time::Instant::now();
             FixturePermit {
+                administrator_stop: None,
                 expires: if matches!(case, local_auth::Case::ExpiredPermit) {
                     now
                 } else {
@@ -2086,11 +2144,13 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         })?;
         let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
         let config_parent = lock_parent(config_path)?;
+        let mut signed_permit_id = None;
         if matches!(
             local_auth_case,
             Some(
                 local_auth::Case::SingleUsePermit
                     | local_auth::Case::SignedPermit
+                    | local_auth::Case::SignedAdministratorStop
                     | local_auth::Case::PermitExpiresBeforeGrant
             )
         ) {
@@ -2172,19 +2232,38 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                 Instant::now(),
             )?;
             permit.expires = expiry;
+            if matches!(
+                local_auth_case,
+                Some(local_auth::Case::SignedAdministratorStop)
+            ) {
+                signed_permit_id = Some(id);
+            }
         }
+        let work = WorkArea::create(&parent, work_path)?;
+        let config = (|| {
+            if let Some((id, permit)) = signed_permit_id.zip(permit.as_mut()) {
+                let (device, inode) = fd_identity(&work.pinned)?;
+                let permit_id = format!("{id:032x}");
+                eprintln!("synthetic stop target: {permit_id} {device} {inode}");
+                permit.administrator_stop = Some(FixtureStop {
+                    request: config_path.join(".synthetic-stop-request.json"),
+                    target: FixtureStopTarget {
+                        permit_id,
+                        device,
+                        inode,
+                    },
+                });
+            }
+            writable_config::Generation::create(&config_parent, config_path, &work)
+        })()
+        .map_err(|error| match work.remove(&parent) {
+            Ok(()) => error,
+            Err(cleanup) => io::Error::other(format!("{error}; work cleanup failed: {cleanup}")),
+        })?;
         let local_auth = local_auth_case
             .zip(upstream_network.as_ref())
             .zip(permit.as_ref())
             .map(|((case, namespace), permit)| (case, namespace, permit));
-        let work = WorkArea::create(&parent, work_path)?;
-        let config = writable_config::Generation::create(&config_parent, config_path, &work)
-            .map_err(|error| match work.remove(&parent) {
-                Ok(()) => error,
-                Err(cleanup) => {
-                    io::Error::other(format!("{error}; work cleanup failed: {cleanup}"))
-                }
-            })?;
         let mut observation = None;
         let run = supervised_with_network(
             &parent,
