@@ -192,6 +192,7 @@ pub(super) fn serve_fixture(
     listener: &TcpListener,
     upstream: FixtureUpstream,
     case: Case,
+    expires: Instant,
 ) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(8);
     let mut rejected = accept_before(listener, deadline)?;
@@ -254,10 +255,33 @@ pub(super) fn serve_fixture(
                 }
                 Ok::<_, io::Error>(())
             })?)
+        } else if matches!(case, Case::SignedTlsExpiry) {
+            Some(std::thread::Builder::new().spawn_scoped(scope, || {
+                let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 39275));
+                let mut client = accept_before(listener, expires)?;
+                let tunnel = open_tunnel(&mut client, expires, peer, |address, timeout| {
+                    TcpStream::connect_timeout(&address, timeout)
+                })?;
+                finish_expiring_relay(relay(client, tunnel, expires), expires)?;
+                // The signed IP revision's freshness ended. Check the next
+                // CONNECT but do not create another upstream socket.
+                let mut denied = accept_before(listener, deadline)?;
+                read_request(DeadlineReader {
+                    client: &mut denied,
+                    deadline,
+                })?;
+                denied.set_write_timeout(Some(time_remaining(deadline)?))?;
+                denied.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n")?;
+                Ok(())
+            })?)
         } else {
             None
         };
-        let relayed = relay(client, tunnel, deadline);
+        let relayed = if matches!(case, Case::SignedTlsExpiry) {
+            finish_expiring_relay(relay(client, tunnel, expires), expires)
+        } else {
+            relay(client, tunnel, deadline)
+        };
         let exchanged = exchange
             .join()
             .map_err(|_| io::Error::other("login fixture upstream failed"))?;
@@ -267,6 +291,25 @@ pub(super) fn serve_fixture(
         }
         relayed.and(exchanged)
     })
+}
+
+fn finish_expiring_relay(result: io::Result<()>, expires: Instant) -> io::Result<()> {
+    if Instant::now() < expires {
+        return Err(io::Error::other(
+            "local tunnel ended before signed freshness expired",
+        ));
+    }
+    match result {
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ) =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
 }
 
 #[cfg(test)]
@@ -536,6 +579,7 @@ with socket.create_server(("127.0.0.1", 0)) as listener:
                     &gateway,
                     FixtureUpstream::prepare(Case::Match).unwrap(),
                     Case::Match,
+                    Instant::now() + Duration::from_secs(8),
                 )
             });
             let mut rejected = TcpStream::connect(address).unwrap();

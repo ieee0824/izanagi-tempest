@@ -400,6 +400,13 @@ sudo -n python3 integration/claude_local_auth_pty_smoke.py \
   target/debug/tempest-claude-offline-local-auth-pty --signed-tls
 ```
 
+同じスモークの期限切れケースでは、許可 IP 版を束縛した署名付き
+ダミー許可の単調期限をゲートウェイに渡します。TLS 認証と固定応答を
+確認したトンネルを開いたまま期限を待ち、両端の終了と、同じ世代での
+次の CONNECT が上流接続なしで拒否されることを確認します。その後に
+PTY を切断し、同じ許可 ID と作業・設定世代の回収を照合します。
+運用上の失効配布や DNS の変更通知は別の検証対象です。
+
 公開 CLI の拒否だけを確認するには、Linux で `strace` と `ip` を用意し、
 次の試験を実行します。試験は外向き経路のない専用 mount/net 名前空間で
 ダミー設定と空の台帳を使用します。

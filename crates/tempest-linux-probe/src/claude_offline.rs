@@ -851,6 +851,7 @@ impl FixtureClosure {
                 self.case,
                 local_auth::Case::SignedPermit
                     | local_auth::Case::SignedTls
+                    | local_auth::Case::SignedTlsExpiry
                     | local_auth::Case::MissingConsumptionSync
             ) {
                 eprintln!(
@@ -1278,9 +1279,9 @@ fn run_fixture_with_config(
         .inspect_err(|fault| stage_failure("local_policy", fault))?;
     let launch = (|| {
         let gateway = match (&policy, local_auth) {
-            (Some(policy), Some((case, upstream_network, _))) if case.needs_gateway() => Some(
+            (Some(policy), Some((case, upstream_network, permit))) if case.needs_gateway() => Some(
                 policy
-                    .start_gateway(case, upstream_network)
+                    .start_gateway(case, upstream_network, permit.expires)
                     .map_err(|error| {
                         eprintln!("local auth gateway refused before grant: {error}");
                         error
@@ -2820,6 +2821,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                 local_auth::Case::SingleUsePermit
                     | local_auth::Case::SignedPermit
                     | local_auth::Case::SignedTls
+                    | local_auth::Case::SignedTlsExpiry
                     | local_auth::Case::SignedAdministratorStop
                     | local_auth::Case::PermitExpiresBeforeGrant
                     | local_auth::Case::WrongGrantId
