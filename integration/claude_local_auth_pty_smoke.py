@@ -1,6 +1,8 @@
 """Exercise the integrated synthetic local-auth PTY and the pre-grant failures."""
 
 import errno
+import json
+import time
 import os
 from pathlib import Path
 import pty
@@ -119,30 +121,46 @@ def check_concurrent_refusal(binary):
 
 def check_permit_replay(binary):
     marker = CONFIG / ".used-synthetic-login-permit"
+    policy = CONFIG / ".synthetic-login-policy.json"
     assert_empty()
-    try:
-        fixture(
-            [binary, "single-use-permit"], {},
-            complete_probe=True, success=POSITIVE + REMOVED,
-        )
-        if set(CONFIG.iterdir()) != {marker} or not marker.is_file() or marker.stat().st_size:
-            raise RuntimeError("only the empty synthetic permit marker should remain")
+
+    def write_settings(expires):
+        with os.fdopen(os.open(policy, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as out:
+            json.dump({
+                "policy": {"version": 1, "authority": "platform.claude.com:443"},
+                "expires_unix_seconds": expires,
+            }, out)
+
+    def check_refusal(reason, expected):
         master, slave = pty.openpty()
         try:
             result = subprocess.run(
                 [binary, "single-use-permit"], stdin=slave, stdout=slave,
                 stderr=subprocess.PIPE, env={}, timeout=2,
             )
-            if result.returncode != 1 or b"synthetic login permit already used" not in result.stderr:
-                raise RuntimeError("the used synthetic permit was accepted again")
+            if result.returncode != 1 or reason not in result.stderr:
+                raise RuntimeError(f"synthetic permit refusal failed: {result.stderr!r}")
+            if any(WORK.iterdir()) or set(CONFIG.iterdir()) != expected:
+                raise RuntimeError("rejected permit staged a new generation")
         finally:
             os.close(slave)
             os.close(master)
-        if any(WORK.iterdir()) or set(CONFIG.iterdir()) != {marker}:
-            raise RuntimeError("replay staged a new generation")
+
+    try:
+        check_refusal(b"No such file or directory", set())
+        write_settings(int(time.time()) - 1)
+        check_refusal(b"synthetic permit expired", {policy})
+        write_settings(int(time.time()) + 45)
+        fixture(
+            [binary, "single-use-permit"], {},
+            complete_probe=True, success=POSITIVE + REMOVED,
+        )
+        if set(CONFIG.iterdir()) != {marker, policy} or not marker.is_file() or marker.stat().st_size:
+            raise RuntimeError("unexpected settings or permit artifacts after cleanup")
+        check_refusal(b"synthetic login permit already used", {marker, policy})
     finally:
-        if marker.is_file():
-            marker.unlink()
+        marker.unlink(missing_ok=True)
+        policy.unlink(missing_ok=True)
     assert_empty()
 
 
@@ -166,7 +184,7 @@ def main():
     )
     assert_empty()
     check_permit_replay(binary)
-    print("used permit: refused after first process exited")
+    print("configured permit: missing, expired and replayed settings refused; first use recovered")
     print("concurrent launch: refused before staging")
     print("match: auth accepted, other host and three direct ports denied; disconnect reaped, active tunnel and listeners closed, generation removed")
     return 0

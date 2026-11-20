@@ -1618,7 +1618,7 @@ fn verify_shared_terminal(input: libc::c_int, output: libc::c_int) -> io::Result
 
 const MANUAL_LOGIN_POLICY: &str = "/etc/tempest/claude-manual-login.json";
 
-fn check_manual_login_policy(path: &Path) -> io::Result<()> {
+fn open_manual_login_policy(path: &Path) -> io::Result<File> {
     use std::ffi::CString;
     fn open_child(parent: &File, name: &std::ffi::OsStr, flags: libc::c_int) -> io::Result<File> {
         let name = CString::new(name.as_bytes())?;
@@ -1673,7 +1673,11 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     if fd_identity(&input)? != fd_identity(&pinned)? {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
-    validate_manual_login_policy(input)?;
+    Ok(input)
+}
+
+fn check_manual_login_policy(path: &Path) -> io::Result<()> {
+    validate_manual_login_policy(open_manual_login_policy(path)?)?;
     // A valid file describes the design. It does not authorize a live login.
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -1681,14 +1685,26 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     ))
 }
 
-fn validate_manual_login_policy(input: impl Read) -> io::Result<()> {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Policy {
-        version: u32,
-        authority: String,
-    }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualLoginPolicy {
+    version: u32,
+    authority: String,
+}
 
+impl ManualLoginPolicy {
+    fn validate(&self) -> io::Result<()> {
+        if self.version != 1 || self.authority != login_connect::AUTHORITY {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid manual login policy",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_manual_login_policy(input: impl Read) -> io::Result<()> {
     const MAX_POLICY_BYTES: u64 = 4096;
     let mut bytes = Vec::new();
     input.take(MAX_POLICY_BYTES + 1).read_to_end(&mut bytes)?;
@@ -1696,11 +1712,8 @@ fn validate_manual_login_policy(input: impl Read) -> io::Result<()> {
     if bytes.len() as u64 > MAX_POLICY_BYTES {
         return Err(invalid());
     }
-    let policy: Policy = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-    if policy.version != 1 || policy.authority != login_connect::AUTHORITY {
-        return Err(invalid());
-    }
-    Ok(())
+    let policy: ManualLoginPolicy = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    policy.validate()
 }
 
 pub(super) fn run_manual_login() -> std::process::ExitCode {
@@ -1774,6 +1787,45 @@ pub(super) fn run_local_auth_pty() -> std::process::ExitCode {
     run_writable_pty_for(Some(case))
 }
 
+fn read_fixture_permit(path: &Path) -> io::Result<std::time::Instant> {
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct FixturePolicy {
+        policy: ManualLoginPolicy,
+        expires_unix_seconds: u64,
+    }
+
+    let file = open_manual_login_policy(path)?;
+    let mut bytes = Vec::new();
+    file.take(4097).read_to_end(&mut bytes)?;
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid synthetic login settings",
+        )
+    };
+    if bytes.len() > 4096 {
+        return Err(invalid());
+    }
+    let fixture: FixturePolicy = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    fixture.policy.validate()?;
+    let now = Instant::now();
+    let expires = UNIX_EPOCH
+        .checked_add(Duration::from_secs(fixture.expires_unix_seconds))
+        .ok_or_else(invalid)?;
+    let remaining = expires
+        .duration_since(SystemTime::now())
+        .ok()
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| io::Error::other("synthetic permit expired"))?;
+    if remaining > Duration::from_secs(60) {
+        return Err(invalid());
+    }
+    now.checked_add(remaining).ok_or_else(invalid)
+}
+
 fn consume_fixture_permit(parent: &File) -> io::Result<()> {
     // This marker belongs to the one fixed synthetic permit and survives
     // generation cleanup. O_EXCL makes reuse fail even after process exit.
@@ -1822,7 +1874,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         let upstream_network = local_auth_case
             .map(|_| File::open("/proc/thread-self/ns/net"))
             .transpose()?;
-        let permit = local_auth_case.map(|case| {
+        let mut permit = local_auth_case.map(|case| {
             let now = std::time::Instant::now();
             FixturePermit {
                 expires: if matches!(case, local_auth::Case::ExpiredPermit) {
@@ -1847,10 +1899,6 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                 },
             }
         });
-        let local_auth = local_auth_case
-            .zip(upstream_network.as_ref())
-            .zip(permit.as_ref())
-            .map(|((case, namespace), permit)| (case, namespace, permit));
         let work_path = Path::new(WORK_PARENT);
         let parent = lock_parent(work_path).map_err(|error| {
             if error.kind() == io::ErrorKind::WouldBlock {
@@ -1862,8 +1910,18 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
         let config_parent = lock_parent(config_path)?;
         if matches!(local_auth_case, Some(local_auth::Case::SingleUsePermit)) {
+            let permit = permit
+                .as_mut()
+                .ok_or_else(|| io::Error::other("synthetic permit missing"))?;
+            permit.expires =
+                read_fixture_permit(&config_path.join(".synthetic-login-policy.json"))?;
+            permit.validate()?;
             consume_fixture_permit(&config_parent)?;
         }
+        let local_auth = local_auth_case
+            .zip(upstream_network.as_ref())
+            .zip(permit.as_ref())
+            .map(|((case, namespace), permit)| (case, namespace, permit));
         let work = WorkArea::create(&parent, work_path)?;
         let config = writable_config::Generation::create(&config_parent, config_path, &work)
             .map_err(|error| match work.remove(&parent) {
