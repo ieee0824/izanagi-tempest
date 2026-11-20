@@ -9,6 +9,7 @@ use std::{
 
 const IP: &str = "/usr/sbin/ip";
 const NFT: &str = "/usr/sbin/nft";
+pub(super) const PROXY_URL: &str = "http://127.0.0.1:39271";
 const PORTS: [u16; 4] = [39271, 39272, 39273, 39274];
 const TABLE: &str = "tempest_local_auth";
 const POLICY: &str = "

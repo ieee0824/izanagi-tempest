@@ -68,7 +68,12 @@ def main():
     for case, reason in FAILURES.items():
         check_pre_grant_denial(binary, case, reason)
         print(f"{case}: no launch, no traffic, recovered")
-    fixture([binary, "match"], {}, complete_probe=True, success=POSITIVE + REMOVED)
+    fixture(
+        [binary, "match"],
+        {"HTTPS_PROXY": "http://127.0.0.1:1", "NO_PROXY": "*"},
+        complete_probe=True,
+        success=POSITIVE + REMOVED,
+    )
     assert_empty()
     print("match: auth accepted, other host and three direct ports denied; disconnect reaped, listeners closed, generation removed")
     return 0

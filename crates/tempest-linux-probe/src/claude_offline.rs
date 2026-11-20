@@ -644,6 +644,16 @@ fn artifacts_for(diagnostic: Diagnostic) -> &'static [Artifact<'static>] {
     }
 }
 
+const LOGIN_ARGS: [&str; 2] = ["auth", "login"];
+
+fn configure_login_command(command: &mut std::process::Command) {
+    command
+        .args(LOGIN_ARGS)
+        .env("HTTPS_PROXY", local_auth::PROXY_URL)
+        .env("HTTP_PROXY", local_auth::PROXY_URL)
+        .env("NO_PROXY", "");
+}
+
 fn run_pty_child(
     root: &Path,
     namespace_reaped: &mut bool,
@@ -681,6 +691,13 @@ fn run_pty_child(
             if (: > "$HOME/outside-probe"); then exit 1; fi
         fi
         if test "$3" = local-auth; then
+            shift 3
+            test "$#" = 2
+            test "$1" = auth
+            test "$2" = login
+            test "$HTTPS_PROXY" = http://127.0.0.1:39271
+            test "$HTTP_PROXY" = "$HTTPS_PROXY"
+            test -z "$NO_PROXY"
             /bin/busybox nc -w 1 127.0.0.1 39271 -e /bin/busybox sh -eu -c '
                 printf "CONNECT invalid.example:443 HTTP/1.1\r\n\r\n"
                 IFS= read -r status
@@ -721,6 +738,9 @@ fn run_pty_child(
             ChildNetwork::NewOffline => "offline",
             ChildNetwork::Verified(_) => "local-auth",
         });
+    if matches!(network, ChildNetwork::Verified(_)) {
+        configure_login_command(&mut command);
+    }
     match run_in_pid_namespace_expecting(
         command,
         Duration::from_secs(12),
