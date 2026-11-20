@@ -1,5 +1,6 @@
 //! Fixed inputs for dedicated Linux Claude offline diagnostics.
 use super::os::Fault;
+mod writable_config;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
@@ -177,6 +178,7 @@ enum Diagnostic {
     ConfigControl,
     ConfigIsolated,
     Pty,
+    PtyOtherUid,
 }
 
 const UID: u32 = 999;
@@ -344,6 +346,11 @@ fn isolated_command(
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(stderr);
+    let (uid, gid) = if diagnostic == Diagnostic::PtyOtherUid {
+        (65534, 65534)
+    } else {
+        (UID, GID)
+    };
     // The executable, environment and chroot are fixed, and the child drops
     // all host descriptors at exec apart from stdio.
     unsafe {
@@ -380,7 +387,10 @@ fn isolated_command(
             }
             if libc::chroot(child_root.as_ptr()) < 0
                 || libc::chdir(
-                    if matches!(diagnostic, Diagnostic::Version | Diagnostic::Pty) {
+                    if matches!(
+                        diagnostic,
+                        Diagnostic::Version | Diagnostic::Pty | Diagnostic::PtyOtherUid
+                    ) {
                         c"/home/fixture"
                     } else {
                         c"/work"
@@ -388,8 +398,8 @@ fn isolated_command(
                     .as_ptr(),
                 ) < 0
                 || libc::setgroups(0, std::ptr::null()) < 0
-                || libc::setresgid(GID, GID, GID) < 0
-                || libc::setresuid(UID, UID, UID) < 0
+                || libc::setresgid(gid, gid, gid) < 0
+                || libc::setresuid(uid, uid, uid) < 0
                 || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0
                 || libc::setrlimit(libc::RLIMIT_FSIZE, &limit) < 0
                 || libc::syscall(
@@ -595,13 +605,18 @@ fn artifacts_for(diagnostic: Diagnostic) -> &'static [Artifact<'static>] {
     }
 }
 
-fn run_pty_child(root: &Path, namespace_reaped: &mut bool, mut events: File) -> Result<(), Fault> {
+fn run_pty_child(
+    root: &Path,
+    namespace_reaped: &mut bool,
+    mut events: File,
+    private_config: Option<&writable_config::Generation>,
+) -> Result<(), Fault> {
     use std::{process::Stdio, time::Duration};
     let mut command = isolated_command(
         root,
         "/bin/busybox",
-        File::open("/dev/null")?,
-        File::open("/dev/null")?,
+        OpenOptions::new().write(true).open("/dev/null")?,
+        OpenOptions::new().write(true).open("/dev/null")?,
         Diagnostic::Pty,
     )?;
     command
@@ -617,6 +632,14 @@ fn run_pty_child(root: &Path, namespace_reaped: &mut bool, mut events: File) -> 
         test -r "$CLAUDE_CONFIG_DIR/settings.json"
         test "$(/bin/busybox id -u)" = 999
         test "$(/bin/busybox id -g)" = 988
+        if test "$1" = writable; then
+            test ! -e /home/ubuntu
+            test ! -e "$2/settings.json"
+            test ! -e "$CLAUDE_CONFIG_DIR/write-probe"
+            umask 077
+            : > "$CLAUDE_CONFIG_DIR/write-probe"
+            if (: > "$HOME/outside-probe"); then exit 1; fi
+        fi
         printf 'fixture-ready\n'
         IFS= read -r request
         test "$request" = probe
@@ -627,7 +650,14 @@ fn run_pty_child(root: &Path, namespace_reaped: &mut bool, mut events: File) -> 
         printf 'fixture-response\n'
         wait "$descendant"
         "#,
-        ]);
+        ])
+        .arg("fixed-pty")
+        .arg(if private_config.is_some() {
+            "writable"
+        } else {
+            "readonly"
+        })
+        .arg(private_config.map_or(Path::new("/"), |config| &config.path));
     match run_in_pid_namespace_expecting(
         command,
         Duration::from_secs(12),
@@ -648,7 +678,36 @@ fn run_pty_child(root: &Path, namespace_reaped: &mut bool, mut events: File) -> 
     }
 }
 
-fn verify_mount_table_for(root: &Path, diagnostic: Diagnostic) -> Result<(), Fault> {
+fn verify_other_uid_denied(root: &Path, namespace_reaped: &mut bool) -> Result<(), Fault> {
+    let mut command = isolated_command(
+        root,
+        "/bin/busybox",
+        OpenOptions::new().write(true).open("/dev/null")?,
+        OpenOptions::new().write(true).open("/dev/null")?,
+        Diagnostic::PtyOtherUid,
+    )?;
+    command.args([
+        "sh",
+        "-eu",
+        "-c",
+        r#"
+        test "$(/bin/busybox id -u)" = 65534
+        test -x "$HOME"
+        test ! -x "$CLAUDE_CONFIG_DIR"
+        test ! -r "$CLAUDE_CONFIG_DIR/settings.json"
+        test ! -w "$CLAUDE_CONFIG_DIR"
+        if /bin/busybox cat "$CLAUDE_CONFIG_DIR/settings.json"; then exit 1; fi
+        if (: > "$CLAUDE_CONFIG_DIR/foreign-probe"); then exit 1; fi
+    "#,
+    ]);
+    run_in_pid_namespace(command, std::time::Duration::from_secs(3), namespace_reaped)
+}
+
+fn verify_mount_table_for(
+    root: &Path,
+    diagnostic: Diagnostic,
+    writable: bool,
+) -> Result<(), Fault> {
     use std::collections::BTreeSet;
     let mut expected = BTreeSet::from([root.to_path_buf()]);
     expected.extend(
@@ -660,6 +719,10 @@ fn verify_mount_table_for(root: &Path, diagnostic: Diagnostic) -> Result<(), Fau
     if diagnostic != Diagnostic::Version {
         expected.insert(root.join("bin/busybox"));
     }
+    let config = root.join("home/fixture/config");
+    if writable {
+        expected.insert(config.clone());
+    }
     for line in fs::read_to_string("/proc/self/mountinfo")?.lines() {
         let mut columns = line.split_whitespace().skip(4);
         let Some(target) = columns.next().map(Path::new) else {
@@ -670,12 +733,12 @@ fn verify_mount_table_for(root: &Path, diagnostic: Diagnostic) -> Result<(), Fau
         }
         let flags = columns.next().ok_or(Fault::Identity)?;
         let flags: BTreeSet<_> = flags.split(',').collect();
-        if !expected.remove(target)
-            || !["ro", "nosuid", "nodev"]
-                .iter()
-                .all(|flag| flags.contains(flag))
-            || flags.contains("rw")
-        {
+        let required = if writable && target == config {
+            &["rw", "nosuid", "nodev", "noexec"][..]
+        } else {
+            &["ro", "nosuid", "nodev"][..]
+        };
+        if !expected.remove(target) || !required.iter().all(|flag| flags.contains(flag)) {
             return Err(Fault::Identity);
         }
     }
@@ -726,6 +789,17 @@ fn run_fixture(
     namespace_reaped: &mut bool,
     diagnostic: Diagnostic,
 ) -> Result<(u64, u64), Fault> {
+    run_fixture_with_config(scratch, root, control, namespace_reaped, diagnostic, None)
+}
+
+fn run_fixture_with_config(
+    scratch: &Path,
+    root: &Path,
+    control: &mut UnixStream,
+    namespace_reaped: &mut bool,
+    diagnostic: Diagnostic,
+    private_config: Option<&writable_config::Generation>,
+) -> Result<(u64, u64), Fault> {
     use super::os;
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     for dir in [
@@ -747,11 +821,16 @@ fn run_fixture(
         let staged = stage_artifact(&BUSYBOX, &scratch.join("artifact-busybox"))?;
         mount_artifact(root, &BUSYBOX, &staged)?;
     }
-    let settings = root.join("home/fixture/config/settings.json");
-    fs::write(&settings, b"{}\n")?;
-    own(&root.join("home/fixture"), 0o700)?;
-    own(&root.join("home/fixture/config"), 0o700)?;
-    own(&settings, 0o600)?;
+    if let Some(config) = private_config {
+        own(&root.join("home/fixture"), 0o755)?;
+        config.bind(root)?;
+    } else {
+        let settings = root.join("home/fixture/config/settings.json");
+        fs::write(&settings, b"{}\n")?;
+        own(&root.join("home/fixture"), 0o700)?;
+        own(&root.join("home/fixture/config"), 0o700)?;
+        own(&settings, 0o600)?;
+    }
     let pty_events = if diagnostic == Diagnostic::Pty {
         // BusyBox ash opens /dev/null for a background job's stdin.
         fs::create_dir(root.join("dev"))?;
@@ -772,17 +851,27 @@ fn run_fixture(
         libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
         None,
     )?;
-    verify_mount_table_for(root, diagnostic)?;
-    let before = audit_settings(root)?;
+    verify_mount_table_for(root, diagnostic, private_config.is_some())?;
+    let before = if private_config.is_none() {
+        Some(audit_settings(root)?)
+    } else {
+        None
+    };
     request_cli_start(control)?;
+    if private_config.is_some() {
+        verify_other_uid_denied(root, namespace_reaped)?;
+        *namespace_reaped = false;
+    }
     if let Some(config) = config {
         config.run(root, scratch, namespace_reaped, diagnostic)?;
     } else if let Some(events) = pty_events {
-        run_pty_child(root, namespace_reaped, events)?;
+        run_pty_child(root, namespace_reaped, events, private_config)?;
     } else {
         run_child(root, scratch, namespace_reaped)?;
     }
-    if audit_settings(root)? != before {
+    if let Some(before) = before
+        && audit_settings(root)? != before
+    {
         return Err(Fault::Identity);
     }
 
@@ -1275,6 +1364,72 @@ pub(super) fn run_pty() -> std::process::ExitCode {
         }
         Err(error) => {
             eprintln!("offline PTY fixture failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+pub(super) fn run_writable_pty() -> std::process::ExitCode {
+    use std::process::ExitCode;
+    let mut args = std::env::args_os().skip(1);
+    let retain = match args.next().as_deref() {
+        None => false,
+        Some(flag) if flag == "--retain-fixture" && args.next().is_none() => true,
+        _ => return ExitCode::FAILURE,
+    };
+    if unsafe { libc::geteuid() } != 0
+        || unsafe { libc::isatty(libc::STDIN_FILENO) } != 1
+        || unsafe { libc::isatty(libc::STDOUT_FILENO) } != 1
+    {
+        return ExitCode::FAILURE;
+    }
+    let result = (|| {
+        let work_path = Path::new(WORK_PARENT);
+        let parent = lock_parent(work_path)?;
+        let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
+        let config_parent = lock_parent(config_path)?;
+        let work = WorkArea::create(&parent, work_path)?;
+        let config = writable_config::Generation::create(&config_parent, config_path, &work)
+            .or_else(|error| {
+                work.remove(&parent)?;
+                Err(error)
+            })?;
+        let mut observation = None;
+        let run = supervised_observed(
+            &parent,
+            &work,
+            |scratch, root, control, reaped| {
+                run_fixture_with_config(
+                    scratch,
+                    root,
+                    control,
+                    reaped,
+                    Diagnostic::Pty,
+                    Some(&config),
+                )
+            },
+            &mut observation,
+        );
+        let action = writable_config::disposition(
+            observation.map(|item| item.recovery),
+            run.is_ok(),
+            retain,
+        );
+        config.finish(&config_parent, action, run.is_ok())?;
+        run?;
+        Ok::<_, io::Error>(action)
+    })();
+    match result {
+        Ok(writable_config::Disposition::Retain) => {
+            eprintln!("offline writable PTY: recovered; synthetic configuration retained");
+            ExitCode::SUCCESS
+        }
+        Ok(_) => {
+            eprintln!("offline writable PTY: recovered; synthetic configuration removed");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("offline writable PTY fixture failed: {error}");
             ExitCode::FAILURE
         }
     }

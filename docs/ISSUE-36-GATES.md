@@ -396,3 +396,34 @@ sudo -n python3 integration/linux_login_egress_smoke.py
 交換が `platform.claude.com` です。固定版の最小宛先は未測定です。
 モデル API・MCP・実認証・実サービスとの通信は試験に含めません。
 [Claude Code のネットワーク要件](https://code.claude.com/docs/en/network-config#network-access-requirements)
+
+### 書き込み可能な専用設定領域のオフライン試験
+
+[Issue #129](https://github.com/ieee0824/izanagi-tempest/issues/129) の固定 PTY
+を専用 Linux で実行します。Python 3.11+ と #125 と同じ固定 BusyBox、
+空の既存作業親と空の設定専用親が必要です。
+
+```bash
+sudo install -d -m 0700 -o root -g root /var/lib/tempest-claude-config-fixture
+cargo build --locked -p tempest-linux-probe --bin tempest-claude-offline-writable-pty
+sudo python3 integration/claude_writable_pty_smoke.py target/debug/tempest-claude-offline-writable-pty
+```
+
+root 管理下に世代ごとの UID/GID 999:988・0700 を作り、空ファイル
+`settings.json` を0600で配置します。chroot の専用設定ディレクトリだけに
+書き込み可能な bind を作り、inode と mount flags を照合します。
+別 UID 65534 で同じ設定パスへの読取・作成が失敗することを確認します。
+専用 UID の固定コマンドは親の通常 HOME を公開しない root で、
+設定領域にだけ空のファイルを作成します。
+
+監督が PID 名前空間の終了と mount 解除を確認した後、世代・owner・mode・
+許可エントリとファイルの metadata を照合し、既定の削除か明示保持を行います。
+早期切断は失敗として回収します。終了証跡不足や未許可エントリは失敗として
+領域を残し、同じ世代を再作成しません。試験ドライバーは後続世代を実行し、
+明示保持した先行世代が変わらないことを確認した上で、試験用ファイルを
+回収します。終了証跡を欠いた場合は root 限定の
+`claude_offline::writable_config::tests::unknown_exit_refuses_reuse_and_preserves_generation`
+でも確認します。
+
+これは合成ファイル専用の入口です。実資格情報・SSH・外部通信は使用しません。
+実運用の保持期限、廃棄担当、付随ファイルの許容範囲は #36 の判断項目です。
