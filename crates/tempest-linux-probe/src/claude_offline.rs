@@ -1,4 +1,4 @@
-//! Fixed inputs for the dedicated Linux Claude --version experiment.
+//! Fixed inputs for dedicated Linux Claude offline diagnostics.
 use super::os::Fault;
 use sha2::{Digest, Sha256};
 use std::{
@@ -164,6 +164,20 @@ fn stage_artifact(artifact: &Artifact<'_>, destination: &Path) -> Result<File, F
     Ok(snapshot)
 }
 
+const BUSYBOX: Artifact<'static> = Artifact {
+    source: "/usr/bin/busybox",
+    bytes: 2124608,
+    sha256: "dbac288c29ba568459550a2da9e7ae0ded6b1fc728ee9fad3044c44e62d6ac14",
+    targets: &["bin/busybox"],
+};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Diagnostic {
+    Version,
+    ConfigControl,
+    ConfigIsolated,
+}
+
 const UID: u32 = 999;
 const GID: u32 = 988;
 
@@ -205,16 +219,27 @@ fn own(path: &Path, mode: u32) -> Result<(), Fault> {
 }
 
 fn run_in_pid_namespace(
+    command: std::process::Command,
+    timeout: std::time::Duration,
+    namespace_reaped: &mut bool,
+) -> Result<(), Fault> {
+    run_in_pid_namespace_expecting(command, timeout, namespace_reaped, 0)
+}
+
+fn run_in_pid_namespace_expecting(
     mut command: std::process::Command,
     timeout: std::time::Duration,
     namespace_reaped: &mut bool,
+    expected_code: i32,
 ) -> Result<(), Fault> {
     use std::time::{Duration, Instant};
 
     let deadline = Instant::now() + timeout;
     let init = super::os::clone_isolated()?;
     if init == 0 {
-        let success = command.status().is_ok_and(|status| status.success());
+        let success = command
+            .status()
+            .is_ok_and(|status| status.code() == Some(expected_code));
         // Linux kills and reaps remaining namespace members when PID 1 exits.
         unsafe { libc::_exit(if success { 0 } else { 1 }) };
     }
@@ -258,25 +283,38 @@ fn run_in_pid_namespace(
     }
 }
 
-fn run_child(root: &Path, scratch: &Path, namespace_reaped: &mut bool) -> Result<(), Fault> {
+fn isolated_command(
+    root: &Path,
+    executable: &str,
+    stdout: File,
+    stderr: File,
+    diagnostic: Diagnostic,
+) -> Result<std::process::Command, Fault> {
     use std::{
         ffi::CString,
-        os::unix::{ffi::OsStrExt, process::CommandExt},
+        os::unix::process::CommandExt,
         process::{Command, Stdio},
-        time::Duration,
     };
-    let stdout = scratch.join("stdout");
-    let stderr = scratch.join("stderr");
     let child_root = CString::new(root.as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
-    let mut command = Command::new("/bin/claude");
+    let proc_path =
+        CString::new(root.join("proc").as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
+    let tmp_path =
+        CString::new(root.join("tmp").as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
+    let mut command = Command::new(executable);
     command
-        .arg("--version")
         .env_clear()
         .env("HOME", "/home/fixture")
-        .env("CLAUDE_CONFIG_DIR", "/home/fixture/config")
+        .env(
+            "CLAUDE_CONFIG_DIR",
+            if diagnostic == Diagnostic::ConfigControl {
+                "/home/fixture/ordinary"
+            } else {
+                "/home/fixture/config"
+            },
+        )
         .stdin(Stdio::null())
-        .stdout(File::create(&stdout)?)
-        .stderr(File::create(&stderr)?);
+        .stdout(stdout)
+        .stderr(stderr);
     // The executable, environment and chroot are fixed, and the child drops
     // all host descriptors at exec apart from stdio.
     unsafe {
@@ -285,8 +323,37 @@ fn run_child(root: &Path, scratch: &Path, namespace_reaped: &mut bool) -> Result
                 rlim_cur: 4096,
                 rlim_max: 4096,
             };
+            if diagnostic != Diagnostic::Version
+                && libc::mount(
+                    c"proc".as_ptr(),
+                    proc_path.as_ptr(),
+                    c"proc".as_ptr(),
+                    libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+                    std::ptr::null(),
+                ) < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if diagnostic != Diagnostic::Version
+                && libc::mount(
+                    c"tmpfs".as_ptr(),
+                    tmp_path.as_ptr(),
+                    c"tmpfs".as_ptr(),
+                    libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+                    c"size=1048576,nr_inodes=64,mode=1777".as_ptr().cast(),
+                ) < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
             if libc::chroot(child_root.as_ptr()) < 0
-                || libc::chdir(c"/home/fixture".as_ptr()) < 0
+                || libc::chdir(
+                    if diagnostic == Diagnostic::Version {
+                        c"/home/fixture"
+                    } else {
+                        c"/work"
+                    }
+                    .as_ptr(),
+                ) < 0
                 || libc::setgroups(0, std::ptr::null()) < 0
                 || libc::setresgid(GID, GID, GID) < 0
                 || libc::setresuid(UID, UID, UID) < 0
@@ -304,14 +371,186 @@ fn run_child(root: &Path, scratch: &Path, namespace_reaped: &mut bool) -> Result
             Ok(())
         });
     }
-    run_in_pid_namespace(command, Duration::from_secs(12), namespace_reaped)?;
+    Ok(command)
+}
+
+fn run_child(root: &Path, scratch: &Path, namespace_reaped: &mut bool) -> Result<(), Fault> {
+    let stdout = scratch.join("stdout");
+    let stderr = scratch.join("stderr");
+    let mut command = isolated_command(
+        root,
+        "/bin/claude",
+        File::create(&stdout)?,
+        File::create(&stderr)?,
+        Diagnostic::Version,
+    )?;
+    command.arg("--version");
+    run_in_pid_namespace(
+        command,
+        std::time::Duration::from_secs(12),
+        namespace_reaped,
+    )?;
     if fs::read(stdout)? != b"2.1.325 (Claude Code)\n" || fs::metadata(stderr)?.len() != 0 {
         return Err(Fault::Identity);
     }
     Ok(())
 }
 
-fn verify_mount_table(root: &Path) -> Result<(), Fault> {
+const CONTROL_FILES: &[&str] = &[
+    "home/fixture/ordinary/settings.json",
+    "work/.claude/settings.json",
+    "work/.claude/settings.local.json",
+    "work/.mcp.json",
+];
+const MCP_CONFIG: &[u8] =
+    br#"{"mcpServers":{"probe":{"command":"/bin/busybox","args":["sh","/probe/run"]}}}"#;
+const MCP_PROBE: &[u8] = br#"exec 3>/probe/events
+echo started >&3
+while IFS= read -r line; do
+    case "$line" in
+        *'"method":"initialize"'*)
+            echo initialize >&3
+            printf '%s\n' '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"offline-probe","version":"1"}}}' ;;
+        *'"method":"notifications/initialized"'*) echo initialized >&3 ;;
+    esac
+done
+"#;
+
+struct ConfigFixture {
+    events: File,
+    opened: Option<(File, Vec<i32>)>,
+}
+
+impl ConfigFixture {
+    fn prepare(root: &Path, diagnostic: Diagnostic) -> Result<Self, Fault> {
+        use std::ffi::CString;
+        for path in ["proc", "tmp", "work", "probe"] {
+            fs::create_dir(root.join(path))?;
+        }
+        fs::write(root.join("probe/run"), MCP_PROBE)?;
+        let events_path = root.join("probe/events");
+        let path = CString::new(events_path.as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
+        super::os::syscall(unsafe { libc::mkfifo(path.as_ptr(), 0o600) })?;
+        own(&events_path, 0o600)?;
+        let events = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(events_path)?;
+        if diagnostic == Diagnostic::ConfigIsolated {
+            fs::write(root.join("probe/mcp.json"), MCP_CONFIG)?;
+            for path in CONTROL_FILES {
+                if root.join(path).try_exists()? {
+                    return Err(Fault::Identity);
+                }
+            }
+            return Ok(Self {
+                events,
+                opened: None,
+            });
+        }
+        fs::create_dir(root.join("home/fixture/ordinary"))?;
+        fs::write(root.join(CONTROL_FILES[0]), b"{}\n")?;
+        fs::create_dir(root.join("work/.claude"))?;
+        fs::write(root.join(CONTROL_FILES[1]), b"{}\n")?;
+        fs::write(root.join(CONTROL_FILES[2]), b"{}\n")?;
+        fs::write(root.join(CONTROL_FILES[3]), MCP_CONFIG)?;
+        let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        super::os::syscall(fd)?;
+        let notify = unsafe { File::from_raw_fd(fd) };
+        let mut watches = Vec::new();
+        for path in CONTROL_FILES {
+            let path =
+                CString::new(root.join(path).as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
+            let watch = unsafe { libc::inotify_add_watch(fd, path.as_ptr(), libc::IN_OPEN) };
+            super::os::syscall(watch)?;
+            watches.push(watch);
+        }
+        Ok(Self {
+            events,
+            opened: Some((notify, watches)),
+        })
+    }
+
+    fn run(
+        mut self,
+        root: &Path,
+        scratch: &Path,
+        namespace_reaped: &mut bool,
+        diagnostic: Diagnostic,
+    ) -> Result<(), Fault> {
+        let stdout = scratch.join("stdout");
+        let stderr = scratch.join("stderr");
+        let mut command = isolated_command(
+            root,
+            "/bin/claude",
+            File::create(&stdout)?,
+            File::create(&stderr)?,
+            diagnostic,
+        )?;
+        if diagnostic == Diagnostic::ConfigIsolated {
+            command.args([
+                "--setting-sources",
+                "",
+                "--strict-mcp-config",
+                "--mcp-config",
+                "/probe/mcp.json",
+            ]);
+        }
+        command.args(["--print", "Offline diagnostic only"]);
+        run_in_pid_namespace_expecting(
+            command,
+            std::time::Duration::from_secs(12),
+            namespace_reaped,
+            1,
+        )?;
+        let output = fs::read(stdout)?;
+        let errors = fs::read(stderr)?;
+        if output != "Not logged in · Please run /login\n".as_bytes() || !errors.is_empty() {
+            return Err(Fault::Identity);
+        }
+        let mut buffer = [0; 128];
+        let size = self.events.read(&mut buffer)?;
+        let events = &buffer[..size];
+        match self.opened {
+            Some((mut notify, mut watches)) => {
+                let mut buffer = [0; 4096];
+                let size = notify.read(&mut buffer)?;
+                if size == buffer.len() || size % 16 != 0 {
+                    return Err(Fault::Identity);
+                }
+                for event in buffer[..size].chunks_exact(16) {
+                    if event[12..16] != [0; 4] {
+                        return Err(Fault::Identity);
+                    }
+                    let watch = i32::from_ne_bytes(event[..4].try_into().unwrap());
+                    let mask = u32::from_ne_bytes(event[4..8].try_into().unwrap());
+                    if mask & libc::IN_Q_OVERFLOW != 0 {
+                        return Err(Fault::Identity);
+                    }
+                    if mask == libc::IN_OPEN {
+                        watches.retain(|&pending| pending != watch);
+                    }
+                }
+                if !watches.is_empty()
+                    || !matches!(
+                        events,
+                        b"started\n"
+                            | b"started\ninitialize\n"
+                            | b"started\ninitialize\ninitialized\n"
+                    )
+                {
+                    return Err(Fault::Identity);
+                }
+            }
+            None if events == b"started\ninitialize\ninitialized\n" => {}
+            None => return Err(Fault::Identity),
+        }
+        Ok(())
+    }
+}
+
+fn verify_mount_table_for(root: &Path, diagnostic: Diagnostic) -> Result<(), Fault> {
     use std::collections::BTreeSet;
     let mut expected = BTreeSet::from([root.to_path_buf()]);
     expected.extend(
@@ -320,6 +559,9 @@ fn verify_mount_table(root: &Path) -> Result<(), Fault> {
             .flat_map(|entry| entry.targets)
             .map(|path| root.join(path)),
     );
+    if diagnostic != Diagnostic::Version {
+        expected.insert(root.join("bin/busybox"));
+    }
     for line in fs::read_to_string("/proc/self/mountinfo")?.lines() {
         let mut columns = line.split_whitespace().skip(4);
         let Some(target) = columns.next().map(Path::new) else {
@@ -370,6 +612,22 @@ fn run_in_root(
     control: &mut UnixStream,
     namespace_reaped: &mut bool,
 ) -> Result<(u64, u64), Fault> {
+    run_fixture(
+        scratch,
+        root,
+        control,
+        namespace_reaped,
+        Diagnostic::Version,
+    )
+}
+
+fn run_fixture(
+    scratch: &Path,
+    root: &Path,
+    control: &mut UnixStream,
+    namespace_reaped: &mut bool,
+    diagnostic: Diagnostic,
+) -> Result<(u64, u64), Fault> {
     use super::os;
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     for dir in [
@@ -387,11 +645,20 @@ fn run_in_root(
         let staged = stage_artifact(artifact, &scratch.join(format!("artifact-{index}")))?;
         mount_artifact(root, artifact, &staged)?;
     }
+    if diagnostic != Diagnostic::Version {
+        let staged = stage_artifact(&BUSYBOX, &scratch.join("artifact-busybox"))?;
+        mount_artifact(root, &BUSYBOX, &staged)?;
+    }
     let settings = root.join("home/fixture/config/settings.json");
     fs::write(&settings, b"{}\n")?;
     own(&root.join("home/fixture"), 0o700)?;
     own(&root.join("home/fixture/config"), 0o700)?;
     own(&settings, 0o600)?;
+    let config = if diagnostic == Diagnostic::Version {
+        None
+    } else {
+        Some(ConfigFixture::prepare(root, diagnostic)?)
+    };
     os::mount(
         None,
         root,
@@ -399,10 +666,14 @@ fn run_in_root(
         libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
         None,
     )?;
-    verify_mount_table(root)?;
+    verify_mount_table_for(root, diagnostic)?;
     let before = audit_settings(root)?;
     request_cli_start(control)?;
-    run_child(root, scratch, namespace_reaped)?;
+    if let Some(config) = config {
+        config.run(root, scratch, namespace_reaped, diagnostic)?;
+    } else {
+        run_child(root, scratch, namespace_reaped)?;
+    }
     if audit_settings(root)? != before {
         return Err(Fault::Identity);
     }
@@ -569,7 +840,7 @@ impl WorkArea {
                     }
                     libc::AT_REMOVEDIR
                 }
-                b"stdout" | b"stderr" if file_type.is_file() => 0,
+                b"stdout" | b"stderr" | b"artifact-busybox" if file_type.is_file() => 0,
                 name if file_type.is_file()
                     && (0..ARTIFACTS.len())
                         .any(|index| name == format!("artifact-{index}").as_bytes()) =>
@@ -830,6 +1101,41 @@ pub(super) fn run() -> (std::process::ExitCode, Option<OfflineObservation>) {
         }
     };
     (exit, observation)
+}
+
+pub(super) fn run_config() -> std::process::ExitCode {
+    use std::process::ExitCode;
+    if std::env::args_os().len() != 1 || unsafe { libc::geteuid() } != 0 {
+        return ExitCode::FAILURE;
+    }
+    let parent_path = Path::new(WORK_PARENT);
+    let result = (|| {
+        let parent = lock_parent(parent_path)?;
+        for diagnostic in [Diagnostic::ConfigControl, Diagnostic::ConfigIsolated] {
+            let work = WorkArea::create(&parent, parent_path)?;
+            supervised_observed(
+                &parent,
+                &work,
+                |scratch, root, control, reaped| {
+                    run_fixture(scratch, root, control, reaped, diagnostic)
+                },
+                &mut None,
+            )?;
+        }
+        Ok::<_, io::Error>(())
+    })();
+    match result {
+        Ok(()) => {
+            println!(
+                r#"{{"control_config_open":true,"control_stdio_started":true,"ordinary_config_absent":true,"explicit_stdio_initialized":true,"authentication":"not_logged_in","cleanup":true}}"#
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("offline config fixture failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]
