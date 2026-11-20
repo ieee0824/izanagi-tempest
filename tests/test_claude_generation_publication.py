@@ -1,5 +1,6 @@
 """Offline filesystem model for publishing a complete login policy generation."""
 
+import errno
 import fcntl
 import hashlib
 import json
@@ -96,11 +97,14 @@ class Publication:
             self.pending.unlink(missing_ok=True)
             self.sync(self.root)
 
-    def consume(self, revision, permit):
+    def consume(self, revision, permit, *, minimum_revision):
         with self.exclusive():
             if self.pending.exists():
                 raise ValueError("publication unconfirmed")
-            if revision != self.current_revision():
+            current = self.current_revision()
+            if current < minimum_revision:
+                raise ValueError("revision below management floor")
+            if revision != current:
                 raise ValueError("stale generation")
             self.verify(revision)
             self.write(self.ledger / permit, b"")
@@ -125,20 +129,20 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(self.state.current_revision(), 1)
 
     def test_switch_and_consume_have_a_single_order(self):
-        self.state.consume(1, "before-switch")
+        self.state.consume(1, "before-switch", minimum_revision=1)
         self.state.publish(2)
         with self.assertRaisesRegex(ValueError, "stale generation"):
-            self.state.consume(1, "after-switch")
+            self.state.consume(1, "after-switch", minimum_revision=2)
         with self.assertRaisesRegex(ValueError, "stale generation"):
             self.state.publish(1)
         with self.assertRaises(FileExistsError):
-            self.state.consume(2, "before-switch")
-        self.state.consume(2, "after-switch")
+            self.state.consume(2, "before-switch", minimum_revision=2)
+        self.state.consume(2, "after-switch", minimum_revision=2)
 
     def test_consumption_waits_for_an_in_progress_switch(self):
         syncing = Event()
         release = Event()
-        consuming = Event()
+        contention_confirmed = Event()
 
         def hold_sync(directory):
             syncing.set()
@@ -147,15 +151,19 @@ class PublicationTest(unittest.TestCase):
             self.state.sync(directory)
 
         def consume_old():
-            consuming.set()
-            self.state.consume(1, "racing")
+            with self.state.lock.open("r+b") as independent:
+                with self.assertRaises(BlockingIOError) as blocked:
+                    fcntl.flock(independent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertEqual(blocked.exception.errno, errno.EWOULDBLOCK)
+            contention_confirmed.set()
+            self.state.consume(1, "racing", minimum_revision=1)
 
         with ThreadPoolExecutor(max_workers=2) as workers:
             publishing = workers.submit(self.state.publish, 2, hold_sync)
             try:
                 self.assertTrue(syncing.wait(timeout=5))
                 consumer = workers.submit(consume_old)
-                self.assertTrue(consuming.wait(timeout=5))
+                self.assertTrue(contention_confirmed.wait(timeout=5))
                 self.assertFalse(consumer.done())
             finally:
                 release.set()
@@ -163,6 +171,17 @@ class PublicationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "stale generation"):
                 consumer.result(timeout=5)
         self.assertFalse((self.state.ledger / "racing").exists())
+
+    def test_restored_current_and_complete_old_generation_still_fail_the_floor(self):
+        self.state.publish(2)
+        self.assertFalse(self.state.pending.exists())
+        self.state.current.write_bytes(b"1")
+        self.state.verify(1)
+
+        reopened = Publication(self.state.root)
+        with self.assertRaisesRegex(ValueError, "management floor"):
+            reopened.consume(1, "restored", minimum_revision=2)
+        self.assertEqual(list(reopened.ledger.iterdir()), [])
 
     def test_uncertain_switch_blocks_until_reopened_and_confirmed(self):
         def sync_failure(_):
@@ -173,7 +192,7 @@ class PublicationTest(unittest.TestCase):
         reopened = Publication(self.state.root)
         for revision in (1, 2):
             with self.assertRaisesRegex(ValueError, "publication unconfirmed"):
-                reopened.consume(revision, "blocked")
+                reopened.consume(revision, "blocked", minimum_revision=2)
         self.assertEqual(list(reopened.ledger.iterdir()), [])
         with self.assertRaisesRegex(ValueError, "management floor"):
             reopened.recover(3)
@@ -184,4 +203,4 @@ class PublicationTest(unittest.TestCase):
         self.assertTrue(reopened.pending.exists())
         reopened.current.write_bytes(b"2")
         reopened.recover(2)
-        reopened.consume(2, "confirmed")
+        reopened.consume(2, "confirmed", minimum_revision=2)
