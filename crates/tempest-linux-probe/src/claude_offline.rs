@@ -648,6 +648,7 @@ fn artifacts_for(diagnostic: Diagnostic) -> &'static [Artifact<'static>] {
     }
 }
 
+const LOGIN_EXECUTABLE: &str = "/bin/claude";
 const LOGIN_ARGS: [&str; 2] = ["auth", "login"];
 
 fn configure_login_command(command: &mut std::process::Command) {
@@ -656,6 +657,23 @@ fn configure_login_command(command: &mut std::process::Command) {
         .env("HTTPS_PROXY", local_auth::PROXY_URL)
         .env("HTTP_PROXY", local_auth::PROXY_URL)
         .env("NO_PROXY", "");
+}
+
+fn fixed_login_command(root: &Path) -> Result<std::process::Command, Fault> {
+    use std::process::Stdio;
+    let mut command = isolated_command(
+        root,
+        LOGIN_EXECUTABLE,
+        OpenOptions::new().write(true).open("/dev/null")?,
+        OpenOptions::new().write(true).open("/dev/null")?,
+        Diagnostic::PtyWithLoginArtifacts,
+    )?;
+    configure_login_command(&mut command);
+    command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    Ok(command)
 }
 
 fn run_pty_child(
@@ -966,6 +984,21 @@ fn run_fixture_with_config(
         None,
     )?;
     verify_mount_table_for(root, diagnostic, private_config.is_some())?;
+    if diagnostic == Diagnostic::PtyWithLoginArtifacts {
+        // Build the production invocation after validating the mount table.
+        // The fixture exercises the same arguments and environment with BusyBox.
+        let command = fixed_login_command(root)?;
+        if !root
+            .join(
+                Path::new(command.get_program())
+                    .strip_prefix("/")
+                    .map_err(|_| Fault::Path)?,
+            )
+            .is_file()
+        {
+            return Err(Fault::Identity);
+        }
+    }
     let before = if private_config.is_none() {
         Some(audit_settings(root)?)
     } else {
@@ -1691,6 +1724,31 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_login_invocation_uses_configured_artifact_and_proxy() {
+        let command = fixed_login_command(Path::new("/unused")).unwrap();
+        assert_eq!(command.get_program(), LOGIN_EXECUTABLE);
+        assert_eq!(command.get_args().collect::<Vec<_>>(), LOGIN_ARGS);
+        let environment = command
+            .get_envs()
+            .map(|(key, value)| (key.to_str().unwrap(), value.unwrap().to_str().unwrap()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            environment,
+            std::collections::BTreeMap::from([
+                ("CLAUDE_CONFIG_DIR", "/home/fixture/config"),
+                ("HOME", "/home/fixture"),
+                ("HTTPS_PROXY", local_auth::PROXY_URL),
+                ("HTTP_PROXY", local_auth::PROXY_URL),
+                ("NO_PROXY", ""),
+            ])
+        );
+        assert_eq!(
+            ARTIFACTS[0].targets[0],
+            LOGIN_EXECUTABLE.trim_start_matches('/')
+        );
+    }
 
     #[test]
     fn dedicated_terminal_rejects_split_or_redirected_stdio() {
