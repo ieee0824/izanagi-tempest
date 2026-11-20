@@ -1194,6 +1194,7 @@ name = "tempest-linux-probe"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

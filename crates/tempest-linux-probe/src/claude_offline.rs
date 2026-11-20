@@ -2,6 +2,8 @@
 use super::os::Fault;
 mod local_auth;
 mod login_connect;
+#[cfg(test)]
+mod login_handoff;
 mod login_permit;
 mod writable_config;
 use sha2::{Digest, Sha256};
