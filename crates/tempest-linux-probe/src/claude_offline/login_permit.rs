@@ -11,6 +11,8 @@ pub(super) struct Scope<'a> {
     pub executable_sha256: &'a str,
     pub arguments: &'a [&'a str],
     pub authority: &'a str,
+    pub target_id: &'a str,
+    pub approved_ips_revision: u64,
 }
 
 pub(super) struct Permit<'a> {
@@ -110,6 +112,8 @@ mod tests {
         executable_sha256: "fixed-dummy-digest",
         arguments: &["auth", "login"],
         authority: "auth.example.invalid:443",
+        target_id: "dummy-target",
+        approved_ips_revision: 1,
     };
 
     #[test]

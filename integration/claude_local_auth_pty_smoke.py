@@ -124,11 +124,16 @@ def check_permit_replay(binary):
     policy = CONFIG / ".synthetic-login-policy.json"
     assert_empty()
 
-    def write_settings(expires):
+    def write_settings(expires, **overrides):
         with os.fdopen(os.open(policy, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as out:
             json.dump({
                 "policy": {"version": 1, "authority": "platform.claude.com:443"},
                 "expires_unix_seconds": expires,
+                "executable_sha256": "dbac288c29ba568459550a2da9e7ae0ded6b1fc728ee9fad3044c44e62d6ac14",
+                "arguments": ["auth", "login"],
+                "target_id": "synthetic-target",
+                "approved_ips_revision": 1,
+                **overrides,
             }, out)
 
     def check_refusal(reason, expected):
@@ -150,6 +155,14 @@ def check_permit_replay(binary):
         check_refusal(b"No such file or directory", set())
         write_settings(int(time.time()) - 1)
         check_refusal(b"synthetic permit expired", {policy})
+        for mismatch in (
+            {"executable_sha256": "0" * 64},
+            {"arguments": ["auth", "status"]},
+            {"target_id": "other-target"},
+            {"approved_ips_revision": 2},
+        ):
+            write_settings(int(time.time()) + 45, **mismatch)
+            check_refusal(b"manual login permit scope mismatch", {policy})
         write_settings(int(time.time()) + 45)
         fixture(
             [binary, "single-use-permit"], {},
