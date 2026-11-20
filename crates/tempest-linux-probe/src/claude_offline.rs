@@ -2266,56 +2266,20 @@ fn verify_revocation_state_with_disposition(
     Ok((state.revocation_revision, state.expires_unix_seconds))
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct SupervisorDiagnosticBinding<'a> {
-    revision: u64,
-    manifest_sha256: &'a str,
-    generation: (u64, u64),
-    permit_id: u128,
-    target_id: &'a str,
-    executable: (u64, u64),
-    ledger: (u64, u64),
+// Carries the result of the read-only checks to the launch refusal boundary.
+// There is no independently configured supervisor scope on this public route.
+struct VerifiedSupervisorInputs {
+    _publication_lock: File,
+    _generation: File,
+    _revision: u64,
+    _manifest_sha256: String,
+    _login: VerifiedLoginInputs,
 }
 
-struct SupervisorDiagnostic<'a> {
-    lock: &'a File,
-    generation: &'a File,
-    revision: u64,
-    manifest_sha256: &'a str,
-    inputs: &'a VerifiedLoginInputs,
-}
-
-impl<'a> SupervisorDiagnostic<'a> {
-    fn binding(&self) -> io::Result<SupervisorDiagnosticBinding<'a>> {
-        Ok(SupervisorDiagnosticBinding {
-            revision: self.revision,
-            manifest_sha256: self.manifest_sha256,
-            generation: fd_identity(self.generation)?,
-            permit_id: self.inputs.id,
-            target_id: &self.inputs.target_id,
-            executable: fd_identity(&self.inputs.executable)?,
-            ledger: fd_identity(&self.inputs.ledger)?,
-        })
-    }
-
-    fn verify_before_supervision(
-        &self,
-        expected: &SupervisorDiagnosticBinding<'_>,
-    ) -> io::Result<()> {
-        // Retain the original publication lock and descriptors through this
-        // boundary. It has no path-based lookup and yields no launch permission.
-        self.lock.metadata()?;
-        if &self.binding()? != expected {
-            return Err(io::Error::other("supervisor diagnostic binding mismatch"));
-        }
-        if std::time::Instant::now() >= self.inputs.expires {
-            return Err(io::Error::other("supervisor diagnostic expired"));
-        }
-        Ok(())
-    }
-}
-
-fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> {
+fn verify_login_generation(
+    parent: &File,
+    publication: &File,
+) -> io::Result<VerifiedSupervisorInputs> {
     use sha2::{Digest, Sha256};
 
     let lock = open_pinned_login_policy(open_login_child(
@@ -2377,14 +2341,6 @@ fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> 
         },
     )?
     .ok_or_else(|| io::Error::other("publication handoff missing"))?;
-    let handoff = SupervisorDiagnostic {
-        lock: &lock,
-        generation: &generation,
-        revision: current,
-        manifest_sha256: &manifest_sha256,
-        inputs: &inputs,
-    };
-    let binding = handoff.binding()?;
     recheck_login_generation(
         publication,
         &authority,
@@ -2402,9 +2358,13 @@ fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> 
     )?;
     inputs.recheck(parent, &ARTIFACTS[0], revocation)?;
     eprintln!("manual login final diagnostic verified");
-    handoff.verify_before_supervision(&binding)?;
-    eprintln!("manual login supervisor diagnostic verified");
-    Ok(())
+    Ok(VerifiedSupervisorInputs {
+        _publication_lock: lock,
+        _generation: generation,
+        _revision: current,
+        _manifest_sha256: manifest_sha256,
+        _login: inputs,
+    })
 }
 
 fn recheck_login_generation(
@@ -2438,6 +2398,18 @@ fn recheck_login_generation(
     )
 }
 
+fn refuse_supervised_login(_verified: VerifiedSupervisorInputs) -> io::Result<()> {
+    eprintln!("manual login verified inputs handed off");
+    Err(manual_login_disabled())
+}
+
+fn manual_login_disabled() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "manual login policy acceptance is disabled",
+    )
+}
+
 fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     let parent = pin_login_path(
         path.parent().ok_or(io::ErrorKind::InvalidInput)?,
@@ -2449,11 +2421,12 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     }
     match open_private_login_directory(&parent, "claude-login-publication") {
         Ok(publication) => {
-            verify_login_generation(&parent, &publication).map_err(|error| {
+            let verified = verify_login_generation(&parent, &publication).map_err(|error| {
                 eprintln!("manual login publication diagnostic refused: {error}");
                 io::Error::from(io::ErrorKind::InvalidData)
             })?;
             eprintln!("manual login publication diagnostic verified");
+            return refuse_supervised_login(verified);
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
@@ -2465,11 +2438,7 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
         }
         Err(error) => return Err(error),
     }
-    // A valid file describes the design. It does not authorize a live login.
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "manual login policy acceptance is disabled",
-    ))
+    Err(manual_login_disabled())
 }
 
 fn read_login_input(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
@@ -3296,76 +3265,6 @@ mod tests {
         verify_approved_login_manifest(&new_approval, 2, new_manifest).unwrap();
         assert!(verify_approved_login_manifest(&old_approval, 2, old_manifest).is_err());
         assert!(verify_approved_login_manifest(&new_approval, 2, old_manifest).is_err());
-    }
-
-    #[test]
-    fn supervisor_diagnostic_uses_pinned_generation_and_rejects_scope_mismatch() {
-        use std::time::{Duration, Instant};
-        let root = std::env::temp_dir().join(format!(
-            "tempest-supervisor-diagnostic-{}",
-            crate::private_io::random_hex().unwrap()
-        ));
-        fs::create_dir(&root).unwrap();
-        let generation_path = root.join("generation");
-        let ledger_path = root.join("ledger");
-        fs::create_dir(&generation_path).unwrap();
-        fs::create_dir(&ledger_path).unwrap();
-        let executable_path = root.join("executable");
-        fs::write(&executable_path, b"dummy").unwrap();
-        let lock = File::create(root.join("lock")).unwrap();
-        let generation = File::open(&generation_path).unwrap();
-        let inputs = VerifiedLoginInputs {
-            id: 7,
-            target_id: "synthetic-target".into(),
-            expires: Instant::now() + Duration::from_secs(30),
-            executable: File::open(&executable_path).unwrap(),
-            ledger: File::open(&ledger_path).unwrap(),
-        };
-        let diagnostic = SupervisorDiagnostic {
-            lock: &lock,
-            generation: &generation,
-            revision: 1,
-            manifest_sha256: "synthetic-manifest",
-            inputs: &inputs,
-        };
-        let expected = diagnostic.binding().unwrap();
-
-        // Once verification hands off the descriptors, this boundary uses
-        // those objects even if their names have moved.
-        for (path, moved) in [
-            (&generation_path, "pinned-generation"),
-            (&ledger_path, "pinned-ledger"),
-            (&executable_path, "pinned-executable"),
-        ] {
-            fs::rename(path, root.join(moved)).unwrap();
-        }
-        diagnostic.verify_before_supervision(&expected).unwrap();
-
-        fs::create_dir(&generation_path).unwrap();
-        let replacement = File::open(&generation_path).unwrap();
-        let substituted = SupervisorDiagnostic {
-            generation: &replacement,
-            ..diagnostic
-        };
-        assert!(substituted.verify_before_supervision(&expected).is_err());
-        for wrong in [
-            SupervisorDiagnosticBinding {
-                revision: 2,
-                ..expected.clone()
-            },
-            SupervisorDiagnosticBinding {
-                permit_id: 8,
-                ..expected.clone()
-            },
-            SupervisorDiagnosticBinding {
-                target_id: "other-target",
-                ..expected.clone()
-            },
-        ] {
-            assert!(diagnostic.verify_before_supervision(&wrong).is_err());
-        }
-        assert_eq!(fs::read_dir(root.join("pinned-ledger")).unwrap().count(), 0);
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

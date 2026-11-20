@@ -104,8 +104,8 @@ def check_signed_publication(config, ledger, check):
         b"manual login fixed CLI verified",
         b"manual login ledger diagnostic verified",
         b"manual login final diagnostic verified",
-        b"manual login supervisor diagnostic verified",
         b"manual login publication diagnostic verified",
+        b"manual login verified inputs handed off",
     )
     cases = (
         ("normal", b"administrator policy acceptance disabled", len(stages)),
