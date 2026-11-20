@@ -34,6 +34,7 @@ pub(super) enum Case {
     EmptyResolution,
     UnapprovedResolution,
     ExpiredPermit,
+    SingleUsePermit,
 }
 
 impl Case {
@@ -48,6 +49,7 @@ impl Case {
             "empty-resolution" => Self::EmptyResolution,
             "unapproved-resolution" => Self::UnapprovedResolution,
             "expired-permit" => Self::ExpiredPermit,
+            "single-use-permit" => Self::SingleUsePermit,
             _ => return None,
         })
     }
@@ -55,7 +57,11 @@ impl Case {
     pub fn needs_gateway(self) -> bool {
         matches!(
             self,
-            Self::Match | Self::MissingGateway | Self::EmptyResolution | Self::UnapprovedResolution
+            Self::Match
+                | Self::MissingGateway
+                | Self::EmptyResolution
+                | Self::UnapprovedResolution
+                | Self::SingleUsePermit
         )
     }
 }

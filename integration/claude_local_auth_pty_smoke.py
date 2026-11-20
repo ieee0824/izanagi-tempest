@@ -114,6 +114,35 @@ def check_concurrent_refusal(binary):
                 os.close(fd)
 
 
+def check_permit_replay(binary):
+    marker = CONFIG / ".used-synthetic-login-permit"
+    assert_empty()
+    try:
+        fixture(
+            [binary, "single-use-permit"], {},
+            complete_probe=True, success=POSITIVE + REMOVED,
+        )
+        if set(CONFIG.iterdir()) != {marker} or not marker.is_file() or marker.stat().st_size:
+            raise RuntimeError("only the empty synthetic permit marker should remain")
+        master, slave = pty.openpty()
+        try:
+            result = subprocess.run(
+                [binary, "single-use-permit"], stdin=slave, stdout=slave,
+                stderr=subprocess.PIPE, env={}, timeout=2,
+            )
+            if result.returncode != 1 or b"synthetic login permit already used" not in result.stderr:
+                raise RuntimeError("the used synthetic permit was accepted again")
+        finally:
+            os.close(slave)
+            os.close(master)
+        if any(WORK.iterdir()) or set(CONFIG.iterdir()) != {marker}:
+            raise RuntimeError("replay staged a new generation")
+    finally:
+        if marker.is_file():
+            marker.unlink()
+    assert_empty()
+
+
 def main():
     if sys.platform != "linux" or os.geteuid() != 0 or len(sys.argv) != 2:
         return 2
@@ -133,6 +162,8 @@ def main():
         before_probe=lambda: check_concurrent_refusal(binary),
     )
     assert_empty()
+    check_permit_replay(binary)
+    print("used permit: refused after first process exited")
     print("concurrent launch: refused before staging")
     print("match: auth accepted, other host and three direct ports denied; disconnect reaped, active tunnel and listeners closed, generation removed")
     return 0
