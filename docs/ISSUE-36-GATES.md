@@ -47,9 +47,17 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 空の環境、新規 HOME、空の専用設定で版確認とヘルプ表示に成功した。
 ヘルプは `--strict-mcp-config` が明示した MCP 設定だけを使用することと、
 `--setting-sources` が設定の読み込み元を指定することを説明する。
-起動時に空の読み込み元指定が設定探索を抑止するか、実際にどの MCP が
-選ばれるかは別途実測する。
 [固定版の測定記録](https://github.com/ieee0824/izanagi-tempest/issues/36#issuecomment-7034854488)
+
+同じ固定版を通信遮断・資格情報なしで起動した試験（cc-sakura 17512）では、
+制限なしの対照で user/project/local の設定とプロジェクトの `.mcp.json` を
+読み取り用に開き、固定 stdio MCP を起動した。空の `--setting-sources` と
+厳格な MCP 指定で空の MCP 定義を渡すと、`.mcp.json` の open と MCP 起動は
+観測されなかったが、user/project/local の設定の open は観測された。
+同じ制限下で固定 MCP を明示すると起動と `initialize` を観測した。
+全ケースが未認証で終了し、設定値の適用と認証後の挙動は未確認。
+通常設定への非到達は OS 側の隔離で検証する。
+[Issue #120](https://github.com/ieee0824/izanagi-tempest/issues/120)
 
 既存 relay の起動引数には `--bare` がある。Anthropic の公式文書では
 このモードはサブスクリプションのログイン状態を使用しないため、
