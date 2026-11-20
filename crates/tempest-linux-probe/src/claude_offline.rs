@@ -1595,8 +1595,6 @@ const MANUAL_LOGIN_POLICY: &str = "/etc/tempest/claude-manual-login.json";
 
 fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     use std::ffi::CString;
-    // Inspect metadata only. Until the operational policy is agreed, even a
-    // correctly placed file cannot authorize an invocation or external access.
     fn open_child(parent: &File, name: &std::ffi::OsStr, flags: libc::c_int) -> io::Result<File> {
         let name = CString::new(name.as_bytes())?;
         let fd = unsafe {
@@ -1618,12 +1616,12 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     }
     let mut directory = File::open("/")?;
     let mut components = components.peekable();
-    let metadata = loop {
+    let pinned = loop {
         let Some(std::path::Component::Normal(name)) = components.next() else {
             return Err(io::ErrorKind::InvalidInput.into());
         };
         if components.peek().is_none() {
-            break open_child(&directory, name, 0)?.metadata()?;
+            break open_child(&directory, name, 0)?;
         }
         let next = open_child(&directory, name, libc::O_DIRECTORY)?;
         let metadata = next.metadata()?;
@@ -1632,6 +1630,7 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
         }
         directory = next;
     };
+    let metadata = pinned.metadata()?;
     if !metadata.is_file()
         || (
             metadata.uid(),
@@ -1645,10 +1644,38 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
             "manual login policy metadata is invalid",
         ));
     }
+    let input = File::open(format!("/proc/self/fd/{}", pinned.as_raw_fd()))?;
+    if fd_identity(&input)? != fd_identity(&pinned)? {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    validate_manual_login_policy(input)?;
+    // A valid file describes the design. It does not authorize a live login.
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "manual login policy acceptance is disabled",
     ))
+}
+
+fn validate_manual_login_policy(input: impl Read) -> io::Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Policy {
+        version: u32,
+        authority: String,
+    }
+
+    const MAX_POLICY_BYTES: u64 = 4096;
+    let mut bytes = Vec::new();
+    input.take(MAX_POLICY_BYTES + 1).read_to_end(&mut bytes)?;
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid manual login policy");
+    if bytes.len() as u64 > MAX_POLICY_BYTES {
+        return Err(invalid());
+    }
+    let policy: Policy = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    if policy.version != 1 || policy.authority != login_connect::AUTHORITY {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 pub(super) fn run_manual_login() -> std::process::ExitCode {
@@ -1809,6 +1836,63 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_login_policy_accepts_only_fixed_authority_and_version() {
+        assert!(
+            validate_manual_login_policy(
+                br#"{"version":1,"authority":"platform.claude.com:443"}"#.as_slice()
+            )
+            .is_ok()
+        );
+        for input in [
+            br#"{"version":2,"authority":"platform.claude.com:443"}"#.as_slice(),
+            br#"{"version":1,"authority":"platform.claude.com:8443"}"#,
+            br#"{"version":1,"authority":"example.org:443"}"#,
+            br#"{"version":1,"authority":"platform.claude.com:443","executable":"/bin/sh"}"#,
+            br#"{"version":1,"version":1,"authority":"platform.claude.com:443"}"#,
+            &[b' '; 4097],
+        ] {
+            assert_eq!(
+                validate_manual_login_policy(input).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a root-owned fixture under /var/lib"]
+    fn manual_login_policy_valid_file_cannot_authorize_launch() {
+        use std::os::unix::fs::DirBuilderExt;
+        let directory = Path::new("/var/lib").join(format!(
+            "tempest-manual-login-policy-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        let path = directory.join("policy.json");
+        let link = directory.join("link.json");
+        let result = (|| -> io::Result<_> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)?;
+            file.write_all(br#"{"version":1,"authority":"platform.claude.com:443"}"#)?;
+            std::os::unix::fs::symlink(&path, &link)?;
+            Ok((
+                check_manual_login_policy(&path).unwrap_err().kind(),
+                check_manual_login_policy(&link).unwrap_err().kind(),
+            ))
+        })();
+        fs::remove_dir_all(directory).unwrap();
+        assert_eq!(
+            result.unwrap(),
+            (io::ErrorKind::Unsupported, io::ErrorKind::PermissionDenied)
+        );
+    }
 
     #[test]
     fn manual_login_policy_rejects_untrusted_paths() {
