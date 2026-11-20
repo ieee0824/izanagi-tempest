@@ -217,6 +217,8 @@ def check_signed_permits(binary):
     trust = CONFIG / ".synthetic-handoff-key"
     inputs = {policy, payload, signature, trust}
     used, expired, stopped, later = [CONFIG / f"{value:032x}" for value in (2, 3, 4, 5)]
+    mismatches = {f"wrong-grant-{field}": CONFIG / f"{index:032x}"
+                  for index, field in enumerate(("id", "ledger", "stage"), 6)}
     stop_request = CONFIG / ".synthetic-stop-request.json"
     pending_stop = CONFIG / ".synthetic-stop-request.pending"
 
@@ -347,20 +349,30 @@ def check_signed_permits(binary):
                 "other host and three direct ports denied; descendant, tunnel and generations recovered"
             )
             assert_denied("signed-permit", b"already consumed or revoked", inputs | {used})
+            recorded = inputs | {used}
+            for case, record in mismatches.items():
+                write_handoff(key, record, 45)
+                recorded.add(record)
+                assert_denied(case, b"work removed; synthetic grant identity mismatch",
+                              recorded, unused_gateway=True)
+                identity = record.stat()
+                assert_denied("signed-permit", b"already consumed or revoked", recorded)
+                if record.stat().st_ino != identity.st_ino:
+                    raise RuntimeError("signed permit replay replaced the consumed record")
             write_handoff(key, expired, 4)
             assert_denied("permit-expires-before-grant", b"work removed; synthetic permit expired",
-                          inputs | {used, expired}, unused_gateway=True)
+                          inputs | {used, expired} | set(mismatches.values()), unused_gateway=True)
             write_handoff(key, expired, 45)
-            assert_denied("signed-permit", b"already consumed or revoked", inputs | {used, expired})
+            assert_denied("signed-permit", b"already consumed or revoked", inputs | {used, expired} | set(mismatches.values()))
             write_handoff(key, stopped, 45)
             check_administrator_stop(stopped)
             assert_denied("signed-administrator-stop", b"already consumed or revoked",
-                          inputs | {used, expired, stopped, stop_request})
+                          inputs | {used, expired, stopped, stop_request} | set(mismatches.values()))
             # Leave the previous stop in place while the successor reaches readiness.
             write_handoff(key, later, 45)
             check_administrator_stop(later)
     finally:
-        for path in inputs | {used, expired, stopped, later, stop_request, pending_stop}:
+        for path in inputs | {used, expired, stopped, later, stop_request, pending_stop} | set(mismatches.values()):
             path.unlink(missing_ok=True)
     assert_empty()
 

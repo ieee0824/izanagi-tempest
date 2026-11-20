@@ -29,7 +29,7 @@ pub(super) fn consume(
     permit: &Permit<'_>,
     expected: Scope<'_>,
     now: std::time::Instant,
-) -> io::Result<()> {
+) -> io::Result<File> {
     if permit.scope != expected {
         return Err(refused("manual login permit scope mismatch"));
     }
@@ -43,14 +43,14 @@ pub(super) fn consume(
 /// permanently closes the permit ID in this ledger.
 #[cfg(test)]
 pub(super) fn revoke(ledger: &File, id: u128) -> io::Result<()> {
-    close_permit(ledger, id)
+    close_permit(ledger, id).map(drop)
 }
 
 fn refused(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
 
-fn close_permit(ledger: &File, id: u128) -> io::Result<()> {
+fn close_permit(ledger: &File, id: u128) -> io::Result<File> {
     let name = CString::new(format!("{id:032x}")).expect("hex contains no NUL");
     let fd = unsafe {
         libc::openat(
@@ -72,7 +72,8 @@ fn close_permit(ledger: &File, id: u128) -> io::Result<()> {
     // Keep the record even if a sync fails. A caller can start the process
     // only after both syncs have succeeded.
     record.sync_all()?;
-    ledger.sync_all()
+    ledger.sync_all()?;
+    Ok(record)
 }
 
 #[cfg(test)]
