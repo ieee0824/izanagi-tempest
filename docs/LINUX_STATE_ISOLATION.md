@@ -99,6 +99,16 @@ driver stderrは出力なしを観測しましたが専用byte counter未保存�
 独立ドライバーと crate テストには同じ固定ソケットを使う経路があり、並行実行時に
 EADDRINUSE を観測しました。crate テストは合成試験が終了した後に単独で実行します。
 
+同じネットワーク名前空間で固定プローブを2件起動した実測では、2件目は
+`phase=run_guard`、`errno=98`、`active_scenario=null` で終了しました。
+先行側の RUN と cgroup の dev/inode は拒否の前後で一致し、先行側は
+198項目を出力して仕様どおり `incomplete` で終了しました。
+拒否側の `resources_removed=false` は、その観測時点で先行側の資源が存在したことを示します。
+両者の終了後に RUN と cgroup の不在、同じバイナリの実行中プロセスが0件であること、
+同じソケットを再取得できることを確認しました。拒否側が子を生成する前に終了することは
+起動順から確認しました。個別の fork トレースは採取していません。
+[Issue #89 の実測記録](https://github.com/ieee0824/izanagi-tempest/issues/89#issuecomment-7031259129)
+
 ### driver独立正対照の固定捕捉点（実装済み・最終受入継続）
 
 専用root fixtureは自分がspawnしたsupervisorだけをptraceし、PIDFDと
