@@ -246,3 +246,25 @@ Rust の固定 FD 試験では、最低版の永続化直後・現在版の切�
 続けて現在版を同じ新版へ置換し、親同期の失敗を注入します。保留中は
 台帳が変わらず、管理側が同じ FD のディレクトリを照合・同期してから
 保留を解除した場合だけ、新版を消費できることを確認します。
+
+正規運用の順序は、保留の永続化、最低版の永続化、現在版の切替です。
+合成試験では原因を切り分けるため、Rust で最低版のみ進んだ状態を
+先に構成し、次に保留が残ったまま現在版の親同期に失敗する状態を
+検証します。Python では保留の永続化から現在版切替までを検証し、
+独立した最低版は消費・復旧時の入力として与えます。正規手順全体を
+一度に通した試験や、電源断後の実ストレージでの復旧は今後の検証項目です。
+
+専用 Linux では次のコマンドで、外向き経路のない名前空間で対象試験を
+実行できます。
+
+```sh
+sudo -n unshare -n -- python3 -m unittest discover -s tests \
+  -p test_claude_generation_publication.py -v
+CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 \
+  cargo test -j2 --offline --locked -p tempest-linux-probe \
+  > /tmp/tempest-floor-tests.log 2>&1
+probe=$(sed -n 's/.*Running unittests src\/lib.rs (\(.*\)).*/\1/p' /tmp/tempest-floor-tests.log)
+sudo -n unshare -n -- "$probe" \
+  management_floor_is_durable_before_switch_and_reread_under_lock --ignored
+cargo clippy -j2 --offline --locked -p tempest-linux-probe --all-targets -- -D warnings
+```
