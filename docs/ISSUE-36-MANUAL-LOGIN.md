@@ -58,3 +58,19 @@ owner の操作範囲に依存します。ネットワークで操作単位ま�
 
 初回のモデル実行、本番 B/VM、MCP は別判断です。この設計の作成では、
 ログインモードの起動、外部接続、SSH 設定や権限変更は行いません。
+
+## 固定入口の起動前確認
+
+`tempest-claude-manual-login` は引数を受け付けず、管理者と標準入出力・
+標準エラーが共有する PTY を確認します。管理者設定の候補位置は
+`/etc/tempest/claude-manual-login.json` です。現段階は候補位置の
+メタデータ確認までで、ファイルの内容は開きません。管理 DNS、許可する
+アドレス、認証ファイルの保存条件と保持期限、および TLS 透過の制約への
+合意を得てから、設定を受理する処理を実装します。owner の承認は実施ごとに
+確認します。現段階の入口はいずれのケースでも子プロセスやゲートウェイを
+起動せず、設定世代の作成も行いません。
+
+```sh
+cargo build -p tempest-linux-probe --locked --bin tempest-claude-manual-login --bin tempest-claude-offline-local-auth-pty
+sudo python3 integration/claude_local_auth_pty_smoke.py target/debug/tempest-claude-offline-local-auth-pty
+```

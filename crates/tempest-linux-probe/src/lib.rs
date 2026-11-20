@@ -88,3 +88,9 @@ pub fn claude_offline_writable_pty() -> std::process::ExitCode {
 pub fn claude_offline_local_auth_pty() -> std::process::ExitCode {
     claude_offline::run_local_auth_pty()
 }
+
+/// Check the fixed manual login entry before any process, mount, or network setup.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn claude_manual_login() -> std::process::ExitCode {
+    claude_offline::run_manual_login()
+}

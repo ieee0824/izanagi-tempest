@@ -1591,6 +1591,53 @@ fn verify_shared_terminal(input: libc::c_int, output: libc::c_int) -> io::Result
     Ok(())
 }
 
+const MANUAL_LOGIN_POLICY: &str = "/etc/tempest/claude-manual-login.json";
+
+fn check_manual_login_policy(path: &Path) -> io::Result<()> {
+    // Inspect metadata only. Until the operational policy is agreed, even a
+    // correctly placed file cannot authorize an invocation or external access.
+    let metadata = path.symlink_metadata()?;
+    if !metadata.is_file()
+        || (
+            metadata.uid(),
+            metadata.gid(),
+            metadata.mode() & 0o7777,
+            metadata.nlink(),
+        ) != (0, 0, 0o600, 1)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "manual login policy metadata is invalid",
+        ));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "manual login policy acceptance is disabled",
+    ))
+}
+
+pub(super) fn run_manual_login() -> std::process::ExitCode {
+    use std::process::ExitCode;
+    if std::env::args_os().len() != 1 {
+        eprintln!("manual login refused: arguments are unsupported");
+    } else if unsafe { libc::geteuid() } != 0
+        || verify_shared_terminal(libc::STDIN_FILENO, libc::STDOUT_FILENO).is_err()
+        || verify_shared_terminal(libc::STDOUT_FILENO, libc::STDERR_FILENO).is_err()
+    {
+        eprintln!("manual login refused: dedicated administrator PTY required");
+    } else {
+        let reason = match check_manual_login_policy(Path::new(MANUAL_LOGIN_POLICY)) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => "administrator policy missing",
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                "administrator policy acceptance disabled"
+            }
+            _ => "administrator policy unavailable or invalid",
+        };
+        eprintln!("manual login refused: {reason}");
+    }
+    ExitCode::FAILURE
+}
+
 pub(super) fn run_pty() -> std::process::ExitCode {
     use std::process::ExitCode;
     if std::env::args_os().len() != 1
