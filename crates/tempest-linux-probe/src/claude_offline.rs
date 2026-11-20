@@ -1842,6 +1842,30 @@ fn open_private_login_directory(parent: &File, name: &str) -> io::Result<File> {
     Ok(fd)
 }
 
+fn verify_approved_login_manifest(
+    approved: &[u8],
+    revision: u64,
+    manifest: &[u8],
+) -> io::Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ApprovedGeneration {
+        revision: u64,
+        manifest_sha256: String,
+    }
+
+    let approved: ApprovedGeneration =
+        serde_json::from_slice(approved).map_err(io::Error::other)?;
+    if approved.revision != revision
+        || approved.manifest_sha256 != format!("{:x}", Sha256::digest(manifest))
+    {
+        return Err(io::Error::other(
+            "publication does not match approved generation",
+        ));
+    }
+    Ok(())
+}
+
 fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> {
     use sha2::{Digest, Sha256};
 
@@ -1874,9 +1898,11 @@ fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> 
         return Err(io::Error::other("publication below management floor"));
     }
     let generation = open_private_login_directory(publication, &current.to_string())?;
+    let manifest_bytes = read_login_child(&generation, "manifest", 4096)?;
+    let approved = read_login_child(&authority, "approved-generation", 4096)?;
+    verify_approved_login_manifest(&approved, current, &manifest_bytes)?;
     let manifest: std::collections::BTreeMap<String, String> =
-        serde_json::from_slice(&read_login_child(&generation, "manifest", 4096)?)
-            .map_err(io::Error::other)?;
+        serde_json::from_slice(&manifest_bytes).map_err(io::Error::other)?;
     if manifest.len() != LOGIN_GENERATION_INPUTS.len() {
         return Err(io::Error::other("incomplete publication manifest"));
     }
@@ -2535,6 +2561,24 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn published_manifest_must_match_the_independently_approved_revision_and_digest() {
+        let old_manifest = br#"{"settings":"old","signature":"valid-for-old-handoff"}"#;
+        let new_manifest = br#"{"settings":"new","signature":"valid-for-new-handoff"}"#;
+        let approval = |revision, manifest: &[u8]| {
+            serde_json::to_vec(&serde_json::json!({
+                "revision": revision,
+                "manifest_sha256": format!("{:x}", Sha256::digest(manifest)),
+            }))
+            .unwrap()
+        };
+        let old_approval = approval(1, old_manifest);
+        let new_approval = approval(2, new_manifest);
+        verify_approved_login_manifest(&new_approval, 2, new_manifest).unwrap();
+        assert!(verify_approved_login_manifest(&old_approval, 2, old_manifest).is_err());
+        assert!(verify_approved_login_manifest(&new_approval, 2, old_manifest).is_err());
+    }
 
     #[test]
     #[ignore = "requires root-owned fixtures under /var/lib"]
