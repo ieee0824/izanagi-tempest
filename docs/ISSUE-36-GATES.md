@@ -143,3 +143,21 @@ CLI の起動許可は送信試行前に記録する。送信結果が不明、�
 配置回収の合成試験には、同じテスト実行ファイルを root で起動し、
 `--ignored --exact claude_offline::tests::outer_recovery_is_limited_to_the_confirmed_staging_generation`
 を指定する。
+
+### 固定ループバック通信境界の合成回帰
+
+専用 Linux ホストで Python 3.11+、iproute2、nftables、util-linux を
+用意し、リポジトリのルートから実行する。試験スクリプトのビルドは不要。
+
+```sh
+sudo -n python3 integration/linux_synthetic_egress_smoke.py
+```
+
+新規ネットワーク名前空間で固定のループバックリスナー2つへの事前到達を
+確認し、合成した親と子の UID に試験用ルールを適用する。
+親の許可接続1件、親の拒否1件、子の拒否2件を接続結果と受理件数で
+照合し、nftables の拒否カウンタと子の標準入出力の応答も確認する。
+通常経路とポリシー適用後に失敗を注入する経路の両方でルールと
+リスナーを回収し、試験プロセスの終了後に名前空間の消滅を確認する。
+この試験の範囲は固定の合成プロセスとループバックに限る。
+Tempest 本体への適用、実エージェント、実サービス、外部接続は未検証。
