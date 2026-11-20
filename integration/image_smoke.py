@@ -59,7 +59,17 @@ def main():
                         help='run the four fixed relay phases after receiver preflight')
     parser.add_argument('--fixed-vm-relay-recovery', type=Path,
                         help='verify supervisor loss after a fixed relay connects')
+    parser.add_argument('--fixed-http-mcp-control', type=Path,
+                        help='private coordinator directory for one fixed HTTP MCP trial VM')
     args = parser.parse_args()
+    http_control = args.fixed_http_mcp_control
+    if http_control and (not args.fixed_vm_receiver_preflight or args.fixed_vm_relay_trial
+                         or os.geteuid() != 0):
+        parser.error('HTTP MCP trial requires root and fixed receiver preflight')
+    if http_control:
+        import fixed_http_mcp_observe
+        import fixed_http_mcp_storage
+        fixed_http_mcp_observe.require_control_directory(http_control)
     if args.fixed_vm_relay_recovery and not args.fixed_vm_relay_trial:
         parser.error('fixed relay recovery requires --fixed-vm-relay-trial')
     if args.fixed_vm_relay_trial and (
@@ -113,6 +123,8 @@ def main():
     mapped_metadata(public, stat.S_IFDIR | 0o777)
     if args.fixed_vm_receiver_preflight:
         fixed_vm_receive_observe.stage_receiver(box.workspace, mapped_metadata)
+        if http_control:
+            fixed_http_mcp_observe.stage(box.workspace, mapped_metadata)
     if args.proc_evidence:
         for source, name in [('proc_evidence.py', 'proc_evidence.py'), ('proc_paging.py', 'proc-probe.py')]:
             path = public / name
@@ -144,6 +156,8 @@ def main():
     template = (ROOT / 'tools/m0/izanagi.example.toml').read_text()
     if args.sidecar_evidence:
         template = sidecar_evidence.configure(template)
+    if http_control:
+        template = template.replace('memory = "4G"', 'memory = "2G"')
     config.write_text(template.replace('image = "default"', 'image = ' + json.dumps(str(args.image.resolve()))))
     if args.network_evidence or args.fixed_vm_receiver_preflight:
         network_evidence.require_config(config.read_text())
@@ -158,16 +172,17 @@ def main():
                                                    'scope': 'offline image bytes; runtime identity checked separately'}
     exec_evidence = ExecEvidence(output / 'exec-evidence') if args.exec_evidence else None
     vm_identity = {}
-    if args.fixed_vm_relay_trial:
+    if args.fixed_vm_relay_trial or http_control:
         import grp
-        unit, *relay_binaries = args.fixed_vm_relay_trial
-        relay_client, allow_entry, deny_entry = (Path(path).resolve(strict=True) for path in relay_binaries)
+        if args.fixed_vm_relay_trial:
+            unit, *relay_binaries = args.fixed_vm_relay_trial
+            relay_client, allow_entry, deny_entry = (Path(path).resolve(strict=True) for path in relay_binaries)
         home = output / 'vm-home'
-        tmp = output / 'vm-tmp'
+        tmp = Path('/tmp/vm-overlay') if http_control else output / 'vm-tmp'
         home.mkdir(mode=0o700)
         tmp.mkdir(mode=0o700)
         environment.update(HOME=str(home), TMPDIR=str(tmp))
-        for path in [*output.rglob('*'), output]:
+        for path in [*output.rglob('*'), output, tmp]:
             os.chown(path, 999, 988, follow_symlinks=False)
         vm_identity = {'user': 999, 'group': 988, 'extra_groups': [grp.getgrnam('kvm').gr_gid]}
     def save():
@@ -319,6 +334,8 @@ def main():
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline and process.poll() is None:
             if 'サンドボックスを起動しました' in (output / 'up.stdout').read_text():
+                if http_control:
+                    report['qemu_storage'] = fixed_http_mcp_storage.check_placement(process.pid, args.image)
                 result = execute('/bin/echo', 'ready', timeout=10)
                 if result.returncode == 0 and result.stdout.strip() == 'ready':
                     break
@@ -328,6 +345,17 @@ def main():
         if args.fixed_vm_receiver_preflight:
             report['checks']['fixed_vm_receiver'] = fixed_vm_receive_observe.preflight_guest(execute, build_inputs)
             report['status'] = 'fixed_receiver_preflight_collected'
+            if http_control:
+                def binding():
+                    route = fixed_http_mcp_storage.check_placement(process.pid, args.image)
+                    fingerprint = fixed_vm_receive_observe.session_binding(
+                        box.workspace, home, owner_uid=999, supervisor_pid=process.pid,
+                        forward=route)
+                    return route, fingerprint
+
+                fixed_http_mcp_observe.serve_commands(
+                    http_control, execute, binding, process, report['checks']['fixed_vm_receiver'])
+                report['status'] = 'fixed_http_mcp_collected'
             if args.fixed_vm_relay_trial:
                 import image_smoke_observe
                 session = home / '.izanagi/instances' / hashlib.sha256(
@@ -737,6 +765,13 @@ def main():
                     hmac_path.unlink()
                     report['fixed_receiver_up_exit'] = process.returncode
                     save()
+                    if http_control:
+                        fixed_http_mcp_observe.publish(http_control / 'stopped.json', {
+                            'up_exit': process.returncode,
+                            'down_exit': report.get('fixed_receiver_down_exit'),
+                            'hmac_gone': not hmac_path.exists(),
+                            'status': report['status'],
+                        })
     instance = Path.home() / '.izanagi/instances' / hashlib.sha256(str(box.workspace).encode()).hexdigest()
     logs = output / 'izanagi-logs'
     logs.mkdir(mode=0o700)

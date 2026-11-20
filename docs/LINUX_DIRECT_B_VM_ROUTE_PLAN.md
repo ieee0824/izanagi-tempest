@@ -599,3 +599,41 @@ boot ID は `44f013c0-16a7-481a-8b7b-458c34946859`。
 再試行には前節の2本のバイナリに加えて、同じ試行固有の
 `FIXED_VM_TRIAL_SUFFIX` と `CONNECT4_CASE=11` で `fixture.c` をビルドし、
 `--fixed-vm-relay-recovery` にそのバイナリを渡す。
+
+#### 同一実行の固定 HTTP MCP 応答（Issue #110）
+
+試験用の `image/fixed_http_mcp_fixture.py` はゲスト loopback の
+固定 `/mcp` で `initialize` と `tools/list` の合成応答を返す。
+同時稼働の別 VM にも同じ fixture を置き、別の nonce・boot ID で
+対照を取る。`integration/fixed_http_mcp_observe.py` は、既存固定 VM
+試験の認証済み Izanagi exec を呼び出すアダプターを受け取り、
+別 VM の事前対照、本試験、別 VM の事後対照の順に照合する。
+各区間の TCP 受理増分は [0,2]、[2,0]、[0,2] を要求し、
+受理数とは別に固定要求のメソッド順、応答 ID、nonce、boot ID、
+受信側終了と作業領域の削除を検査する。
+
+VM の準備・認証セッションの照合・回収は既存の固定 VM ハーネス側が
+担当する。この fixture は固定の HTTP JSON-RPC 応答だけに限定し、
+汎用 MCP transport、Claude 接続、本番実行許可を提供しない。
+
+専用 Linux で、checkout・固定入力・出力先を `/tmp` の外に置く。
+Python 3.11+、KVM、systemd、iproute2、util-linux と、既存固定 VM
+試験と同じ専用 UID/GID および固定 receiver イメージ、Izanagi、
+build-inputs を使用する。VM 用アーティファクトの再ビルドは不要。
+開始前に `MemAvailable` が 6.5 GiB 以上であることを確認する。
+
+```sh
+sudo -n unshare --net /usr/bin/python3 integration/fixed_http_mcp_trial.py \
+  --izanagi /absolute/path/to/izanagi \
+  --image /absolute/path/to/fixed-receiver.qcow2 \
+  --build-inputs /absolute/path/to/build-inputs.json \
+  --output /absolute/path/to/new-trial-directory
+```
+
+起動器は2台を別々の systemd unit と上限 512 MiB の一時書込領域に置く。
+各固定 receiver preflight が準備した認証済み Izanagi exec を使い、
+操作ごとに QEMU とセッションを照合する。出力の `result.json` は、
+受理差分、固定応答の実行 ID と boot ID、両台の停止と資源回収を記録する。
+書込使用量は各 VM の準備完了後から停止指示までのサンプル値を記録する。
+別 VM の受理0は、この試験の経路選択を確認する。別 VM 宛接続の拒否を
+測った結果は PR #108 の試験記録を参照する。
