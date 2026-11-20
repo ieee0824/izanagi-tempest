@@ -661,18 +661,21 @@ fn configure_login_command(command: &mut std::process::Command) {
 
 fn fixed_login_command(root: &Path) -> Result<std::process::Command, Fault> {
     use std::process::Stdio;
+    // Send diagnostics to the same already-verified terminal as stdout.
+    let diagnostic_fd = unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_DUPFD_CLOEXEC, 3) };
+    if diagnostic_fd < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    let diagnostic_output = unsafe { File::from_raw_fd(diagnostic_fd) };
     let mut command = isolated_command(
         root,
         LOGIN_EXECUTABLE,
         OpenOptions::new().write(true).open("/dev/null")?,
-        OpenOptions::new().write(true).open("/dev/null")?,
+        diagnostic_output,
         Diagnostic::PtyWithLoginArtifacts,
     )?;
     configure_login_command(&mut command);
-    command
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+    command.stdin(Stdio::inherit()).stdout(Stdio::inherit());
     Ok(command)
 }
 

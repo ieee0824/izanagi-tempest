@@ -61,11 +61,35 @@ def check_pre_grant_denial(binary, case, reason):
     assert_empty()
 
 
+def check_terminal_refusals(binary):
+    master, slave = pty.openpty()
+    other_master, other_slave = pty.openpty()
+    try:
+        for input_fd, output_fd in (
+            (subprocess.DEVNULL, slave),
+            (slave, subprocess.PIPE),
+            (slave, other_slave),
+            (master, master),
+        ):
+            result = subprocess.run(
+                [binary, "match"], stdin=input_fd, stdout=output_fd,
+                stderr=subprocess.PIPE, env={}, timeout=5,
+            )
+            if result.returncode != 1 or result.stdout or result.stderr:
+                raise RuntimeError("invalid login terminal was not refused before staging")
+            assert_empty()
+    finally:
+        for fd in (master, slave, other_master, other_slave):
+            os.close(fd)
+
+
 def main():
     if sys.platform != "linux" or os.geteuid() != 0 or len(sys.argv) != 2:
         return 2
     binary = str(Path(sys.argv[1]).resolve(strict=True))
     assert_empty()
+    check_terminal_refusals(binary)
+    print("invalid terminals: redirected, split and master endpoints refused before staging")
     for case, reason in FAILURES.items():
         check_pre_grant_denial(binary, case, reason)
         print(f"{case}: no launch, no traffic, recovered")
