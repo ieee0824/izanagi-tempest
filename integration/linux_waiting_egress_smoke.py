@@ -32,7 +32,7 @@ import errno
 import socket
 import sys
 
-role, nonce = sys.argv[1:]
+role, nonce, *config = sys.argv[1:]
 print("waiting", flush=True)
 if input() != nonce:
     raise SystemExit(2)
@@ -49,7 +49,10 @@ if role == "mcp":
         check_denial(port)
     print("pong")
 else:
-    with socket.create_connection(("127.0.0.1", 39181), timeout=2):
+    with socket.create_connection(("127.0.0.1", 39181), timeout=2) as connection:
+        if config:
+            connection.sendall(nonce.encode("ascii"))
+            print("config:" + config[0])
         print("connected")
     check_denial(39182)
     print("denied:EHOSTUNREACH")
@@ -80,9 +83,10 @@ def close_process(process):
     process.stdout.close()
 
 
-def start_participant(stack, run_id, role, uid):
+def start_participant(stack, run_id, role, uid, *, config=None):
     process = subprocess.Popen(
-        (sys.executable, "-I", "-c", CLIENT, role, run_id),
+        (sys.executable, "-I", "-c", CLIENT, role, run_id,
+         *((os.fsdecode(config),) if config is not None else ())),
         user=uid, group=uid, extra_groups=[], env={}, text=True,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
     )

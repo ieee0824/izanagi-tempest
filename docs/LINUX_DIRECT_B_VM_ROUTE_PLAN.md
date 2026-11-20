@@ -637,3 +637,19 @@ sudo -n unshare --net /usr/bin/python3 integration/fixed_http_mcp_trial.py \
 書込使用量は各 VM の準備完了後から停止指示までのサンプル値を記録する。
 別 VM の受理0は、この試験の経路選択を確認する。別 VM 宛接続の拒否を
 測った結果は PR #108 の試験記録を参照する。
+
+#### 設定・通信ゲートと固定 VM 試験の結合（Issue #36）
+
+同じ `fixed_http_mcp_trial.py` コマンドに
+`--joined-preflight match` を追加する。設定・ポリシーの拒否対照には
+それぞれ `--joined-preflight config-mismatch` と
+`--joined-preflight policy-mismatch` を指定し、各回の出力先を分ける。
+追加のホスト要件は nftables。監督が発行した試験 ID に検査済み設定、
+待機中の親子、固定ゲート要求、各 VM の nonce・boot ID・認証
+セッションを結び付ける。両検査に成功し、固定ゲート要求を1件受理した
+場合だけ既存の2台試験へ進む。
+
+拒否対照は固定親子の待機解除、ゲート受理、VM 起動、固定 HTTP 要求と
+受理が各0件であることを確認する。ポリシー負例では照合のために作った
+待機プロセスを回収する。正例では準備済み管理セッションの件数と
+HTTP の要求・受理差分を別に保存する。試験は固定ループバックのみ。

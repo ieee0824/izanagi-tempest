@@ -44,6 +44,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("izanagi", "image", "build-inputs", "output"):
         parser.add_argument(f"--{name}", required=True, type=Path)
+    parser.add_argument("--joined-preflight", choices=("match", "config-mismatch", "policy-mismatch"),
+                        help="run the fixed configuration and waiting-role checks before the VM trial")
     args = parser.parse_args()
     if os.geteuid() != 0 or os.stat("/proc/self/ns/net") == os.stat("/proc/1/ns/net"):
         parser.error("requires root in a fresh network namespace")
@@ -65,6 +67,19 @@ def main():
            for path in (ROOT, output, args.izanagi, args.image, args.build_inputs)):
         parser.error("checkout, inputs and output must be outside the service-private /tmp")
     output.mkdir(mode=0o700, exist_ok=False)
+    trial_id = secrets.token_hex(16)
+    preflight = None
+    network_namespace = os.stat("/proc/self/ns/net").st_ino
+    if args.joined_preflight:
+        import fixed_http_mcp_gate
+        preflight = fixed_http_mcp_gate.check(trial_id, args.joined_preflight)
+        if not preflight["admitted"]:
+            observe.publish(output / "result.json", {
+                "trial_id": trial_id, "network_namespace": network_namespace,
+                "preflight": preflight, "vm_starts": 0,
+                "management_prepared": 0, "http_requests": 0, "http_accepts": [0, 0],
+            })
+            return
     mount_ids = []
     minimum = initial
     peaks = [0, 0]
@@ -74,6 +89,7 @@ def main():
     logs = []
     controls = []
     sequences = [0, 0]
+    request_counts = [0, 0]
 
     def start(index):
         unit = f"{prefix}-{index}.service"
@@ -128,6 +144,8 @@ def main():
         response = read_when_ready(control / f"reply-{position}.json")
         if not all(map(same_process, ready)):
             raise RuntimeError("fixture QEMU identity changed")
+        if mode == "request":
+            request_counts[index] += len(response)
         return response
 
     try:
@@ -158,14 +176,25 @@ def main():
                     or str(mount) in active_mounts
                     or (Path("/sys/fs/cgroup/system.slice") / unit).exists()):
                 raise RuntimeError("fixed VM recovery failed")
-            del row["session_fingerprint"]
+            fingerprint = row.pop("session_fingerprint")
+            if preflight is not None:
+                row["trial_session_binding"] = hashlib.sha256(
+                    bytes.fromhex(trial_id) + bytes.fromhex(fingerprint)
+                ).hexdigest()
         if sha(args.image) != image_sha:
             raise RuntimeError("base image changed")
-        observe.publish(output / "result.json", {
+        result = {
             "initial_available_kib": initial, "minimum_available_kib": minimum,
             "observed_write_peaks": peaks, "http": http, "vms": ready,
             "terminal": terminal, "base_sha256": image_sha, "recovered": True,
-        })
+        }
+        if preflight is not None:
+            result.update(trial_id=trial_id, network_namespace=network_namespace,
+                          preflight=preflight, vm_starts=len(jobs),
+                          management_prepared=len(ready), http_requests=sum(request_counts),
+                          http_accepts=[sum(row[index] for row in http["accept_deltas"])
+                                        for index in range(2)])
+        observe.publish(output / "result.json", result)
     finally:
         for unit, job in zip(units, jobs, strict=True):
             if job.poll() is None:
