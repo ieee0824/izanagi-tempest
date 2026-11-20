@@ -39,7 +39,9 @@ def live_descendant(supervisor: int) -> int:
     raise RuntimeError("fixed descendant was not alive before disconnect")
 
 
-def fixture(command: list[str], env: dict[str, str], complete_probe: bool) -> None:
+def fixture(
+    command: list[str], env: dict[str, str], complete_probe: bool, success: bytes = SUCCESS
+) -> None:
     master, slave = pty.openpty()
     descendant = -1
     try:
@@ -63,9 +65,9 @@ def fixture(command: list[str], env: dict[str, str], complete_probe: bool) -> No
             watcher.register(descendant, select.POLLIN)
             if not watcher.poll(0):
                 raise RuntimeError("fixed descendant survived the PTY disconnect")
-            if child.returncode != 0 or result != SUCCESS:
+            if child.returncode != 0 or result != success:
                 raise RuntimeError(f"disconnect and recovery failed: {result!r}")
-        elif child.returncode != 1 or SUCCESS in result:
+        elif child.returncode != 1 or success in result:
             raise RuntimeError(f"early disconnect was not rejected: {result!r}")
         if any(WORK.iterdir()):
             raise RuntimeError("supervised work area remains after disconnect")
