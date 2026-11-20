@@ -20,6 +20,7 @@ FAILURES = {
     "wrong-namespace": b"fixed login namespace missing or mismatched",
     "missing-policy": b"fixed login policy or loopback inspection failed",
     "wrong-policy": b"fixed login policy or loopback inspection failed",
+    "missing-gateway": b"fixed gateway unavailable",
 }
 
 
@@ -39,7 +40,7 @@ def check_pre_grant_denial(binary, case, reason):
             _, result = process.communicate(timeout=8)
             if (
                 process.returncode != 1
-                or not result.startswith(NEGATIVE)
+                or NEGATIVE not in result
                 or b"work removed" not in result
                 or reason not in result
             ):

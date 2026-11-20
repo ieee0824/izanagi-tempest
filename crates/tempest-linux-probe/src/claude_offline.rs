@@ -954,6 +954,17 @@ fn run_fixture_with_config(
         .map(|(case, _)| local_auth::LocalPolicy::setup(case))
         .transpose()?;
     let launch = (|| {
+        let gateway = match (&policy, local_auth) {
+            (Some(policy), Some((case, upstream_network))) if case.needs_gateway() => Some(
+                policy
+                    .start_gateway(case, upstream_network)
+                    .map_err(|error| {
+                        eprintln!("local auth gateway refused before grant: {error}");
+                        error
+                    })?,
+            ),
+            _ => None,
+        };
         let network = if let Some((case, _)) = local_auth {
             ChildNetwork::Verified(local_auth::request(control, case)?)
         } else {
@@ -967,12 +978,6 @@ fn run_fixture_with_config(
         if let Some(config) = config {
             config.run(root, scratch, namespace_reaped, diagnostic)?;
         } else if let Some(events) = pty_events {
-            let gateway = match (&policy, local_auth) {
-                (Some(policy), Some((_, upstream_network))) => {
-                    Some(policy.start_gateway(upstream_network)?)
-                }
-                _ => None,
-            };
             run_pty_child(root, namespace_reaped, events, private_config, network)?;
             if let Some(gateway) = gateway {
                 gateway.finish()?;

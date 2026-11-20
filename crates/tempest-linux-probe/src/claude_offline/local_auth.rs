@@ -30,6 +30,7 @@ pub(super) enum Case {
     WrongNamespace,
     MissingPolicy,
     WrongPolicy,
+    MissingGateway,
 }
 
 impl Case {
@@ -40,8 +41,13 @@ impl Case {
             "wrong-namespace" => Self::WrongNamespace,
             "missing-policy" => Self::MissingPolicy,
             "wrong-policy" => Self::WrongPolicy,
+            "missing-gateway" => Self::MissingGateway,
             _ => return None,
         })
+    }
+
+    pub fn needs_gateway(self) -> bool {
+        matches!(self, Self::Match | Self::MissingGateway)
     }
 }
 
@@ -189,7 +195,10 @@ impl LocalPolicy {
         })
     }
 
-    pub fn start_gateway(&self, upstream_network: &File) -> io::Result<Gateway> {
+    pub fn start_gateway(&self, case: Case, upstream_network: &File) -> io::Result<Gateway> {
+        if matches!(case, Case::MissingGateway) {
+            return Err(io::Error::other("fixed gateway unavailable"));
+        }
         let upstream_identity = fd_identity(upstream_network)?;
         if namespace()? == upstream_identity {
             return Err(io::Error::other(
