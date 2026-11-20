@@ -1,8 +1,11 @@
 """Exercise the administrator handoff decision with synthetic verifier results."""
 
+import json
+import os
 import unittest
 from dataclasses import dataclass, replace
 from hashlib import sha256
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -29,11 +32,12 @@ class RegistrySnapshot:
 
 
 def handoff_candidate(
-    pair: VerifiedPair, registry: RegistrySnapshot, now: int
+    pair: VerifiedPair, registry: RegistrySnapshot, now: int,
+    approved_choice: str = "fixture-approve",
 ) -> dict[str, str]:
     if not (pair.request_verified and pair.decision_verified and pair.target_verified):
         raise ValueError("unverified approval pair")
-    if pair.choice_id != "fixture-approve":
+    if not approved_choice or pair.choice_id != approved_choice:
         raise ValueError("approval choice mismatch")
     if (
         pair.request_id != pair.decision_reply_to
@@ -43,7 +47,11 @@ def handoff_candidate(
         raise ValueError("approval request mismatch")
     if pair.target_id != registry.target_id or not registry.target_id:
         raise ValueError("unregistered target")
-    if pair.approver_key_id != registry.approver_key_id or not registry.authorized:
+    if (
+        not pair.approver_key_id
+        or pair.approver_key_id != registry.approver_key_id
+        or not registry.authorized
+    ):
         raise ValueError("unauthorized approver")
     if registry.checked_at != now or registry.revoked is not False:
         raise ValueError("revocation state unavailable or revoked")
@@ -83,3 +91,46 @@ class AdminHandoffTest(unittest.TestCase):
         ]:
             with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, error):
                 handoff_candidate(pair, replace(registry, **{field: value}), 100)
+
+
+def pair_from_client_detail(detail: dict, target_id: str) -> VerifiedPair:
+    request, decision = detail["request"], detail["decision"]
+    request_auth, decision_auth = request["auth"], decision["auth"]
+    payload = decision["payload"]
+    return VerifiedPair(
+        request_verified=request_auth.get("approval_verified") is True
+        and (request_auth.get("verified") is True
+             or request_auth.get("server_authenticated") is True),
+        decision_verified=decision_auth.get("approval_verified") is True
+        and decision_auth.get("verified") is True
+        and decision_auth.get("approval_authorized") is True,
+        target_verified=decision_auth.get("approval_target_verified") is True,
+        request_id=request["id"],
+        decision_reply_to=payload["reply_to"],
+        request_digest=request_auth["action_digest"],
+        decision_request_digest=payload["request_digest"],
+        choice_id=payload["choice_id"],
+        approver_key_id=decision_auth["key_id"],
+        target_id=target_id,
+    )
+
+
+class FixedClientHandoffTest(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("TEMPEST_CLIENT_APPROVAL_FIXTURE"), "requires local client fixture")
+    def test_loopback_client_detail_feeds_the_handoff_check(self):
+        fixture_path = Path(os.environ["TEMPEST_CLIENT_APPROVAL_FIXTURE"])
+        fixture = json.loads(fixture_path.read_text())
+        registry = RegistrySnapshot(approver_key_id=fixture["registered_key_id"])
+        # First option in the client's pinned test vector, independent of the response.
+        choice = "85f4ded4-025d-4b71-b44b-298bbca40ad1"
+        pair = pair_from_client_detail(fixture["detail"], registry.target_id)
+        result = handoff_candidate(pair, registry, 100, choice)
+        self.assertEqual(result["request_digest"], pair.decision_request_digest)
+        for invalid in (
+            replace(registry, authorized=False),
+            replace(registry, checked_at=99),
+            replace(registry, revoked=None),
+            replace(registry, revoked=True),
+        ):
+            with self.assertRaises(ValueError):
+                handoff_candidate(pair, invalid, 100, choice)

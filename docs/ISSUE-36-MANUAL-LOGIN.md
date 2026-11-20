@@ -194,3 +194,33 @@ Linux ホスト名と照合し、認証先と許可 IP 一覧の版も照合し�
 ```sh
 python3 -m unittest discover -s tests -p test_claude_admin_handoff.py -v
 ```
+
+固定 cc-sakura client v0.4.0（`3194bca`）の承認照会から、
+申請の `id` と `auth.action_digest`、回答の `payload.reply_to`、
+`payload.request_digest`、`payload.choice_id`、`auth.key_id` を
+引渡し判断に渡せます。模擬照会では申請がサーバー認証済みブラウザ記録、
+回答が利用者署名済み記録であり、それぞれの認証種別を明示して検証します。
+
+管理側の独立した情報源には、申請 ID とダイジェストに紐づく対象登録と
+承認選択 ID、署名鍵 ID と対象に対する承認権限、当該鍵の失効状態と
+照会時刻が必要です。回答の `approval_authorized` はサーバー応答に
+由来するため、管理側で発行直前に権限と失効状態を再照会します。
+同じ発行処理で取得した状態が欠ける、失効済み、または照会後に状態の
+更新が判明した場合は発行を拒否します。試験の時刻は固定で、実運用の
+許容遅延や状態の同時更新の扱いは別途定義が必要です。
+
+接続試験では固定クライアントの
+`encrypted_approvals_interoperate_with_browser_records_and_preserve_failed_items`
+をループバックのみのネットワーク名前空間で実行します。照会結果の
+選択 ID を検証した直後に、試験用クライアント鍵 ID と
+`crate::mcp::model_view(detail)` をそれぞれ `registered_key_id` と
+`detail` に格納した JSON を採取します。試験用の一時ファイルを指定して
+上記 unittest を実行します。
+
+```sh
+TEMPEST_CLIENT_APPROVAL_FIXTURE=/absolute/path/to/test-detail.json \
+  python3 -m unittest discover -s tests -p test_claude_admin_handoff.py -v
+```
+
+この採取は承認照会直後までの試験で、後続のブラウザ側復号の相互運用
+チェックは含みません。
