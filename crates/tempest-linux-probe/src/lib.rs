@@ -82,3 +82,9 @@ pub fn claude_offline_pty() -> std::process::ExitCode {
 pub fn claude_offline_writable_pty() -> std::process::ExitCode {
     claude_offline::run_writable_pty()
 }
+
+/// Exercise a local synthetic login policy under the fixed PTY supervisor.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn claude_offline_local_auth_pty() -> std::process::ExitCode {
+    claude_offline::run_local_auth_pty()
+}
