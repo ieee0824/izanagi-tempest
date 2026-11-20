@@ -682,6 +682,11 @@ fn run_pty_child(
         fi
         if test "$3" = local-auth; then
             /bin/busybox nc -w 1 127.0.0.1 39271 -e /bin/busybox sh -eu -c '
+                printf "CONNECT invalid.example:443 HTTP/1.1\r\n\r\n"
+                IFS= read -r status
+                test "$status" = "$(printf "HTTP/1.1 403 Forbidden\r")"
+            '
+            /bin/busybox nc -w 1 127.0.0.1 39271 -e /bin/busybox sh -eu -c '
                 printf "CONNECT platform.claude.com:443 HTTP/1.1\r\n\r\nPING"
                 IFS= read -r status
                 test "$status" = "$(printf "HTTP/1.1 200 Connection Established\r")"
@@ -958,7 +963,9 @@ fn run_fixture_with_config(
     if let Some(policy) = policy {
         policy.finish(launch.is_ok())?;
         if launch.is_ok() {
-            eprintln!("local auth: accepts=1,0,0,0 denied=3; listeners and policy closed");
+            eprintln!(
+                "local auth: tunnel accepted, other host refused, three direct ports denied; listeners and policy closed"
+            );
         } else {
             eprintln!("local auth: accepts=0,0,0,0 denied=0; listeners and policy closed");
         }

@@ -10,7 +10,10 @@ import sys
 from claude_supervised_pty_smoke import WORK, fixture
 from claude_writable_pty_smoke import CONFIG, REMOVED
 
-POSITIVE = b"local auth: accepts=1,0,0,0 denied=3; listeners and policy closed\n"
+POSITIVE = (
+    b"local auth: tunnel accepted, other host refused, three direct ports denied; "
+    b"listeners and policy closed\n"
+)
 NEGATIVE = b"local auth: accepts=0,0,0,0 denied=0; listeners and policy closed\n"
 FAILURES = {
     "missing-namespace": b"fixed login namespace missing or mismatched",
@@ -67,7 +70,7 @@ def main():
         print(f"{case}: no launch, no traffic, recovered")
     fixture([binary, "match"], {}, complete_probe=True, success=POSITIVE + REMOVED)
     assert_empty()
-    print("match: auth accepted, three denied; disconnect reaped, listeners closed, generation removed")
+    print("match: auth accepted, other host and three direct ports denied; disconnect reaped, listeners closed, generation removed")
     return 0
 
 

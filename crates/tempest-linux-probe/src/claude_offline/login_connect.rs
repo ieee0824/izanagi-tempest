@@ -132,21 +132,43 @@ fn time_remaining(deadline: Instant) -> io::Result<Duration> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "login CONNECT deadline expired"))
 }
 
-/// Serve one fixed exchange inside the isolated fixture network.
-pub(super) fn serve_fixture(listener: &TcpListener) -> io::Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(8);
+fn accept_before(listener: &TcpListener, deadline: Instant) -> io::Result<TcpStream> {
     let mut event = libc::pollfd {
         fd: listener.as_raw_fd(),
         events: libc::POLLIN,
         revents: 0,
     };
-    let ready = unsafe { libc::poll(&mut event, 1, 8_000) };
+    let timeout = time_remaining(deadline)?.as_millis().saturating_add(1);
+    let ready = unsafe { libc::poll(&mut event, 1, timeout.min(i32::MAX as u128) as i32) };
     if ready != 1 || event.revents != libc::POLLIN {
         return Err(io::Error::other(
             "login fixture gateway did not receive a client",
         ));
     }
-    let (mut client, _) = listener.accept()?;
+    listener.accept().map(|(client, _)| client)
+}
+
+/// Exercise destination refusal and a fixed exchange inside the isolated fixture network.
+pub(super) fn serve_fixture(listener: &TcpListener) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut rejected = accept_before(listener, deadline)?;
+    match read_request(DeadlineReader {
+        client: &mut rejected,
+        deadline,
+    }) {
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            rejected.set_write_timeout(Some(time_remaining(deadline)?))?;
+            rejected.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n")?;
+        }
+        _ => {
+            return Err(io::Error::other(
+                "login fixture expected destination refusal",
+            ));
+        }
+    }
+    drop(rejected);
+
+    let mut client = accept_before(listener, deadline)?;
     let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let address = upstream.local_addr()?;
     let tunnel = open_tunnel(&mut client, deadline, |timeout| {
@@ -283,6 +305,17 @@ mod tests {
         let address = gateway.local_addr().unwrap();
         std::thread::scope(|scope| {
             let responder = scope.spawn(|| serve_fixture(&gateway));
+            let mut rejected = TcpStream::connect(address).unwrap();
+            rejected
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            rejected
+                .write_all(b"CONNECT invalid.example:443 HTTP/1.1\r\n\r\n")
+                .unwrap();
+            let mut response = Vec::new();
+            rejected.read_to_end(&mut response).unwrap();
+            assert_eq!(response, b"HTTP/1.1 403 Forbidden\r\n\r\n");
+
             let mut client = TcpStream::connect(address).unwrap();
             client
                 .set_read_timeout(Some(Duration::from_secs(2)))
