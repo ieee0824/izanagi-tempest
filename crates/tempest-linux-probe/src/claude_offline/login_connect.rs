@@ -243,6 +243,154 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires openssl, Python 3, and an isolated Linux loopback"]
+    fn fixed_connect_relays_tls_certificate_for_client_validation() {
+        use std::io::{BufRead, BufReader};
+        use std::net::Ipv4Addr;
+        use std::process::{Command, Stdio};
+
+        let dir = std::env::temp_dir().join(format!(
+            "tempest-local-tls-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let cert = dir.join("cert.pem");
+        let key = dir.join("key.pem");
+        let result = (|| -> io::Result<()> {
+            let generated = Command::new("openssl")
+                .args([
+                    "req",
+                    "-x509",
+                    "-newkey",
+                    "ed25519",
+                    "-nodes",
+                    "-days",
+                    "1",
+                    "-subj",
+                    "/CN=platform.claude.com",
+                    "-addext",
+                    "subjectAltName=DNS:platform.claude.com",
+                    "-keyout",
+                ])
+                .arg(&key)
+                .arg("-out")
+                .arg(&cert)
+                .output()?;
+            assert!(generated.status.success(), "{:?}", generated.stderr);
+            let mut server = Command::new("timeout")
+                .args([
+                    "20",
+                    "python3",
+                    "-u",
+                    "-c",
+                    r#"
+import socket, ssl, sys
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(sys.argv[1], sys.argv[2])
+with socket.create_server(("127.0.0.1", 0)) as listener:
+    listener.settimeout(8)
+    print(listener.getsockname()[1])
+    for expected in (True, False):
+        client, _ = listener.accept()
+        with client:
+            client.settimeout(5)
+            try:
+                with context.wrap_socket(client, server_side=True) as tls:
+                    if not expected:
+                        raise AssertionError("client accepted a mismatched certificate")
+                    tls.recv(1)
+            except ssl.SSLError:
+                if expected:
+                    raise
+"#,
+                ])
+                .arg(&cert)
+                .arg(&key)
+                .stdout(Stdio::piped())
+                .spawn()?;
+            let mut port = String::new();
+            BufReader::new(server.stdout.take().unwrap()).read_line(&mut port)?;
+            let upstream =
+                SocketAddr::from((Ipv4Addr::LOCALHOST, port.trim().parse::<u16>().unwrap()));
+            let gateway = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+            let proxy = gateway.local_addr()?;
+            let mut wrong = TcpStream::connect(proxy)?;
+            wrong.write_all(b"CONNECT invalid.example:443 HTTP/1.1\r\n\r\n")?;
+            let (mut socket, _) = gateway.accept()?;
+            let timeout = || Instant::now() + Duration::from_secs(8);
+            assert_eq!(
+                open_tunnel(&mut socket, timeout(), upstream, |_, _| panic!(
+                    "wrong authority dialed upstream"
+                ))
+                .unwrap_err()
+                .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            std::thread::scope(|threads| -> io::Result<()> {
+                let worker = threads.spawn(|| -> io::Result<()> {
+                    gateway.set_nonblocking(true)?;
+                    for _ in 0..2 {
+                        let deadline = timeout();
+                        let mut client = accept_before(&gateway, deadline)?;
+                        let peer = open_tunnel(&mut client, deadline, upstream, |addr, left| {
+                            TcpStream::connect_timeout(&addr, left)
+                        })?;
+                        match relay(client, peer, deadline) {
+                            Ok(()) => {}
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
+                                ) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    Ok(())
+                });
+                for name in ["platform.claude.com", "wrong.example"] {
+                    let output = Command::new("timeout")
+                        .args([
+                            "8",
+                            "openssl",
+                            "s_client",
+                            "-proxy",
+                            &proxy.to_string(),
+                            "-connect",
+                            AUTHORITY,
+                            "-verify_hostname",
+                            name,
+                            "-verify_return_error",
+                            "-showcerts",
+                            "-CAfile",
+                        ])
+                        .arg(&cert)
+                        .stdin(Stdio::null())
+                        .output()?;
+                    if name == "platform.claude.com" {
+                        assert!(output.status.success(), "{:?}", output.stderr);
+                        let remote = String::from_utf8_lossy(&output.stdout);
+                        let expected = std::fs::read_to_string(&cert)?;
+                        assert!(
+                            remote.contains(expected.trim_end()),
+                            "relayed certificate differs"
+                        );
+                    } else {
+                        assert!(!output.status.success());
+                        assert!(
+                            String::from_utf8_lossy(&output.stderr).contains("hostname mismatch")
+                        );
+                    }
+                }
+                worker.join().unwrap()
+            })?;
+            assert!(server.wait()?.success());
+            Ok(())
+        })();
+        std::fs::remove_dir_all(dir).unwrap();
+        result.unwrap();
+    }
+
+    #[test]
     fn accepts_fixed_authority_without_consuming_tunnel_bytes() {
         let mut input = &b"CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\nTLS"[..];
         read_request(&mut input).unwrap();
