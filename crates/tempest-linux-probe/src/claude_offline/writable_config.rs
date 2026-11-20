@@ -406,23 +406,55 @@ mod tests {
             fd_identity(&config.pinned).unwrap(),
             fd_identity(&next_config.pinned).unwrap()
         );
+        let target_identity = fd_identity(&next_config.pinned).unwrap();
+        let preserved_identity = fd_identity(&config.pinned).unwrap();
+        let protected_file = config.path.join(SETTINGS);
+        let protected_contents = fs::read(&protected_file).unwrap();
         let unexpected = next_config.path.join("unexpected");
-        fs::write(&unexpected, b"").unwrap();
-        own(&unexpected, 0o600).unwrap();
-        assert!(
-            next_config
-                .finish(&config_parent, Disposition::Remove, false)
-                .is_err()
-        );
-        assert!(unexpected.exists());
-        fs::remove_file(unexpected).unwrap();
+        for kind in ["regular", "symlink", "hardlink"] {
+            match kind {
+                "regular" => {
+                    fs::write(&unexpected, b"").unwrap();
+                    own(&unexpected, 0o600).unwrap();
+                }
+                "symlink" => std::os::unix::fs::symlink(&protected_file, &unexpected).unwrap(),
+                "hardlink" => fs::hard_link(&protected_file, &unexpected).unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(
+                next_config
+                    .finish(&config_parent, Disposition::Remove, false)
+                    .is_err(),
+                "{kind}"
+            );
+            assert!(unexpected.symlink_metadata().is_ok());
+            assert!(next_config.path.join(SETTINGS).is_file());
+            assert!(next.path.is_dir());
+
+            // In this fixture no process was granted access to the successor.
+            // The administrator checks its pinned identity and removes only
+            // the injected entry. unlinkat does not follow the link target.
+            let selected = WorkArea::open_at(&config_parent, &next_config.name).unwrap();
+            assert_eq!(fd_identity(&selected).unwrap(), target_identity);
+            assert_ne!(fd_identity(&selected).unwrap(), preserved_identity);
+            unlink_at(selected.as_raw_fd(), c"unexpected", 0).unwrap();
+            assert_eq!(fs::read(&protected_file).unwrap(), protected_contents);
+        }
         next_config
             .finish(&config_parent, Disposition::Remove, false)
             .unwrap();
         next.remove(&work_parent).unwrap();
+        assert!(!next.path.exists());
+        assert!(!next_config.path.exists());
+        assert!(work.path.is_dir());
+        assert_eq!(fd_identity(&config.pinned).unwrap(), preserved_identity);
         config.audit(&config_parent, false).unwrap();
 
         // The injected fault launched no command, and the supervisor has been reaped.
+        assert!(libc::WIFEXITED(observed.supervisor_wait_status));
+        assert_eq!(libc::WEXITSTATUS(observed.supervisor_wait_status), 7);
+        let selected = WorkArea::open_at(&config_parent, &config.name).unwrap();
+        assert_eq!(fd_identity(&selected).unwrap(), preserved_identity);
         config
             .finish(&config_parent, Disposition::Remove, false)
             .unwrap();
