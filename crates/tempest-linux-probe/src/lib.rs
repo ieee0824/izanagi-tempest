@@ -70,3 +70,9 @@ pub fn claude_offline_version_observed() -> (std::process::ExitCode, Option<Offl
 pub fn claude_offline_config() -> std::process::ExitCode {
     claude_offline::run_config()
 }
+
+/// Run the fixed, unauthenticated offline PTY fixture.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn claude_offline_pty() -> std::process::ExitCode {
+    claude_offline::run_pty()
+}

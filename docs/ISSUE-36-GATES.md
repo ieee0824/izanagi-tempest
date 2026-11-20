@@ -338,3 +338,26 @@ inotify の `IN_OPEN` と固定プローブの起動を確認します。隔離�
 CLI の終了コード 1 と固定の未ログイン出力、両側の観測、回収がそろえば
 診断は成功です。公開結果は固定項目だけです。実資格情報や外部通信を
 使わず、設定値の適用、本番ランチャーの統合、認証後の挙動は未検証です。
+
+### 操作者端末のオフライン事前試験
+
+[Issue #125](https://github.com/ieee0824/izanagi-tempest/issues/125) の専用 Linux
+試験では、作業領域が空の状態で次を実行します。
+
+```bash
+cargo build --locked -p tempest-linux-probe --bin tempest-claude-offline-pty
+sudo python3 integration/claude_supervised_pty_smoke.py target/debug/tempest-claude-offline-pty
+```
+
+ローカル PTY の固定コマンドは、監督が設定した `HOME` と
+`CLAUDE_CONFIG_DIR`、固定 UID/GID と設定の読取を確認してから応答します。
+通常 HOME は chroot に含めません。試験ドライバーが合成の文字列を一度送り、
+応答の後に切断します。親には別の合成 HOME と設定を明示して渡し、
+子が専用値を使い、合成親設定が変化しないことを確認します。
+固定の子孫が切断前に生存し、監督が PID 名前空間を停止・回収した後に
+終了したことを pidfd で確認します。一時領域の消失も照合します。応答前の切断と非 PTY の起動は
+失敗として扱います。
+
+これは owner が操作する入口の事前試験です。実施用の入口でも環境変数は
+起動処理が設定する想定です。owner に求める実認証操作、SSH の接続設定・鍵登録、
+認証通信は #36 の別判断です。
