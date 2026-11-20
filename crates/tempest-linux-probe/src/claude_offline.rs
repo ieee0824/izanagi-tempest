@@ -849,7 +849,9 @@ impl FixtureClosure {
                 .map(|_| true);
             if matches!(
                 self.case,
-                local_auth::Case::SignedPermit | local_auth::Case::MissingConsumptionSync
+                local_auth::Case::SignedPermit
+                    | local_auth::Case::SignedTls
+                    | local_auth::Case::MissingConsumptionSync
             ) {
                 eprintln!(
                     "synthetic recovery evidence: {}",
@@ -1338,7 +1340,9 @@ fn run_fixture_with_config(
                 local_auth.and_then(|(_, _, permit)| permit.administrator_stop.as_ref()),
             )?;
             if let Some(gateway) = gateway {
-                gateway.finish()?;
+                gateway
+                    .finish()
+                    .inspect_err(|error| eprintln!("synthetic gateway finish: {error}"))?;
             }
         } else {
             run_child(root, scratch, namespace_reaped)?;
@@ -2737,6 +2741,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
             Some(
                 local_auth::Case::SingleUsePermit
                     | local_auth::Case::SignedPermit
+                    | local_auth::Case::SignedTls
                     | local_auth::Case::SignedAdministratorStop
                     | local_auth::Case::PermitExpiresBeforeGrant
                     | local_auth::Case::WrongGrantId

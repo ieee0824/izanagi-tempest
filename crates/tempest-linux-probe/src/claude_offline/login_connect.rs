@@ -188,7 +188,11 @@ impl FixtureUpstream {
 }
 
 /// Exercise destination refusal and a fixed exchange inside the isolated fixture network.
-pub(super) fn serve_fixture(listener: &TcpListener, upstream: FixtureUpstream) -> io::Result<()> {
+pub(super) fn serve_fixture(
+    listener: &TcpListener,
+    upstream: FixtureUpstream,
+    case: Case,
+) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(8);
     let mut rejected = accept_before(listener, deadline)?;
     match read_request(DeadlineReader {
@@ -230,10 +234,37 @@ pub(super) fn serve_fixture(listener: &TcpListener, upstream: FixtureUpstream) -
             }
             Ok(())
         })?;
+        // The signed TLS exercise uses a separate local TLS probe while the
+        // fixed PTY child keeps its ordinary ACK tunnel open.
+        let tls = if matches!(case, Case::SignedTls) {
+            Some(std::thread::Builder::new().spawn_scoped(scope, || {
+                let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 39275));
+                for expects_rejection in [false, true] {
+                    let mut client = accept_before(listener, deadline)?;
+                    let tunnel = open_tunnel(&mut client, deadline, peer, |address, timeout| {
+                        TcpStream::connect_timeout(&address, timeout)
+                    })?;
+                    match relay(client, tunnel, deadline) {
+                        // The client aborts the second handshake with a TLS alert.
+                        Err(error)
+                            if expects_rejection
+                                && error.kind() == io::ErrorKind::ConnectionReset => {}
+                        result => result?,
+                    }
+                }
+                Ok::<_, io::Error>(())
+            })?)
+        } else {
+            None
+        };
         let relayed = relay(client, tunnel, deadline);
         let exchanged = exchange
             .join()
             .map_err(|_| io::Error::other("login fixture upstream failed"))?;
+        if let Some(tls) = tls {
+            tls.join()
+                .map_err(|_| io::Error::other("local TLS relay failed"))??;
+        }
         relayed.and(exchanged)
     })
 }
@@ -500,8 +531,13 @@ with socket.create_server(("127.0.0.1", 0)) as listener:
         let gateway = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let address = gateway.local_addr().unwrap();
         std::thread::scope(|scope| {
-            let responder = scope
-                .spawn(|| serve_fixture(&gateway, FixtureUpstream::prepare(Case::Match).unwrap()));
+            let responder = scope.spawn(|| {
+                serve_fixture(
+                    &gateway,
+                    FixtureUpstream::prepare(Case::Match).unwrap(),
+                    Case::Match,
+                )
+            });
             let mut rejected = TcpStream::connect(address).unwrap();
             rejected
                 .set_read_timeout(Some(Duration::from_secs(2)))
