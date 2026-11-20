@@ -91,6 +91,13 @@ root supervisor が cgroup・kernel identity・開始 barrier と回収を扱い
 Claude、設定・認証情報、Izanagi/guest、外部 network、HTTP MCP は使いません。
 Issue全体の完了条件と未完gateは[Issue #36 gate台帳](docs/ISSUE-36-GATES.md)に固定します。
 
+固定ループバック通信境界の合成回帰は、専用 Linux に Python 3.11+、
+iproute2、nftables、util-linux を用意し、ビルド不要で実行できます。
+
+```sh
+sudo -n python3 integration/linux_synthetic_egress_smoke.py
+```
+
 ```bash
 cargo build --workspace --locked
 cargo test --locked -p tempest-linux-probe
