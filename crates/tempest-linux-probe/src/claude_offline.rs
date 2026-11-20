@@ -2117,9 +2117,14 @@ mod tests {
                 "expires_unix_seconds": 160,
             },
         });
-        assert!(
-            validate_manual_login_policy_at(settings.to_string().as_bytes(), now, "tempest-test")
-                .is_ok()
+        let input = settings.to_string();
+        assert!(validate_manual_login_policy_at(input.as_bytes(), now, "tempest-test").is_ok());
+        assert_eq!(
+            validate_manual_login_policy_at(input.as_bytes(), now, "other-host")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData,
+            "the same policy must be rejected on a different Linux host",
         );
 
         for (path, value) in [
