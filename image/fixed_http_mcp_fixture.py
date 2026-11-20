@@ -92,17 +92,26 @@ def main(mode, nonce):
     record = area / "record.json"
     if mode == "start":
         area.mkdir(mode=0o700)
-        child = subprocess.Popen(
-            (sys.executable, "-I", "-B", __file__, "serve", nonce),
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, start_new_session=True,
-        )
-        deadline = time.monotonic() + 5
-        while not record.exists():
-            if time.monotonic() >= deadline or child.poll() is not None:
-                (area / "stop").touch()
-                raise RuntimeError("fixed HTTP receiver did not start")
-            time.sleep(.02)
+        child = None
+        try:
+            child = subprocess.Popen(
+                (sys.executable, "-I", "-B", __file__, "serve", nonce),
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+            deadline = time.monotonic() + 5
+            while not record.exists():
+                if time.monotonic() >= deadline or child.poll() is not None:
+                    raise RuntimeError("fixed HTTP receiver did not start")
+                time.sleep(.02)
+        except (OSError, RuntimeError, KeyboardInterrupt):
+            if child is not None:
+                child.kill()
+                child.wait()
+            for path in (record, record.with_suffix(".pending"), area / "closed"):
+                path.unlink(missing_ok=True)
+            area.rmdir()
+            raise
     elif mode == "serve":
         with Receiver(record, nonce) as server:
             deadline = time.monotonic() + 120
