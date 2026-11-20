@@ -2462,7 +2462,7 @@ mod tests {
             assert_eq!(unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX) }, 0);
             fd
         };
-        let replace = |directory: &Path, name: &str, content: &[u8]| -> io::Result<()> {
+        let replace_unsynced = |directory: &Path, name: &str, content: &[u8]| -> io::Result<()> {
             let staged = directory.join("next");
             let mut file = OpenOptions::new()
                 .write(true)
@@ -2471,7 +2471,10 @@ mod tests {
                 .open(&staged)?;
             file.write_all(content)?;
             file.sync_all()?;
-            fs::rename(staged, directory.join(name))?;
+            fs::rename(staged, directory.join(name))
+        };
+        let replace = |directory: &Path, name: &str, content: &[u8]| -> io::Result<()> {
+            replace_unsynced(directory, name, content)?;
             File::open(directory)?.sync_all()
         };
         let read_revision = |parent: &File, name| -> io::Result<u64> {
@@ -2488,6 +2491,16 @@ mod tests {
             let current = read_revision(&publication_fd, "current")?;
             if revision != current || current < floor {
                 return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            match open_login_child(&publication_fd, std::ffi::OsStr::new("pending"), 0) {
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "publication unconfirmed",
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
             }
             let now = Instant::now();
             let scope = login_permit::Scope {
@@ -2532,7 +2545,11 @@ mod tests {
             if fail_after_floor {
                 return Err(io::Error::other("injected interruption after floor sync"));
             }
-            replace(&publication, "current", b"2")
+            replace(&publication, "pending", b"2")?;
+            replace_unsynced(&publication, "current", b"2")?;
+            // An O_PATH descriptor pins the correct directory but cannot sync it.
+            // Inject a real fsync failure after current is already visible.
+            publication_fd.sync_all()
         };
         assert!(publish(true).is_err());
         assert_eq!(read_revision(&authority_fd, "minimum").unwrap(), 2);
@@ -2546,7 +2563,38 @@ mod tests {
             io::ErrorKind::PermissionDenied
         );
         assert_eq!(fs::read_dir(&ledger_path).unwrap().count(), 1);
-        publish(false).unwrap();
+        assert_eq!(
+            publish(false).unwrap_err().raw_os_error(),
+            Some(libc::EBADF)
+        );
+        assert_eq!(read_revision(&authority_fd, "minimum").unwrap(), 2);
+        assert_eq!(read_revision(&publication_fd, "current").unwrap(), 2);
+        assert_eq!(read_revision(&publication_fd, "pending").unwrap(), 2);
+        assert_eq!(
+            consume(2, 2).unwrap_err().to_string(),
+            "publication unconfirmed"
+        );
+        assert_eq!(fs::read_dir(&ledger_path).unwrap().count(), 1);
+        {
+            let _lock = acquire();
+            let floor = read_revision(&authority_fd, "minimum").unwrap();
+            let current = read_revision(&publication_fd, "current").unwrap();
+            assert_eq!(floor, current);
+            assert_eq!(read_revision(&publication_fd, "pending").unwrap(), current);
+            let sync_fd =
+                File::open(format!("/proc/self/fd/{}", publication_fd.as_raw_fd())).unwrap();
+            assert_eq!(
+                fd_identity(&sync_fd).unwrap(),
+                fd_identity(&publication_fd).unwrap()
+            );
+            sync_fd.sync_all().unwrap();
+            let pending = c"pending";
+            assert_eq!(
+                unsafe { libc::unlinkat(publication_fd.as_raw_fd(), pending.as_ptr(), 0) },
+                0
+            );
+            sync_fd.sync_all().unwrap();
+        }
         assert_eq!(
             consume(1, 2).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
