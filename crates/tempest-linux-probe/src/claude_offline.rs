@@ -2,6 +2,8 @@
 use super::os::Fault;
 mod local_auth;
 mod login_connect;
+#[allow(dead_code)] // The production entrance remains disabled pending integration.
+mod login_permit;
 mod writable_config;
 use sha2::{Digest, Sha256};
 use std::{
