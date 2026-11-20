@@ -207,6 +207,7 @@ fn own(path: &Path, mode: u32) -> Result<(), Fault> {
 fn run_in_pid_namespace(
     mut command: std::process::Command,
     timeout: std::time::Duration,
+    namespace_reaped: &mut bool,
 ) -> Result<(), Fault> {
     use std::time::{Duration, Instant};
 
@@ -224,6 +225,10 @@ fn run_in_pid_namespace(
         let flags = if timed_out { 0 } else { libc::WNOHANG };
         match unsafe { libc::waitpid(init, &mut status, flags) } {
             pid if pid == init => {
+                if !libc::WIFEXITED(status) && !libc::WIFSIGNALED(status) {
+                    continue;
+                }
+                *namespace_reaped = true;
                 return if timed_out {
                     Err(Fault::ReportTimeout)
                 } else if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
@@ -253,7 +258,7 @@ fn run_in_pid_namespace(
     }
 }
 
-fn run_child(root: &Path, scratch: &Path) -> Result<(), Fault> {
+fn run_child(root: &Path, scratch: &Path, namespace_reaped: &mut bool) -> Result<(), Fault> {
     use std::{
         ffi::CString,
         os::unix::{ffi::OsStrExt, process::CommandExt},
@@ -299,7 +304,7 @@ fn run_child(root: &Path, scratch: &Path) -> Result<(), Fault> {
             Ok(())
         });
     }
-    run_in_pid_namespace(command, Duration::from_secs(12))?;
+    run_in_pid_namespace(command, Duration::from_secs(12), namespace_reaped)?;
     if fs::read(stdout)? != b"2.1.325 (Claude Code)\n" || fs::metadata(stderr)?.len() != 0 {
         return Err(Fault::Identity);
     }
@@ -359,7 +364,12 @@ fn mount_artifact(root: &Path, artifact: &Artifact<'_>, staged: &File) -> Result
     Ok(())
 }
 
-fn run_in_root(scratch: &Path, root: &Path, control: &mut UnixStream) -> Result<(u64, u64), Fault> {
+fn run_in_root(
+    scratch: &Path,
+    root: &Path,
+    control: &mut UnixStream,
+    namespace_reaped: &mut bool,
+) -> Result<(u64, u64), Fault> {
     use super::os;
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     for dir in [
@@ -392,7 +402,7 @@ fn run_in_root(scratch: &Path, root: &Path, control: &mut UnixStream) -> Result<
     verify_mount_table(root)?;
     let before = audit_settings(root)?;
     request_cli_start(control)?;
-    run_child(root, scratch)?;
+    run_child(root, scratch, namespace_reaped)?;
     if audit_settings(root)? != before {
         return Err(Fault::Identity);
     }
@@ -434,8 +444,9 @@ fn confirm_offline_network() -> Result<(), Fault> {
     Ok(())
 }
 
-fn trial<T>(
+fn trial_with_detach<T>(
     scratch: &Path,
+    detached: &mut bool,
     execute: impl FnOnce(&Path, &Path) -> Result<T, Fault>,
 ) -> Result<T, Fault> {
     use super::{capsule, os};
@@ -450,7 +461,16 @@ fn trial<T>(
     // Detach the complete private mount tree before touching staging files.
     let path = CString::new(root.as_os_str().as_bytes()).map_err(|_| Fault::Path)?;
     os::syscall(unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) })?;
+    *detached = true;
     result
+}
+
+#[cfg(test)]
+fn trial<T>(
+    scratch: &Path,
+    execute: impl FnOnce(&Path, &Path) -> Result<T, Fault>,
+) -> Result<T, Fault> {
+    trial_with_detach(scratch, &mut false, execute)
 }
 
 #[cfg(test)]
@@ -605,8 +625,9 @@ fn request_cli_start(control: &mut UnixStream) -> Result<(), Fault> {
 fn supervised(
     parent: &File,
     work: &WorkArea,
-    execute: impl FnOnce(&Path, &Path, &mut UnixStream) -> Result<(u64, u64), Fault>,
+    execute: impl FnOnce(&Path, &Path, &mut UnixStream, &mut bool) -> Result<(u64, u64), Fault>,
 ) -> io::Result<(u64, u64)> {
+    const RECOVERABLE_FAILURE: i32 = 2;
     let (mut outside, mut inside) = UnixStream::pair().or_else(|error| {
         work.remove(parent)?;
         Err(error)
@@ -619,10 +640,15 @@ fn supervised(
     }
     if pid == 0 {
         drop(outside);
-        let result = trial(&work.path, |scratch, root| {
-            execute(scratch, root, &mut inside)
+        let mut namespace_reaped = false;
+        let mut detached = false;
+        let result = trial_with_detach(&work.path, &mut detached, |scratch, root| {
+            execute(scratch, root, &mut inside, &mut namespace_reaped)
         });
-        if let Ok((bytes, inodes)) = result {
+        if namespace_reaped
+            && detached
+            && let Ok((bytes, inodes)) = result
+        {
             let mut report = [0; 16];
             report[..8].copy_from_slice(&bytes.to_ne_bytes());
             report[8..].copy_from_slice(&inodes.to_ne_bytes());
@@ -630,7 +656,13 @@ fn supervised(
                 unsafe { libc::_exit(0) };
             }
         }
-        unsafe { libc::_exit(1) };
+        // This exit status attests only to termination and mount detach.
+        let exit = if namespace_reaped && detached {
+            RECOVERABLE_FAILURE
+        } else {
+            1
+        };
+        unsafe { libc::_exit(exit) };
     }
     drop(inside);
     let mut message = [0];
@@ -648,12 +680,16 @@ fn supervised(
     })();
     drop(outside);
     let status = wait_for_supervisor(pid)?;
-    let completed = received.is_ok() && libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0;
-    if !cli_granted || completed {
+    let exit_status = libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status));
+    let completed = received.is_ok() && exit_status == Some(0);
+    let recoverable_failure = exit_status == Some(RECOVERABLE_FAILURE);
+    if !cli_granted || completed || recoverable_failure {
         work.remove(parent)?;
     }
     if !completed {
-        let outcome = if cli_granted {
+        let outcome = if recoverable_failure {
+            "offline CLI diagnostic failed; work removed after verified termination"
+        } else if cli_granted {
             "offline supervisor failed after CLI grant; work retained"
         } else {
             "offline supervisor failed during staging; work removed"
@@ -801,7 +837,7 @@ mod tests {
         };
         let stopped = WorkArea::create(&parent, &path).unwrap();
         let stopped_path = stopped.path.clone();
-        let error = supervised(&parent, &stopped, |scratch, root, _| {
+        let error = supervised(&parent, &stopped, |scratch, root, _, _| {
             let staged = stage_artifact(&artifact, &scratch.join("artifact-0"))?;
             mount_artifact(root, &artifact, &staged)?;
             if !fs::read_to_string("/proc/thread-self/mountinfo")?
@@ -835,7 +871,7 @@ mod tests {
         );
 
         let retained = WorkArea::create(&parent, &path).unwrap();
-        let error = supervised(&parent, &retained, |scratch, _, control| {
+        let error = supervised(&parent, &retained, |scratch, _, control, _| {
             fs::write(scratch.join("artifact-0"), b"retained")?;
             request_cli_start(control)?;
             unsafe { libc::raise(libc::SIGKILL) };
@@ -851,11 +887,51 @@ mod tests {
             b"retained"
         );
 
+        for timeout_case in [false, true] {
+            use std::{process::Command, time::Duration};
+            let failed = WorkArea::create(&parent, &path).unwrap();
+            let error = supervised(&parent, &failed, |scratch, _, control, reaped| {
+                fs::write(scratch.join("artifact-0"), b"dummy-failure")?;
+                request_cli_start(control)?;
+                let mut command = Command::new(if timeout_case {
+                    "/bin/sleep"
+                } else {
+                    "/bin/false"
+                });
+                let deadline = if timeout_case {
+                    command.arg("60");
+                    Duration::from_millis(200)
+                } else {
+                    Duration::from_secs(2)
+                };
+                let result = run_in_pid_namespace(command, deadline, reaped);
+                match (timeout_case, result) {
+                    (true, Err(Fault::ReportTimeout)) => Err(Fault::ReportTimeout),
+                    (false, Err(Fault::Identity)) => Err(Fault::Identity),
+                    _ => {
+                        *reaped = false;
+                        Err(Fault::Identity)
+                    }
+                }
+            })
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "offline CLI diagnostic failed; work removed after verified termination; signal=0"
+            );
+            assert!(!failed.path.exists());
+        }
+
         let restarted = WorkArea::create(&parent, &path).unwrap();
         assert_eq!(
-            supervised(&parent, &restarted, |scratch, _, control| {
+            supervised(&parent, &restarted, |scratch, _, control, reaped| {
                 fs::write(scratch.join("artifact-0"), b"control")?;
                 request_cli_start(control)?;
+                run_in_pid_namespace(
+                    std::process::Command::new("/bin/true"),
+                    std::time::Duration::from_secs(2),
+                    reaped,
+                )?;
                 Ok((1, 2))
             })
             .unwrap(),
@@ -968,7 +1044,7 @@ if mode == 'timeout':
                         .arg(root)
                         .arg(scratch.join("descendant"))
                         .arg(mode);
-                    let result = run_in_pid_namespace(command, Duration::from_secs(2));
+                    let result = run_in_pid_namespace(command, Duration::from_secs(2), &mut false);
                     match (mode, result) {
                         ("success", Ok(())) | ("timeout", Err(Fault::ReportTimeout)) => Ok(()),
                         _ => Err(Fault::Identity),
