@@ -5,6 +5,8 @@ use std::{collections::BTreeSet, fs, io, path::Path};
 
 const LIMIT: u64 = 1024 * 1024;
 
+pub(crate) const CLAUDE_SUBSCRIPTION_DIRECT: &str = "claude_subscription_direct";
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComparisonPlan {

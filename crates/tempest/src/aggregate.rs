@@ -455,7 +455,7 @@ fn generate_inner(root: &Path, aggregate_id: &str) -> io::Result<Value> {
                 return Err(invalid("comparison plan binding mismatch"));
             }
             candidate.add(&result)?;
-            candidate.sources.push(json!({
+            let mut source = json!({
                 "slot_id":slot.slot_id,"run_id":slot.run_id,"state":"committed",
                 "evaluator_sha256":slot.evaluator_sha256,
                 "evaluation_id":record.evaluation_id,
@@ -463,7 +463,14 @@ fn generate_inner(root: &Path, aggregate_id: &str) -> io::Result<Value> {
                 "planned_connection_route":slot.comparison_conditions["connection_route"],
                 "recorded_connection_route":result["recorded_connection_route"],
                 "route_coverage":result.pointer("/evidence/route_coverage")
-            }));
+            });
+            if slot.comparison_conditions["connection_route"]
+                == crate::comparison_plan::CLAUDE_SUBSCRIPTION_DIRECT
+            {
+                source["direct_observation"] =
+                    json!({"state":"missing","reason":"parent_evidence_unavailable"});
+            }
+            candidate.sources.push(source);
             Ok::<_, io::Error>(())
         })();
         if let Err(error) = outcome {
@@ -545,6 +552,28 @@ fn markdown(value: &Value) -> String {
         ]
         .map(|key| report::markdown_cell(&source[key]));
         output.push_str(&format!("| {} |\n", cells.join(" | ")));
+    }
+    let observations: Vec<_> = value["groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|group| group["sources"].as_array().into_iter().flatten())
+        .filter(|source| source.get("direct_observation").is_some())
+        .collect();
+    if !observations.is_empty() {
+        output.push_str(
+            "\n## Direct observations\n\n| Slot | Run | State | Reason |\n|---|---|---|---|\n",
+        );
+        for source in observations {
+            let cells = [
+                &source["slot_id"],
+                &source["run_id"],
+                &source["direct_observation"]["state"],
+                &source["direct_observation"]["reason"],
+            ]
+            .map(report::markdown_cell);
+            output.push_str(&format!("| {} |\n", cells.join(" | ")));
+        }
     }
     output
 }
@@ -655,6 +684,18 @@ mod tests {
 
     #[test]
     fn planned_missing_slot_stays_unknown_and_unplanned_run_is_not_substituted() {
+        for route in [
+            None,
+            Some("mock_in_process"),
+            Some("model_relay"),
+            Some("legacy_route"),
+            Some(crate::comparison_plan::CLAUDE_SUBSCRIPTION_DIRECT),
+        ] {
+            check_planned_missing_slot(route);
+        }
+    }
+
+    fn check_planned_missing_slot(route: Option<&str>) {
         let root = std::env::temp_dir().join(format!(
             "tempest-aggregate-plan-{}",
             host_io::random_hex().unwrap()
@@ -662,7 +703,9 @@ mod tests {
         host_io::directory(&root).unwrap();
         let mut conditions = json!({"scenario":"fixed","adapter":{"adapter":"codex"}});
         let evaluator = "a".repeat(64);
-        conditions["connection_route"] = "mock_in_process".into();
+        if let Some(route) = route {
+            conditions["connection_route"] = route.into();
+        }
         let plan = ComparisonPlan {
             schema_version: 1,
             plan_id: "comparison-001".into(),
@@ -699,7 +742,7 @@ mod tests {
         host_io::directory(&run).unwrap();
         host_io::write_new(&run.join("evaluation.lock"), b"").unwrap();
         let mut committed = result("run-1", "success", false, "not_performed");
-        committed["recorded_connection_route"] = "mock_in_process".into();
+        committed["recorded_connection_route"] = json!(route);
         committed["evidence"]["route_coverage"] = "verified".into();
         committed["evaluation"] = "performed".into();
         committed["comparison_conditions"] = conditions.clone();
@@ -743,19 +786,34 @@ mod tests {
         assert_eq!(aggregate["groups"][0]["sources"][0]["state"], "committed");
         assert_eq!(aggregate["groups"][0]["sources"][1]["state"], "unavailable");
         let sources = &aggregate["groups"][0]["sources"];
-        assert_eq!(sources[0]["planned_connection_route"], "mock_in_process");
-        assert_eq!(sources[0]["recorded_connection_route"], "mock_in_process");
+        assert_eq!(sources[0]["planned_connection_route"], json!(route));
+        assert_eq!(sources[0]["recorded_connection_route"], json!(route));
         assert_eq!(sources[0]["route_coverage"], "verified");
-        assert_eq!(sources[1]["planned_connection_route"], "mock_in_process");
+        assert_eq!(sources[1]["planned_connection_route"], json!(route));
         assert!(sources[1]["recorded_connection_route"].is_null());
         assert!(sources[1]["route_coverage"].is_null());
         let rendered = fs::read_to_string(root.join("aggregate.md")).unwrap();
-        assert!(rendered.contains(
-            "| slot&#45;1 | run&#45;1 | committed | mock&#95;in&#95;process | mock&#95;in&#95;process | verified |"
-        ));
-        assert!(rendered.contains(
-            "| slot&#45;2 | run&#45;2 | unavailable | mock&#95;in&#95;process | null | null |"
-        ));
+        let route_cell = report::markdown_cell(&json!(route));
+        assert!(rendered.contains(&format!(
+            "| slot&#45;1 | run&#45;1 | committed | {route_cell} | {route_cell} | verified |"
+        )));
+        assert!(rendered.contains(&format!(
+            "| slot&#45;2 | run&#45;2 | unavailable | {route_cell} | null | null |"
+        )));
+        assert!(sources[1].get("direct_observation").is_none());
+        if route == Some(crate::comparison_plan::CLAUDE_SUBSCRIPTION_DIRECT) {
+            assert_eq!(
+                sources[0]["direct_observation"],
+                json!({"state":"missing","reason":"parent_evidence_unavailable"})
+            );
+            assert!(rendered.contains("## Direct observations"));
+            assert!(rendered.contains(
+                "| slot&#45;1 | run&#45;1 | missing | parent&#95;evidence&#95;unavailable |"
+            ));
+        } else {
+            assert!(sources[0].get("direct_observation").is_none());
+            assert!(!rendered.contains("## Direct observations"));
+        }
 
         assert_eq!(aggregate["unplanned_directories"], json!(["unplanned-run"]));
         let marker: Value =

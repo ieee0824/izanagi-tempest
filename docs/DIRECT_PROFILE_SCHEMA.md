@@ -96,3 +96,10 @@ SHA-256 を照合できた場合に、項目別の観測状態を集計へ渡し
 `BinaryConfiguration` の証跡で記録できる場合も、プロバイダーによる予算の
 強制は `Unobserved` と表示します。実行記録と比較スロットの対応付け、
 直結レポートの実行時生成および集計への取り込みは未実装です。
+
+比較計画の直結経路は `connection_route: claude_subscription_direct` とする。
+計画でこの値を指定した評価済みスロットは、親側の証跡経路が未実装の間、
+集計 JSON の `direct_observation` に `missing` と
+`parent_evidence_unavailable` を記録し、Markdown に補足表を出す。
+評価状態、経路の確認状況、分母は従来の集計を使う。実行入口は
+`mock_in_process` と `model_relay` のみを発行し、計画と照合する。

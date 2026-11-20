@@ -1134,13 +1134,7 @@ async fn execute(
             return Err(io::Error::other("comparison plan interval mismatch"));
         }
         let slot = comparison.slot(slot_id, &options.id, &evaluator_sha256)?;
-        if let Some(route) = slot.comparison_conditions.get("connection_route")
-            && route.as_str() != Some(connection_route)
-        {
-            return Err(io::Error::other(
-                "comparison slot connection route mismatch",
-            ));
-        }
+        check_comparison_route(&slot.comparison_conditions, connection_route)?;
         if slot.finding_configured != plan.self_check().is_some()
             || slot.retest_configured != plan.retest().is_some()
         {
@@ -1799,8 +1793,37 @@ pub fn run(args: &[OsString]) -> ExitCode {
     }
 }
 
+fn check_comparison_route(conditions: &Value, connection_route: &str) -> io::Result<()> {
+    if let Some(route) = conditions.get("connection_route")
+        && route.as_str() != Some(connection_route)
+    {
+        return Err(io::Error::other(
+            "comparison slot connection route mismatch",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn execution_rejects_direct_comparison_route() {
+        let conditions = serde_json::json!({
+            "connection_route": crate::comparison_plan::CLAUDE_SUBSCRIPTION_DIRECT
+        });
+        for route in ["mock_in_process", "model_relay"] {
+            let err = super::check_comparison_route(&conditions, route).unwrap_err();
+            assert_eq!(err.to_string(), "comparison slot connection route mismatch");
+            assert!(
+                super::check_comparison_route(
+                    &serde_json::json!({"connection_route": route}),
+                    route
+                )
+                .is_ok()
+            );
+        }
+    }
+
     use super::*;
     use std::os::unix::process::CommandExt;
 
