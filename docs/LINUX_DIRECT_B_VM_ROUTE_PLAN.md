@@ -599,3 +599,19 @@ boot ID は `44f013c0-16a7-481a-8b7b-458c34946859`。
 再試行には前節の2本のバイナリに加えて、同じ試行固有の
 `FIXED_VM_TRIAL_SUFFIX` と `CONNECT4_CASE=11` で `fixture.c` をビルドし、
 `--fixed-vm-relay-recovery` にそのバイナリを渡す。
+
+#### 同一実行の固定 HTTP MCP 応答（Issue #110）
+
+試験用の `image/fixed_http_mcp_fixture.py` はゲスト loopback の
+固定 `/mcp` で `initialize` と `tools/list` の合成応答を返す。
+同時稼働の別 VM にも同じ fixture を置き、別の nonce・boot ID で
+対照を取る。`integration/fixed_http_mcp_observe.py` は、既存固定 VM
+試験の認証済み Izanagi exec を呼び出すアダプターを受け取り、
+別 VM の事前対照、本試験、別 VM の事後対照の順に照合する。
+各区間の TCP 受理増分は [0,2]、[2,0]、[0,2] を要求し、
+受理数とは別に固定要求のメソッド順、応答 ID、nonce、boot ID、
+受信側終了と作業領域の削除を検査する。
+
+VM の準備・認証セッションの照合・回収は既存の固定 VM ハーネス側が
+担当する。この fixture は固定の HTTP JSON-RPC 応答だけに限定し、
+汎用 MCP transport、Claude 接続、本番実行許可を提供しない。
