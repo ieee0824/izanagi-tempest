@@ -1753,6 +1753,30 @@ pub(super) fn run_local_auth_pty() -> std::process::ExitCode {
     run_writable_pty_for(Some(case))
 }
 
+fn consume_fixture_permit(parent: &File) -> io::Result<()> {
+    // This marker belongs to the one fixed synthetic permit and survives
+    // generation cleanup. O_EXCL makes reuse fail even after process exit.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            c".used-synthetic-login-permit".as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        let error = io::Error::last_os_error();
+        return Err(if error.kind() == io::ErrorKind::AlreadyExists {
+            io::Error::other("synthetic login permit already used")
+        } else {
+            error
+        });
+    }
+    let marker = unsafe { File::from_raw_fd(fd) };
+    marker.sync_all()?;
+    parent.sync_all()
+}
+
 fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::process::ExitCode {
     use std::process::ExitCode;
     let mut args = std::env::args_os().skip(1);
@@ -1798,6 +1822,9 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         })?;
         let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
         let config_parent = lock_parent(config_path)?;
+        if matches!(local_auth_case, Some(local_auth::Case::SingleUsePermit)) {
+            consume_fixture_permit(&config_parent)?;
+        }
         let work = WorkArea::create(&parent, work_path)?;
         let config = writable_config::Generation::create(&config_parent, config_path, &work)
             .map_err(|error| match work.remove(&parent) {
