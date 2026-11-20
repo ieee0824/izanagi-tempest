@@ -924,7 +924,7 @@ fn run_fixture_with_config(
     namespace_reaped: &mut bool,
     diagnostic: Diagnostic,
     private_config: Option<&writable_config::Generation>,
-    local_auth: Option<(local_auth::Case, &File)>,
+    local_auth: Option<(local_auth::Case, &File, std::time::Instant)>,
 ) -> Result<(u64, u64), Fault> {
     use super::os;
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
@@ -1008,11 +1008,11 @@ fn run_fixture_with_config(
         None
     };
     let policy = local_auth
-        .map(|(case, _)| local_auth::LocalPolicy::setup(case))
+        .map(|(case, _, _)| local_auth::LocalPolicy::setup(case))
         .transpose()?;
     let launch = (|| {
         let gateway = match (&policy, local_auth) {
-            (Some(policy), Some((case, upstream_network))) if case.needs_gateway() => Some(
+            (Some(policy), Some((case, upstream_network, _))) if case.needs_gateway() => Some(
                 policy
                     .start_gateway(case, upstream_network)
                     .map_err(|error| {
@@ -1022,7 +1022,11 @@ fn run_fixture_with_config(
             ),
             _ => None,
         };
-        let network = if let Some((case, _)) = local_auth {
+        let network = if let Some((case, _, expires)) = local_auth {
+            if std::time::Instant::now() >= expires {
+                eprintln!("local auth refused before grant: synthetic permit expired");
+                return Err(Fault::Identity);
+            }
             ChildNetwork::Verified(local_auth::request(control, case)?)
         } else {
             request_cli_start(control)?;
@@ -1773,9 +1777,25 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         let upstream_network = local_auth_case
             .map(|_| File::open("/proc/thread-self/ns/net"))
             .transpose()?;
-        let local_auth = local_auth_case.zip(upstream_network.as_ref());
+        let local_auth = local_auth_case
+            .zip(upstream_network.as_ref())
+            .map(|(case, namespace)| {
+                let now = std::time::Instant::now();
+                let expires = if matches!(case, local_auth::Case::ExpiredPermit) {
+                    now
+                } else {
+                    now + std::time::Duration::from_secs(60)
+                };
+                (case, namespace, expires)
+            });
         let work_path = Path::new(WORK_PARENT);
-        let parent = lock_parent(work_path)?;
+        let parent = lock_parent(work_path).map_err(|error| {
+            if error.kind() == io::ErrorKind::WouldBlock {
+                io::Error::other("dedicated PTY work area already in use")
+            } else {
+                error
+            }
+        })?;
         let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
         let config_parent = lock_parent(config_path)?;
         let work = WorkArea::create(&parent, work_path)?;
