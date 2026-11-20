@@ -286,7 +286,28 @@ def check_signed_permits(binary):
             write_private(payload, payload.read_bytes() + b" ")
             assert_denied("signed-permit", b"invalid handoff signature", inputs)
             write_handoff(key, used, 45)
-            fixture([binary, "signed-permit"], {}, complete_probe=True, success=POSITIVE + REMOVED)
+            generation = None
+
+            def observe_signed_generation():
+                nonlocal generation
+                (work,) = WORK.iterdir()
+                generation = CONFIG / work.name
+                settings = (generation / "settings.json").stat()
+                write_probe = (generation / "write-probe").stat()
+                for entry in (settings, write_probe):
+                    if (entry.st_uid, entry.st_gid, entry.st_mode & 0o777) != (999, 988, 0o600):
+                        raise RuntimeError("signed fixture configuration was not owner-private")
+
+            fixture(
+                [binary, "signed-permit"], {}, complete_probe=True, success=POSITIVE + REMOVED,
+                before_probe=observe_signed_generation,
+            )
+            if generation is None or generation.exists():
+                raise RuntimeError("signed fixture configuration did not disappear after disconnect")
+            print(
+                "signed PTY: owner-private settings and write probe; fixed local ACK; "
+                "other host and three direct ports denied; descendant, tunnel and generations recovered"
+            )
             assert_denied("signed-permit", b"already consumed or revoked", inputs | {used})
             write_handoff(key, expired, 4)
             assert_denied("permit-expires-before-grant", b"work removed; synthetic permit expired",
