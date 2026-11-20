@@ -1835,8 +1835,16 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                 } else {
                     BUSYBOX.sha256
                 },
-                arguments: LOGIN_ARGS,
-                authority: login_connect::AUTHORITY,
+                arguments: if matches!(case, local_auth::Case::WrongPermitArguments) {
+                    ["auth", "status"]
+                } else {
+                    LOGIN_ARGS
+                },
+                authority: if matches!(case, local_auth::Case::WrongPermitAuthority) {
+                    "platform.claude.com:8443"
+                } else {
+                    login_connect::AUTHORITY
+                },
             }
         });
         let local_auth = local_auth_case
