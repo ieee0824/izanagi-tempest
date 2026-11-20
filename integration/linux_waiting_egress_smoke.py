@@ -36,18 +36,23 @@ role, nonce = sys.argv[1:]
 print("waiting", flush=True)
 if input() != nonce:
     raise SystemExit(2)
+def check_denial(port):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            raise RuntimeError("unexpected connection to denied port")
+    except OSError as error:
+        if error.errno != errno.EHOSTUNREACH:
+            raise
+
 if role == "mcp":
     for port in (39181, 39182):
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=2):
-                raise RuntimeError("unexpected child connection")
-        except OSError as error:
-            if error.errno != errno.EHOSTUNREACH:
-                raise
+        check_denial(port)
     print("pong")
 else:
     with socket.create_connection(("127.0.0.1", 39181), timeout=2):
         print("connected")
+    check_denial(39182)
+    print("denied:EHOSTUNREACH")
 """
 
 
@@ -167,7 +172,8 @@ def worker(case, caller_namespace):
                             grants += 1
                         for participant, process, _ in participants:
                             output, _ = process.communicate(timeout=5)
-                            expected = "connected\n" if participant.role == "parent" else "pong\n"
+                            expected = ("connected\ndenied:EHOSTUNREACH\n"
+                                        if participant.role == "parent" else "pong\n")
                             require(process.returncode == 0 and output == expected,
                                     "fixed participant did not respond")
             require(all(process.returncode is not None for _, process, _ in participants),
@@ -181,6 +187,8 @@ def worker(case, caller_namespace):
         require(not run("nft", "list", "tables", capture_output=True).stdout.strip(),
                 "unexpected policy remains")
     require(all(listener.fileno() == -1 for listener in listeners), "listener was not closed")
+    if case == "match":
+        print("released parent: allowed connection succeeded; denied port returned EHOSTUNREACH")
     print(f"{case}: grants={grants} accepted={counts} denial={CASES[case]} recovered=true")
 
 
