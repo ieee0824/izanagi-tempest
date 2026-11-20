@@ -2,6 +2,7 @@
 use super::os::Fault;
 mod local_auth;
 mod login_connect;
+mod login_handoff;
 mod login_permit;
 mod writable_config;
 use sha2::{Digest, Sha256};
@@ -1696,12 +1697,62 @@ fn open_manual_login_policy(path: &Path) -> io::Result<File> {
 }
 
 fn check_manual_login_policy(path: &Path) -> io::Result<()> {
-    validate_manual_login_policy(open_manual_login_policy(path)?)?;
+    let revision = validate_manual_login_policy(open_manual_login_policy(path)?)?;
+    if let Some(revision) = revision {
+        diagnose_manual_login_handoff(path, revision)?;
+    }
     // A valid file describes the design. It does not authorize a live login.
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "manual login policy acceptance is disabled",
     ))
+}
+
+fn diagnose_manual_login_handoff(policy: &Path, revision: u64) -> io::Result<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let read = |name, limit: u64| -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        open_manual_login_policy(&policy.with_file_name(name))?
+            .take(limit + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(bytes)
+    };
+    let payload = match read("claude-login-diagnostic-handoff", 4096) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let result = (|| {
+        let key = read("claude-login-diagnostic-trust-key", 32)?;
+        let key = key
+            .as_slice()
+            .try_into()
+            .map_err(|_| io::ErrorKind::InvalidData)?;
+        let signature = read("claude-login-diagnostic-signature", 64)?;
+        let expected = login_permit::Scope {
+            executable_sha256: ARTIFACTS[0].sha256,
+            arguments: &LOGIN_ARGS,
+            authority: login_connect::AUTHORITY,
+            target_id: "registered-fixture",
+            approved_ips_revision: revision,
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_secs();
+        login_handoff::verify_handoff(key, &payload, &signature, expected, now)?;
+        Ok::<_, io::Error>(())
+    })();
+    if let Err(error) = result {
+        eprintln!("manual login handoff diagnostic refused: {error}");
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    eprintln!("manual login handoff diagnostic verified");
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
@@ -1755,7 +1806,7 @@ struct LoginPolicyScope {
     expires_unix_seconds: u64,
 }
 
-fn validate_manual_login_policy(input: impl Read) -> io::Result<()> {
+fn validate_manual_login_policy(input: impl Read) -> io::Result<Option<u64>> {
     let mut hostname = [0_u8; 256];
     if unsafe { libc::gethostname(hostname.as_mut_ptr().cast(), hostname.len()) } != 0 {
         return Err(io::Error::last_os_error());
@@ -1772,7 +1823,7 @@ fn validate_manual_login_policy_at(
     input: impl Read,
     now: std::time::SystemTime,
     hostname: &str,
-) -> io::Result<()> {
+) -> io::Result<Option<u64>> {
     use std::time::{Duration, UNIX_EPOCH};
 
     const MAX_POLICY_BYTES: u64 = 4096;
@@ -1786,7 +1837,7 @@ fn validate_manual_login_policy_at(
     }
     let policy: ManualLoginSettings = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
     let policy = match policy {
-        ManualLoginSettings::Legacy(policy) => return policy.validate(),
+        ManualLoginSettings::Legacy(policy) => return policy.validate().map(|()| None),
         ManualLoginSettings::Scoped(policy) => policy,
     };
     let ips = &policy.approved_ips;
@@ -1807,7 +1858,7 @@ fn validate_manual_login_policy_at(
     if remaining.is_zero() || remaining > MAX_DIAGNOSTIC_REMAINING {
         return Err(invalid());
     }
-    Ok(())
+    Ok(Some(ips.revision))
 }
 
 pub(super) fn run_manual_login() -> std::process::ExitCode {
