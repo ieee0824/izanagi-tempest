@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import pty
 import select
+import shutil
 import subprocess
 import tempfile
 import sys
@@ -219,6 +220,13 @@ def check_signed_permits(binary):
     used, expired, stopped, later = [CONFIG / f"{value:032x}" for value in (2, 3, 4, 5)]
     mismatches = {f"wrong-grant-{field}": CONFIG / f"{index:032x}"
                   for index, field in enumerate(("id", "ledger", "stage"), 6)}
+    closure_cases = (
+        ("missing-closure", CONFIG / f"{9:032x}",
+         b"synthetic gateway closure unconfirmed: failed to fill whole buffer"),
+        ("wrong-closure-generation", CONFIG / f"{10:032x}",
+         b"synthetic gateway closure generation mismatch"),
+    )
+    closure_records = {record for _, record, _ in closure_cases}
     stop_request = CONFIG / ".synthetic-stop-request.json"
     pending_stop = CONFIG / ".synthetic-stop-request.pending"
 
@@ -306,6 +314,40 @@ def check_signed_permits(binary):
                     os.close(fd)
             if process is not None:
                 process.communicate(timeout=20)
+    def check_closure_quarantine(case, reason):
+        identities = {}
+
+        def observe():
+            (work,) = WORK.iterdir()
+            for directory in (work, CONFIG / work.name):
+                metadata = directory.stat()
+                identities[directory] = (metadata.st_dev, metadata.st_ino)
+
+        def quarantine():
+            (work,) = WORK.iterdir()
+            for directory in (work, CONFIG / work.name):
+                metadata = directory.stat()
+                if (metadata.st_dev, metadata.st_ino) != identities.get(directory):
+                    raise RuntimeError("closure refusal did not retain the same generation")
+            if any((work / "root").iterdir()):
+                raise RuntimeError("fixture root still has a mounted filesystem")
+
+        try:
+            fixture(
+                [binary, case], {}, complete_probe=True, before_probe=observe, quarantine=quarantine,
+                success=POSITIVE + (
+                    b"offline writable PTY fixture failed: offline supervisor failed after CLI grant; "
+                    b"work retained; " + reason + b"; child and mount termination confirmed; "
+                    b"signal=0; private configuration quarantined\n"
+                ),
+            )
+        finally:
+            # This test controls the entire disposable fixture and has no real data.
+            for directory, identity in identities.items():
+                metadata = directory.stat()
+                if (metadata.st_dev, metadata.st_ino) == identity:
+                    shutil.rmtree(directory)
+
     assert_empty()
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -359,20 +401,26 @@ def check_signed_permits(binary):
                 assert_denied("signed-permit", b"already consumed or revoked", recorded)
                 if record.stat().st_ino != identity.st_ino:
                     raise RuntimeError("signed permit replay replaced the consumed record")
+            for case, record, reason in closure_cases:
+                write_handoff(key, record, 45)
+                check_closure_quarantine(case, reason)
+                recorded.add(record)
+                assert_denied("signed-permit", b"already consumed or revoked", recorded)
+                print(f"{case}: child reaped, mount detached, both generations quarantined")
             write_handoff(key, expired, 4)
             assert_denied("permit-expires-before-grant", b"work removed; synthetic permit expired",
-                          inputs | {used, expired} | set(mismatches.values()), unused_gateway=True)
+                          inputs | {used, expired} | set(mismatches.values()) | closure_records, unused_gateway=True)
             write_handoff(key, expired, 45)
-            assert_denied("signed-permit", b"already consumed or revoked", inputs | {used, expired} | set(mismatches.values()))
+            assert_denied("signed-permit", b"already consumed or revoked", inputs | {used, expired} | set(mismatches.values()) | closure_records)
             write_handoff(key, stopped, 45)
             check_administrator_stop(stopped)
             assert_denied("signed-administrator-stop", b"already consumed or revoked",
-                          inputs | {used, expired, stopped, stop_request} | set(mismatches.values()))
+                          inputs | {used, expired, stopped, stop_request} | set(mismatches.values()) | closure_records)
             # Leave the previous stop in place while the successor reaches readiness.
             write_handoff(key, later, 45)
             check_administrator_stop(later)
     finally:
-        for path in inputs | {used, expired, stopped, later, stop_request, pending_stop} | set(mismatches.values()):
+        for path in inputs | {used, expired, stopped, later, stop_request, pending_stop} | set(mismatches.values()) | closure_records:
             path.unlink(missing_ok=True)
     assert_empty()
 

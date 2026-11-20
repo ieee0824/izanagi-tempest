@@ -771,9 +771,61 @@ impl FixtureGrant {
     }
 }
 
+struct FixtureClosure {
+    case: local_auth::Case,
+    generation: [u8; 48],
+}
+
+impl FixtureClosure {
+    fn new(
+        case: local_auth::Case,
+        work: &WorkArea,
+        config: &writable_config::Generation,
+        permit_id: Option<u128>,
+    ) -> io::Result<Self> {
+        let (work_device, work_inode) = fd_identity(&work.pinned)?;
+        let (config_device, config_inode) = config.identity()?;
+        let mut generation = [0; 48];
+        generation[32..].copy_from_slice(&permit_id.unwrap_or_default().to_be_bytes());
+        for (chunk, value) in generation[..32].chunks_exact_mut(8).zip([
+            work_device,
+            work_inode,
+            config_device,
+            config_inode,
+        ]) {
+            chunk.copy_from_slice(&value.to_be_bytes());
+        }
+        Ok(Self { case, generation })
+    }
+
+    fn report(&self, control: &mut UnixStream) -> io::Result<()> {
+        let mut generation = self.generation;
+        match self.case {
+            local_auth::Case::MissingClosure => return Ok(()),
+            local_auth::Case::WrongClosureGeneration => generation[31] ^= 1,
+            _ => {}
+        }
+        control.write_all(&generation)
+    }
+
+    fn verify(&self, control: &mut UnixStream) -> io::Result<()> {
+        let mut generation = [0; 48];
+        control.read_exact(&mut generation).map_err(|error| {
+            io::Error::other(format!("synthetic gateway closure unconfirmed: {error}"))
+        })?;
+        if generation != self.generation {
+            return Err(io::Error::other(
+                "synthetic gateway closure generation mismatch",
+            ));
+        }
+        Ok(())
+    }
+}
+
 struct FixturePermit {
     verified_executable: Option<File>,
     grant: Option<FixtureGrant>,
+    closure: Option<FixtureClosure>,
     administrator_stop: Option<FixtureStop>,
     expires: std::time::Instant,
     executable_digest: &'static str,
@@ -1574,6 +1626,7 @@ fn supervised_with_network(
 ) -> io::Result<(u64, u64)> {
     const RECOVERABLE_FAILURE: i32 = 2;
     let local_auth = permit.is_some();
+    let closure = permit.and_then(|permit| permit.closure.as_ref());
     let (mut outside, mut inside) = UnixStream::pair().or_else(|error| {
         work.remove(parent)?;
         Err(error)
@@ -1598,7 +1651,11 @@ fn supervised_with_network(
             let mut report = [0; 16];
             report[..8].copy_from_slice(&bytes.to_ne_bytes());
             report[8..].copy_from_slice(&inodes.to_ne_bytes());
-            if inside.write_all(&report).is_ok() {
+            // The fixture returns success only after the gateway has been waited
+            // for and the listeners and policy have been closed.
+            if inside.write_all(&report).is_ok()
+                && closure.is_none_or(|closure| closure.report(&mut inside).is_ok())
+            {
                 unsafe { libc::_exit(0) };
             }
         }
@@ -1615,6 +1672,7 @@ fn supervised_with_network(
     let mut report = [0; 16];
     let mut cli_granted = false;
     let mut verified_network = None;
+    let mut termination_reported = false;
     let received = (|| -> io::Result<()> {
         // Treat the grant as issued before attempting delivery.
         outside.read_exact(&mut message)?;
@@ -1638,13 +1696,19 @@ fn supervised_with_network(
         if local_auth {
             local_auth::grant(&mut outside, identity)?;
         }
-        outside.read_exact(&mut report)
+        outside.read_exact(&mut report)?;
+        termination_reported = true;
+        if let Some(closure) = closure {
+            closure.verify(&mut outside)?;
+        }
+        Ok(())
     })();
     drop(outside);
     let status = wait_for_supervisor(pid)?;
     let exit_status = libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status));
     let completed = received.is_ok() && exit_status == Some(0);
-    let recoverable_failure = exit_status == Some(RECOVERABLE_FAILURE);
+    // A PID/mount-only failure attestation cannot authorize local-auth recovery.
+    let recoverable_failure = !local_auth && exit_status == Some(RECOVERABLE_FAILURE);
     if !cli_granted || completed || recoverable_failure {
         work.remove(parent)?;
     }
@@ -1677,12 +1741,14 @@ fn supervised_with_network(
         } else {
             0
         };
-        if local_auth
-            && !cli_granted
-            && let Err(cause) = received
-        {
+        if local_auth && let Err(cause) = received {
+            let termination = if termination_reported && exit_status == Some(0) {
+                "; child and mount termination confirmed"
+            } else {
+                ""
+            };
             return Err(io::Error::other(format!(
-                "{outcome}; {cause}; signal={signal}"
+                "{outcome}; {cause}{termination}; signal={signal}"
             )));
         }
         return Err(io::Error::other(format!("{outcome}; signal={signal}")));
@@ -2579,6 +2645,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
             FixturePermit {
                 verified_executable: None,
                 grant: None,
+                closure: None,
                 administrator_stop: None,
                 expires: if matches!(case, local_auth::Case::ExpiredPermit) {
                     now
@@ -2623,6 +2690,8 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     | local_auth::Case::WrongGrantId
                     | local_auth::Case::WrongGrantLedger
                     | local_auth::Case::WrongGrantStage
+                    | local_auth::Case::MissingClosure
+                    | local_auth::Case::WrongClosureGeneration
             )
         ) {
             use std::time::Instant;
@@ -2729,6 +2798,14 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
             Ok(()) => error,
             Err(cleanup) => io::Error::other(format!("{error}; work cleanup failed: {cleanup}")),
         })?;
+        if let Some((case, permit)) = local_auth_case.zip(permit.as_mut()) {
+            permit.closure = Some(FixtureClosure::new(
+                case,
+                &work,
+                &config,
+                permit.grant.as_ref().map(|grant| grant.id),
+            )?);
+        }
         let local_auth = local_auth_case
             .zip(upstream_network.as_ref())
             .zip(permit.as_ref())
@@ -2760,7 +2837,12 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
             run.is_ok(),
             retain,
         );
-        config.finish(&config_parent, action, run.is_ok())?;
+        if let Err(error) = config.finish(&config_parent, action, run.is_ok()) {
+            return Err(match run {
+                Ok(_) => error,
+                Err(run_error) => io::Error::other(format!("{run_error}; {error}")),
+            });
+        }
         run?;
         Ok::<_, io::Error>(action)
     })();
