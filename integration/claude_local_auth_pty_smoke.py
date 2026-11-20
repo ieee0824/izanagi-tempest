@@ -21,6 +21,8 @@ FAILURES = {
     "missing-policy": b"fixed login policy or loopback inspection failed",
     "wrong-policy": b"fixed login policy or loopback inspection failed",
     "missing-gateway": b"fixed gateway unavailable",
+    "empty-resolution": b"fixed gateway upstream unavailable or unapproved",
+    "unapproved-resolution": b"fixed gateway upstream unavailable or unapproved",
 }
 
 

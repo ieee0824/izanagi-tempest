@@ -1,6 +1,7 @@
+use super::local_auth::Case;
 use std::{
     io::{self, Read, Write},
-    net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream},
+    net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream},
     os::fd::AsRawFd,
     time::{Duration, Instant},
 };
@@ -159,8 +160,35 @@ fn accept_before(listener: &TcpListener, deadline: Instant) -> io::Result<TcpStr
     listener.accept().map(|(client, _)| client)
 }
 
+fn approved_peer(resolved: &[IpAddr], approved: &[IpAddr], port: u16) -> io::Result<SocketAddr> {
+    resolved
+        .iter()
+        .find(|address| approved.contains(address))
+        .map(|address| SocketAddr::new(*address, port))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "no approved login address"))
+}
+
+pub(super) struct FixtureUpstream {
+    listener: TcpListener,
+    peer: SocketAddr,
+}
+
+impl FixtureUpstream {
+    pub fn prepare(case: Case) -> io::Result<Self> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let address = listener.local_addr()?;
+        let resolved = match case {
+            Case::EmptyResolution => None,
+            Case::UnapprovedResolution => Some(IpAddr::from([127, 0, 0, 2])),
+            _ => Some(address.ip()),
+        };
+        let peer = approved_peer(resolved.as_slice(), &[address.ip()], address.port())?;
+        Ok(Self { listener, peer })
+    }
+}
+
 /// Exercise destination refusal and a fixed exchange inside the isolated fixture network.
-pub(super) fn serve_fixture(listener: &TcpListener) -> io::Result<()> {
+pub(super) fn serve_fixture(listener: &TcpListener, upstream: FixtureUpstream) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(8);
     let mut rejected = accept_before(listener, deadline)?;
     match read_request(DeadlineReader {
@@ -180,12 +208,10 @@ pub(super) fn serve_fixture(listener: &TcpListener) -> io::Result<()> {
     drop(rejected);
 
     let mut client = accept_before(listener, deadline)?;
-    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    let address = upstream.local_addr()?;
-    let tunnel = open_tunnel(&mut client, deadline, address, |address, timeout| {
+    let tunnel = open_tunnel(&mut client, deadline, upstream.peer, |address, timeout| {
         TcpStream::connect_timeout(&address, timeout)
     })?;
-    let (mut server, peer) = upstream.accept()?;
+    let (mut server, peer) = upstream.listener.accept()?;
     if peer != tunnel.local_addr()? {
         return Err(io::Error::other("login fixture upstream peer mismatch"));
     }
@@ -326,7 +352,8 @@ mod tests {
         let gateway = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let address = gateway.local_addr().unwrap();
         std::thread::scope(|scope| {
-            let responder = scope.spawn(|| serve_fixture(&gateway));
+            let responder = scope
+                .spawn(|| serve_fixture(&gateway, FixtureUpstream::prepare(Case::Match).unwrap()));
             let mut rejected = TcpStream::connect(address).unwrap();
             rejected
                 .set_read_timeout(Some(Duration::from_secs(2)))
@@ -383,5 +410,25 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         assert_eq!(wrong_peer.read(&mut [0]).unwrap(), 0);
+    }
+
+    #[test]
+    fn approved_route_requires_an_address_in_both_sets() {
+        let approved = "192.0.2.10".parse().unwrap();
+        let other = "192.0.2.11".parse().unwrap();
+        assert_eq!(
+            approved_peer(&[other, approved], &[approved], 443).unwrap(),
+            SocketAddr::new(approved, 443)
+        );
+        for (resolved, approvers) in [
+            (&[][..], &[approved][..]),
+            (&[other][..], &[approved][..]),
+            (&[approved][..], &[][..]),
+        ] {
+            assert_eq!(
+                approved_peer(resolved, approvers, 443).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+        }
     }
 }

@@ -31,6 +31,8 @@ pub(super) enum Case {
     MissingPolicy,
     WrongPolicy,
     MissingGateway,
+    EmptyResolution,
+    UnapprovedResolution,
 }
 
 impl Case {
@@ -42,12 +44,17 @@ impl Case {
             "missing-policy" => Self::MissingPolicy,
             "wrong-policy" => Self::WrongPolicy,
             "missing-gateway" => Self::MissingGateway,
+            "empty-resolution" => Self::EmptyResolution,
+            "unapproved-resolution" => Self::UnapprovedResolution,
             _ => return None,
         })
     }
 
     pub fn needs_gateway(self) -> bool {
-        matches!(self, Self::Match | Self::MissingGateway)
+        matches!(
+            self,
+            Self::Match | Self::MissingGateway | Self::EmptyResolution | Self::UnapprovedResolution
+        )
     }
 }
 
@@ -222,15 +229,35 @@ impl LocalPolicy {
             let entered = guarded
                 && unsafe { libc::setns(upstream_network.as_raw_fd(), libc::CLONE_NEWNET) } == 0
                 && namespace().is_ok_and(|current| current == upstream_identity);
-            let confirmed = entered && sender.write_all(b"G").is_ok();
-            drop(sender);
-            let success = confirmed && login_connect::serve_fixture(&self.listeners[0]).is_ok();
+            let success = (|| -> io::Result<()> {
+                if !entered {
+                    return Err(io::Error::other(
+                        "fixed login gateway namespace unavailable",
+                    ));
+                }
+                let upstream = match login_connect::FixtureUpstream::prepare(case) {
+                    Ok(upstream) => upstream,
+                    Err(error) => {
+                        sender.write_all(b"R")?;
+                        return Err(error);
+                    }
+                };
+                sender.write_all(b"G")?;
+                drop(sender);
+                login_connect::serve_fixture(&self.listeners[0], upstream)
+            })()
+            .is_ok();
             unsafe { libc::_exit(i32::from(!success)) };
         }
         drop(sender);
         let gateway = Gateway(Some(pid));
         let mut acknowledgement = [0];
         ready.read_exact(&mut acknowledgement)?;
+        if acknowledgement == *b"R" {
+            return Err(io::Error::other(
+                "fixed gateway upstream unavailable or unapproved",
+            ));
+        }
         if acknowledgement != *b"G" {
             return Err(io::Error::other("fixed login gateway readiness mismatch"));
         }
