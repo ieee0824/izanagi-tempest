@@ -2266,7 +2266,20 @@ fn verify_revocation_state_with_disposition(
     Ok((state.revocation_revision, state.expires_unix_seconds))
 }
 
-fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> {
+// Carries the result of the read-only checks to the launch refusal boundary.
+// There is no independently configured supervisor scope on this public route.
+struct VerifiedSupervisorInputs {
+    _publication_lock: File,
+    _generation: File,
+    _revision: u64,
+    _manifest_sha256: String,
+    _login: VerifiedLoginInputs,
+}
+
+fn verify_login_generation(
+    parent: &File,
+    publication: &File,
+) -> io::Result<VerifiedSupervisorInputs> {
     use sha2::{Digest, Sha256};
 
     let lock = open_pinned_login_policy(open_login_child(
@@ -2345,7 +2358,13 @@ fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> 
     )?;
     inputs.recheck(parent, &ARTIFACTS[0], revocation)?;
     eprintln!("manual login final diagnostic verified");
-    Ok(())
+    Ok(VerifiedSupervisorInputs {
+        _publication_lock: lock,
+        _generation: generation,
+        _revision: current,
+        _manifest_sha256: manifest_sha256,
+        _login: inputs,
+    })
 }
 
 fn recheck_login_generation(
@@ -2379,6 +2398,18 @@ fn recheck_login_generation(
     )
 }
 
+fn refuse_supervised_login(_verified: VerifiedSupervisorInputs) -> io::Result<()> {
+    eprintln!("manual login verified inputs handed off");
+    Err(manual_login_disabled())
+}
+
+fn manual_login_disabled() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "manual login policy acceptance is disabled",
+    )
+}
+
 fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     let parent = pin_login_path(
         path.parent().ok_or(io::ErrorKind::InvalidInput)?,
@@ -2390,11 +2421,12 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     }
     match open_private_login_directory(&parent, "claude-login-publication") {
         Ok(publication) => {
-            verify_login_generation(&parent, &publication).map_err(|error| {
+            let verified = verify_login_generation(&parent, &publication).map_err(|error| {
                 eprintln!("manual login publication diagnostic refused: {error}");
                 io::Error::from(io::ErrorKind::InvalidData)
             })?;
             eprintln!("manual login publication diagnostic verified");
+            return refuse_supervised_login(verified);
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
@@ -2406,11 +2438,7 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
         }
         Err(error) => return Err(error),
     }
-    // A valid file describes the design. It does not authorize a live login.
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "manual login policy acceptance is disabled",
-    ))
+    Err(manual_login_disabled())
 }
 
 fn read_login_input(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
