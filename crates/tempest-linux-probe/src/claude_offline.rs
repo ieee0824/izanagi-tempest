@@ -2,6 +2,7 @@
 use super::os::Fault;
 mod local_auth;
 mod login_connect;
+mod login_permit;
 mod writable_config;
 use sha2::{Digest, Sha256};
 use std::{
@@ -1844,30 +1845,6 @@ fn read_fixture_permit(path: &Path) -> io::Result<std::time::Instant> {
     now.checked_add(remaining).ok_or_else(invalid)
 }
 
-fn consume_fixture_permit(parent: &File) -> io::Result<()> {
-    // This marker belongs to the one fixed synthetic permit and survives
-    // generation cleanup. O_EXCL makes reuse fail even after process exit.
-    let fd = unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            c".used-synthetic-login-permit".as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
-        )
-    };
-    if fd < 0 {
-        let error = io::Error::last_os_error();
-        return Err(if error.kind() == io::ErrorKind::AlreadyExists {
-            io::Error::other("synthetic login permit already used")
-        } else {
-            error
-        });
-    }
-    let marker = unsafe { File::from_raw_fd(fd) };
-    marker.sync_all()?;
-    parent.sync_all()
-}
-
 fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::process::ExitCode {
     use std::process::ExitCode;
     let mut args = std::env::args_os().skip(1);
@@ -1934,7 +1911,34 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
             permit.expires =
                 read_fixture_permit(&config_path.join(".synthetic-login-policy.json"))?;
             permit.validate()?;
-            consume_fixture_permit(&config_parent)?;
+            let scope = login_permit::Scope {
+                executable_sha256: BUSYBOX.sha256,
+                arguments: &LOGIN_ARGS,
+                authority: login_connect::AUTHORITY,
+            };
+            let record = login_permit::Permit {
+                id: 1,
+                expires_at: permit.expires,
+                scope: login_permit::Scope {
+                    executable_sha256: permit.executable_digest,
+                    arguments: &permit.arguments,
+                    authority: permit.authority,
+                },
+            };
+            // Preserve refusal of a permit consumed by an earlier fixture build.
+            match config_path
+                .join(".used-synthetic-login-permit")
+                .symlink_metadata()
+            {
+                Ok(_) => {
+                    return Err(io::Error::other(
+                        "manual login permit already consumed or revoked",
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            login_permit::consume(&config_parent, &record, scope, std::time::Instant::now())?;
         }
         let local_auth = local_auth_case
             .zip(upstream_network.as_ref())

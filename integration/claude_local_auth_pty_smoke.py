@@ -120,7 +120,7 @@ def check_concurrent_refusal(binary):
 
 
 def check_permit_replay(binary):
-    marker = CONFIG / ".used-synthetic-login-permit"
+    marker = CONFIG / f"{1:032x}"
     policy = CONFIG / ".synthetic-login-policy.json"
     assert_empty()
 
@@ -157,7 +157,7 @@ def check_permit_replay(binary):
         )
         if set(CONFIG.iterdir()) != {marker, policy} or not marker.is_file() or marker.stat().st_size:
             raise RuntimeError("unexpected settings or permit artifacts after cleanup")
-        check_refusal(b"synthetic login permit already used", {marker, policy})
+        check_refusal(b"manual login permit already consumed or revoked", {marker, policy})
     finally:
         marker.unlink(missing_ok=True)
         policy.unlink(missing_ok=True)
