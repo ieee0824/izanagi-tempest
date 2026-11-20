@@ -48,7 +48,8 @@ def main() -> int:
         if result.returncode == 124:
             print(json.dumps({"status": "failed", "reason": "driver_timeout", "exit_code": 124}))
             return 1
-        for marker in [b"dummy-argv-marker", b"dummy-stderr-marker", b"synthetic-canary-only", b"dummy-output-marker"]:
+        for marker in [b"dummy-argv-marker", b"dummy-stderr-marker", b"synthetic-canary-only", b"dummy-output-marker",
+                       b"dummy-stdout-marker", b"dummy-internal-partial-marker"]:
             if marker in result.stdout or marker in result.stderr:
                 raise RuntimeError("untrusted_marker_reached_audit")
         try:

@@ -644,6 +644,9 @@ pub(super) fn run() -> i32 {
     }
     if manifest.scenario.lifecycle() && manifest.role == Role::A {
         if manifest.scenario == Scenario::ReportEof {
+            if !bytes(5, br#"{"marker":"dummy-internal-partial-marker"#) {
+                return 4;
+            }
             unsafe {
                 libc::close(5);
             }
@@ -691,7 +694,12 @@ pub(super) fn run() -> i32 {
     }
     // All raw argv/stderr bytes are deliberately untrusted and must be bounded
     // and discarded by the supervisor instead of copied into audit.
-    bytes(2, b"dummy-stderr-marker\n");
+    if manifest.scenario == Scenario::Baseline && !bytes(1, b"dummy-stdout-marker\n") {
+        return 4;
+    }
+    if !bytes(2, b"dummy-stderr-marker\n") {
+        return 4;
+    }
     let mut values = checks(&manifest);
     if manifest.role == Role::Guard {
         let directions = if manifest.scenario.reverse() {
