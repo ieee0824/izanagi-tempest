@@ -22,7 +22,8 @@ Linux dummy probeの成功をClaude、credential、VM、外部通信を含む本
 | run間のstate独立性 | dummy checkpoint実測済・本番未達 | `c5e26e0`でdigest/mount再照合込み両run各21check true。最終独立driver `d598243`もcapture2/read18/各21check・guardian回収・ROOT/RUN不在を実測しルーム#16256へ報告。合成ファイル境界の拡張後は各 run 30 項目。[検証範囲と実行条件](LINUX_STATE_ISOLATION.md#合成ファイル境界の監査)。Claude session保存停止は未検証 |
 | subscription通信境界 | 未実装 | 法務制約によりOAuth tokenのTempest介在を禁止。Claude親direct egress allowlistとMCP子の外部network拒否を別に実装する。既存API-key/mock relayを根拠にしない |
 | direct profile・report schema | 純粋型・負例実装/レビュー済 | `b27e88d`で独立profile/report型・semantic validator・7test。request catalog/schema/header/count/retry/budget強制はUnobserved必須、既存relay契約へ変換不可。実artifact生成・正式比較受入は未完。[schema](DIRECT_PROFILE_SCHEMA.md) |
-| 秘密の成果物・log・process metadata非露出 | 部分実装 | dummy診断はraw argv/env/stderr/任意pathを公開しない。実credentialを使う正負試験は未実施 |
+| 秘密の成果物・log・process metadata非露出 | 固定ダミーの公開出力を実測 | PR #90（`c1c2f29`）で通常出力、内部報告の途中 EOF、容量超過4ケースを含む198項目を専用 Linux で確認。公開出力に合成マーカーや許可外のトップレベル項目は出ず、回収も確認した。[実測記録](https://github.com/ieee0824/izanagi-tempest/issues/36#issuecomment-7031246241)。実 credential を使う試験は未実施 |
+| 固定オフライン診断の配置失敗時の回収 | エラー復帰時を実測 | PR #92（`b3b98c4`）で1件目の bind 後に2件目の SHA-256 不一致を検出し、一時マウントと作業領域を回収。直後の正常試験と固定 CLI のオフライン起動も成功。[監督の強制終了時の独立回収](https://github.com/ieee0824/izanagi-tempest/issues/93)は検証中 |
 | 固定 Izanagi MCP のローカル stdio | 固定ホストで正例・遮断・回収を実測 | `1c05b83` で `initialize`・`tools/list`・stdout EOF を確認。`73a440c` で余分な要求パイプ FD を観測して送信を許可せず、`059fa0f` で照合失敗から cgroup を停止し、元の両子と試験用パスを回収。[試験記録](LINUX_DIRECT_B_VM_ROUTE_PLAN.md) |
 | 固定 VM 受信試験の起動前確認 | 専用イメージで実測済 | `b6af0be` で同じ実セッションから専用フラグ、ゲスト ELF、空の記録ディレクトリ、boot ID を照合。独立 observer は終了状態を取得できず、同じ Invocation の正常停止は PID 1 の journal で確認した。[起動確認001](LINUX_DIRECT_B_VM_ROUTE_PLAN.md#専用-vm-の起動確認001) |
 | 固定 VM 受信試験の4区間照合 | 専用 VM で実測済（固定ダミー） | PR #38（`279168b`）で同一 VM の4区間を完走。ゲスト要求 [1,1,0,1]、別 listener の受理 [1,0,0,1]、拒否は TCP `EPERM`。PR #80（`fea4a51`）で監督強制終了後の中継子・pin・cgroup の回収、独立管理経路、正常停止を追加実測。[試験記録](LINUX_DIRECT_B_VM_ROUTE_PLAN.md) |
