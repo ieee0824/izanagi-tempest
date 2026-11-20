@@ -117,6 +117,98 @@ mod tests {
     };
 
     #[test]
+    fn unavailable_or_stale_revocation_state_does_not_consume() {
+        #[derive(Clone, Copy)]
+        struct Status<'a> {
+            permit_id: u128,
+            target_id: &'a str,
+            revision: u64,
+            valid_until: u64,
+            revoked: bool,
+        }
+
+        let tmp = Ledger::new();
+        let ledger = File::open(&tmp.0).unwrap();
+        let now = Instant::now();
+        let permit = Permit {
+            id: 14,
+            expires_at: now + Duration::from_secs(30),
+            scope: SCOPE,
+        };
+        let status = Status {
+            permit_id: permit.id,
+            target_id: SCOPE.target_id,
+            revision: 7,
+            valid_until: 105,
+            revoked: false,
+        };
+        // Model an authenticated snapshot read under the same management
+        // lock that orders the current revision and final ledger consumption.
+        let consume_with_status = |snapshot: Option<Status<'_>>, current_revision: Option<u64>| {
+            let status = snapshot.ok_or_else(|| refused("revocation state unavailable"))?;
+            if status.permit_id != permit.id
+                || status.target_id != SCOPE.target_id
+                || Some(status.revision) != current_revision
+                || status.valid_until <= 100
+                || status.revoked
+            {
+                return Err(refused("revocation state does not permit consumption"));
+            }
+            consume(&ledger, &permit, SCOPE, now)
+        };
+        for (snapshot, current_revision) in [
+            (None, Some(7)),
+            (Some(status), None),
+            (Some(status), Some(8)),
+            (
+                Some(Status {
+                    valid_until: 100,
+                    ..status
+                }),
+                Some(7),
+            ),
+            (
+                Some(Status {
+                    permit_id: 15,
+                    ..status
+                }),
+                Some(7),
+            ),
+            (
+                Some(Status {
+                    target_id: "another-target",
+                    ..status
+                }),
+                Some(7),
+            ),
+            (
+                Some(Status {
+                    revoked: true,
+                    ..status
+                }),
+                Some(7),
+            ),
+        ] {
+            assert_eq!(
+                consume_with_status(snapshot, current_revision)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(fs::read_dir(&tmp.0).unwrap().count(), 0);
+        }
+
+        revoke(&ledger, permit.id).unwrap();
+        assert_eq!(
+            consume_with_status(Some(status), Some(7))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(fs::read_dir(&tmp.0).unwrap().count(), 1);
+    }
+
+    #[test]
     fn rejects_expired_wrong_scope_and_revoked_permits() {
         let tmp = Ledger::new();
         let ledger = File::open(&tmp.0).unwrap();
