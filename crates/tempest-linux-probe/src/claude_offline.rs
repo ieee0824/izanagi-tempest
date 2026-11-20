@@ -197,12 +197,61 @@ fn own(path: &Path, mode: u32) -> Result<(), Fault> {
     Ok(())
 }
 
+fn run_in_pid_namespace(
+    mut command: std::process::Command,
+    timeout: std::time::Duration,
+) -> Result<(), Fault> {
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + timeout;
+    let init = super::os::clone_isolated()?;
+    if init == 0 {
+        let success = command.status().is_ok_and(|status| status.success());
+        // Linux kills and reaps remaining namespace members when PID 1 exits.
+        unsafe { libc::_exit(if success { 0 } else { 1 }) };
+    }
+
+    let mut timed_out = false;
+    loop {
+        let mut status = 0;
+        let flags = if timed_out { 0 } else { libc::WNOHANG };
+        match unsafe { libc::waitpid(init, &mut status, flags) } {
+            pid if pid == init => {
+                return if timed_out {
+                    Err(Fault::ReportTimeout)
+                } else if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
+                    Ok(())
+                } else {
+                    Err(Fault::Identity)
+                };
+            }
+            0 if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            0 => {
+                // The direct child's PID cannot be reused before waitpid reaps it.
+                if unsafe { libc::kill(init, libc::SIGKILL) } < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.raw_os_error() != Some(libc::ESRCH) {
+                        return Err(error.into());
+                    }
+                }
+                timed_out = true;
+            }
+            _ => {
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted {
+                    return Err(error.into());
+                }
+            }
+        }
+    }
+}
+
 fn run_child(root: &Path, scratch: &Path) -> Result<(), Fault> {
     use std::{
         ffi::CString,
         os::unix::{ffi::OsStrExt, process::CommandExt},
         process::{Command, Stdio},
-        time::{Duration, Instant},
+        time::Duration,
     };
     let stdout = scratch.join("stdout");
     let stderr = scratch.join("stderr");
@@ -243,23 +292,8 @@ fn run_child(root: &Path, scratch: &Path) -> Result<(), Fault> {
             Ok(())
         });
     }
-    let mut child = command.spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(12);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            result => {
-                let _ = child.kill();
-                child.wait()?;
-                return Err(result.err().map_or(Fault::ReportTimeout, Fault::from));
-            }
-        }
-    };
-    if !status.success()
-        || fs::read(stdout)? != b"2.1.325 (Claude Code)\n"
-        || fs::metadata(stderr)?.len() != 0
-    {
+    run_in_pid_namespace(command, Duration::from_secs(12))?;
+    if fs::read(stdout)? != b"2.1.325 (Claude Code)\n" || fs::metadata(stderr)?.len() != 0 {
         return Err(Fault::Identity);
     }
     Ok(())
@@ -523,6 +557,74 @@ mod tests {
         fs::remove_dir(scratch.join("root")).unwrap();
         fs::remove_dir(&scratch).unwrap();
         result.unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires root and private mount, network and PID namespaces"]
+    fn fixed_dummy_descendants_are_reaped_on_exit_and_timeout() {
+        use std::{process::Command, time::Duration};
+
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let scratch = Path::new("/var/lib").join(format!(
+            "tempest-claude-pid-test-{}",
+            super::super::private_io::random_hex().unwrap()
+        ));
+        fs::create_dir(&scratch).unwrap();
+        for mode in ["success", "timeout"] {
+            let case = scratch.join(mode);
+            fs::create_dir(&case).unwrap();
+            // The test harness has multiple threads. Run the trial in a
+            // single-threaded child, matching the production entry point.
+            let worker = unsafe { libc::fork() };
+            assert!(worker >= 0);
+            if worker == 0 {
+                let result = trial(&case, |scratch, root| {
+                    let mut command = Command::new("/usr/bin/python3");
+                    command
+                        .arg("-c")
+                        .arg(
+                            r#"
+import os, pathlib, subprocess, sys, time
+root, evidence, mode = sys.argv[1:]
+child = subprocess.Popen(
+    ['/bin/sh', '-c', 'cd "$1" && exec /bin/sleep 60', 'dummy', root],
+    start_new_session=True,
+)
+host_children = pathlib.Path('/proc/thread-self/children').read_text().split()
+pid = host_children[0]
+while os.readlink('/proc/' + pid + '/cwd') != root:
+    time.sleep(0.002)
+pathlib.Path(evidence).write_text(pid)
+if mode == 'timeout':
+    time.sleep(60)
+"#,
+                        )
+                        .arg(root)
+                        .arg(scratch.join("descendant"))
+                        .arg(mode);
+                    let result = run_in_pid_namespace(command, Duration::from_secs(2));
+                    match (mode, result) {
+                        ("success", Ok(())) | ("timeout", Err(Fault::ReportTimeout)) => Ok(()),
+                        _ => Err(Fault::Identity),
+                    }
+                });
+                unsafe { libc::_exit(if result.is_ok() { 0 } else { 1 }) };
+            }
+            let mut status = 0;
+            assert_eq!(unsafe { libc::waitpid(worker, &mut status, 0) }, worker);
+            assert_eq!(status, 0, "{mode}");
+            let pid = fs::read_to_string(case.join("descendant")).unwrap();
+            assert!(!Path::new("/proc").join(pid.trim()).exists(), "{mode}");
+            assert_eq!(fs::read_dir(case.join("root")).unwrap().count(), 0);
+            fs::remove_dir_all(&case).unwrap();
+            assert!(!case.exists());
+            assert!(
+                !fs::read_to_string("/proc/self/mountinfo")
+                    .unwrap()
+                    .contains(case.to_str().unwrap())
+            );
+        }
+        fs::remove_dir(scratch).unwrap();
     }
 
     #[test]
