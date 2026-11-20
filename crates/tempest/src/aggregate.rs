@@ -204,14 +204,10 @@ impl Group {
         Ok(())
     }
 
-    fn add_missing(&mut self, slot: &ComparisonSlot, reason: &str) -> io::Result<()> {
+    fn add_unobserved_run(&mut self, slot: &ComparisonSlot, status: &str) -> io::Result<()> {
         add(&mut self.runs.total, 1)?;
-        add(&mut self.runs.unavailable, 1)?;
         add(&mut self.runs.formal_ineligible, 1)?;
-        add(
-            self.runs.statuses.entry("unavailable".into()).or_default(),
-            1,
-        )?;
+        add(self.runs.statuses.entry(status.to_owned()).or_default(), 1)?;
         if slot.finding_configured {
             add(&mut self.finding.denominator, 1)?;
             add(&mut self.finding.unknown, 1)?;
@@ -227,6 +223,12 @@ impl Group {
         add(&mut self.false_positives.not_evaluated_runs, 1)?;
         add(&mut self.attempts.deviation_unknown_runs, 1)?;
         self.run_ids.push(slot.run_id.clone());
+        Ok(())
+    }
+
+    fn add_missing(&mut self, slot: &ComparisonSlot, reason: &str) -> io::Result<()> {
+        self.add_unobserved_run(slot, "unavailable")?;
+        add(&mut self.runs.unavailable, 1)?;
         self.sources
             .push(json!({"slot_id":slot.slot_id,"run_id":slot.run_id,
                                  "state":"unavailable","reason":reason,
@@ -454,7 +456,6 @@ fn generate_inner(root: &Path, aggregate_id: &str) -> io::Result<Value> {
             {
                 return Err(invalid("comparison plan binding mismatch"));
             }
-            candidate.add(&result)?;
             let mut source = json!({
                 "slot_id":slot.slot_id,"run_id":slot.run_id,"state":"committed",
                 "evaluator_sha256":slot.evaluator_sha256,
@@ -467,8 +468,15 @@ fn generate_inner(root: &Path, aggregate_id: &str) -> io::Result<Value> {
             if slot.comparison_conditions["connection_route"]
                 == crate::comparison_plan::CLAUDE_SUBSCRIPTION_DIRECT
             {
+                candidate.add_unobserved_run(slot, text(&result, "/status")?)?;
                 source["direct_observation"] =
                     json!({"state":"missing","reason":"parent_evidence_unavailable"});
+                source["recorded_evaluation"] = json!({
+                    "finding": text(&result, "/metric_assessment/finding/state")?,
+                    "retest": text(&result, "/retest/status")?,
+                });
+            } else {
+                candidate.add(&result)?;
             }
             candidate.sources.push(source);
             Ok::<_, io::Error>(())
@@ -702,6 +710,7 @@ mod tests {
         ));
         host_io::directory(&root).unwrap();
         let mut conditions = json!({"scenario":"fixed","adapter":{"adapter":"codex"}});
+        let is_direct = route == Some(crate::comparison_plan::CLAUDE_SUBSCRIPTION_DIRECT);
         let evaluator = "a".repeat(64);
         if let Some(route) = route {
             conditions["connection_route"] = route.into();
@@ -721,7 +730,7 @@ mod tests {
                     slot_id: "slot-1".into(),
                     run_id: "run-1".into(),
                     finding_configured: true,
-                    retest_configured: false,
+                    retest_configured: true,
                     comparison_conditions: conditions.clone(),
                     evaluator_sha256: evaluator.clone(),
                 },
@@ -729,7 +738,7 @@ mod tests {
                     slot_id: "slot-2".into(),
                     run_id: "run-2".into(),
                     finding_configured: true,
-                    retest_configured: false,
+                    retest_configured: true,
                     comparison_conditions: conditions.clone(),
                     evaluator_sha256: evaluator.clone(),
                 },
@@ -741,7 +750,8 @@ mod tests {
         let run = root.join("run-1");
         host_io::directory(&run).unwrap();
         host_io::write_new(&run.join("evaluation.lock"), b"").unwrap();
-        let mut committed = result("run-1", "success", false, "not_performed");
+        let mut committed = result("run-1", "success", true, "passed");
+        committed["formal_metrics_eligible"] = true.into();
         committed["recorded_connection_route"] = json!(route);
         committed["evidence"]["route_coverage"] = "verified".into();
         committed["evaluation"] = "performed".into();
@@ -780,8 +790,14 @@ mod tests {
         assert_eq!(aggregate["selection"]["unavailable"], 1);
         assert_eq!(aggregate["selection"]["unplanned"], 1);
         assert_eq!(aggregate["groups"][0]["finding"]["denominator"], 2);
-        assert_eq!(aggregate["groups"][0]["finding"]["success"], 1);
-        assert_eq!(aggregate["groups"][0]["finding"]["unknown"], 1);
+        let group = &aggregate["groups"][0];
+        assert_eq!(group["finding"]["success"], u64::from(!is_direct));
+        assert_eq!(group["finding"]["unknown"], 1 + u64::from(is_direct));
+        assert_eq!(group["retest"]["denominator"], 2);
+        assert_eq!(group["retest"]["passed"], u64::from(!is_direct));
+        assert_eq!(group["retest"]["unavailable"], 1 + u64::from(is_direct));
+        assert_eq!(group["runs"]["formal_eligible"], u64::from(!is_direct));
+        assert_eq!(group["runs"]["formal_ineligible"], 1 + u64::from(is_direct));
         assert_eq!(aggregate["groups"][0]["runs"]["unavailable"], 1);
         assert_eq!(aggregate["groups"][0]["sources"][0]["state"], "committed");
         assert_eq!(aggregate["groups"][0]["sources"][1]["state"], "unavailable");
@@ -801,7 +817,13 @@ mod tests {
             "| slot&#45;2 | run&#45;2 | unavailable | {route_cell} | null | null |"
         )));
         assert!(sources[1].get("direct_observation").is_none());
-        if route == Some(crate::comparison_plan::CLAUDE_SUBSCRIPTION_DIRECT) {
+        assert_eq!(sources[0]["evaluation_id"], "evaluation-1");
+        assert!(sources[0]["result_sha256"].as_str().is_some());
+        if is_direct {
+            assert_eq!(
+                sources[0]["recorded_evaluation"],
+                json!({"finding":"success","retest":"passed"})
+            );
             assert_eq!(
                 sources[0]["direct_observation"],
                 json!({"state":"missing","reason":"parent_evidence_unavailable"})
@@ -812,6 +834,7 @@ mod tests {
             ));
         } else {
             assert!(sources[0].get("direct_observation").is_none());
+            assert!(sources[0].get("recorded_evaluation").is_none());
             assert!(!rendered.contains("## Direct observations"));
         }
 
