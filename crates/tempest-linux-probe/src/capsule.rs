@@ -59,7 +59,7 @@ pub(super) struct LibraryIdentity {
     nlink: u64,
 }
 
-fn library_identity(file: &fs::File) -> Result<LibraryIdentity, Fault> {
+pub(super) fn library_identity(file: &fs::File) -> Result<LibraryIdentity, Fault> {
     metadata_identity(&file.metadata()?)
 }
 
@@ -79,12 +79,19 @@ fn metadata_identity(m: &fs::Metadata) -> Result<LibraryIdentity, Fault> {
 }
 
 pub(super) fn verify_library(snapshot: &Snapshot, target: &Path) -> Result<LibraryIdentity, Fault> {
+    verify_bound_file(target, |file| snapshot.verify_file(file))
+}
+
+pub(super) fn verify_bound_file(
+    target: &Path,
+    verify: impl FnOnce(&fs::File) -> Result<(), Fault>,
+) -> Result<LibraryIdentity, Fault> {
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(target)?;
     let identity = library_identity(&file)?;
-    snapshot.verify_file(&file)?;
+    verify(&file)?;
     let mut flags = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     os::syscall(unsafe { libc::fstatvfs(file.as_raw_fd(), flags.as_mut_ptr()) })?;
     let flags = unsafe { flags.assume_init() }.f_flag;
@@ -100,6 +107,25 @@ pub(super) fn verify_library(snapshot: &Snapshot, target: &Path) -> Result<Libra
         return Err(Fault::Identity);
     }
     Ok(identity)
+}
+
+/// Bind the opened inode, then make the individual mount read-only.
+pub(super) fn bind_read_only(source: &fs::File, target: &Path) -> Result<(), Fault> {
+    os::mount(
+        Some(Path::new(&format!("/proc/self/fd/{}", source.as_raw_fd()))),
+        target,
+        None,
+        libc::MS_BIND,
+        None,
+    )?;
+    os::mount(
+        None,
+        target,
+        None,
+        libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
+        None,
+    )?;
+    Ok(())
 }
 
 fn bind(
@@ -187,20 +213,7 @@ fn bind(
     if metadata_identity(&target.symlink_metadata()?)? != identity {
         return Err(Fault::Identity);
     }
-    os::mount(
-        Some(Path::new(&format!("/proc/self/fd/{}", source.as_raw_fd()))),
-        &target,
-        None,
-        libc::MS_BIND,
-        None,
-    )?;
-    os::mount(
-        None,
-        &target,
-        None,
-        libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
-        None,
-    )?;
+    bind_read_only(&source, &target)?;
     if verify_library(snapshot, &target)? != identity {
         return Err(Fault::Identity);
     }
@@ -301,7 +314,7 @@ pub(super) fn drop_privileges(uid: u32) -> Result<(), Fault> {
     Ok(())
 }
 
-fn make_mounts_private() -> Result<(), Fault> {
+pub(super) fn make_mounts_private() -> Result<(), Fault> {
     os::mount(
         None,
         Path::new("/"),
@@ -311,7 +324,7 @@ fn make_mounts_private() -> Result<(), Fault> {
     )
 }
 
-fn mount_root(root: &Path) -> Result<(), Fault> {
+pub(super) fn mount_root(root: &Path) -> Result<(), Fault> {
     os::mount(
         Some(Path::new("tmpfs")),
         root,
