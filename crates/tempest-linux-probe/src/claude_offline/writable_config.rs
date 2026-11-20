@@ -166,7 +166,8 @@ impl Generation {
             libc::MS_BIND | libc::MS_REMOUNT | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
             None,
         )?;
-        if fd_identity(&File::open(target)?)? != fd_identity(&self.pinned)? {
+        let mounted = File::open(target)?;
+        if fd_identity(&mounted)? != fd_identity(&self.pinned)? || self.audit_entries(false)? {
             return Err(super::Fault::Identity);
         }
         Ok(())
@@ -174,11 +175,18 @@ impl Generation {
 
     pub fn audit(&self, parent: &File, require_probe: bool) -> io::Result<bool> {
         let current = WorkArea::open_at(parent, &self.name)?;
-        let directory = self.pinned.metadata()?;
-        if fd_identity(&current)? != fd_identity(&self.pinned)?
-            || (directory.uid(), directory.gid(), directory.mode() & 0o7777) != (UID, GID, 0o700)
-        {
+        if fd_identity(&current)? != fd_identity(&self.pinned)? {
             return Err(io::Error::other("private configuration identity changed"));
+        }
+        self.audit_entries(require_probe)
+    }
+
+    fn audit_entries(&self, require_probe: bool) -> io::Result<bool> {
+        let directory = self.pinned.metadata()?;
+        if (directory.uid(), directory.gid(), directory.mode() & 0o7777) != (UID, GID, 0o700) {
+            return Err(io::Error::other(
+                "private configuration permissions changed",
+            ));
         }
         let mut settings = false;
         let mut probe = false;

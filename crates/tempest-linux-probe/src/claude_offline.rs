@@ -1,6 +1,7 @@
 //! Fixed inputs for dedicated Linux Claude offline diagnostics.
 use super::os::Fault;
 mod local_auth;
+mod login_connect;
 mod writable_config;
 use sha2::{Digest, Sha256};
 use std::{
@@ -680,7 +681,15 @@ fn run_pty_child(
             if (: > "$HOME/outside-probe"); then exit 1; fi
         fi
         if test "$3" = local-auth; then
-            /bin/busybox nc -w 1 127.0.0.1 39271 -e /bin/busybox true
+            /bin/busybox nc -w 1 127.0.0.1 39271 -e /bin/busybox sh -eu -c '
+                printf "CONNECT platform.claude.com:443 HTTP/1.1\r\n\r\nPING"
+                IFS= read -r status
+                test "$status" = "$(printf "HTTP/1.1 200 Connection Established\r")"
+                IFS= read -r separator
+                test "$separator" = "$(printf "\r")"
+                IFS= read -r answer
+                test "$answer" = ACK
+            '
             for port in 39272 39273 39274; do
                 if /bin/busybox nc -w 1 127.0.0.1 "$port" -e /bin/busybox true; then exit 1; fi
             done
@@ -933,7 +942,14 @@ fn run_fixture_with_config(
         if let Some(config) = config {
             config.run(root, scratch, namespace_reaped, diagnostic)?;
         } else if let Some(events) = pty_events {
+            let gateway = policy
+                .as_ref()
+                .map(local_auth::LocalPolicy::start_gateway)
+                .transpose()?;
             run_pty_child(root, namespace_reaped, events, private_config, network)?;
+            if let Some(gateway) = gateway {
+                gateway.finish()?;
+            }
         } else {
             run_child(root, scratch, namespace_reaped)?;
         }
@@ -1452,6 +1468,27 @@ pub(super) fn run_config() -> std::process::ExitCode {
     }
 }
 
+fn verify_shared_terminal(input: libc::c_int, output: libc::c_int) -> io::Result<()> {
+    fn identity(fd: libc::c_int) -> io::Result<(libc::dev_t, libc::ino_t, libc::dev_t)> {
+        if unsafe { libc::isatty(fd) } != 1 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let stat = unsafe { stat.assume_init() };
+        Ok((stat.st_dev, stat.st_ino, stat.st_rdev))
+    }
+
+    if identity(input)? != identity(output)? {
+        return Err(io::Error::other(
+            "login input and output use different terminals",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn run_pty() -> std::process::ExitCode {
     use std::process::ExitCode;
     if std::env::args_os().len() != 1
@@ -1516,8 +1553,7 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         _ => return ExitCode::FAILURE,
     };
     if unsafe { libc::geteuid() } != 0
-        || unsafe { libc::isatty(libc::STDIN_FILENO) } != 1
-        || unsafe { libc::isatty(libc::STDOUT_FILENO) } != 1
+        || verify_shared_terminal(libc::STDIN_FILENO, libc::STDOUT_FILENO).is_err()
     {
         return ExitCode::FAILURE;
     }
@@ -1580,6 +1616,35 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dedicated_terminal_rejects_split_or_redirected_stdio() {
+        fn terminals() -> (File, File) {
+            let mut master = -1;
+            let mut slave = -1;
+            assert_eq!(
+                unsafe {
+                    libc::openpty(
+                        &mut master,
+                        &mut slave,
+                        std::ptr::null_mut(),
+                        std::ptr::null(),
+                        std::ptr::null(),
+                    )
+                },
+                0
+            );
+            unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) }
+        }
+
+        let (_master, slave) = terminals();
+        let identical = slave.try_clone().unwrap();
+        let (_other_master, other_slave) = terminals();
+        let redirected = File::open("/dev/null").unwrap();
+        assert!(verify_shared_terminal(slave.as_raw_fd(), identical.as_raw_fd()).is_ok());
+        assert!(verify_shared_terminal(slave.as_raw_fd(), other_slave.as_raw_fd()).is_err());
+        assert!(verify_shared_terminal(slave.as_raw_fd(), redirected.as_raw_fd()).is_err());
+    }
 
     #[test]
     #[ignore = "requires root and private mount and PID namespaces"]

@@ -1,4 +1,4 @@
-use super::{Fault, fd_identity};
+use super::{Fault, fd_identity, login_connect, wait_for_supervisor};
 use std::{
     fs::File,
     io::{self, Read, Write},
@@ -129,6 +129,29 @@ pub(super) struct LocalPolicy {
     installed: bool,
 }
 
+pub(super) struct Gateway(Option<libc::pid_t>);
+
+impl Gateway {
+    pub fn finish(mut self) -> io::Result<()> {
+        let pid = self.0.unwrap();
+        let status = wait_for_supervisor(pid)?;
+        self.0 = None;
+        if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+            return Err(io::Error::other("fixed login gateway exchange failed"));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Gateway {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            let _ = wait_for_supervisor(pid);
+        }
+    }
+}
+
 impl LocalPolicy {
     pub fn setup(case: Case) -> io::Result<Self> {
         output(IP, &["link", "set", "lo", "up"])?;
@@ -162,6 +185,22 @@ impl LocalPolicy {
             listeners,
             installed,
         })
+    }
+
+    pub fn start_gateway(&self) -> io::Result<Gateway> {
+        let supervisor = unsafe { libc::getpid() };
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if pid == 0 {
+            let guarded = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) }
+                == 0
+                && unsafe { libc::getppid() } == supervisor;
+            let success = guarded && login_connect::serve_fixture(&self.listeners[0]).is_ok();
+            unsafe { libc::_exit(i32::from(!success)) };
+        }
+        Ok(Gateway(Some(pid)))
     }
 
     pub fn finish(self, granted_and_completed: bool) -> io::Result<()> {
@@ -210,7 +249,7 @@ impl LocalPolicy {
             counters.is_empty()
         };
         if !output(NFT, &["-s", "list", "ruleset"])?.trim().is_empty()
-            || observed? != [usize::from(granted_and_completed), 0, 0, 0]
+            || observed? != [0, 0, 0, 0]
             || !expected_counters
         {
             return Err(io::Error::other("fixed login traffic or cleanup mismatch"));
