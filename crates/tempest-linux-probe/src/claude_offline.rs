@@ -2602,6 +2602,69 @@ mod tests {
             consume(7).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
         );
+        let starts = std::cell::Cell::new(0);
+        let start = |ledger: &File, id, signed: &[u8], signature: &[u8]| {
+            consume_signed(ledger, signed, signature)?;
+            starts.set(starts.get() + 1);
+            let work = WorkArea::create(&parent, &path)?;
+            let result = supervised(&parent, &work, |_, _, control, reaped| {
+                request_cli_start(control)?;
+                if !login_permit::revoke(&parent, id)
+                    .is_err_and(|error| error.kind() == io::ErrorKind::PermissionDenied)
+                {
+                    return Err(Fault::Identity);
+                }
+                let mut child = std::process::Command::new("/bin/sleep");
+                child.arg("60");
+                match run_in_pid_namespace(child, Duration::from_millis(200), reaped) {
+                    Err(Fault::ReportTimeout) => Err(Fault::ReportTimeout),
+                    _ => {
+                        *reaped = false;
+                        Err(Fault::Identity)
+                    }
+                }
+            });
+            assert!(
+                !work.path.exists(),
+                "verified stop must remove the generation"
+            );
+            result
+        };
+
+        // The handoff has already been signed when management closes its ID.
+        let (published, signature) = login_handoff::signed_fixture(&key, 8, scope, 140);
+        login_permit::revoke(&parent, 8).unwrap();
+        let before_denials = fs::read_dir(&path).unwrap().count();
+        assert_eq!(
+            start(&parent, 8, &published, signature.as_ref())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        let unusable = File::open(&input).unwrap();
+        let (published, signature) = login_handoff::signed_fixture(&key, 9, scope, 140);
+        assert_eq!(
+            start(&unusable, 9, &published, signature.as_ref())
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOTDIR)
+        );
+        assert_eq!(starts.get(), 0);
+        assert_eq!(fs::read_dir(&path).unwrap().count(), before_denials);
+
+        let error = start(&parent, 9, &published, signature.as_ref()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "offline CLI diagnostic failed; work removed after verified termination; signal=0"
+        );
+        assert_eq!(
+            start(&parent, 9, &published, signature.as_ref())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(starts.get(), 1);
+
         consume(1).unwrap();
         let retained = WorkArea::create(&parent, &path).unwrap();
         let error = supervised(&parent, &retained, |scratch, _, control, _| {
