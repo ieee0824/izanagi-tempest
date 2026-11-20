@@ -1697,9 +1697,9 @@ fn open_manual_login_policy(path: &Path) -> io::Result<File> {
 }
 
 fn check_manual_login_policy(path: &Path) -> io::Result<()> {
-    let revision = validate_manual_login_policy(open_manual_login_policy(path)?)?;
-    if let Some(revision) = revision {
-        diagnose_manual_login_handoff(path, revision)?;
+    let scope = validate_manual_login_policy(open_manual_login_policy(path)?)?;
+    if let Some(scope) = scope {
+        diagnose_manual_login_handoff(path, &scope)?;
     }
     // A valid file describes the design. It does not authorize a live login.
     Err(io::Error::new(
@@ -1708,7 +1708,7 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     ))
 }
 
-fn diagnose_manual_login_handoff(policy: &Path, revision: u64) -> io::Result<()> {
+fn diagnose_manual_login_handoff(policy: &Path, scope: &LoginPolicyScope) -> io::Result<()> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let read = |name, limit: u64| -> io::Result<Vec<u8>> {
@@ -1733,18 +1733,27 @@ fn diagnose_manual_login_handoff(policy: &Path, revision: u64) -> io::Result<()>
             .try_into()
             .map_err(|_| io::ErrorKind::InvalidData)?;
         let signature = read("claude-login-diagnostic-signature", 64)?;
+        let record = read("claude-login-diagnostic-target-registration", 4096)?;
+        let target_id = registered_diagnostic_target(&record, &scope.target_hostname)?;
         let expected = login_permit::Scope {
             executable_sha256: ARTIFACTS[0].sha256,
             arguments: &LOGIN_ARGS,
             authority: login_connect::AUTHORITY,
-            target_id: "registered-fixture",
-            approved_ips_revision: revision,
+            target_id: &target_id,
+            approved_ips_revision: scope.approved_ips_revision,
         };
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
             .as_secs();
-        login_handoff::verify_handoff(key, &payload, &signature, expected, now)?;
+        login_handoff::verify_handoff(
+            key,
+            &payload,
+            &signature,
+            expected,
+            scope.expires_unix_seconds,
+            now,
+        )?;
         Ok::<_, io::Error>(())
     })();
     if let Err(error) = result {
@@ -1753,6 +1762,34 @@ fn diagnose_manual_login_handoff(policy: &Path, revision: u64) -> io::Result<()>
     }
     eprintln!("manual login handoff diagnostic verified");
     Ok(())
+}
+
+fn registered_diagnostic_target(record: &[u8], hostname: &str) -> io::Result<String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct TargetRegistration {
+        target_hostname: String,
+        target_id: String,
+    }
+
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid diagnostic target registration",
+        )
+    };
+    let record: TargetRegistration = serde_json::from_slice(record).map_err(|_| invalid())?;
+    if record.target_hostname != hostname
+        || record.target_id.is_empty()
+        || record.target_id.len() > 128
+        || !record
+            .target_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(invalid());
+    }
+    Ok(record.target_id)
 }
 
 #[derive(serde::Deserialize)]
@@ -1799,6 +1836,7 @@ struct ApprovedLoginIps {
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[derive(Debug)]
 struct LoginPolicyScope {
     target_hostname: String,
     authority: String,
@@ -1806,7 +1844,7 @@ struct LoginPolicyScope {
     expires_unix_seconds: u64,
 }
 
-fn validate_manual_login_policy(input: impl Read) -> io::Result<Option<u64>> {
+fn validate_manual_login_policy(input: impl Read) -> io::Result<Option<LoginPolicyScope>> {
     let mut hostname = [0_u8; 256];
     if unsafe { libc::gethostname(hostname.as_mut_ptr().cast(), hostname.len()) } != 0 {
         return Err(io::Error::last_os_error());
@@ -1823,7 +1861,7 @@ fn validate_manual_login_policy_at(
     input: impl Read,
     now: std::time::SystemTime,
     hostname: &str,
-) -> io::Result<Option<u64>> {
+) -> io::Result<Option<LoginPolicyScope>> {
     use std::time::{Duration, UNIX_EPOCH};
 
     const MAX_POLICY_BYTES: u64 = 4096;
@@ -1858,7 +1896,7 @@ fn validate_manual_login_policy_at(
     if remaining.is_zero() || remaining > MAX_DIAGNOSTIC_REMAINING {
         return Err(invalid());
     }
-    Ok(Some(ips.revision))
+    Ok(Some(policy.permit))
 }
 
 pub(super) fn run_manual_login() -> std::process::ExitCode {
@@ -2159,6 +2197,18 @@ mod tests {
                 io::ErrorKind::InvalidData
             );
         }
+    }
+
+    #[test]
+    fn diagnostic_registration_binds_id_to_the_validated_hostname() {
+        let record = br#"{"target_hostname":"test-vm","target_id":"registered-test-23"}"#;
+        assert_eq!(
+            registered_diagnostic_target(record, "test-vm").unwrap(),
+            "registered-test-23"
+        );
+        assert!(registered_diagnostic_target(record, "different-vm").is_err());
+        let malformed = br#"{"target_hostname":"test-vm","target_id":"wrong id"}"#;
+        assert!(registered_diagnostic_target(malformed, "test-vm").is_err());
     }
 
     #[test]
