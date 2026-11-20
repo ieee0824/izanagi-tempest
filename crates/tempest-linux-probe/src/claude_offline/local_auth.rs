@@ -33,6 +33,7 @@ pub(super) enum Case {
     MissingGateway,
     EmptyResolution,
     UnapprovedResolution,
+    ExpiredPermit,
 }
 
 impl Case {
@@ -46,6 +47,7 @@ impl Case {
             "missing-gateway" => Self::MissingGateway,
             "empty-resolution" => Self::EmptyResolution,
             "unapproved-resolution" => Self::UnapprovedResolution,
+            "expired-permit" => Self::ExpiredPermit,
             _ => return None,
         })
     }

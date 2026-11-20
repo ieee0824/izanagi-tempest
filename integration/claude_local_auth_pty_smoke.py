@@ -23,6 +23,7 @@ FAILURES = {
     "missing-gateway": b"fixed gateway unavailable",
     "empty-resolution": b"fixed gateway upstream unavailable or unapproved",
     "unapproved-resolution": b"fixed gateway upstream unavailable or unapproved",
+    "expired-permit": b"synthetic permit expired",
 }
 
 
@@ -85,6 +86,34 @@ def check_terminal_refusals(binary):
             os.close(fd)
 
 
+def check_concurrent_refusal(binary):
+    original = (set(WORK.iterdir()), set(CONFIG.iterdir()))
+    master, slave = pty.openpty()
+    try:
+        result = subprocess.run(
+            [binary, "match"], stdin=slave, stdout=slave,
+            stderr=subprocess.PIPE, env={}, timeout=2,
+        )
+        if result.returncode != 1 or b"dedicated PTY work area already in use" not in result.stderr:
+            raise RuntimeError(f"concurrent login was not refused by the lock: {result.stderr!r}")
+        os.close(slave)
+        slave = -1
+        try:
+            output = os.read(master, 1024)
+        except OSError as error:
+            if error.errno != errno.EIO:
+                raise
+        else:
+            if output:
+                raise RuntimeError("concurrent login emitted PTY output")
+        if (set(WORK.iterdir()), set(CONFIG.iterdir())) != original:
+            raise RuntimeError("concurrent login changed an active generation")
+    finally:
+        for fd in (master, slave):
+            if fd >= 0:
+                os.close(fd)
+
+
 def main():
     if sys.platform != "linux" or os.geteuid() != 0 or len(sys.argv) != 2:
         return 2
@@ -101,8 +130,10 @@ def main():
         complete_probe=True,
         success=POSITIVE + REMOVED,
         startup_timeout=20,
+        before_probe=lambda: check_concurrent_refusal(binary),
     )
     assert_empty()
+    print("concurrent launch: refused before staging")
     print("match: auth accepted, other host and three direct ports denied; disconnect reaped, active tunnel and listeners closed, generation removed")
     return 0
 
