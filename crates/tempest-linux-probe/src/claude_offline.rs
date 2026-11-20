@@ -1887,7 +1887,6 @@ fn verify_login_revocation(
     permit_id: u128,
     target_id: &str,
 ) -> io::Result<std::time::Instant> {
-    use ring::signature::{ED25519, UnparsedPublicKey};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     let payload = read_login_child(authority, "revocation-state", 4096)?;
@@ -1895,8 +1894,33 @@ fn verify_login_revocation(
     let key: [u8; 32] = read_login_child(authority, "revocation-key", 32)?
         .try_into()
         .map_err(|_| io::ErrorKind::InvalidData)?;
+    let monotonic = Instant::now();
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?;
+    let expires = verify_revocation_state(
+        &key,
+        &payload,
+        &signature,
+        (revision, manifest_sha256, permit_id, target_id),
+        wall.as_secs(),
+    )?;
+    monotonic
+        .checked_add(Duration::from_secs(expires) - wall)
+        .ok_or(io::ErrorKind::InvalidData.into())
+}
+
+fn verify_revocation_state(
+    key: &[u8; 32],
+    payload: &[u8],
+    signature: &[u8],
+    expected: (u64, &str, u128, &str),
+    now_unix_seconds: u64,
+) -> io::Result<u64> {
+    use ring::signature::{ED25519, UnparsedPublicKey};
+    let (revision, manifest_sha256, permit_id, target_id) = expected;
     UnparsedPublicKey::new(&ED25519, key)
-        .verify(&payload, &signature)
+        .verify(payload, signature)
         .map_err(|_| io::Error::other("invalid revocation signature"))?;
     let payload = payload
         .strip_prefix(REVOCATION_DOMAIN)
@@ -1913,24 +1937,18 @@ fn verify_login_revocation(
         return Err(io::Error::other("permit revoked"));
     }
     const MAX_FIXTURE_WINDOW: u64 = 30;
-    let monotonic = Instant::now();
-    let wall = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(io::Error::other)?;
-    if state.issued_unix_seconds > wall.as_secs()
+    if state.issued_unix_seconds > now_unix_seconds
         || !matches!(
             state
                 .expires_unix_seconds
                 .checked_sub(state.issued_unix_seconds),
             Some(1..=MAX_FIXTURE_WINDOW)
         )
-        || state.expires_unix_seconds <= wall.as_secs()
+        || state.expires_unix_seconds <= now_unix_seconds
     {
         return Err(io::Error::other("invalid or expired revocation window"));
     }
-    monotonic
-        .checked_add(Duration::from_secs(state.expires_unix_seconds) - wall)
-        .ok_or(io::ErrorKind::InvalidData.into())
+    Ok(state.expires_unix_seconds)
 }
 
 fn verify_login_generation(parent: &File, publication: &File) -> io::Result<()> {
@@ -2645,6 +2663,46 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_revocation_state_checks_scope_and_fixed_time_boundaries() {
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        let key = Ed25519KeyPair::from_seed_unchecked(&[23; 32]).unwrap();
+        let public = key.public_key().as_ref().try_into().unwrap();
+        let expected = (2, "manifest-2", 42, "target-2");
+        let baseline = serde_json::json!({
+            "revision": 2,
+            "manifest_sha256": "manifest-2",
+            "permit_id": format!("{:032x}", 42),
+            "target_id": "target-2",
+            "issued_unix_seconds": 100,
+            "expires_unix_seconds": 130,
+            "revoked": false,
+        });
+        let verify = |state: &serde_json::Value, now| {
+            let mut payload = REVOCATION_DOMAIN.to_vec();
+            payload.extend(serde_json::to_vec(state).unwrap());
+            let signature = key.sign(&payload);
+            verify_revocation_state(public, &payload, signature.as_ref(), expected, now)
+        };
+        assert_eq!(verify(&baseline, 100).unwrap(), 130);
+        assert_eq!(verify(&baseline, 129).unwrap(), 130);
+        assert!(verify(&baseline, 130).is_err());
+        assert!(verify(&baseline, 99).is_err());
+
+        for (field, value) in [
+            ("expires_unix_seconds", serde_json::json!(100)),
+            ("expires_unix_seconds", serde_json::json!(131)),
+            ("manifest_sha256", serde_json::json!("manifest-1")),
+            ("permit_id", serde_json::json!(format!("{:032x}", 43))),
+            ("target_id", serde_json::json!("target-1")),
+        ] {
+            let mut changed = baseline.clone();
+            changed[field] = value;
+            assert!(verify(&changed, 100).is_err(), "{field}");
+        }
+    }
 
     #[test]
     fn published_manifest_must_match_the_independently_approved_revision_and_digest() {
