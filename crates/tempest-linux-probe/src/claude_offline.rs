@@ -2536,6 +2536,27 @@ mod tests {
             b"replacement"
         );
 
+        let scope = login_permit::Scope {
+            executable_sha256: BUSYBOX.sha256,
+            arguments: &LOGIN_ARGS,
+            authority: login_connect::AUTHORITY,
+            target_id: "synthetic-recovery",
+            approved_ips_revision: 1,
+        };
+        let consume = |id| {
+            let now = std::time::Instant::now();
+            login_permit::consume(
+                &parent,
+                &login_permit::Permit {
+                    id,
+                    expires_at: now + std::time::Duration::from_secs(30),
+                    scope,
+                },
+                scope,
+                now,
+            )
+        };
+        consume(1).unwrap();
         let retained = WorkArea::create(&parent, &path).unwrap();
         let error = supervised(&parent, &retained, |scratch, _, control, _| {
             fs::write(scratch.join("artifact-0"), b"retained")?;
@@ -2553,16 +2574,22 @@ mod tests {
             b"retained"
         );
 
-        for timeout_case in [false, true] {
+        assert_eq!(
+            consume(1).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+
+        for (permit_id, timeout_case) in [(2, false), (3, true)] {
             use std::{process::Command, time::Duration};
+            consume(permit_id).unwrap();
             let failed = WorkArea::create(&parent, &path).unwrap();
             let error = supervised(&parent, &failed, |scratch, _, control, reaped| {
                 fs::write(scratch.join("artifact-0"), b"dummy-failure")?;
                 request_cli_start(control)?;
                 let mut command = Command::new(if timeout_case {
-                    "/bin/sleep"
+                    std::path::PathBuf::from("/bin/sleep")
                 } else {
-                    "/bin/false"
+                    scratch.join("absent-executable")
                 });
                 let deadline = if timeout_case {
                     command.arg("60");
@@ -2586,8 +2613,13 @@ mod tests {
                 "offline CLI diagnostic failed; work removed after verified termination; signal=0"
             );
             assert!(!failed.path.exists());
+            assert_eq!(
+                consume(permit_id).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
         }
 
+        consume(4).unwrap();
         let restarted = WorkArea::create(&parent, &path).unwrap();
         assert_eq!(
             supervised(&parent, &restarted, |scratch, _, control, reaped| {
