@@ -124,7 +124,7 @@ def namespace_id():
     return os.stat("/proc/self/ns/net").st_ino
 
 
-def check_preflight(expected_namespace):
+def check_preflight(expected_namespace, expected_policy=POLICY):
     if expected_namespace is None:
         raise PreflightDenied("namespace missing")
     expected = os.fstat(expected_namespace.fileno())
@@ -138,7 +138,7 @@ def check_preflight(expected_namespace):
     policy = run("nft", "-s", "list", "ruleset", capture_output=True).stdout.split()
     if not policy:
         raise PreflightDenied("policy missing")
-    if policy != POLICY.replace("icmpx type ", "icmpx ").split():
+    if policy != expected_policy.replace("icmpx type ", "icmpx ").split():
         raise PreflightDenied("policy mismatch")
 
 
