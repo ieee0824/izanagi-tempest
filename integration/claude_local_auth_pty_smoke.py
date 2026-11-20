@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import pty
 import subprocess
+import tempfile
 import sys
 
 from claude_supervised_pty_smoke import WORK, fixture
@@ -136,17 +137,15 @@ def check_permit_replay(binary):
                 **overrides,
             }, out)
 
-    def check_refusal(reason, expected, case="single-use-permit", timeout=2):
+    def check_refusal(reason, expected):
         master, slave = pty.openpty()
         try:
             result = subprocess.run(
-                [binary, case], stdin=slave, stdout=slave,
-                stderr=subprocess.PIPE, env={}, timeout=timeout,
+                [binary, "single-use-permit"], stdin=slave, stdout=slave,
+                stderr=subprocess.PIPE, env={}, timeout=2,
             )
             if result.returncode != 1 or reason not in result.stderr:
                 raise RuntimeError(f"synthetic permit refusal failed: {result.stderr!r}")
-            if case == "permit-expires-before-grant" and NEGATIVE not in result.stderr:
-                raise RuntimeError(f"late expiry did not close an unused gateway: {result.stderr!r}")
             if any(WORK.iterdir()) or set(CONFIG.iterdir()) != expected:
                 raise RuntimeError("rejected permit staged a new generation")
         finally:
@@ -173,17 +172,82 @@ def check_permit_replay(binary):
         if set(CONFIG.iterdir()) != {marker, policy} or not marker.is_file() or marker.stat().st_size:
             raise RuntimeError("unexpected settings or permit artifacts after cleanup")
         check_refusal(b"manual login permit already consumed or revoked", {marker, policy})
-        marker.unlink()
-        write_settings(int(time.time()) + 4)
-        check_refusal(
-            b"work removed; synthetic permit expired", {marker, policy},
-            case="permit-expires-before-grant", timeout=10,
-        )
-        write_settings(int(time.time()) + 45)
-        check_refusal(b"manual login permit already consumed or revoked", {marker, policy})
     finally:
         marker.unlink(missing_ok=True)
         policy.unlink(missing_ok=True)
+    assert_empty()
+
+
+def check_signed_permits(binary):
+    policy = CONFIG / ".synthetic-login-policy.json"
+    payload = CONFIG / ".synthetic-handoff"
+    signature = CONFIG / ".synthetic-handoff-signature"
+    trust = CONFIG / ".synthetic-handoff-key"
+    inputs = {policy, payload, signature, trust}
+    used, expired = [CONFIG / f"{value:032x}" for value in (2, 3)]
+    scope = {
+        "executable_sha256": "dbac288c29ba568459550a2da9e7ae0ded6b1fc728ee9fad3044c44e62d6ac14",
+        "arguments": ["auth", "login"],
+        "target_id": "synthetic-target",
+        "approved_ips_revision": 1,
+    }
+
+    def write_private(path, data):
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as out:
+            out.write(data)
+
+    def write_handoff(key, record, seconds):
+        authority = "platform.claude.com:443"
+        now = int(time.time())
+        write_private(policy, json.dumps({
+            **scope, "policy": {"version": 1, "authority": authority},
+            "expires_unix_seconds": now + 45,
+        }).encode())
+        write_private(payload, b"izanagi-tempest:manual-login-handoff:fixture-v1\0" + json.dumps({
+            **scope, "authority": authority, "permit_id": record.name,
+            "approval_pair_sha256": "a" * 64, "expires_unix_seconds": now + seconds,
+        }).encode())
+        write_private(signature, subprocess.check_output([
+            "/usr/bin/openssl", "pkeyutl", "-sign", "-rawin", "-inkey", key, "-in", payload,
+        ]))
+
+    def assert_denied(case, reason, expected, unused_gateway=False):
+        master, slave = pty.openpty()
+        try:
+            result = subprocess.run([binary, case], stdin=slave, stdout=slave,
+                                    stderr=subprocess.PIPE, env={}, timeout=10)
+            if (result.returncode != 1 or reason not in result.stderr
+                    or (unused_gateway and NEGATIVE not in result.stderr)):
+                raise RuntimeError(f"signed permit refusal failed: {result.stderr!r}")
+            if any(WORK.iterdir()) or set(CONFIG.iterdir()) != expected:
+                raise RuntimeError("unexpected artifacts after signed permit refusal")
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    assert_empty()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp) / "fixture.pem"
+            subprocess.run(["/usr/bin/openssl", "genpkey", "-algorithm", "ED25519", "-out", key], check=True)
+            # Ed25519 SubjectPublicKeyInfo ends with the 32 raw public key bytes.
+            write_private(trust, subprocess.check_output([
+                "/usr/bin/openssl", "pkey", "-in", key, "-pubout", "-outform", "DER",
+            ])[-32:])
+            write_handoff(key, used, 45)
+            write_private(payload, payload.read_bytes() + b" ")
+            assert_denied("signed-permit", b"invalid handoff signature", inputs)
+            write_handoff(key, used, 45)
+            fixture([binary, "signed-permit"], {}, complete_probe=True, success=POSITIVE + REMOVED)
+            assert_denied("signed-permit", b"already consumed or revoked", inputs | {used})
+            write_handoff(key, expired, 4)
+            assert_denied("permit-expires-before-grant", b"work removed; synthetic permit expired",
+                          inputs | {used, expired}, unused_gateway=True)
+            write_handoff(key, expired, 45)
+            assert_denied("signed-permit", b"already consumed or revoked", inputs | {used, expired})
+    finally:
+        for path in inputs | {used, expired}:
+            path.unlink(missing_ok=True)
     assert_empty()
 
 
@@ -207,6 +271,7 @@ def main():
     )
     assert_empty()
     check_permit_replay(binary)
+    check_signed_permits(binary)
     print("configured permit: missing, expired and replayed settings refused; late expiry recovered without traffic")
     print("concurrent launch: refused before staging")
     print("match: auth accepted, other host and three direct ports denied; disconnect reaped, active tunnel and listeners closed, generation removed")

@@ -35,6 +35,7 @@ pub(super) enum Case {
     UnapprovedResolution,
     ExpiredPermit,
     SingleUsePermit,
+    SignedPermit,
     PermitExpiresBeforeGrant,
     WrongPermitScope,
     WrongPermitArguments,
@@ -54,6 +55,7 @@ impl Case {
             "unapproved-resolution" => Self::UnapprovedResolution,
             "expired-permit" => Self::ExpiredPermit,
             "single-use-permit" => Self::SingleUsePermit,
+            "signed-permit" => Self::SignedPermit,
             "permit-expires-before-grant" => Self::PermitExpiresBeforeGrant,
             "wrong-permit-scope" => Self::WrongPermitScope,
             "wrong-permit-arguments" => Self::WrongPermitArguments,
@@ -70,6 +72,7 @@ impl Case {
                 | Self::EmptyResolution
                 | Self::UnapprovedResolution
                 | Self::SingleUsePermit
+                | Self::SignedPermit
                 | Self::PermitExpiresBeforeGrant
         )
     }

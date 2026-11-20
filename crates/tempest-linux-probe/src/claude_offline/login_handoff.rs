@@ -27,7 +27,7 @@ pub(super) fn verify_handoff(
     expected: Scope<'_>,
     policy_expires_unix_seconds: u64,
     now_unix_seconds: u64,
-) -> io::Result<u128> {
+) -> io::Result<(u128, u64)> {
     if signed.len() > 4096 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -58,11 +58,10 @@ pub(super) fn verify_handoff(
     }
     let permit_id = u128::from_str_radix(&handoff.permit_id, 16)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid handoff permit ID"))?;
-    if handoff
+    let expires = handoff
         .expires_unix_seconds
-        .min(policy_expires_unix_seconds)
-        <= now_unix_seconds
-    {
+        .min(policy_expires_unix_seconds);
+    if expires <= now_unix_seconds {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "handoff expired",
@@ -82,7 +81,7 @@ pub(super) fn verify_handoff(
             "handoff scope mismatch",
         ));
     }
-    Ok(permit_id)
+    Ok((permit_id, expires))
 }
 
 #[cfg(test)]
@@ -143,7 +142,7 @@ fn offline_handoff_checks_signature_expiry_and_scope() {
     };
     assert_eq!(
         verify(&signed, signature.as_ref(), expected, 119).unwrap(),
-        42
+        (42, 120)
     );
     assert_eq!(
         verify(&signed, signature.as_ref(), expected, 120).unwrap_err(),
@@ -151,7 +150,7 @@ fn offline_handoff_checks_signature_expiry_and_scope() {
     );
     assert_eq!(
         verify_handoff(trusted, &signed, signature.as_ref(), expected, 110, 109).unwrap(),
-        42
+        (42, 110)
     );
     assert_eq!(
         verify_handoff(trusted, &signed, signature.as_ref(), expected, 110, 110)

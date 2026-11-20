@@ -1720,19 +1720,21 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     ))
 }
 
+fn read_login_input(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    open_manual_login_policy(path)?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok(bytes)
+}
+
 fn diagnose_manual_login_handoff(policy: &Path, scope: &LoginPolicyScope) -> io::Result<()> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let read = |name, limit: u64| -> io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        open_manual_login_policy(&policy.with_file_name(name))?
-            .take(limit + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > limit {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        Ok(bytes)
-    };
+    let read = |name, limit| read_login_input(&policy.with_file_name(name), limit);
     let payload = match read("claude-login-diagnostic-handoff", 4096) {
         Ok(payload) => payload,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -2086,14 +2088,19 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         let config_parent = lock_parent(config_path)?;
         if matches!(
             local_auth_case,
-            Some(local_auth::Case::SingleUsePermit | local_auth::Case::PermitExpiresBeforeGrant)
+            Some(
+                local_auth::Case::SingleUsePermit
+                    | local_auth::Case::SignedPermit
+                    | local_auth::Case::PermitExpiresBeforeGrant
+            )
         ) {
+            use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
             let permit = permit
                 .as_mut()
                 .ok_or_else(|| io::Error::other("synthetic permit missing"))?;
-            let (approval, expiry) =
+            let (approval, policy_expiry) =
                 read_fixture_permit(&config_path.join(".synthetic-login-policy.json"))?;
-            permit.expires = expiry;
             let expected = login_permit::Scope {
                 executable_sha256: BUSYBOX.sha256,
                 arguments: &LOGIN_ARGS,
@@ -2102,31 +2109,69 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                 approved_ips_revision: 1,
             };
             let arguments = approval.arguments.each_ref().map(String::as_str);
-            let record = login_permit::Permit {
-                id: 1,
-                expires_at: expiry,
-                scope: login_permit::Scope {
-                    executable_sha256: &approval.executable_sha256,
-                    arguments: &arguments,
-                    authority: &approval.policy.authority,
-                    target_id: &approval.target_id,
-                    approved_ips_revision: approval.approved_ips_revision,
-                },
+            let configured = login_permit::Scope {
+                executable_sha256: &approval.executable_sha256,
+                arguments: &arguments,
+                authority: &approval.policy.authority,
+                target_id: &approval.target_id,
+                approved_ips_revision: approval.approved_ips_revision,
             };
-            // Preserve refusal of a permit consumed by an earlier fixture build.
-            match config_path
-                .join(".used-synthetic-login-permit")
-                .symlink_metadata()
+            let (id, expiry) = if matches!(local_auth_case, Some(local_auth::Case::SingleUsePermit))
             {
-                Ok(_) => {
-                    return Err(io::Error::other(
-                        "manual login permit already consumed or revoked",
-                    ));
+                // Preserve refusal of a permit consumed by an earlier fixture build.
+                match config_path
+                    .join(".used-synthetic-login-permit")
+                    .symlink_metadata()
+                {
+                    Ok(_) => {
+                        return Err(io::Error::other(
+                            "manual login permit already consumed or revoked",
+                        ));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
                 }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-            login_permit::consume(&config_parent, &record, expected, std::time::Instant::now())?;
+                (1, policy_expiry)
+            } else {
+                let read = |name, limit| read_login_input(&config_path.join(name), limit);
+                let payload = read(".synthetic-handoff", 4096)?;
+                let signature = read(".synthetic-handoff-signature", 64)?;
+                let key: [u8; 32] = read(".synthetic-handoff-key", 32)?
+                    .try_into()
+                    .map_err(|_| io::ErrorKind::InvalidData)?;
+                let monotonic = Instant::now();
+                let wall = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(io::Error::other)?;
+                let (id, expiry) = login_handoff::verify_handoff(
+                    &key,
+                    &payload,
+                    &signature,
+                    expected,
+                    approval.expires_unix_seconds,
+                    wall.as_secs(),
+                )?;
+                let remaining = Duration::from_secs(expiry)
+                    .checked_sub(wall)
+                    .ok_or_else(|| io::Error::other("synthetic permit expired"))?;
+                let expiry = policy_expiry.min(
+                    monotonic
+                        .checked_add(remaining)
+                        .ok_or(io::ErrorKind::InvalidData)?,
+                );
+                (id, expiry)
+            };
+            login_permit::consume(
+                &config_parent,
+                &login_permit::Permit {
+                    id,
+                    expires_at: expiry,
+                    scope: configured,
+                },
+                expected,
+                Instant::now(),
+            )?;
+            permit.expires = expiry;
         }
         let local_auth = local_auth_case
             .zip(upstream_network.as_ref())
@@ -2564,7 +2609,8 @@ mod tests {
         let public_key = key.public_key().as_ref().try_into().unwrap();
         let consume_signed = |ledger: &File, signed: &[u8], signature: &[u8]| {
             let now = Instant::now();
-            let id = login_handoff::verify_handoff(public_key, signed, signature, scope, 130, 100)?;
+            let (id, _) =
+                login_handoff::verify_handoff(public_key, signed, signature, scope, 130, 100)?;
             login_permit::consume(
                 ledger,
                 &login_permit::Permit {
