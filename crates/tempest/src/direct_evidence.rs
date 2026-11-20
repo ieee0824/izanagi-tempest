@@ -190,8 +190,173 @@ impl DirectInvestigationReport {
     }
 }
 
+/// Identity of one process-isolation artifact in a parent-owned run record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IsolationProvenance {
+    pub slot_id: String,
+    pub target_id: String,
+    pub observer_id: String,
+    pub evidence: EvidenceRef,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProvenanceFailure {
+    Missing,
+    Mismatch,
+    Unreadable,
+    InvalidFile,
+    TooLarge,
+    DigestMismatch,
+}
+
+const ISOLATION_ARTIFACT: &std::ffi::CStr = c"process-isolation.json";
+const MAX_ISOLATION_ARTIFACT_BYTES: u64 = 64 * 1024;
+
+/// Check a fixed process-isolation artifact without producing an observation.
+/// The parent record and directory FD must come from the caller's trusted,
+/// committed generation. The caller must hold that generation stable against
+/// publication and in-place writes for this call. The claim is untrusted.
+pub fn verify_isolation_provenance(
+    directory: &std::fs::File,
+    parent: Option<&IsolationProvenance>,
+    claim: Option<&IsolationProvenance>,
+) -> Result<(), ProvenanceFailure> {
+    use sha2::{Digest, Sha256};
+    use std::{
+        fs::File,
+        io::{ErrorKind, Read},
+        os::fd::{AsRawFd, FromRawFd},
+    };
+
+    let parent = parent.ok_or(ProvenanceFailure::Missing)?;
+    let claim = claim.ok_or(ProvenanceFailure::Missing)?;
+    let evidence = &parent.evidence;
+    if parent.slot_id.is_empty() || parent.target_id.is_empty() || parent.observer_id.is_empty() {
+        return Err(ProvenanceFailure::Missing);
+    }
+    if claim != parent
+        || !evidence.binding.valid()
+        || evidence.source != Source::OsObservation
+        || evidence.scope != Scope::ProcessIsolation
+        || !hex(&evidence.artifact_sha256, 64)
+    {
+        return Err(ProvenanceFailure::Mismatch);
+    }
+
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            ISOLATION_ARTIFACT.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        return Err(match error.kind() {
+            ErrorKind::NotFound => ProvenanceFailure::Missing,
+            _ if error.raw_os_error() == Some(libc::ELOOP) => ProvenanceFailure::InvalidFile,
+            _ => ProvenanceFailure::Unreadable,
+        });
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file.metadata().map_err(|_| ProvenanceFailure::Unreadable)?;
+    if !metadata.is_file() {
+        return Err(ProvenanceFailure::InvalidFile);
+    }
+    if metadata.len() > MAX_ISOLATION_ARTIFACT_BYTES {
+        return Err(ProvenanceFailure::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_ISOLATION_ARTIFACT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ProvenanceFailure::Unreadable)?;
+    if bytes.len() as u64 > MAX_ISOLATION_ARTIFACT_BYTES {
+        return Err(ProvenanceFailure::TooLarge);
+    }
+    if format!("{:x}", Sha256::digest(&bytes)) != evidence.artifact_sha256 {
+        return Err(ProvenanceFailure::DigestMismatch);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn isolation_provenance_checks_parent_identity_and_artifact_bytes() {
+        use sha2::{Digest, Sha256};
+        use std::{fs, os::unix::fs::symlink};
+
+        let root = std::env::temp_dir().join(format!(
+            "tempest-provenance-{}",
+            crate::host_io::random_hex().unwrap()
+        ));
+        crate::host_io::directory(&root).unwrap();
+        let directory = fs::File::open(&root).unwrap();
+        let path = root.join("process-isolation.json");
+        let payload = b"{\"synthetic\":true}";
+        let parent = IsolationProvenance {
+            slot_id: "slot-1".into(),
+            target_id: "fixed-target".into(),
+            observer_id: "fixed-observer".into(),
+            evidence: EvidenceRef {
+                source: Source::OsObservation,
+                scope: Scope::ProcessIsolation,
+                binding: Binding {
+                    run_id: "a".repeat(32),
+                    profile_sha256: "b".repeat(64),
+                    binary_sha256: "c".repeat(64),
+                },
+                artifact_sha256: format!("{:x}", Sha256::digest(payload)),
+            },
+        };
+        let verify = |claim: Option<&IsolationProvenance>| {
+            verify_isolation_provenance(&directory, Some(&parent), claim)
+        };
+        assert_eq!(verify(Some(&parent)), Err(ProvenanceFailure::Missing));
+        fs::write(&path, payload).unwrap();
+        assert_eq!(verify(Some(&parent)), Ok(()));
+        assert_eq!(verify(None), Err(ProvenanceFailure::Missing));
+        assert_eq!(
+            verify_isolation_provenance(&directory, None, Some(&parent)),
+            Err(ProvenanceFailure::Missing)
+        );
+
+        for changed in [
+            |item: &mut IsolationProvenance| item.slot_id = "slot-2".into(),
+            |item: &mut IsolationProvenance| item.evidence.binding.run_id = "d".repeat(32),
+            |item: &mut IsolationProvenance| item.evidence.binding.profile_sha256 = "e".repeat(64),
+            |item: &mut IsolationProvenance| item.evidence.binding.binary_sha256 = "f".repeat(64),
+            |item: &mut IsolationProvenance| item.target_id = "other-target".into(),
+            |item: &mut IsolationProvenance| item.observer_id = "other-observer".into(),
+            |item: &mut IsolationProvenance| item.evidence.source = Source::AgentSelfReport,
+            |item: &mut IsolationProvenance| item.evidence.scope = Scope::AgentClaim,
+            |item: &mut IsolationProvenance| item.evidence.artifact_sha256 = "0".repeat(64),
+        ] {
+            let mut claim = parent.clone();
+            changed(&mut claim);
+            assert_eq!(verify(Some(&claim)), Err(ProvenanceFailure::Mismatch));
+        }
+
+        fs::write(&path, b"changed").unwrap();
+        assert_eq!(
+            verify(Some(&parent)),
+            Err(ProvenanceFailure::DigestMismatch)
+        );
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(MAX_ISOLATION_ARTIFACT_BYTES + 1)
+            .unwrap();
+        assert_eq!(verify(Some(&parent)), Err(ProvenanceFailure::TooLarge));
+        let other = root.join("identical-bytes");
+        fs::write(&other, payload).unwrap();
+        fs::remove_file(&path).unwrap();
+        symlink(other, &path).unwrap();
+        assert_eq!(verify(Some(&parent)), Err(ProvenanceFailure::InvalidFile));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     use super::*;
     #[test]
     fn profile_report_binding_and_relay_separation() {
