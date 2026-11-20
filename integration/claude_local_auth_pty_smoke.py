@@ -24,6 +24,7 @@ FAILURES = {
     "empty-resolution": b"fixed gateway upstream unavailable or unapproved",
     "unapproved-resolution": b"fixed gateway upstream unavailable or unapproved",
     "expired-permit": b"synthetic permit expired",
+    "wrong-permit-scope": b"synthetic permit scope mismatch",
 }
 
 

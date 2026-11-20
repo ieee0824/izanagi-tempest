@@ -651,6 +651,28 @@ fn artifacts_for(diagnostic: Diagnostic) -> &'static [Artifact<'static>] {
 const LOGIN_EXECUTABLE: &str = "/bin/claude";
 const LOGIN_ARGS: [&str; 2] = ["auth", "login"];
 
+struct FixturePermit {
+    expires: std::time::Instant,
+    executable_digest: &'static str,
+    arguments: [&'static str; 2],
+    authority: &'static str,
+}
+
+impl FixturePermit {
+    fn validate(&self) -> io::Result<()> {
+        if std::time::Instant::now() >= self.expires {
+            return Err(io::Error::other("synthetic permit expired"));
+        }
+        if self.executable_digest != BUSYBOX.sha256
+            || self.arguments != LOGIN_ARGS
+            || self.authority != login_connect::AUTHORITY
+        {
+            return Err(io::Error::other("synthetic permit scope mismatch"));
+        }
+        Ok(())
+    }
+}
+
 fn configure_login_command(command: &mut std::process::Command) {
     command
         .args(LOGIN_ARGS)
@@ -924,7 +946,7 @@ fn run_fixture_with_config(
     namespace_reaped: &mut bool,
     diagnostic: Diagnostic,
     private_config: Option<&writable_config::Generation>,
-    local_auth: Option<(local_auth::Case, &File, std::time::Instant)>,
+    local_auth: Option<(local_auth::Case, &File, &FixturePermit)>,
 ) -> Result<(u64, u64), Fault> {
     use super::os;
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
@@ -1022,11 +1044,10 @@ fn run_fixture_with_config(
             ),
             _ => None,
         };
-        let network = if let Some((case, _, expires)) = local_auth {
-            if std::time::Instant::now() >= expires {
-                eprintln!("local auth refused before grant: synthetic permit expired");
-                return Err(Fault::Identity);
-            }
+        let network = if let Some((case, _, permit)) = local_auth {
+            permit.validate().inspect_err(|error| {
+                eprintln!("local auth refused before grant: {error}");
+            })?;
             ChildNetwork::Verified(local_auth::request(control, case)?)
         } else {
             request_cli_start(control)?;
@@ -1801,17 +1822,27 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
         let upstream_network = local_auth_case
             .map(|_| File::open("/proc/thread-self/ns/net"))
             .transpose()?;
-        let local_auth = local_auth_case
-            .zip(upstream_network.as_ref())
-            .map(|(case, namespace)| {
-                let now = std::time::Instant::now();
-                let expires = if matches!(case, local_auth::Case::ExpiredPermit) {
+        let permit = local_auth_case.map(|case| {
+            let now = std::time::Instant::now();
+            FixturePermit {
+                expires: if matches!(case, local_auth::Case::ExpiredPermit) {
                     now
                 } else {
                     now + std::time::Duration::from_secs(60)
-                };
-                (case, namespace, expires)
-            });
+                },
+                executable_digest: if matches!(case, local_auth::Case::WrongPermitScope) {
+                    ARTIFACTS[0].sha256
+                } else {
+                    BUSYBOX.sha256
+                },
+                arguments: LOGIN_ARGS,
+                authority: login_connect::AUTHORITY,
+            }
+        });
+        let local_auth = local_auth_case
+            .zip(upstream_network.as_ref())
+            .zip(permit.as_ref())
+            .map(|((case, namespace), permit)| (case, namespace, permit));
         let work_path = Path::new(WORK_PARENT);
         let parent = lock_parent(work_path).map_err(|error| {
             if error.kind() == io::ErrorKind::WouldBlock {
