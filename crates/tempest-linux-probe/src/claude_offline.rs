@@ -2794,6 +2794,7 @@ fn verify_combined_login_inputs() -> io::Result<(VerifiedSupervisorInputs, File)
         &verified._login.target_id,
         verified._login.id,
         verified._revision,
+        verified._login.expires,
     )?;
     let authority = open_private_login_directory(&parent, "claude-login-authority")?;
     let revocation_deadline = verify_login_revocation(
