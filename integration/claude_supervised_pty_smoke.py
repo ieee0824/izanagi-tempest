@@ -15,6 +15,14 @@ WORK = Path("/var/lib/tempest-claude-version-work")
 SUCCESS = b"offline PTY: supervisor stopped and reaped namespace; cleanup complete\n"
 
 
+def process_children(proc):
+    for task in (proc / "task").iterdir():
+        try:
+            yield from map(int, (task / "children").read_text().split())
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+
+
 def live_descendant(supervisor: int) -> int:
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
@@ -23,7 +31,7 @@ def live_descendant(supervisor: int) -> int:
             pid = pending.pop()
             proc = Path(f"/proc/{pid}")
             try:
-                pending.extend(map(int, (proc / f"task/{pid}/children").read_text().split()))
+                pending.extend(process_children(proc))
                 if (proc / "cmdline").read_bytes() == b"/bin/busybox\0sleep\0" + b"60\0":
                     pidfd = os.pidfd_open(pid)
                     watcher = select.poll()
@@ -42,7 +50,7 @@ def live_descendant(supervisor: int) -> int:
 def fixture(
     command: list[str], env: dict[str, str], complete_probe: bool, success: bytes = SUCCESS,
     *, startup_timeout: float = 3, before_probe=None, observe_child=None,
-    quarantine=None, check_evidence=None, after_probe=None,
+    quarantine=None, check_evidence=None, after_probe=None, before_ready=None,
 ) -> None:
     master, slave = pty.openpty()
     descendant = -1
@@ -55,6 +63,8 @@ def fixture(
             readiness_error = None
             try:
                 try:
+                    if before_ready is not None:
+                        before_ready(master)
                     read_until(master, b"fixture-ready", timeout=startup_timeout)
                 except (OSError, RuntimeError) as error:
                     readiness_error = error

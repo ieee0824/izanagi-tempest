@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 import sys
 
-from claude_supervised_pty_smoke import WORK, fixture, live_descendant, read_until
+from claude_supervised_pty_smoke import WORK, fixture, live_descendant, process_children, read_until
 from claude_writable_pty_smoke import CONFIG, REMOVED
 
 POSITIVE = (
@@ -190,7 +190,7 @@ def verify_signed_child_environment(supervisor):
         pid = pending.pop()
         proc = Path(f"/proc/{pid}")
         try:
-            pending.extend(map(int, (proc / f"task/{pid}/children").read_text().split()))
+            pending.extend(process_children(proc))
             args = (proc / "cmdline").read_bytes().rstrip(b"\0").split(b"\0")
             if args[:4] != [b"/bin/busybox", b"sh", b"-eu", b"-c"]:
                 continue
@@ -267,7 +267,7 @@ def probe_local_tls(cert_pem, expire=False, revoke=False):
 
 
 def check_signed_tls(binary, temporary, record, check_evidence, expire=False, signing_key=None,
-                     *, stage_login_artifacts=False):
+                     *, stage_login_artifacts=False, supervision=None):
     revoke = signing_key is not None
     terminal_case = expire or revoke
     notice = CONFIG / ".synthetic-live-revocation.json"
@@ -395,9 +395,11 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
             case = "signed-tls-revocation"
         elif expire:
             case = "signed-tls-expiry"
+        command, before_ready = ([binary, case], None) if supervision is None else supervision
         fixture(
-            [binary, case],
+            command,
             {}, complete_probe=True,
+            before_ready=before_ready,
             startup_timeout=25 if stage_login_artifacts else 3,
             success=(b"synthetic administrator stop: PID namespace reaped\n" if revoke else b"")
             + POSITIVE + REMOVED,
@@ -431,7 +433,7 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
           "direct ports denied, child and gateway reaped, both generations recovered")
 
 
-def check_signed_permits(binary, tls=False, *, integration_gate=None):
+def check_signed_permits(binary, tls=False, *, integration_gate=None, direct_tls=None):
     policy = CONFIG / ".synthetic-login-policy.json"
     payload = CONFIG / ".synthetic-handoff"
     signature = CONFIG / ".synthetic-handoff-signature"
@@ -627,6 +629,12 @@ def check_signed_permits(binary, tls=False, *, integration_gate=None):
                     if (entry.st_uid, entry.st_gid, entry.st_mode & 0o777) != (999, 988, 0o600):
                         raise RuntimeError("signed fixture configuration was not owner-private")
 
+            if direct_tls is not None:
+                write_handoff(key, tls_record, 45)
+                supervision = direct_tls(tls_record, payload)
+                check_signed_tls(binary, tmp, tls_record, check_recovery_evidence,
+                                 stage_login_artifacts=True, supervision=supervision)
+                return
             if integration_gate is not None:
                 integration_gate(used, payload)
 

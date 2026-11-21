@@ -53,7 +53,7 @@ def check_signed_publication(config, ledger, check, *, combined_check=None):
     write(authority / "revocation-key", public_key(revocation_key))
     write(authority / "revocation-minimum", b"1")
 
-    def publish(case, permit_id=permit_id, target=target):
+    def publish(case, permit_id=permit_id, target=target, revocation_seconds=25):
         now = int(time.time())
         handoff = b"izanagi-tempest:manual-login-handoff:fixture-v1\0" + encode({
             "permit_id": permit_id, "approval_pair_sha256": "a" * 64,
@@ -90,7 +90,7 @@ def check_signed_publication(config, ledger, check, *, combined_check=None):
         revocation = b"izanagi-tempest:manual-login-revocation:fixture-v1\0" + encode({
             "revision": 1, "revocation_revision": 1, "manifest_sha256": digest(manifest),
             "permit_id": permit_id, "target_id": target, "issued_unix_seconds": now,
-            "expires_unix_seconds": now + 25, "revoked": case == "revoked",
+            "expires_unix_seconds": now + revocation_seconds, "revoked": case == "revoked",
         })
         write(authority / "revocation-state", revocation)
         write(authority / "revocation-signature", revocation_key.sign(revocation))
@@ -99,7 +99,8 @@ def check_signed_publication(config, ledger, check, *, combined_check=None):
         }))
 
     if combined_check is not None:
-        combined_check(lambda permit=permit_id, registered_target=target: publish("normal", permit, registered_target))
+        combined_check(lambda permit=permit_id, registered_target=target, revocation_seconds=25:
+                       publish("normal", permit, registered_target, revocation_seconds))
         return
 
     stages = (

@@ -3009,7 +3009,7 @@ pub(super) fn run_pty() -> std::process::ExitCode {
 }
 
 pub(super) fn run_writable_pty() -> std::process::ExitCode {
-    run_writable_pty_for(None, false)
+    run_writable_pty_for(None, false, None)
 }
 
 pub(super) fn run_local_auth_pty() -> std::process::ExitCode {
@@ -3028,7 +3028,7 @@ pub(super) fn run_local_auth_pty() -> std::process::ExitCode {
     if args.next().is_some() {
         return std::process::ExitCode::FAILURE;
     }
-    run_writable_pty_for(Some(case), stage_login_artifacts)
+    run_writable_pty_for(Some(case), stage_login_artifacts, None)
 }
 
 #[derive(serde::Deserialize)]
@@ -3072,6 +3072,7 @@ fn read_fixture_permit(parent: &File) -> io::Result<(FixtureApproval, std::time:
 fn run_writable_pty_for(
     local_auth_case: Option<local_auth::Case>,
     stage_login_artifacts: bool,
+    verified_diagnostic: Option<&VerifiedSupervisorInputs>,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
     let mut args = std::env::args_os().skip(1);
@@ -3145,6 +3146,22 @@ fn run_writable_pty_for(
                 certificate,
             });
         }
+        let diagnostic_files = verified_diagnostic
+            .map(|verified| {
+                if !stage_login_artifacts || verified._revision != 1 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fixture management generation mismatch",
+                    ));
+                }
+                let mut files = vec![verified._login.executable.try_clone()?];
+                files.extend(
+                    pin_artifacts(&ARTIFACTS[1..])
+                        .map_err(|fault| io::Error::other(fault.reason()))?,
+                );
+                Ok(files)
+            })
+            .transpose()?;
         let mut signed_permit_id = None;
         let mut signed_revocation_key = None;
         if matches!(
@@ -3232,6 +3249,17 @@ fn run_writable_pty_for(
                     permit.verified_executable = Some(inputs.executable);
                     (inputs.id, inputs.expires, inputs.ledger)
                 };
+            let expiry = if let Some(verified) = verified_diagnostic {
+                if verified._login.id != id || verified._login.target_id != approval.target_id {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fixture permit scope mismatch",
+                    ));
+                }
+                expiry.min(verified._login.expires)
+            } else {
+                expiry
+            };
             // O_PATH still allows openat on the pinned directory but cannot
             // fsync it. Exercise a real sync failure after record creation.
             let unsyncable = if matches!(
@@ -3336,7 +3364,9 @@ fn run_writable_pty_for(
             } else {
                 Diagnostic::Pty
             };
-        let verified_artifacts = if diagnostic == Diagnostic::PtyWithLoginArtifacts {
+        let verified_artifacts = if let Some(files) = diagnostic_files {
+            Some(files)
+        } else if diagnostic == Diagnostic::PtyWithLoginArtifacts {
             match pin_artifacts(artifacts_for(diagnostic)) {
                 Ok(artifacts) => Some(artifacts),
                 Err(fault) => {
@@ -3818,6 +3848,27 @@ mod tests {
             Err(Fault::Identity)
         ));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[ignore = "run through the isolated fixed TLS supervisor harness"]
+    fn supervise_verified_dummy_tls() {
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        verify_shared_terminal(libc::STDIN_FILENO, libc::STDOUT_FILENO).unwrap();
+        let verification = verify_combined_login_inputs();
+        if std::env::var_os("TEMPEST_EXPECT_DUMMY_REFUSAL").is_some() {
+            assert!(verification.is_err());
+            println!("direct supervisor refused before launch");
+            return;
+        }
+        let (verified, _host_lock) = verification.unwrap();
+        assert_eq!(
+            run_writable_pty_for(Some(local_auth::Case::SignedTls), true, Some(&verified)),
+            std::process::ExitCode::SUCCESS,
+        );
+        // The PTY master is closed to exercise recovery, so libtest cannot report to stdout.
+        drop(_host_lock);
+        std::process::exit(0);
     }
 
     struct DiagnosticArtifactSet {
