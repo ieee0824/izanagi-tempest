@@ -2397,7 +2397,7 @@ fn verify_login_generation(
     )?;
     inputs.recheck(parent, &ARTIFACTS[0], revocation)?;
     if report {
-        eprintln!("manual login final diagnostic verified");
+        host_login_diagnostic::report_without_waiting("manual login final diagnostic verified");
     }
     Ok(VerifiedSupervisorInputs {
         _publication_lock: lock,
@@ -2463,11 +2463,17 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
         Ok(publication) => {
             let verified =
                 verify_login_generation(&parent, &publication, true).map_err(|error| {
-                    eprintln!("manual login publication diagnostic refused: {error}");
+                    host_login_diagnostic::report_without_waiting(&format!(
+                        "manual login publication diagnostic refused: {error}"
+                    ));
                     io::Error::from(io::ErrorKind::InvalidData)
                 })?;
-            eprintln!("manual login publication diagnostic verified");
-            eprintln!("manual login verified inputs handed off");
+            host_login_diagnostic::report_without_waiting(
+                "manual login publication diagnostic verified",
+            );
+            host_login_diagnostic::report_without_waiting(
+                "manual login verified inputs handed off",
+            );
             return refuse_supervised_login(verified);
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -2614,27 +2620,34 @@ fn diagnose_manual_login_handoff_with(
     })();
     let (id, mut expires, target_id) = result.map_err(|error| {
         if report {
-            eprintln!("manual login handoff diagnostic refused: {error}");
+            host_login_diagnostic::report_without_waiting(&format!(
+                "manual login handoff diagnostic refused: {error}"
+            ));
         }
         io::Error::from(io::ErrorKind::InvalidData)
     })?;
     if report {
-        eprintln!("manual login handoff diagnostic verified");
+        host_login_diagnostic::report_without_waiting("manual login handoff diagnostic verified");
     }
     if let Some(deadline) = revocation_deadline(id, &target_id)? {
         expires = expires.min(deadline);
         if report {
-            eprintln!("manual login revocation diagnostic verified");
+            host_login_diagnostic::report_without_waiting(
+                "manual login revocation diagnostic verified",
+            );
         }
     }
     let executable = verify_fixed_artifact(&ARTIFACTS[0]).map_err(|fault| {
         if report {
-            stage_failure("manual_login_fixed_cli", &fault);
+            host_login_diagnostic::report_without_waiting(&format!(
+                "offline staging: stage=manual_login_fixed_cli reason={}",
+                fault.reason()
+            ));
         }
         io::Error::new(io::ErrorKind::InvalidData, "manual login fixed CLI refused")
     })?;
     if report {
-        eprintln!("manual login fixed CLI verified");
+        host_login_diagnostic::report_without_waiting("manual login fixed CLI verified");
     }
     let ledger = open_login_ledger(parent);
     let ledger_result = (|| {
@@ -2653,12 +2666,14 @@ fn diagnose_manual_login_handoff_with(
     })();
     let inputs = ledger_result.map_err(|error| {
         if report {
-            eprintln!("manual login ledger diagnostic refused: {error}");
+            host_login_diagnostic::report_without_waiting(&format!(
+                "manual login ledger diagnostic refused: {error}"
+            ));
         }
         io::Error::from(io::ErrorKind::InvalidData)
     })?;
     if report {
-        eprintln!("manual login ledger diagnostic verified");
+        host_login_diagnostic::report_without_waiting("manual login ledger diagnostic verified");
     }
     Ok(Some(inputs))
 }
@@ -2876,7 +2891,7 @@ pub(super) fn run_manual_login() -> std::process::ExitCode {
             }
             _ => "administrator policy unavailable or invalid",
         };
-        eprintln!("manual login refused: {reason}");
+        host_login_diagnostic::report_without_waiting(&format!("manual login refused: {reason}"));
     }
     ExitCode::FAILURE
 }

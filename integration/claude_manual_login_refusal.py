@@ -135,6 +135,42 @@ def check_signed_publication(config, ledger, check, *, combined_check=None):
               }.get(case, ()))
 
 
+def check_full_publication_terminal(binary, config, trace):
+    lock = config / "claude-login-publication/lock"
+    master, slave = pty.openpty()
+    filler = os.open(os.ttyname(slave), os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY)
+    try:
+        for _ in range(8):
+            try:
+                while True:
+                    os.write(filler, b"x" * 4096)
+            except BlockingIOError:
+                time.sleep(0.025)
+        try:
+            os.write(filler, b"x" * 65)
+        except BlockingIOError:
+            pass
+        else:
+            raise RuntimeError("publication PTY queue is not full")
+        result = subprocess.run(
+            ["strace", "-f", "-qq", "-s", "120", "-o", trace, "-e", "trace=write,%process,%network", binary],
+            stdin=slave, stdout=slave, stderr=slave, timeout=15,
+        )
+        if result.returncode != 1:
+            raise RuntimeError("full PTY changed the public refusal result")
+        subprocess.run(["flock", "-n", "-x", lock, "true"], check=True, timeout=3)
+        calls = trace.read_text().splitlines()
+        if (not any("manual login verified inputs handed off" in line and "EAGAIN" in line
+                    for line in calls)
+                or sum("execve(" in line for line in calls) != 1
+                or any("socket(" in line or "connect(" in line for line in calls)):
+            raise RuntimeError(f"did not verify the full-queue refusal: {calls!r}")
+        print("signed publication with a full PTY: exit 1, exclusive lock recovered")
+    finally:
+        for descriptor in (filler, slave, master):
+            os.close(descriptor)
+
+
 def exercise(binary, root, signed=False):
     etc = root / "etc"
     config = etc / "tempest"
@@ -186,7 +222,10 @@ def exercise(binary, root, signed=False):
         unexpected = [
             line for line in lines
             if line.split("(", 1)[0] not in allowed
-            or any(token in line for token in ("O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC"))
+            or any(token in line for token in ("O_RDWR", "O_CREAT", "O_TRUNC"))
+            or ("O_WRONLY" in line and not (
+                '"/proc/self/fd/2"' in line and "O_NONBLOCK" in line
+            ))
         ]
         if sum(line.startswith("execve(") for line in lines) != 1 or unexpected:
             raise RuntimeError(f"{label}: unexpected traced operations: {unexpected!r}")
@@ -196,6 +235,9 @@ def exercise(binary, root, signed=False):
         if snapshot() != baseline:
             raise RuntimeError(f"{label}: policy or ledger changed")
         print(f"{label}: exit 1, no child, network, or ledger mutation")
+        if label == "signed publication normal":
+            check_full_publication_terminal(binary, config, trace)
+
 
     same = (0, 0, 0)
     terminal = b"dedicated administrator PTY required"
