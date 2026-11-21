@@ -395,16 +395,28 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
             case = "signed-tls-revocation"
         elif expire:
             case = "signed-tls-expiry"
-        command, before_ready = ([binary, case], None) if supervision is None else supervision
+        command, before_ready, host_revoke = (
+            ([binary, case], None, None) if supervision is None else supervision
+        )
+
+        def revoke_live_host(pid):
+            child = verify_signed_child_environment(pid)
+            child_fd = os.pidfd_open(child)
+            try:
+                host_revoke()
+                if not select.select([child_fd], [], [], 5)[0]:
+                    raise RuntimeError("fixed child survived the management revocation")
+            finally:
+                os.close(child_fd)
         fixture(
             command,
             {}, complete_probe=True,
             before_ready=before_ready,
             startup_timeout=25 if stage_login_artifacts else 3,
-            success=(b"synthetic administrator stop: PID namespace reaped\n" if revoke else b"")
+            success=(b"synthetic administrator stop: PID namespace reaped\n" if revoke or host_revoke else b"")
             + POSITIVE + REMOVED,
             observe_child=None if terminal_case else observe_and_probe,
-            after_probe=observe_and_probe if terminal_case else None,
+            after_probe=observe_and_probe if terminal_case else revoke_live_host if host_revoke else None,
             check_evidence=lambda stderr: check_evidence(stderr, record, identities, True),
         )
         served.result()

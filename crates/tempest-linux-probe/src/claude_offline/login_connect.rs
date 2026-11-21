@@ -282,7 +282,9 @@ pub(super) fn serve_fixture(
         } else {
             None
         };
-        let relayed = if matches!(case, Case::SignedTlsExpiry) {
+        let relayed = if let Some(stop @ super::FixtureStop::Host(_)) = stop {
+            relay_until_revoked(client, tunnel, deadline.min(expires), stop)
+        } else if matches!(case, Case::SignedTlsExpiry) {
             finish_expiring_relay(relay(client, tunnel, expires), expires)
         } else {
             relay(client, tunnel, deadline)

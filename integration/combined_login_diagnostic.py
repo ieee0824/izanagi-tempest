@@ -278,6 +278,8 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *
                 mismatch = replace(commit, scope=replace(expected, generation=2))
                 run_case("direct supervisor generation mismatch", mismatch, False,
                          stage="direct-refusal")
+                run_case("direct supervisor revoked before start", commit, False,
+                         revoke_after_response=True, stage="direct-refusal")
                 if record.exists():
                     raise RuntimeError("refused supervisor consumed the permit")
                 refresh_publication(expected.permit_id, expected.target_id, 30)
@@ -295,8 +297,28 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *
                     )
                     os.write(master, response.stdout)
 
+                def revoke_live_host():
+                    update = """
+import sqlite3
+import sys
+
+with sqlite3.connect(sys.argv[1]) as db:
+    updated = db.execute(
+        "INSERT INTO permit_commits "
+        "SELECT sequence + 1, ledger_id, target_id, permit_id, generation, 'revoked' "
+        "FROM permit_commits WHERE sequence = 1"
+    )
+    if updated.rowcount != 1:
+        raise RuntimeError("active management permit was not revoked")
+"""
+                    subprocess.run(
+                        ["flock", "-x", "-w", "3", published / "lock",
+                         sys.executable, "-c", update, database],
+                        check=True, timeout=5,
+                    )
+
                 command = [direct_test, "--ignored", "--nocapture", "supervise_verified_dummy_tls"]
-                return command, relay_challenge
+                return command, relay_challenge, revoke_live_host
 
             check_signed_permits(dummy, direct_tls=connect_verified_supervisor)
             return
