@@ -168,6 +168,70 @@ fn approved_peer(resolved: &[IpAddr], approved: &[IpAddr], port: u16) -> io::Res
         .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "no approved login address"))
 }
 
+/// Use a pinned numeric peer after validating the fixed CONNECT authority.
+fn relay_fixed_request(
+    mut client: TcpStream,
+    peer: SocketAddr,
+    deadline: Instant,
+    stop: Option<&(dyn Fn() -> bool + Sync)>,
+) -> io::Result<()> {
+    let tunnel = match open_tunnel(&mut client, deadline, peer, |address, timeout| {
+        TcpStream::connect_timeout(&address, timeout)
+    }) {
+        Ok(tunnel) => tunnel,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            client.set_write_timeout(Some(time_remaining(deadline)?))?;
+            client.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n")?;
+            return Err(error);
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(stop) = stop {
+        relay_until_revoked(client, tunnel, deadline, stop, true)
+    } else {
+        relay(client, tunnel, deadline)
+    }
+}
+
+/// Serve the bounded owner-interactive route. Its socket address is pinned
+/// before entering the client namespace and never comes from the CONNECT request.
+pub(super) fn serve_managed(
+    listener: &TcpListener,
+    peer: SocketAddr,
+    expires: Instant,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> io::Result<()> {
+    loop {
+        if Instant::now() >= expires || stop() {
+            return Ok(());
+        }
+        match listener.accept() {
+            Ok((client, _)) => {
+                if stop() {
+                    return Ok(());
+                }
+                match relay_fixed_request(client, peer, expires, Some(stop)) {
+                    Ok(()) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::PermissionDenied
+                                | io::ErrorKind::ConnectionReset
+                                | io::ErrorKind::BrokenPipe
+                                | io::ErrorKind::UnexpectedEof
+                        ) => {}
+                    Err(_) if Instant::now() >= expires || stop() => return Ok(()),
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 pub(super) struct FixtureUpstream {
     listener: TcpListener,
     peer: SocketAddr,
@@ -242,11 +306,8 @@ pub(super) fn serve_fixture(
             Some(std::thread::Builder::new().spawn_scoped(scope, || {
                 let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 39275));
                 for expects_rejection in [false, true] {
-                    let mut client = accept_before(listener, deadline)?;
-                    let tunnel = open_tunnel(&mut client, deadline, peer, |address, timeout| {
-                        TcpStream::connect_timeout(&address, timeout)
-                    })?;
-                    match relay(client, tunnel, deadline) {
+                    let client = accept_before(listener, deadline)?;
+                    match relay_fixed_request(client, peer, deadline, None) {
                         // The client aborts the second handshake with a TLS alert.
                         Err(error)
                             if expects_rejection
@@ -264,7 +325,7 @@ pub(super) fn serve_fixture(
                     TcpStream::connect_timeout(&address, timeout)
                 })?;
                 if let Some(stop) = stop {
-                    relay_until_revoked(client, tunnel, deadline, stop)?;
+                    relay_until_revoked(client, tunnel, deadline, &|| stop.requested(), false)?;
                 } else {
                     finish_expiring_relay(relay(client, tunnel, expires), expires)?;
                 }
@@ -283,7 +344,7 @@ pub(super) fn serve_fixture(
             None
         };
         let relayed = if let Some(stop @ super::FixtureStop::Host(..)) = stop {
-            relay_until_revoked(client, tunnel, deadline, stop)
+            relay_until_revoked(client, tunnel, deadline, &|| stop.requested(), true)
         } else if matches!(case, Case::SignedTlsExpiry) {
             finish_expiring_relay(relay(client, tunnel, expires), expires)
         } else {
@@ -304,16 +365,16 @@ fn relay_until_revoked(
     client: TcpStream,
     tunnel: TcpStream,
     deadline: Instant,
-    stop: &super::FixtureStop,
+    stop: &(dyn Fn() -> bool + Sync),
+    allow_peer_close: bool,
 ) -> io::Result<()> {
     let client_pin = client.try_clone()?;
     let upstream_pin = tunnel.try_clone()?;
-    let host = matches!(stop, super::FixtureStop::Host(..));
     let (finished, finished_relay) = std::sync::mpsc::channel::<()>();
     std::thread::scope(|scope| {
         let watcher = std::thread::Builder::new().spawn_scoped(scope, move || {
             loop {
-                if stop.requested() {
+                if stop() {
                     let shutdown = |stream: &TcpStream| match stream.shutdown(Shutdown::Both) {
                         Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
                         result => result,
@@ -325,7 +386,7 @@ fn relay_until_revoked(
                 if Instant::now() >= deadline {
                     return Err(io::Error::other("signed revocation not observed"));
                 }
-                if host {
+                if allow_peer_close {
                     if finished_relay
                         .recv_timeout(Duration::from_millis(10))
                         .is_ok()
@@ -368,6 +429,63 @@ fn finish_expiring_relay(result: io::Result<()>, expires: Instant) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_gateway_rejects_wrong_authority_and_closes_live_tunnel_on_stop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        const REQUEST: &[u8] =
+            b"CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\n";
+        const ACCEPTED: &[u8] = b"HTTP/1.1 200 Connection Established\r\n\r\n";
+        const DENIED: &[u8] = b"HTTP/1.1 403 Forbidden\r\n\r\n";
+        let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let gateway = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        gateway.set_nonblocking(true).unwrap();
+        let stop = AtomicBool::new(false);
+        let timeout = Duration::from_secs(2);
+        let deadline = Instant::now() + timeout;
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                serve_managed(&gateway, upstream.local_addr().unwrap(), deadline, &|| {
+                    stop.load(Ordering::Acquire)
+                })
+                .unwrap();
+            });
+            let connect = || {
+                let client = TcpStream::connect(gateway.local_addr().unwrap()).unwrap();
+                client.set_read_timeout(Some(timeout)).unwrap();
+                client
+            };
+            let mut denied = connect();
+            denied
+                .write_all(b"CONNECT other.invalid:443 HTTP/1.0\r\n\r\n")
+                .unwrap();
+            let mut refusal = [0; DENIED.len()];
+            denied.read_exact(&mut refusal).unwrap();
+            assert_eq!(refusal, DENIED);
+            assert_eq!(
+                upstream.accept().unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+
+            let mut client = connect();
+            client.write_all(REQUEST).unwrap();
+            let mut accepted = [0; ACCEPTED.len()];
+            client.read_exact(&mut accepted).unwrap();
+            assert_eq!(accepted, ACCEPTED);
+            let mut server = accept_before(&upstream, deadline).unwrap();
+            server.set_read_timeout(Some(timeout)).unwrap();
+            client.write_all(b"PING").unwrap();
+            let mut data = [0; 4];
+            server.read_exact(&mut data).unwrap();
+            assert_eq!(&data, b"PING");
+            stop.store(true, Ordering::Release);
+            assert_eq!(client.read(&mut data).unwrap(), 0);
+            assert_eq!(server.read(&mut data).unwrap(), 0);
+            worker.join().unwrap();
+        });
+    }
 
     #[test]
     #[ignore = "requires openssl, Python 3, and an isolated Linux loopback"]

@@ -820,6 +820,8 @@ struct FixtureGrant {
     id: u128,
     ledger: File,
     record: File,
+    stage_name: &'static str,
+    artifact: &'static Artifact<'static>,
 }
 
 impl FixtureGrant {
@@ -856,7 +858,7 @@ impl FixtureGrant {
         let mut claim = [0; 48];
         control.read_exact(&mut claim)?;
         self.verify_consumed_record()?;
-        let stage = open_login_child(&work.pinned, std::ffi::OsStr::new("artifact-busybox"), 0)?;
+        let stage = open_login_child(&work.pinned, std::ffi::OsStr::new(self.stage_name), 0)?;
         if claim != self.claim(&stage)? {
             return Err(io::Error::other("synthetic grant identity mismatch"));
         }
@@ -866,7 +868,7 @@ impl FixtureGrant {
             ));
         }
         let stage = File::open(format!("/proc/self/fd/{}", stage.as_raw_fd()))?;
-        verify_artifact(&stage, &BUSYBOX).map_err(|fault| io::Error::other(fault.reason()))
+        verify_artifact(&stage, self.artifact).map_err(|fault| io::Error::other(fault.reason()))
     }
 }
 
@@ -970,6 +972,7 @@ struct FixtureTls {
 
 struct FixturePermit {
     tls: Option<FixtureTls>,
+    managed_route: Option<ManagedLoginRoute>,
     verified_executable: Option<File>,
     grant: Option<FixtureGrant>,
     closure: Option<FixtureClosure>,
@@ -985,7 +988,12 @@ impl FixturePermit {
         if std::time::Instant::now() >= self.expires {
             return Err(io::Error::other("synthetic permit expired"));
         }
-        if self.executable_digest != BUSYBOX.sha256
+        let expected_digest = if self.managed_route.is_some() {
+            ARTIFACTS[0].sha256
+        } else {
+            BUSYBOX.sha256
+        };
+        if self.executable_digest != expected_digest
             || self.arguments != LOGIN_ARGS
             || self.authority != login_connect::AUTHORITY
         {
@@ -1373,7 +1381,15 @@ fn run_fixture_with_config(
         fs::set_permissions(certificate, fs::Permissions::from_mode(0o444))?;
     }
     let private_config = staging.config;
-    let staged_busybox = if diagnostic != Diagnostic::Version {
+    let managed_route = local_auth.and_then(|(_, _, permit)| permit.managed_route.as_ref());
+    let managed = managed_route.is_some();
+    if let Some(route) = managed_route {
+        use std::os::unix::fs::PermissionsExt;
+        let path = root.join("manual-login-ca.pem");
+        fs::write(&path, &route.ca)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o444))?;
+    }
+    if diagnostic != Diagnostic::Version {
         let destination = scratch.join("artifact-busybox");
         let staged =
             match local_auth.and_then(|(_, _, permit)| permit.verified_executable.as_ref()) {
@@ -1382,13 +1398,14 @@ fn run_fixture_with_config(
             }
             .inspect_err(|fault| stage_failure("busybox", fault))?;
         mount_artifact(root, &BUSYBOX, &staged)?;
-        Some(staged)
-    } else {
-        None
-    };
+    }
     if let Some(config) = private_config {
         own(&root.join("home/fixture"), 0o755)?;
-        config.bind(root)?;
+        if managed {
+            config.mount_ephemeral(root)?;
+        } else {
+            config.bind(root)?;
+        }
     } else {
         let settings = root.join("home/fixture/config/settings.json");
         fs::write(&settings, b"{}\n")?;
@@ -1465,6 +1482,7 @@ fn run_fixture_with_config(
                         upstream_network,
                         permit.expires,
                         permit.administrator_stop.as_ref(),
+                        managed_route.map(|route| route.peer),
                     )
                     .map_err(|error| {
                         eprintln!("local auth gateway refused before grant: {error}");
@@ -1489,11 +1507,8 @@ fn run_fixture_with_config(
                 .grant
                 .as_ref()
                 .map(|grant| {
-                    grant.claim(
-                        staged_busybox
-                            .as_ref()
-                            .ok_or_else(|| io::Error::other("synthetic stage missing"))?,
-                    )
+                    let staged = File::open(scratch.join(grant.stage_name))?;
+                    grant.claim(&staged)
                 })
                 .transpose()?;
             if let Some(claim) = claim.as_mut() {
@@ -1515,6 +1530,34 @@ fn run_fixture_with_config(
         }
         if let Some(config) = config {
             config.run(root, scratch, namespace_reaped, diagnostic)?;
+        } else if managed {
+            let (_, _, permit) = local_auth.ok_or(Fault::Identity)?;
+            let stop = permit.administrator_stop.as_ref().ok_or(Fault::Identity)?;
+            let gateway = gateway.ok_or(Fault::Identity)?;
+            if stop.requested() {
+                return Err(Fault::AdministratorStop);
+            }
+            let mut command = fixed_login_command(root)?;
+            command.env("NODE_EXTRA_CA_CERTS", "/manual-login-ca.pem");
+            let child = supervise_pid_namespace(
+                command,
+                permit
+                    .expires
+                    .saturating_duration_since(std::time::Instant::now()),
+                namespace_reaped,
+                0,
+                Some(libc::STDIN_FILENO),
+                network,
+                || stop.requested(),
+            );
+            gateway.close_managed()?;
+            match child {
+                Ok(())
+                | Err(Fault::AdministratorStop | Fault::ReportEof | Fault::ReportTimeout)
+                    if *namespace_reaped => {}
+                Err(error) => return Err(error),
+                Ok(()) => return Err(Fault::Identity),
+            }
         } else if let Some(events) = pty_events {
             run_pty_child(
                 root,
@@ -1535,8 +1578,10 @@ fn run_fixture_with_config(
         Ok::<_, Fault>(())
     })();
     if let Some(policy) = policy {
-        policy.finish(launch.is_ok())?;
-        if launch.is_ok() {
+        policy.finish(launch.is_ok(), managed)?;
+        if managed {
+            eprintln!("manual login network policy closed");
+        } else if launch.is_ok() {
             eprintln!(
                 "local auth: tunnel accepted, other host refused, three direct ports denied; listeners and policy closed"
             );
@@ -1928,6 +1973,15 @@ fn supervised_with_network(
                 grant.verify(&mut outside, work)?;
             }
             permit.validate()?;
+            if permit
+                .administrator_stop
+                .as_ref()
+                .is_some_and(FixtureStop::requested)
+            {
+                return Err(io::Error::other(
+                    "manual login authorization lost before launch grant",
+                ));
+            }
         }
         cli_granted = true;
         outside.write_all(b"G")?;
@@ -2108,6 +2162,9 @@ fn verify_shared_terminal(input: libc::c_int, output: libc::c_int) -> io::Result
 }
 
 const MANUAL_LOGIN_POLICY: &str = "/etc/tempest/claude-manual-login.json";
+const MANUAL_LOGIN_DEPLOYMENT: &str = "/etc/tempest/claude-login-deployment.json";
+const MANUAL_LOGIN_CONFIG: &str = "/var/lib/tempest-claude-login";
+const MANUAL_LOGIN_CA: &str = "/etc/tempest/claude-login-ca.pem";
 
 fn open_login_child(parent: &File, name: &std::ffi::OsStr, flags: libc::c_int) -> io::Result<File> {
     let name = std::ffi::CString::new(name.as_bytes())?;
@@ -3066,20 +3123,112 @@ pub(super) fn run_combined_login_diagnostic() -> std::process::ExitCode {
 }
 
 enum ManualLoginBackend {
-    Uninstalled,
+    Distribution,
     #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
     FixedDummy,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualLoginDeployment {
+    generation: u64,
+    manifest_sha256: String,
+    peer: std::net::IpAddr,
+    ca_sha256: String,
+}
+
+struct ManagedLoginRoute {
+    peer: std::net::SocketAddr,
+    ca: Vec<u8>,
+}
+
+fn preflight_managed_manual_login(
+    deployment: &ManualLoginDeployment,
+    verified: &VerifiedSupervisorInputs,
+) -> io::Result<ManagedLoginRoute> {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::MetadataExt;
+
+    if deployment.generation != verified._revision
+        || deployment.manifest_sha256 != verified._manifest_sha256
+        || !verified.approved_route.addresses.contains(&deployment.peer)
+        || deployment.peer.is_unspecified()
+        || deployment.peer.is_multicast()
+    {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    for path in [WORK_PARENT, MANUAL_LOGIN_CONFIG] {
+        let dir = pin_login_path(Path::new(path), libc::O_DIRECTORY)?.metadata()?;
+        if (dir.uid(), dir.gid(), dir.mode() & 0o7777) != (0, 0, 0o700) {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+    }
+    pin_artifacts(&ARTIFACTS[1..]).map_err(|fault| io::Error::other(fault.reason()))?;
+    verify_fixed_artifact(&BUSYBOX).map_err(|fault| io::Error::other(fault.reason()))?;
+    host_login_diagnostic::preflight_for_supervision(
+        &verified._login.target_id,
+        verified._login.id,
+        verified._revision,
+    )?;
+    let ca = read_login_input(Path::new(MANUAL_LOGIN_CA), 512 * 1024)?;
+    if !ca.starts_with(b"-----BEGIN CERTIFICATE-----")
+        || format!("{:x}", Sha256::digest(&ca)) != deployment.ca_sha256
+    {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok(ManagedLoginRoute {
+        peer: std::net::SocketAddr::new(deployment.peer, 443),
+        ca,
+    })
+}
+
+fn run_deployed_manual_login(deployment: ManualLoginDeployment) -> std::process::ExitCode {
+    let mut route = None;
+    match verify_combined_login_inputs_with(|verified| {
+        route = Some(preflight_managed_manual_login(&deployment, verified)?);
+        Ok(())
+    }) {
+        Ok((verified, commit, lock)) => {
+            drop(lock);
+            run_writable_pty_for(
+                Some(local_auth::Case::Managed),
+                true,
+                Some((&verified, commit)),
+                route,
+            )
+        }
+        Err(error) => {
+            host_login_diagnostic::report_without_waiting(&format!(
+                "manual login refused before authorization: {error}"
+            ));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
 pub(super) fn run_manual_login() -> std::process::ExitCode {
-    run_manual_login_with(ManualLoginBackend::Uninstalled)
+    run_manual_login_with(ManualLoginBackend::Distribution)
 }
 
 fn run_manual_login_with(backend: ManualLoginBackend) -> std::process::ExitCode {
     use std::process::ExitCode;
     manual_login_entry(std::env::args_os().len(), || {
         let reason = match backend {
-            ManualLoginBackend::Uninstalled => {
+            ManualLoginBackend::Distribution => {
+                match read_login_input(Path::new(MANUAL_LOGIN_DEPLOYMENT), 4096) {
+                    Ok(bytes) => {
+                        if let Ok(deployment) = serde_json::from_slice(&bytes) {
+                            return run_deployed_manual_login(deployment);
+                        }
+                        eprintln!("manual login refused: invalid deployment");
+                        return ExitCode::FAILURE;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(_) => {
+                        eprintln!("manual login refused: deployment unavailable");
+                        return ExitCode::FAILURE;
+                    }
+                }
                 match check_manual_login_policy(Path::new(MANUAL_LOGIN_POLICY)) {
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {
                         "administrator policy missing"
@@ -3112,6 +3261,7 @@ fn run_manual_login_with(backend: ManualLoginBackend) -> std::process::ExitCode 
                             Some(local_auth::Case::SignedTls),
                             true,
                             Some((&verified, commit)),
+                            None,
                         );
                     }
                     Err(error) => {
@@ -3241,7 +3391,7 @@ pub(super) fn run_pty() -> std::process::ExitCode {
 }
 
 pub(super) fn run_writable_pty() -> std::process::ExitCode {
-    run_writable_pty_for(None, false, None)
+    run_writable_pty_for(None, false, None, None)
 }
 
 pub(super) fn run_local_auth_pty() -> std::process::ExitCode {
@@ -3260,7 +3410,7 @@ pub(super) fn run_local_auth_pty() -> std::process::ExitCode {
     if args.next().is_some() {
         return std::process::ExitCode::FAILURE;
     }
-    run_writable_pty_for(Some(case), stage_login_artifacts, None)
+    run_writable_pty_for(Some(case), stage_login_artifacts, None, None)
 }
 
 #[derive(serde::Deserialize)]
@@ -3308,6 +3458,7 @@ fn run_writable_pty_for(
         &VerifiedSupervisorInputs,
         host_login_diagnostic::VerifiedHostCommit,
     )>,
+    managed_route: Option<ManagedLoginRoute>,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
     let mut args = std::env::args_os().skip(1);
@@ -3332,10 +3483,15 @@ fn run_writable_pty_for(
         let upstream_network = local_auth_case
             .map(|_| File::open("/proc/thread-self/ns/net"))
             .transpose()?;
+        let managed = managed_route.is_some();
+        if managed != matches!(local_auth_case, Some(local_auth::Case::Managed)) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         let mut permit = local_auth_case.map(|case| {
             let now = std::time::Instant::now();
             FixturePermit {
                 tls: None,
+                managed_route,
                 verified_executable: None,
                 grant: None,
                 closure: None,
@@ -3345,7 +3501,10 @@ fn run_writable_pty_for(
                 } else {
                     now + std::time::Duration::from_secs(60)
                 },
-                executable_digest: if matches!(case, local_auth::Case::WrongPermitScope) {
+                executable_digest: if matches!(
+                    case,
+                    local_auth::Case::WrongPermitScope | local_auth::Case::Managed
+                ) {
                     ARTIFACTS[0].sha256
                 } else {
                     BUSYBOX.sha256
@@ -3370,9 +3529,13 @@ fn run_writable_pty_for(
                 error
             }
         })?;
-        let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
+        let config_path = Path::new(if managed {
+            MANUAL_LOGIN_CONFIG
+        } else {
+            "/var/lib/tempest-claude-config-fixture"
+        });
         let config_parent = lock_parent(config_path)?;
-        if stage_login_artifacts {
+        if stage_login_artifacts && !managed {
             let certificate = read_login_child(&config_parent, ".synthetic-tls-ca.pem", 4096)?;
             let artifacts = pin_artifacts(TLS_FIXTURE_ARTIFACTS)
                 .map_err(|fault| io::Error::other(fault.reason()))?;
@@ -3392,8 +3555,8 @@ fn run_writable_pty_for(
         let diagnostic_files = verified_diagnostic
             .map(|verified| {
                 if !stage_login_artifacts
-                    || verified._revision != 1
-                    || verified.approved_route.revision != 1
+                    || (!managed
+                        && (verified._revision != 1 || verified.approved_route.revision != 1))
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -3410,7 +3573,42 @@ fn run_writable_pty_for(
             .transpose()?;
         let mut signed_permit_id = None;
         let mut signed_revocation_key = None;
-        if matches!(
+        if managed {
+            let verified = verified_diagnostic.ok_or(io::ErrorKind::InvalidInput)?;
+            let commit = host_commit.as_ref().ok_or(io::ErrorKind::InvalidInput)?;
+            let permit = permit.as_mut().ok_or(io::ErrorKind::InvalidInput)?;
+            let scope = login_permit::Scope {
+                executable_sha256: ARTIFACTS[0].sha256,
+                arguments: &LOGIN_ARGS,
+                authority: login_connect::AUTHORITY,
+                target_id: &verified._login.target_id,
+                approved_ips_revision: verified.approved_route.revision,
+            };
+            let gate = commit.lock_current()?;
+            let expiry = verified._login.expires.min(verified.revocation_deadline()?);
+            let id = verified._login.id;
+            let ledger = verified._login.ledger.try_clone()?;
+            let record = login_permit::consume(
+                &ledger,
+                &login_permit::Permit {
+                    id,
+                    expires_at: expiry,
+                    scope,
+                },
+                scope,
+                std::time::Instant::now(),
+            )?;
+            verified.release_publication_lock()?;
+            drop(gate);
+            permit.expires = expiry;
+            permit.grant = Some(FixtureGrant {
+                id,
+                ledger,
+                record,
+                stage_name: "artifact-0",
+                artifact: &ARTIFACTS[0],
+            });
+        } else if matches!(
             local_auth_case,
             Some(
                 local_auth::Case::SingleUsePermit
@@ -3560,7 +3758,18 @@ fn run_writable_pty_for(
             }
             drop(management_gate);
             if permit.verified_executable.is_some() {
-                permit.grant = Some(FixtureGrant { id, ledger, record });
+                let (stage_name, artifact) = if verified_diagnostic.is_some() {
+                    ("artifact-0", &ARTIFACTS[0])
+                } else {
+                    ("artifact-busybox", &BUSYBOX)
+                };
+                permit.grant = Some(FixtureGrant {
+                    id,
+                    ledger,
+                    record,
+                    stage_name,
+                    artifact,
+                });
             }
             permit.expires = expiry;
             if matches!(
@@ -3676,7 +3885,7 @@ fn run_writable_pty_for(
             run.is_ok(),
             retain,
         );
-        if let Err(error) = config.finish(&config_parent, action, run.is_ok()) {
+        if let Err(error) = config.finish(&config_parent, action, run.is_ok() && !managed) {
             return Err(match run {
                 Ok(_) => error,
                 Err(run_error) => io::Error::other(format!("{run_error}; {error}")),
@@ -4153,6 +4362,7 @@ mod tests {
                 Some(local_auth::Case::SignedTls),
                 true,
                 Some((&verified, host_commit)),
+                None,
             )
         });
         assert!(entered, "manual login entry refused the fixture PTY");

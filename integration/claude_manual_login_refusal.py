@@ -260,6 +260,19 @@ def exercise(binary, root, signed=False):
     )
     if signed:
         check_signed_publication(config, ledger, check)
+    else:
+        deployment = config / "claude-login-deployment.json"
+        try:
+            deployment.write_text(json.dumps({
+                "generation": 1,
+                "manifest_sha256": "0" * 64,
+                "peer": "192.0.2.1",
+                "ca_sha256": "0" * 64,
+            }))
+            deployment.chmod(0o600)
+            check("partial managed deployment", same, b"refused before authorization")
+        finally:
+            deployment.unlink(missing_ok=True)
 
 
 def main():

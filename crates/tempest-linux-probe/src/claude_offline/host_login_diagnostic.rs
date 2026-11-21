@@ -499,7 +499,6 @@ impl VerifiedHostCommit {
     }
 }
 
-#[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
 pub(super) fn preflight_for_supervision(
     target_id: &str,
     permit_id: u128,
