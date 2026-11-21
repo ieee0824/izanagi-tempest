@@ -619,3 +619,25 @@ sudo python3 integration/host_login_diagnostic_readonly.py \
 統合試験は読み取り専用の試験領域で2つのバイナリを接続し、未確定、
 台帳の巻き戻し、応答喪失での拒否を確認します。台帳公開の生成と
 実運用への配備は、この診断とは別の作業です。
+
+`tempest-host-login-publisher` は固定管理領域の
+`host-login-ledger-source/committed.json` から確定済み台帳の単一レコードを
+読み、管理スコープ・独立確定点と照合して `host-login-ledger/record.json`
+へ公開します。台帳本体から元レコードを取り出す処理は、台帳の管理側が
+担います。元レコード・確定点・スコープの管理側の更新は、公開先内の
+root 所有、モード 0600 の固定 `lock` を共有し、排他ロック内で行います。
+公開側も排他ロックを取得し、応答側は共有ロックの間に元レコードと
+公開済みレコードを照合してから署名します。
+
+公開時は `pending` を永続化し、同期済みの `record.new` をアトミックに
+置き換えます。ディレクトリの同期を確認してから `pending` を除去します。
+中断で `pending` が残る場合は署名を拒否します。復旧は管理者がロックを
+取得し、元台帳と独立確定点を確認したうえで判断します。
+
+```sh
+cargo build --locked -p tempest-linux-probe --bin tempest-host-login-diagnostic \
+  --bin tempest-host-login-responder --bin tempest-host-login-publisher
+sudo python3 integration/host_login_diagnostic_readonly.py \
+  target/debug/tempest-host-login-diagnostic target/debug/tempest-host-login-responder \
+  target/debug/tempest-host-login-publisher
+```

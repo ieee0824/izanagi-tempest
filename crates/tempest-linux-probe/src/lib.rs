@@ -106,3 +106,9 @@ pub fn host_login_diagnostic() -> std::process::ExitCode {
 pub fn host_login_responder() -> std::process::ExitCode {
     claude_offline::run_host_login_responder()
 }
+
+/// Publish the committed host ledger record for read-only login diagnostics.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn host_login_publisher() -> std::process::ExitCode {
+    claude_offline::run_host_login_publisher()
+}

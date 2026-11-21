@@ -1,4 +1,7 @@
-use super::{open_private_login_directory, pin_login_path, read_login_child};
+use super::{
+    open_login_child, open_pinned_login_policy, open_private_login_directory, pin_login_path,
+    read_login_child,
+};
 use ring::{
     rand::{SecureRandom, SystemRandom},
     signature::{self, KeyPair},
@@ -6,7 +9,10 @@ use ring::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    ffi::OsStr,
+    fs::{File, OpenOptions},
     io::{self, BufRead, Write},
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::Path,
     process::ExitCode,
 };
@@ -29,7 +35,7 @@ struct Scope {
 }
 
 // Declaration order matches the sorted JSON used by the existing fixture.
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Commit {
     ledger_id: String,
@@ -167,6 +173,69 @@ fn check_commit(inputs: &HostInputs, commit: &Commit) -> io::Result<()> {
     Ok(())
 }
 
+fn lock_publication(parent: &File, mode: libc::c_int) -> io::Result<File> {
+    let directory = open_private_login_directory(parent, "host-login-ledger")?;
+    let lock = open_pinned_login_policy(open_login_child(&directory, OsStr::new("lock"), 0)?)?;
+    if unsafe { libc::flock(lock.as_raw_fd(), mode | libc::LOCK_NB) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(lock)
+}
+
+fn read_source(parent: &File, inputs: &HostInputs) -> io::Result<Commit> {
+    let source = open_private_login_directory(parent, "host-login-ledger-source")?;
+    let commit = serde_json::from_slice(&read_login_child(&source, "committed.json", 2048)?)
+        .map_err(io::Error::other)?;
+    check_commit(inputs, &commit)?;
+    Ok(commit)
+}
+
+fn require_no_pending(directory: &File) -> io::Result<()> {
+    match open_login_child(directory, OsStr::new("pending"), 0) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+        Ok(_) => Err(io::Error::other("publication pending")),
+    }
+}
+
+fn publish() -> io::Result<()> {
+    let parent = open_management_parent()?;
+    let _lock = lock_publication(&parent, libc::LOCK_EX)?;
+    let inputs = read_inputs(&parent)?;
+    let commit = read_source(&parent, &inputs)?;
+    let publication = open_private_login_directory(&parent, "host-login-ledger")?;
+    require_no_pending(&publication)?;
+    let directory_path = Path::new("/proc/self/fd").join(publication.as_raw_fd().to_string());
+    let pending = directory_path.join("pending");
+    let temporary = directory_path.join("record.new");
+    let directory = File::open(&directory_path)?;
+    let create = |path| {
+        OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+    };
+    create(&pending)?.sync_all()?;
+    directory.sync_all()?;
+    let mut file = create(&temporary)?;
+    serde_json::to_writer(&mut file, &commit).map_err(io::Error::other)?;
+    file.sync_all()?;
+    std::fs::rename(&temporary, directory_path.join("record.json"))?;
+    directory.sync_all()?;
+    std::fs::remove_file(&pending)?;
+    directory.sync_all()
+}
+
+pub(crate) fn run_host_login_publisher() -> ExitCode {
+    if std::env::args_os().len() == 1 && unsafe { libc::geteuid() } == 0 && publish().is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("host login publication refused");
+        ExitCode::FAILURE
+    }
+}
+
 fn respond(reader: impl BufRead, mut output: impl Write) -> io::Result<()> {
     let challenge = String::from_utf8(read_line(reader, 65)?).map_err(io::Error::other)?;
     if challenge.len() != 64
@@ -177,11 +246,17 @@ fn respond(reader: impl BufRead, mut output: impl Write) -> io::Result<()> {
         return Err(io::ErrorKind::InvalidData.into());
     }
     let parent = open_management_parent()?;
+    let _lock = lock_publication(&parent, libc::LOCK_SH)?;
     let inputs = read_inputs(&parent)?;
+    let source = read_source(&parent, &inputs)?;
     let ledger = open_private_login_directory(&parent, "host-login-ledger")?;
+    require_no_pending(&ledger)?;
     let commit = serde_json::from_slice(&read_login_child(&ledger, "record.json", 2048)?)
         .map_err(io::Error::other)?;
     check_commit(&inputs, &commit)?;
+    if source != commit {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
     let signer_directory = open_private_login_directory(&parent, "host-login-signer")?;
     let seed = read_login_child(&signer_directory, "signing-seed", 32)?;
     let signer = signature::Ed25519KeyPair::from_seed_unchecked(&seed)

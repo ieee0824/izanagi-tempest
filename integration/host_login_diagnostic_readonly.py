@@ -20,7 +20,7 @@ INVALID_RECEIPT = "receipt unavailable or invalid"
 INVALID_INPUTS = "management inputs unavailable or invalid"
 
 
-def exercise(binary, root, responder=None):
+def exercise(binary, root, responder=None, publisher=None):
     parent = root / "izanagi-tempest"
     authority = parent / "host-login-authority"
     recovery = parent / "host-login-recovery"
@@ -115,15 +115,20 @@ def exercise(binary, root, responder=None):
             ledger = parent / "host-login-ledger"
             signer_directory = parent / "host-login-signer"
             ledger.mkdir(mode=0o700)
+            lock = ledger / "lock"
+            lock.touch(mode=0o600)
+            source = parent / "host-login-ledger-source"
+            source.mkdir(mode=0o700)
+            source_record = source / "committed.json"
             signer_directory.mkdir(mode=0o700)
             seed = signer_directory / "signing-seed"
             seed.write_bytes(bytes(range(32)))
             seed.chmod(0o600)
             record = ledger / "record.json"
 
-            def write_record(value):
-                record.write_text(json.dumps(asdict(value)), encoding="ascii")
-                record.chmod(0o600)
+            def write_record(value, path=record):
+                path.write_text(json.dumps(asdict(value)), encoding="ascii")
+                path.chmod(0o600)
 
             def request(challenge, status):
                 trace = root / "responder-syscalls"
@@ -148,8 +153,39 @@ def exercise(binary, root, responder=None):
                 request(challenge, 0)
                 return None
 
-            write_record(commit)
+            write_record(commit, source_record)
+            if publisher is None:
+                write_record(commit)
+            else:
+                def publish(status, wrapper=()):
+                    subprocess.run(["mount", "-o", "remount,bind,rw", "/var/lib"], check=True)
+                    try:
+                        result = subprocess.run([*wrapper, publisher], capture_output=True, timeout=10)
+                        if result.returncode != status:
+                            raise RuntimeError(f"unexpected publication result: {result}")
+                    finally:
+                        subprocess.run(["mount", "-o", "remount,bind,ro", "/var/lib"], check=True)
+
+                publish(0)
             check(VERIFIED_INPUTS, reply=lambda challenge: request(challenge, 0))
+            if publisher is not None:
+                source_record.unlink()
+                publish(1)
+                check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
+                write_record(replace(commit, sequence=1), source_record)
+                publish(1)
+                check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
+                write_record(commit, source_record)
+                pending = ledger / "pending"
+                publish(1, ("strace", "-qq", "-e", "trace=rename,renameat,renameat2",
+                            "-e", "inject=rename,renameat,renameat2:error=EIO"))
+                if not pending.exists() or not (ledger / "record.new").exists():
+                    raise RuntimeError("injected rename failure did not leave pending publication")
+                publish(1)
+                check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
+                (ledger / "record.new").unlink()
+                pending.unlink()
+                print("PASS: publication, source loss/rollback and interrupted-publication refusal")
             check(INVALID_RECEIPT, reply=lose_response)
             pending = replace(commit, state="pending")
             write_record(pending)
@@ -166,14 +202,14 @@ def exercise(binary, root, responder=None):
 
 def main():
     if sys.argv[1:2] != ["--isolated"]:
-        if len(sys.argv) not in (2, 3):
+        if len(sys.argv) not in (2, 3, 4):
             return 2
         binaries = [str(Path(path).resolve(strict=True)) for path in sys.argv[1:]]
         return subprocess.call([
             "unshare", "--mount", "--net", "--propagation", "private",
             sys.executable, str(Path(__file__).resolve()), "--isolated", *binaries,
         ])
-    if len(sys.argv) not in (3, 4) or os.geteuid() != 0:
+    if len(sys.argv) not in (3, 4, 5) or os.geteuid() != 0:
         return 2
     with tempfile.TemporaryDirectory(prefix="tempest-host-diagnostic-") as directory:
         exercise(sys.argv[2], Path(directory), *sys.argv[3:])
