@@ -53,7 +53,8 @@ def check_signed_publication(config, ledger, check, *, combined_check=None):
     write(authority / "revocation-key", public_key(revocation_key))
     write(authority / "revocation-minimum", b"1")
 
-    def publish(case, permit_id=permit_id, target=target, revocation_seconds=25):
+    def publish(case, permit_id=permit_id, target=target, revocation_seconds=25,
+                approved_peer="192.0.2.1"):
         now = int(time.time())
         handoff = b"izanagi-tempest:manual-login-handoff:fixture-v1\0" + encode({
             "permit_id": permit_id, "approval_pair_sha256": "a" * 64,
@@ -65,7 +66,7 @@ def check_signed_publication(config, ledger, check, *, combined_check=None):
         inputs = {
             "claude-manual-login.json": encode({
                 "version": 2, "authority": endpoint,
-                "approved_ips": {"revision": 1, "addresses": ["192.0.2.1"]},
+                "approved_ips": {"revision": 1, "addresses": [approved_peer]},
                 "permit": {
                     "target_hostname": hostname, "authority": endpoint,
                     "approved_ips_revision": 1, "expires_unix_seconds": now + 45,
@@ -99,8 +100,9 @@ def check_signed_publication(config, ledger, check, *, combined_check=None):
         }))
 
     if combined_check is not None:
-        combined_check(lambda permit=permit_id, registered_target=target, revocation_seconds=25:
-                       publish("normal", permit, registered_target, revocation_seconds))
+        combined_check(lambda permit=permit_id, registered_target=target, revocation_seconds=25,
+                              approved_peer="192.0.2.1":
+                       publish("normal", permit, registered_target, revocation_seconds, approved_peer))
         return
 
     stages = (
@@ -260,6 +262,19 @@ def exercise(binary, root, signed=False):
     )
     if signed:
         check_signed_publication(config, ledger, check)
+    else:
+        deployment = config / "claude-login-deployment.json"
+        try:
+            deployment.write_text(json.dumps({
+                "generation": 1,
+                "manifest_sha256": "0" * 64,
+                "peer": "192.0.2.1",
+                "ca_sha256": "0" * 64,
+            }))
+            deployment.chmod(0o600)
+            check("partial managed deployment", same, b"refused before authorization")
+        finally:
+            deployment.unlink(missing_ok=True)
 
 
 def main():

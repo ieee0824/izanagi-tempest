@@ -180,6 +180,29 @@ impl Generation {
         Ok(())
     }
 
+    /// Keep authentication material inside the disposable mount namespace.
+    /// The host generation remains an empty-settings recovery marker.
+    pub(super) fn mount_ephemeral(&self, root: &Path) -> Result<(), super::Fault> {
+        use super::super::os;
+        let target = root.join("home/fixture/config");
+        os::mount(
+            Some(Path::new("tmpfs")),
+            &target,
+            Some("tmpfs"),
+            libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+            Some("size=4194304,nr_inodes=128,mode=0700,uid=999,gid=988,noswap"),
+        )?;
+        let settings = target.join("settings.json");
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(settings)?;
+        std::io::Write::write_all(&mut file, b"{}\n")?;
+        configure(&file, 0o600)?;
+        Ok(())
+    }
+
     pub fn audit(&self, parent: &File, require_probe: bool) -> io::Result<bool> {
         let current = WorkArea::open_at(parent, &self.name)?;
         if fd_identity(&current)? != fd_identity(&self.pinned)? {
@@ -263,6 +286,43 @@ mod tests {
     use super::super::own;
     use super::*;
     use std::os::unix::fs::DirBuilderExt;
+
+    #[test]
+    #[ignore = "run as root in an isolated mount namespace"]
+    fn managed_configuration_does_not_persist_credentials() {
+        let base = PathBuf::from(format!(
+            "/var/tmp/tempest-managed-config-{}",
+            crate::private_io::random_hex().unwrap()
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&base).unwrap();
+        let root = base.join("root");
+        let target = root.join("home/fixture/config");
+        fs::create_dir_all(&target).unwrap();
+        let work = base.join("work");
+        let config = base.join("config");
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(&config).unwrap();
+        let work_parent = super::super::directory(&work).unwrap();
+        let config_parent = super::super::directory(&config).unwrap();
+        let work = WorkArea::create(&work_parent, &work).unwrap();
+        let generation = Generation::create(&config_parent, &config, &work).unwrap();
+        generation.mount_ephemeral(&root).unwrap();
+        let credential = target.join(".credentials.json");
+        fs::write(&credential, b"synthetic").unwrap();
+        assert!(credential.is_file());
+        assert!(!generation.path.join(".credentials.json").exists());
+        let mount = CString::new(target.as_os_str().as_bytes()).unwrap();
+        assert_eq!(
+            unsafe { libc::umount2(mount.as_ptr(), libc::MNT_DETACH) },
+            0
+        );
+        assert!(!credential.exists());
+        generation
+            .finish(&config_parent, Disposition::Remove, false)
+            .unwrap();
+        work.remove(&work_parent).unwrap();
+        fs::remove_dir_all(&base).unwrap();
+    }
 
     #[test]
     #[ignore = "requires root to create fixed UID/GID configuration fixtures"]

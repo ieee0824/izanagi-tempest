@@ -3,6 +3,7 @@
 from contextlib import closing
 from dataclasses import asdict, replace
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import pty
 import re
 import select
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -20,7 +22,7 @@ import time
 from claude_manual_login_refusal import FIXED_CLI, check_signed_publication
 from host_permit_receipt import Commit, Scope
 from claude_local_auth_pty_smoke import check_signed_permits
-from claude_supervised_pty_smoke import WORK
+from claude_supervised_pty_smoke import WORK, process_children
 from claude_writable_pty_smoke import CONFIG
 
 
@@ -275,7 +277,245 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, f
             os.close(slave)
             os.close(master)
 
+    def managed_entry(refresh_publication):
+        managed_config = root / "lib/tempest-claude-login"
+        managed_config.mkdir(mode=0o700)
+        managed_scope = scope
+        record = local_ledger / managed_scope.permit_id
+        ca_key = root / "managed-ca.key"
+        ca_path = config / "claude-login-ca.pem"
+        subprocess.run([
+            "/usr/bin/openssl", "req", "-x509", "-newkey", "ed25519", "-nodes",
+            "-days", "1", "-config", "/dev/null", "-subj", "/CN=isolated-login-fixture",
+            "-keyout", ca_key, "-out", ca_path,
+        ], check=True, capture_output=True)
+        ca_path.chmod(0o600)
+        ca_digest = hashlib.sha256(ca_path.read_bytes()).hexdigest()
+        deployment = config / "claude-login-deployment.json"
+        manifest = config / "claude-login-publication/1/manifest"
+        commit = Commit("fixture-ledger", 1, managed_scope, "consumed")
+        prepare(commit)
+        subprocess.run([publisher], check=True, timeout=5)
+
+        def write_provision(peer="127.0.0.1"):
+            refresh_publication(managed_scope.permit_id, managed_scope.target_id, 30, "127.0.0.1")
+            write(deployment, json.dumps({
+                "generation": 1, "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                "peer": peer, "ca_sha256": ca_digest,
+            }).encode())
+
+        def read_through(master, predicate, timeout):
+            deadline = time.monotonic() + timeout
+            output = b""
+            while not predicate(output):
+                if not select.select([master], [], [], max(0, deadline - time.monotonic()))[0]:
+                    raise RuntimeError(f"managed entry output timed out: {output!r}")
+                try:
+                    output += os.read(master, 4096)
+                except OSError as error:
+                    raise RuntimeError(f"managed entry lost its PTY: {output!r}") from error
+            return output
+
+        def assert_unstarted(label):
+            master, slave = pty.openpty()
+            try:
+                trace = root / "managed-partial.trace"
+                rejected = subprocess.run(
+                    ["strace", "-f", "-qq", "-o", trace, "-e", "trace=%process,%network", fixed_entry],
+                    stdin=slave, stdout=slave, stderr=slave, timeout=15,
+                )
+                os.set_blocking(master, False)
+                output = os.read(master, 4096)
+                calls = trace.read_text().splitlines()
+                if (rejected.returncode != 1 or b"refused before authorization" not in output
+                        or re.search(rb"(?:^|\n)[a-f0-9]{64}\r?\n", output)
+                        or sum("execve(" in call for call in calls) != 1
+                        or any(token in call for call in calls
+                               for token in ("clone(", "clone3(", "fork(", "socket("))
+                        or record.exists() or any(WORK.iterdir()) or any(managed_config.iterdir())):
+                    raise RuntimeError(f"{label} changed state: {output!r}")
+                print(f"{label}: no challenge, consumption, child, network or setup")
+            finally:
+                os.close(slave)
+                os.close(master)
+
+        write_provision("127.0.0.2")
+        assert_unstarted("managed entry with unapproved IP")
+        write_provision()
+        original_ca = ca_path.read_bytes()
+        ca_path.unlink()
+        try:
+            assert_unstarted("managed entry missing CA")
+        finally:
+            write(ca_path, original_ca)
+
+        def assert_host_settings():
+            (generation,) = managed_config.iterdir()
+            if {path.name for path in generation.iterdir()} != {"settings.json"}:
+                raise RuntimeError("managed fixed child wrote credentials to host settings")
+
+        def revoke():
+            with (published / "lock").open("rb") as held:
+                lock_deadline = time.monotonic() + 3
+                while True:
+                    try:
+                        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= lock_deadline:
+                            raise
+                        time.sleep(0.01)
+                with closing(sqlite3.connect(database)) as db, db:
+                    db.execute("INSERT INTO permit_commits VALUES (?, ?, ?, ?, ?, ?)", (
+                        2, commit.ledger_id, managed_scope.target_id, managed_scope.permit_id,
+                        managed_scope.generation, "revoked",
+                    ))
+
+        def header_probe(pid):
+            pending = [pid]
+            while pending:
+                proc = Path(f"/proc/{pending.pop()}")
+                try:
+                    pending.extend(process_children(proc))
+                    if b"managed-login-dummy" in (proc / "cmdline").read_bytes():
+                        break
+                except FileNotFoundError:
+                    continue
+            else:
+                raise RuntimeError("managed fixed child was not found")
+            probe = r"""
+import socket
+import sys
+with socket.create_connection(("127.0.0.1", 39271), timeout=3) as client:
+    client.sendall(b"CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: ")
+    print("partial", flush=True)
+    if sys.stdin.readline() != "revoked\n":
+        raise RuntimeError("missing revocation result")
+    try:
+        if client.recv(1) != b"":
+            raise RuntimeError("partial request was answered")
+    except ConnectionResetError:
+        pass
+    try:
+        client.sendall(b"platform.claude.com:443\r\n\r\n")
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+"""
+            with subprocess.Popen(
+                ["nsenter", "--net=" + str(proc / "ns/net"), sys.executable, "-c", probe],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+            ) as process:
+                try:
+                    if not select.select([process.stdout], [], [], 3)[0] or process.stdout.readline() != "partial\n":
+                        raise RuntimeError("managed partial CONNECT was not sent")
+                    time.sleep(0.1)
+                    revoke()
+                    process.communicate("revoked\n", timeout=5)
+                    if process.returncode != 0:
+                        raise RuntimeError("managed gateway did not abort the partial CONNECT")
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+
+        def exchange(listener, login, master, outcome, disconnect):
+            if outcome == "partial-header":
+                read_through(master, lambda data: b"managed-dummy-idle" in data, 25)
+                assert_host_settings()
+                header_probe(login.pid)
+                listener.setblocking(False)
+                try:
+                    unexpected, _ = listener.accept()
+                except BlockingIOError:
+                    return master
+                unexpected.close()
+                raise RuntimeError("revoked partial header reached upstream")
+
+            try:
+                tunnel = listener.accept()[0]
+            except TimeoutError as error:
+                os.set_blocking(master, False)
+                diagnostics = os.read(master, 4096) if select.select([master], [], [], 0)[0] else b""
+                raise RuntimeError(
+                    f"managed child did not connect (exit={login.poll()}): {diagnostics!r}"
+                ) from error
+            with tunnel:
+                tunnel.settimeout(7)
+                with tunnel.makefile("rb") as probe:
+                    if probe.read(4) != b"PING":
+                        raise RuntimeError("managed fixed child did not reach the pinned peer")
+                    tunnel.sendall(b"ACK\n")
+                    if probe.readline() != b"READY\n":
+                        raise RuntimeError("managed fixed child did not hold its tunnel")
+                assert_host_settings()
+                if outcome == "disconnect":
+                    disconnect()
+                else:
+                    revoke()
+                if tunnel.recv(1) != b"":
+                    raise RuntimeError(f"managed tunnel survived {outcome}")
+            return master
+
+        for index, outcome in enumerate(("revoked", "partial-header", "disconnect"), start=2):
+            managed_scope = replace(scope, permit_id=f"{index:032x}")
+            record = local_ledger / managed_scope.permit_id
+            commit = Commit("fixture-ledger", 1, managed_scope, "consumed")
+            prepare(commit)
+            subprocess.run([publisher], check=True, timeout=5)
+            write_provision()
+            with socket.create_server(("127.0.0.1", 39275)) as listener:
+                listener.settimeout(30)
+                master, slave = pty.openpty()
+                attrs = termios.tcgetattr(slave)
+                attrs[3] &= ~termios.ECHO
+                termios.tcsetattr(slave, termios.TCSANOW, attrs)
+
+                def disconnect():
+                    nonlocal master
+                    os.close(master)
+                    master = -1
+
+                env = {**os.environ, "TEMPEST_FIXTURE_IDLE": "1"} if outcome == "partial-header" else None
+                try:
+                    with subprocess.Popen(
+                        [fixed_entry], stdin=slave, stdout=slave, stderr=slave, env=env,
+                    ) as login:
+                        try:
+                            challenge = rb"(?:^|\n)([a-f0-9]{64})\r?\n"
+                            output = read_through(master, lambda data: re.search(challenge, data), 15)
+                            response = subprocess.run(
+                                [responder], input=re.search(challenge, output)[1] + b"\n",
+                                capture_output=True, check=True, timeout=5,
+                            )
+                            os.write(master, response.stdout)
+                            exchange(listener, login, master, outcome, disconnect)
+                            result = login.wait(timeout=12)
+                            if master != -1:
+                                output = read_through(master, lambda data: b"configuration removed" in data, 2)
+                                if b"manual login network policy closed" not in output:
+                                    raise RuntimeError(f"managed entry did not confirm recovery: {output!r}")
+                            if result != 0:
+                                raise RuntimeError(f"managed entry did not recover after {outcome}: {result}")
+                        finally:
+                            if login.poll() is None:
+                                if master != -1:
+                                    os.close(master)
+                                    master = -1
+                                try:
+                                    login.wait(timeout=10)
+                                except subprocess.TimeoutExpired:
+                                    login.kill()
+                finally:
+                    os.close(slave)
+                    if master != -1:
+                        os.close(master)
+            if not record.is_file() or any(WORK.iterdir()) or any(managed_config.iterdir()):
+                raise RuntimeError("managed entry did not recover the matching permit generation")
+            print(f"managed entry: matching permit consumed and both generations recovered after {outcome}")
+
     def signed_fixture(refresh_publication):
+        if fixed_entry is not None:
+            managed_entry(refresh_publication)
+            return
         if staging_test:
             commit = Commit("fixture-ledger", 1, scope, "consumed")
             for mode in ("replace", "missing", "generation", "modify"):
@@ -291,7 +531,7 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, f
                 commit = Commit("fixture-ledger", 1, expected, "consumed")
                 refresh_publication(expected.permit_id, expected.target_id)
                 mismatch = replace(commit, scope=replace(expected, generation=2))
-                if outcome == "revoked" and fixed_entry is None:
+                if outcome == "revoked":
                     run_case("direct supervisor generation mismatch", mismatch, False,
                              stage="direct-refusal")
                     run_case("direct supervisor revoked before start", commit, False,
@@ -299,7 +539,7 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, f
                 if record.exists():
                     raise RuntimeError("refused supervisor consumed the permit")
                 def prepare_live():
-                    if outcome == "revoked" and fixed_entry is None:
+                    if outcome == "revoked":
                         refresh_publication(expected.permit_id, expected.target_id, 30)
                         run_case("direct supervisor revoked at gate", commit, False,
                                  stage="direct-gate")
@@ -318,37 +558,6 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, f
                                         20 if outcome == "expired" else 30)
                     prepare(commit)
                     subprocess.run([publisher], check=True, timeout=5)
-                    if fixed_entry is not None:
-                        missing = published / "record.json"
-                        saved = missing.with_suffix(".saved")
-                        missing.rename(saved)
-                        try:
-                            master, slave = pty.openpty()
-                            trace = root / "fixed-entry-partial.trace"
-                            try:
-                                process = subprocess.run(
-                                    ["strace", "-f", "-qq", "-o", trace, "-e",
-                                     "trace=%process,%network", fixed_entry],
-                                    stdin=slave, stdout=slave, stderr=slave, timeout=15,
-                                )
-                                os.set_blocking(master, False)
-                                output = os.read(master, 4096)
-                            finally:
-                                os.close(slave)
-                                os.close(master)
-                            calls = trace.read_text().splitlines()
-                            if (process.returncode != 1
-                                    or b"refused before authorization" not in output
-                                    or re.search(rb"(?:^|\n)[a-f0-9]{64}\r?\n", output)
-                                    or sum("execve(" in call for call in calls) != 1
-                                    or any(token in call for call in calls
-                                           for token in ("clone(", "clone3(", "fork(", "socket("))
-                                    or record.exists() or any(WORK.iterdir())):
-                                raise RuntimeError(f"partial fixed entry changed state: {output!r}")
-                            print("partial fixed entry: no challenge, child, network, work or consumption")
-                        finally:
-                            saved.rename(missing)
-                        refresh_publication(expected.permit_id, expected.target_id, 30)
 
                 def relay_challenge(master):
                     output = b""
@@ -397,13 +606,12 @@ with sqlite3.connect(sys.argv[1]) as db:
                         check=True, timeout=5,
                     )
 
-                command = ([fixed_entry] if fixed_entry is not None else
-                           [direct_test, "--ignored", "--nocapture", "supervise_verified_dummy_tls"])
+                command = [direct_test, "--ignored", "--nocapture", "supervise_verified_dummy_tls"]
                 return (command, relay_challenge,
                         revoke_live_host if outcome != "disconnect" else None,
-                        prepare_live, fixed_entry is not None)
+                        prepare_live, False)
 
-            outcomes = ("revoked",) if fixed_entry is not None else (
+            outcomes = (
                 "revoked", "missing", "disconnect", "expired", "authority-pending"
             )
             for outcome in outcomes:

@@ -25,6 +25,7 @@ table inet tempest_local_auth {
 
 #[derive(Clone, Copy)]
 pub(super) enum Case {
+    Managed,
     Match,
     MissingNamespace,
     WrongNamespace,
@@ -89,7 +90,8 @@ impl Case {
     pub fn needs_gateway(self) -> bool {
         matches!(
             self,
-            Self::Match
+            Self::Managed
+                | Self::Match
                 | Self::MissingGateway
                 | Self::EmptyResolution
                 | Self::UnapprovedResolution
@@ -206,6 +208,27 @@ pub(super) struct LocalPolicy {
 pub(super) struct Gateway(Option<libc::pid_t>);
 
 impl Gateway {
+    pub fn close_managed(mut self) -> io::Result<()> {
+        let pid = self.0.ok_or(io::ErrorKind::InvalidInput)?;
+        if unsafe { libc::kill(pid, libc::SIGKILL) } < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error);
+            }
+        }
+        let status = wait_for_supervisor(pid)?;
+        self.0 = None;
+        if (libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0)
+            || (libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGKILL)
+        {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "managed login gateway did not close cleanly",
+            ))
+        }
+    }
+
     pub fn finish(mut self) -> io::Result<()> {
         let pid = self.0.unwrap();
         let status = wait_for_supervisor(pid)?;
@@ -267,6 +290,7 @@ impl LocalPolicy {
         upstream_network: &File,
         expires: std::time::Instant,
         stop: Option<&super::FixtureStop>,
+        managed_peer: Option<std::net::SocketAddr>,
     ) -> io::Result<Gateway> {
         if matches!(case, Case::MissingGateway) {
             return Err(io::Error::other("fixed gateway unavailable"));
@@ -299,6 +323,17 @@ impl LocalPolicy {
                     return Err(io::Error::other(
                         "fixed login gateway namespace unavailable",
                     ));
+                }
+                if let Some(peer) = managed_peer {
+                    let stop = stop.ok_or(io::ErrorKind::InvalidInput)?;
+                    sender.write_all(b"G")?;
+                    drop(sender);
+                    return login_connect::serve_managed(
+                        &self.listeners[0],
+                        peer,
+                        expires,
+                        &|| stop.requested(),
+                    );
                 }
                 let upstream = match login_connect::FixtureUpstream::prepare(case) {
                     Ok(upstream) => upstream,
@@ -334,7 +369,7 @@ impl LocalPolicy {
         Ok(gateway)
     }
 
-    pub fn finish(self, granted_and_completed: bool) -> io::Result<()> {
+    pub fn finish(self, granted_and_completed: bool, managed: bool) -> io::Result<()> {
         let counters = if self.installed {
             output(NFT, &["-j", "list", "table", "inet", TABLE]).and_then(|report| {
                 let report: serde_json::Value = serde_json::from_str(&report)?;
@@ -372,7 +407,9 @@ impl LocalPolicy {
             output(NFT, &["delete", "table", "inet", TABLE])?;
         }
         let counters = counters?;
-        let expected_counters = if granted_and_completed {
+        let expected_counters = if managed {
+            matches!(counters.as_slice(), [_, _, _])
+        } else if granted_and_completed {
             matches!(counters.as_slice(), [allowed, 3, 0] if *allowed > 0)
         } else if self.installed {
             counters == [0, 0, 0]
