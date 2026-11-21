@@ -15,7 +15,7 @@ use std::{
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::Path,
     process::ExitCode,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 const MANAGEMENT_PARENT: &str = "/var/lib/izanagi-tempest";
@@ -347,7 +347,11 @@ pub(crate) fn run_host_login_diagnostic() -> ExitCode {
             Err(_) => {
                 eprintln!("host login diagnostic refused: management inputs unavailable or invalid")
             }
-            Ok(inputs) => match verify_receipt(&inputs, io::stdin().lock(), io::stdout().lock()) {
+            Ok(inputs) => match verify_receipt_from_stdin(
+                &inputs,
+                Instant::now() + Duration::from_secs(5),
+                false,
+            ) {
                 Ok(_) => eprintln!("host login diagnostic: receipt verified; launch disabled"),
                 Err(_) => {
                     eprintln!("host login diagnostic refused: receipt unavailable or invalid")
@@ -406,6 +410,22 @@ impl Read for DeadlineInput {
     }
 }
 
+fn verify_receipt_from_stdin(
+    inputs: &HostInputs,
+    deadline: Instant,
+    same_pty: bool,
+) -> io::Result<Commit> {
+    let terminal = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open("/proc/self/fd/0")?;
+    if same_pty {
+        super::verify_shared_terminal(terminal.as_raw_fd(), libc::STDIN_FILENO)?;
+    }
+    let reader = BufReader::new(DeadlineInput { terminal, deadline });
+    verify_receipt(inputs, reader, io::stdout().lock())
+}
+
 pub(super) fn verify_for_supervision(
     target_id: &str,
     permit_id: u128,
@@ -414,13 +434,7 @@ pub(super) fn verify_for_supervision(
 ) -> io::Result<File> {
     let parent = open_management_parent()?;
     let inputs = read_inputs(&parent)?;
-    let terminal = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-        .open("/proc/self/fd/0")?;
-    super::verify_shared_terminal(terminal.as_raw_fd(), libc::STDIN_FILENO)?;
-    let reader = BufReader::new(DeadlineInput { terminal, deadline });
-    let receipt = verify_receipt(&inputs, reader, io::stdout().lock())?;
+    let receipt = verify_receipt_from_stdin(&inputs, deadline, true)?;
     let expected = Scope {
         target_id: target_id.to_owned(),
         permit_id: format!("{permit_id:032x}"),
