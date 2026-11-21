@@ -1,7 +1,9 @@
 //! Fixed inputs for dedicated Linux Claude offline diagnostics.
 use super::os::Fault;
+mod host_login_diagnostic;
 mod local_auth;
 mod login_connect;
+pub(super) use host_login_diagnostic::run_host_login_diagnostic;
 mod login_handoff;
 mod login_permit;
 mod writable_config;
