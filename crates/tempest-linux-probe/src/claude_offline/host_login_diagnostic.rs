@@ -499,6 +499,31 @@ impl VerifiedHostCommit {
     }
 }
 
+#[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
+pub(super) fn preflight_for_supervision(
+    target_id: &str,
+    permit_id: u128,
+    generation: u64,
+) -> io::Result<()> {
+    let parent = open_management_parent()?;
+    let _lock = lock_publication(&parent, libc::LOCK_SH)?;
+    let publication = open_private_login_directory(&parent, "host-login-ledger")?;
+    require_no_pending(&publication)?;
+    let inputs = read_inputs(&parent)?;
+    let source = read_source(&parent, &inputs)?;
+    let record: Commit =
+        serde_json::from_slice(&read_login_child(&publication, "record.json", 2048)?)
+            .map_err(io::Error::other)?;
+    if record != source
+        || source.scope.target_id != target_id
+        || source.scope.permit_id != format!("{permit_id:032x}")
+        || source.scope.generation != generation
+    {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok(())
+}
+
 pub(super) fn verify_for_supervision(
     target_id: &str,
     permit_id: u128,

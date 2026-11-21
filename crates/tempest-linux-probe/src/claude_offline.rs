@@ -2916,6 +2916,16 @@ fn verify_combined_login_inputs() -> io::Result<(
     host_login_diagnostic::VerifiedHostCommit,
     File,
 )> {
+    verify_combined_login_inputs_with(|_| Ok(()))
+}
+
+fn verify_combined_login_inputs_with(
+    preflight: impl FnOnce(&VerifiedSupervisorInputs) -> io::Result<()>,
+) -> io::Result<(
+    VerifiedSupervisorInputs,
+    host_login_diagnostic::VerifiedHostCommit,
+    File,
+)> {
     let parent = pin_login_path(
         Path::new(MANUAL_LOGIN_POLICY)
             .parent()
@@ -2928,6 +2938,10 @@ fn verify_combined_login_inputs() -> io::Result<(
     }
     let publication = open_private_login_directory(&parent, "claude-login-publication")?;
     let mut verified = verify_login_generation(&parent, &publication, false)?;
+    preflight(&verified)?;
+    if std::time::Instant::now() >= verified._login.expires {
+        return Err(io::Error::other("manual login inputs expired"));
+    }
     let (host_commit, host_lock) = host_login_diagnostic::verify_for_supervision(
         &verified._login.target_id,
         verified._login.id,
@@ -2977,18 +2991,127 @@ pub(super) fn run_combined_login_diagnostic() -> std::process::ExitCode {
     ExitCode::FAILURE
 }
 
+enum ManualLoginBackend {
+    Uninstalled,
+    #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
+    FixedDummy,
+}
+
 pub(super) fn run_manual_login() -> std::process::ExitCode {
+    run_manual_login_with(ManualLoginBackend::Uninstalled)
+}
+
+fn run_manual_login_with(backend: ManualLoginBackend) -> std::process::ExitCode {
+    use std::process::ExitCode;
     manual_login_entry(std::env::args_os().len(), || {
-        let reason = match check_manual_login_policy(Path::new(MANUAL_LOGIN_POLICY)) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => "administrator policy missing",
-            Err(error) if error.kind() == io::ErrorKind::Unsupported => {
-                "administrator policy acceptance disabled"
+        let reason = match backend {
+            ManualLoginBackend::Uninstalled => {
+                match check_manual_login_policy(Path::new(MANUAL_LOGIN_POLICY)) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        "administrator policy missing"
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                        "administrator policy acceptance disabled"
+                    }
+                    _ => "administrator policy unavailable or invalid",
+                }
             }
-            _ => "administrator policy unavailable or invalid",
+            #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
+            ManualLoginBackend::FixedDummy => {
+                match verify_combined_login_inputs_with(preflight_fixed_manual_login) {
+                    Ok((verified, commit, lock)) => {
+                        drop(lock);
+                        if let Some(fd) = std::env::var_os("TEMPEST_FIXTURE_EVIDENCE_FD") {
+                            let Some(fd) = fd
+                                .to_str()
+                                .and_then(|value| value.parse::<i32>().ok())
+                                .filter(|fd| *fd > libc::STDERR_FILENO)
+                            else {
+                                return ExitCode::FAILURE;
+                            };
+                            if unsafe { libc::dup2(fd, libc::STDERR_FILENO) } < 0 {
+                                return ExitCode::FAILURE;
+                            }
+                            unsafe { libc::close(fd) };
+                        }
+                        return run_writable_pty_for(
+                            Some(local_auth::Case::SignedTls),
+                            true,
+                            Some((&verified, commit)),
+                        );
+                    }
+                    Err(error) => {
+                        eprintln!("fixed manual login refused before authorization: {error}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
         };
         host_login_diagnostic::report_without_waiting(&format!("manual login refused: {reason}"));
-        std::process::ExitCode::FAILURE
+        ExitCode::FAILURE
     })
+}
+
+#[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
+pub(super) fn run_isolated_manual_login_fixture() -> std::process::ExitCode {
+    run_manual_login_with(ManualLoginBackend::FixedDummy)
+}
+
+#[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
+fn preflight_fixed_manual_login(verified: &VerifiedSupervisorInputs) -> io::Result<()> {
+    let config = pin_login_path(
+        Path::new("/var/lib/tempest-claude-config-fixture"),
+        libc::O_DIRECTORY,
+    )?;
+    let work = pin_login_path(Path::new(WORK_PARENT), libc::O_DIRECTORY)?;
+    for directory in [&config, &work] {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = directory.metadata()?;
+        if (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777) != (0, 0, 0o700) {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+    }
+    let (approval, _) = read_fixture_permit(&config)?;
+    let expected = login_permit::Scope {
+        executable_sha256: BUSYBOX.sha256,
+        arguments: &LOGIN_ARGS,
+        authority: login_connect::AUTHORITY,
+        target_id: "synthetic-target",
+        approved_ips_revision: 1,
+    };
+    if approval.executable_sha256 != expected.executable_sha256
+        || approval.arguments.each_ref().map(String::as_str) != LOGIN_ARGS
+        || approval.policy.authority != expected.authority
+        || approval.target_id != expected.target_id
+        || approval.approved_ips_revision != expected.approved_ips_revision
+        || verified._revision != 1
+    {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let key = read_login_child(&config, ".synthetic-handoff-key", 32)?
+        .try_into()
+        .map_err(|_| io::ErrorKind::InvalidData)?;
+    let (id, _) = verify_login_handoff(
+        &key,
+        &read_login_child(&config, ".synthetic-handoff", 4096)?,
+        &read_login_child(&config, ".synthetic-handoff-signature", 64)?,
+        expected,
+        approval.expires_unix_seconds,
+    )?;
+    if id != verified._login.id || approval.target_id != verified._login.target_id {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    check_unused_login_permit(&config, id)?;
+    read_login_child(&config, ".synthetic-tls-ca.pem", 4096)?;
+    verify_fixed_artifact(&BUSYBOX)
+        .and_then(|_| pin_artifacts(TLS_FIXTURE_ARTIFACTS))
+        .and_then(|_| pin_artifacts(&ARTIFACTS[1..]))
+        .map_err(|fault| io::Error::other(fault.reason()))?;
+    host_login_diagnostic::preflight_for_supervision(
+        &verified._login.target_id,
+        id,
+        verified._revision,
+    )
 }
 
 fn manual_login_entry(

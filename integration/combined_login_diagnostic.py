@@ -33,7 +33,7 @@ def write(path, data):
     path.chmod(0o600)
 
 
-def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *, staging_test=False):
+def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, fixed_entry=None, *, staging_test=False):
     config = root / "etc/tempest"
     config.mkdir(parents=True, mode=0o700)
     local_ledger = config / "claude-login-diagnostic-ledger"
@@ -287,7 +287,7 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *
                 commit = Commit("fixture-ledger", 1, expected, "consumed")
                 refresh_publication(expected.permit_id, expected.target_id)
                 mismatch = replace(commit, scope=replace(expected, generation=2))
-                if outcome == "revoked":
+                if outcome == "revoked" and fixed_entry is None:
                     run_case("direct supervisor generation mismatch", mismatch, False,
                              stage="direct-refusal")
                     run_case("direct supervisor revoked before start", commit, False,
@@ -295,7 +295,7 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *
                 if record.exists():
                     raise RuntimeError("refused supervisor consumed the permit")
                 def prepare_live():
-                    if outcome == "revoked":
+                    if outcome == "revoked" and fixed_entry is None:
                         refresh_publication(expected.permit_id, expected.target_id, 30)
                         run_case("direct supervisor revoked at gate", commit, False,
                                  stage="direct-gate")
@@ -305,6 +305,37 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *
                                         20 if outcome == "expired" else 30)
                     prepare(commit)
                     subprocess.run([publisher], check=True, timeout=5)
+                    if fixed_entry is not None:
+                        missing = published / "record.json"
+                        saved = missing.with_suffix(".saved")
+                        missing.rename(saved)
+                        try:
+                            master, slave = pty.openpty()
+                            trace = root / "fixed-entry-partial.trace"
+                            try:
+                                process = subprocess.run(
+                                    ["strace", "-f", "-qq", "-o", trace, "-e",
+                                     "trace=%process,%network", fixed_entry],
+                                    stdin=slave, stdout=slave, stderr=slave, timeout=15,
+                                )
+                                os.set_blocking(master, False)
+                                output = os.read(master, 4096)
+                            finally:
+                                os.close(slave)
+                                os.close(master)
+                            calls = trace.read_text().splitlines()
+                            if (process.returncode != 1
+                                    or b"refused before authorization" not in output
+                                    or re.search(rb"(?:^|\n)[a-f0-9]{64}\r?\n", output)
+                                    or sum("execve(" in call for call in calls) != 1
+                                    or any(token in call for call in calls
+                                           for token in ("clone(", "clone3(", "fork(", "socket("))
+                                    or record.exists() or any(WORK.iterdir())):
+                                raise RuntimeError(f"partial fixed entry changed state: {output!r}")
+                            print("partial fixed entry: no challenge, child, network, work or consumption")
+                        finally:
+                            saved.rename(missing)
+                        refresh_publication(expected.permit_id, expected.target_id, 30)
 
                 def relay_challenge(master):
                     output = b""
@@ -348,11 +379,16 @@ with sqlite3.connect(sys.argv[1]) as db:
                         check=True, timeout=5,
                     )
 
-                command = [direct_test, "--ignored", "--nocapture", "supervise_verified_dummy_tls"]
+                command = ([fixed_entry] if fixed_entry is not None else
+                           [direct_test, "--ignored", "--nocapture", "supervise_verified_dummy_tls"])
                 return (command, relay_challenge,
-                        revoke_live_host if outcome != "disconnect" else None, prepare_live)
+                        revoke_live_host if outcome != "disconnect" else None,
+                        prepare_live, fixed_entry is not None)
 
-            for outcome in ("revoked", "missing", "disconnect", "expired"):
+            outcomes = ("revoked",) if fixed_entry is not None else (
+                "revoked", "missing", "disconnect", "expired"
+            )
+            for outcome in outcomes:
                 check_signed_permits(
                     dummy,
                     direct_tls=lambda record, payload: connect_verified_supervisor(
@@ -409,14 +445,14 @@ def main():
     if staging_test:
         sys.argv.pop()
     if sys.argv[1:2] != ["--isolated"]:
-        if len(sys.argv) not in (4, 5, 6) or os.geteuid() != 0:
+        if len(sys.argv) not in (4, 5, 6, 7) or os.geteuid() != 0:
             return 2
         binaries = [str(Path(arg).resolve(strict=True)) for arg in sys.argv[1:]]
         return subprocess.call(["unshare", "-mn", "--propagation", "private", sys.executable,
                                 str(Path(__file__).resolve()), "--isolated",
                                 os.readlink("/proc/self/ns/mnt"), os.readlink("/proc/self/ns/net"),
                                 *binaries, *(["--staging-test"] if staging_test else [])])
-    if len(sys.argv) not in (7, 8, 9) or os.geteuid() != 0 or any(
+    if len(sys.argv) not in (7, 8, 9, 10) or os.geteuid() != 0 or any(
         os.readlink(f"/proc/self/ns/{kind}") == original
         for kind, original in zip(("mnt", "net"), sys.argv[2:4])
     ):

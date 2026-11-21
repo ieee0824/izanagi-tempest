@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+isolated-manual-login-fixture = []
+
+[[bin]]
+name = "tempest-isolated-manual-login-fixture"
+required-features = ["isolated-manual-login-fixture"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

@@ -95,6 +95,17 @@ pub fn claude_manual_login() -> std::process::ExitCode {
     claude_offline::run_manual_login()
 }
 
+/// Exercise the manual login entry in the dedicated isolated debug build.
+#[cfg(all(
+    target_os = "linux",
+    target_arch = "x86_64",
+    debug_assertions,
+    feature = "isolated-manual-login-fixture"
+))]
+pub fn isolated_manual_login_fixture() -> std::process::ExitCode {
+    claude_offline::run_isolated_manual_login_fixture()
+}
+
 /// Read the fixed host management inputs without enabling login or consumption.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn host_login_diagnostic() -> std::process::ExitCode {

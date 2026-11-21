@@ -397,8 +397,8 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
             case = "signed-tls-revocation"
         elif expire:
             case = "signed-tls-expiry"
-        command, before_ready, host_revoke, _ = (
-            ([binary, case], None, None, None) if supervision is None else supervision
+        command, before_ready, host_revoke, _, shared_entry = (
+            ([binary, case], None, None, None, False) if supervision is None else supervision
         )
 
         def revoke_live_host(pid):
@@ -416,6 +416,7 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
             command,
             {}, complete_probe=True,
             before_ready=before_ready,
+            shared_entry=shared_entry,
             startup_timeout=25 if stage_login_artifacts else 3,
             success=(b"synthetic administrator stop: PID namespace reaped\n" if revoke or host_revoke else b"")
             + POSITIVE + REMOVED,
