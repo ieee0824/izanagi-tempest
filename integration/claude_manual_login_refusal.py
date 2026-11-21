@@ -178,8 +178,6 @@ def exercise(binary, root, signed=False):
     ledger = config / "claude-login-diagnostic-ledger"
     ledger.mkdir(parents=True, mode=0o700)
     policy = config / "claude-manual-login.json"
-    with open(policy, "xb", opener=lambda path, flags: os.open(path, flags, 0o600)) as out:
-        out.write(b'{"version":1,"authority":"platform.claude.com:443"}')
     def snapshot():
         entries = {}
         for entry in [config, *config.rglob("*")]:
@@ -241,6 +239,10 @@ def exercise(binary, root, signed=False):
 
 
     same = (0, 0, 0)
+    if not signed:
+        check("policy missing", same, b"administrator policy missing")
+    with open(policy, "xb", opener=lambda path, flags: os.open(path, flags, 0o600)) as out:
+        out.write(b'{"version":1,"authority":"platform.claude.com:443"}')
     terminal = b"dedicated administrator PTY required"
     check("extra argument", same, b"arguments are unsupported", ("auth", "login"))
     check("redirected stdin", (2, 0, 0), terminal)
