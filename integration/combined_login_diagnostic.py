@@ -33,7 +33,7 @@ def write(path, data):
     path.chmod(0o600)
 
 
-def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=False):
+def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *, staging_test=False):
     config = root / "etc/tempest"
     config.mkdir(parents=True, mode=0o700)
     local_ledger = config / "claude-login-diagnostic-ledger"
@@ -89,7 +89,11 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
         filters = "%network,%process,%file" if stage is None else "%network,%process"
         command = ["strace", "-f", "-qq", "-o", trace, "-e", f"trace={filters}", binary]
         environment = None
-        if stage is not None:
+        if stage == "direct-refusal":
+            command[-1] = direct_test
+            command += ["--ignored", "--nocapture", "supervise_verified_dummy_tls"]
+            environment = {"TEMPEST_EXPECT_DUMMY_REFUSAL": "1"}
+        elif stage is not None:
             command += ["--ignored", "--nocapture", "stage_combined_diagnostic_descriptors"]
             environment = {"TEMPEST_STAGE_CASE": stage}
         try:
@@ -141,10 +145,11 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
             os.close(slave)
             os.close(master)
         if stage is not None:
-            marker = f"staging case {stage}: expected outcome, mounts detached and generation removed"
-            if marker.encode() not in output or any(CONFIG.iterdir()):
+            marker = ("direct supervisor refused before launch" if stage == "direct-refusal"
+                      else f"staging case {stage}: expected outcome, mounts detached and generation removed")
+            if marker.encode() not in output or (stage != "direct-refusal" and any(CONFIG.iterdir())):
                 raise RuntimeError(f"{label}: unexpected staging output {output!r}")
-            expected_work = {WORK / "staging-source"}
+            expected_work = set() if stage == "direct-refusal" else {WORK / "staging-source"}
             if set(WORK.iterdir()) != expected_work:
                 raise RuntimeError(f"{label}: staging retained work unexpectedly")
             calls = [line.split(maxsplit=1)[1] for line in trace.read_text().splitlines()]
@@ -262,6 +267,39 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
                 refresh_publication()
                 run_case(mode, commit, False, stage=mode)
             return
+        if direct_test is not None:
+            def connect_verified_supervisor(record, payload):
+                handoff = json.loads(payload.read_bytes().split(b"\0", 1)[1])
+                expected = Scope(handoff["target_id"], record.name, 1)
+                if expected.permit_id != handoff["permit_id"]:
+                    raise RuntimeError("unexpected fixture handoff permit")
+                commit = Commit("fixture-ledger", 1, expected, "consumed")
+                refresh_publication(expected.permit_id, expected.target_id)
+                mismatch = replace(commit, scope=replace(expected, generation=2))
+                run_case("direct supervisor generation mismatch", mismatch, False,
+                         stage="direct-refusal")
+                if record.exists():
+                    raise RuntimeError("refused supervisor consumed the permit")
+                refresh_publication(expected.permit_id, expected.target_id, 30)
+                prepare(commit)
+                subprocess.run([publisher], check=True, timeout=5)
+
+                def relay_challenge(master):
+                    output = b""
+                    while not (match := re.search(rb"(?:^|\n)([a-f0-9]{64})\r?\n", output)):
+                        if not select.select([master], [], [], 15)[0]:
+                            raise RuntimeError("direct supervisor did not request a signature")
+                        output += os.read(master, 4096)
+                    response = subprocess.run(
+                        [responder], input=match[1] + b"\n", capture_output=True, check=True, timeout=5,
+                    )
+                    os.write(master, response.stdout)
+
+                command = [direct_test, "--ignored", "--nocapture", "supervise_verified_dummy_tls"]
+                return command, relay_challenge
+
+            check_signed_permits(dummy, direct_tls=connect_verified_supervisor)
+            return
         if dummy is not None:
             def verify_dummy(record, payload):
                 _, pair = payload.read_bytes().split(b"\0", 1)
@@ -310,14 +348,14 @@ def main():
     if staging_test:
         sys.argv.pop()
     if sys.argv[1:2] != ["--isolated"]:
-        if len(sys.argv) not in (4, 5) or os.geteuid() != 0:
+        if len(sys.argv) not in (4, 5, 6) or os.geteuid() != 0:
             return 2
         binaries = [str(Path(arg).resolve(strict=True)) for arg in sys.argv[1:]]
         return subprocess.call(["unshare", "-mn", "--propagation", "private", sys.executable,
                                 str(Path(__file__).resolve()), "--isolated",
                                 os.readlink("/proc/self/ns/mnt"), os.readlink("/proc/self/ns/net"),
                                 *binaries, *(["--staging-test"] if staging_test else [])])
-    if len(sys.argv) not in (7, 8) or os.geteuid() != 0 or any(
+    if len(sys.argv) not in (7, 8, 9) or os.geteuid() != 0 or any(
         os.readlink(f"/proc/self/ns/{kind}") == original
         for kind, original in zip(("mnt", "net"), sys.argv[2:4])
     ):
@@ -325,7 +363,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="tempest-combined-") as directory:
         root = Path(directory)
         (root / "etc").mkdir()
-        if len(sys.argv) == 8:
+        if len(sys.argv) >= 8:
             # nft renders protocol names from the local system databases.
             for name in ("protocols", "services", "ethertypes"):
                 shutil.copyfile(Path("/etc") / name, root / "etc" / name)
@@ -338,7 +376,7 @@ def main():
         subprocess.run(["mount", "--bind", root / "etc", "/etc"], check=True)
         subprocess.run(["mount", "--bind", root / "lib", "/var/lib"], check=True)
         try:
-            if len(sys.argv) == 8 or staging_test:
+            if len(sys.argv) >= 8 or staging_test:
                 if any(subprocess.check_output(["ip", family, "route", "show"]).strip()
                        for family in ("-4", "-6")):
                     raise RuntimeError("external route in test namespace")
@@ -362,7 +400,7 @@ def main():
                     row.split()[4] == FIXED_CLI
                     for row in Path("/proc/self/mountinfo").read_text().splitlines()):
                 subprocess.run(["umount", FIXED_CLI], check=True)
-            if len(sys.argv) == 8 or staging_test:
+            if len(sys.argv) >= 8 or staging_test:
                 for path in (CONFIG, WORK):
                     if path.is_mount():
                         subprocess.run(["umount", path], check=True)
