@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import termios
+import time
 
 from claude_manual_login_refusal import FIXED_CLI, check_signed_publication
 from host_permit_receipt import Commit, Scope
@@ -68,7 +69,7 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
                 value.scope.generation, value.state,
             ))
 
-    def run_case(label, value, expected, lose_response=False, revoke_after_response=False, stage=None):
+    def run_case(label, value, expected, lose_response=False, revoke_after_response=False, stage=None, stall=None):
         prepare(value)
         publication = subprocess.run([publisher], capture_output=True, timeout=5)
         if publication.returncode != (0 if value.state == "consumed" else 1):
@@ -76,6 +77,10 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
         master, slave = pty.openpty()
         attrs = termios.tcgetattr(slave)
         attrs[3] &= ~termios.ECHO
+        if stall == "partial":
+            attrs[3] &= ~termios.ICANON
+            attrs[6][termios.VMIN] = 1
+            attrs[6][termios.VTIME] = 0
         termios.tcsetattr(slave, termios.TCSANOW, attrs)
         trace = root / "trace"
         protected = (database, published / "record.json", recovery / "checkpoint.json")
@@ -96,23 +101,37 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
                         if not select.select([master], [], [], 10)[0]:
                             raise RuntimeError(f"{label}: no challenge in {output!r}")
                         output += os.read(master, 4096)
-                    response = subprocess.run(
-                        [responder], input=match[1] + b"\n", capture_output=True, timeout=5,
-                    )
-                    if response.returncode != (0 if value.state == "consumed" else 1):
-                        raise RuntimeError(f"{label}: unexpected responder result {response}")
-                    if revoke_after_response:
-                        with (published / "lock").open("rb") as held:
-                            fcntl.flock(held, fcntl.LOCK_EX)
-                            with closing(sqlite3.connect(database)) as db, db:
-                                db.execute("INSERT INTO permit_commits VALUES (?, ?, ?, ?, ?, ?)", (
-                                    value.sequence + 1, value.ledger_id, value.scope.target_id,
-                                    value.scope.permit_id, value.scope.generation, "revoked",
-                                ))
-                        before = tuple(path.read_bytes() for path in protected)
-                    os.write(master, response.stdout if response.stdout and not lose_response else b"\x04")
+                    if stall is None:
+                        response = subprocess.run(
+                            [responder], input=match[1] + b"\n", capture_output=True, timeout=5,
+                        )
+                        if response.returncode != (0 if value.state == "consumed" else 1):
+                            raise RuntimeError(f"{label}: unexpected responder result {response}")
+                        if revoke_after_response:
+                            with (published / "lock").open("rb") as held:
+                                fcntl.flock(held, fcntl.LOCK_EX)
+                                with closing(sqlite3.connect(database)) as db, db:
+                                    db.execute("INSERT INTO permit_commits VALUES (?, ?, ?, ?, ?, ?)", (
+                                        value.sequence + 1, value.ledger_id, value.scope.target_id,
+                                        value.scope.permit_id, value.scope.generation, "revoked",
+                                    ))
+                            before = tuple(path.read_bytes() for path in protected)
+                        os.write(master, response.stdout if response.stdout and not lose_response else b"\x04")
+                    else:
+                        lock_path = config / "claude-login-publication/lock"
+                        lock = ["flock", "-n", "-x", lock_path, "true"]
+                        if subprocess.run(lock, timeout=5).returncode != 1:
+                            raise RuntimeError(f"{label}: shared publication lock was not held")
+                        if stall == "partial":
+                            os.write(master, b'{"challenge":')
+                        state = config / "claude-login-authority/revocation-state"
+                        deadline = json.loads(state.read_bytes().split(b"\0", 1)[1])["expires_unix_seconds"]
                     if diagnostic.wait(timeout=25) != (1 if stage is None else 0):
                         raise RuntimeError(f"{label}: unexpected diagnostic status")
+                    if stall is not None:
+                        if time.time() > deadline + 1:
+                            raise RuntimeError(f"{label}: diagnostic exceeded the signed deadline")
+                        subprocess.run(lock, check=True, timeout=5)
                 finally:
                     if diagnostic.poll() is None:
                         diagnostic.kill()
@@ -143,6 +162,8 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
                 raise RuntimeError(f"{label}: staging changed the ledger")
             print(marker)
             return True
+        if stall is not None and b"host receipt deadline expired" not in output:
+            raise RuntimeError(f"{label}: expected an absolute-deadline refusal, got {output!r}")
         if (MATCH in output) != expected or (HANDOFF in output) != expected:
             raise RuntimeError(f"{label}: unexpected diagnostic output {output!r}")
         if tuple(path.read_bytes() for path in protected) != before or any(local_ledger.iterdir()):
@@ -193,6 +214,8 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
             ("response lost", commit, False, {"lose_response": True}),
             ("unconfirmed consumption", replace(commit, state="issued"), False, {}),
             ("revoked after signing", commit, False, {"revoke_after_response": True}),
+            ("open PTY with no response", commit, False, {"stall": "silent"}),
+            ("open PTY with partial response", commit, False, {"stall": "partial"}),
         ]
         for label, value, expected, options in scenarios:
             refresh_publication()

@@ -11,10 +11,11 @@ use sha2::{Digest, Sha256};
 use std::{
     ffi::OsStr,
     fs::{File, OpenOptions},
-    io::{self, BufRead, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::Path,
     process::ExitCode,
+    time::Instant,
 };
 
 const MANAGEMENT_PARENT: &str = "/var/lib/izanagi-tempest";
@@ -357,14 +358,69 @@ pub(crate) fn run_host_login_diagnostic() -> ExitCode {
     ExitCode::FAILURE
 }
 
+struct DeadlineInput {
+    terminal: File,
+    deadline: Instant,
+}
+
+impl Read for DeadlineInput {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let remaining = self.deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "host receipt deadline expired",
+                ));
+            }
+            let millis = remaining.as_nanos().div_ceil(1_000_000);
+            let timeout = millis.min(libc::c_int::MAX as u128) as libc::c_int;
+            let mut descriptor = libc::pollfd {
+                fd: self.terminal.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut descriptor, 1, timeout) };
+            if ready < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if ready == 0 || Instant::now() >= self.deadline {
+                continue;
+            }
+            match self.terminal.read(bytes) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                    ) => {}
+                result => return result,
+            }
+        }
+    }
+}
+
 pub(super) fn verify_for_supervision(
     target_id: &str,
     permit_id: u128,
     generation: u64,
+    deadline: Instant,
 ) -> io::Result<File> {
     let parent = open_management_parent()?;
     let inputs = read_inputs(&parent)?;
-    let receipt = verify_receipt(&inputs, io::stdin().lock(), io::stdout().lock())?;
+    let terminal = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open("/proc/self/fd/0")?;
+    super::verify_shared_terminal(terminal.as_raw_fd(), libc::STDIN_FILENO)?;
+    let reader = BufReader::new(DeadlineInput { terminal, deadline });
+    let receipt = verify_receipt(&inputs, reader, io::stdout().lock())?;
     let expected = Scope {
         target_id: target_id.to_owned(),
         permit_id: format!("{permit_id:032x}"),
