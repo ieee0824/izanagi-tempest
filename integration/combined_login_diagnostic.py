@@ -280,7 +280,7 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
                 if not run_case("matched dummy gate", commit, True):
                     raise RuntimeError("matched diagnostic failed to reach the dummy gate")
 
-            check_signed_permits(dummy, integration_gate=verify_dummy)
+            check_signed_permits(dummy, tls=True, integration_gate=verify_dummy)
             return
         commit = Commit("fixture-ledger", 1, scope, "consumed")
         scenarios = [

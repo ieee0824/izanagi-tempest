@@ -2931,18 +2931,26 @@ pub(super) fn run_pty() -> std::process::ExitCode {
 }
 
 pub(super) fn run_writable_pty() -> std::process::ExitCode {
-    run_writable_pty_for(None)
+    run_writable_pty_for(None, false)
 }
 
 pub(super) fn run_local_auth_pty() -> std::process::ExitCode {
     let mut args = std::env::args_os().skip(1);
-    let Some(case) = args.next().as_deref().and_then(local_auth::Case::parse) else {
+    let argument = args.next();
+    let stage_login_artifacts =
+        argument.as_deref() == Some(std::ffi::OsStr::new("signed-tls-staged"));
+    let case = if stage_login_artifacts {
+        Some(local_auth::Case::SignedTls)
+    } else {
+        argument.as_deref().and_then(local_auth::Case::parse)
+    };
+    let Some(case) = case else {
         return std::process::ExitCode::FAILURE;
     };
     if args.next().is_some() {
         return std::process::ExitCode::FAILURE;
     }
-    run_writable_pty_for(Some(case))
+    run_writable_pty_for(Some(case), stage_login_artifacts)
 }
 
 #[derive(serde::Deserialize)]
@@ -2983,7 +2991,10 @@ fn read_fixture_permit(parent: &File) -> io::Result<(FixtureApproval, std::time:
     Ok((fixture, now.checked_add(remaining).ok_or_else(invalid)?))
 }
 
-fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::process::ExitCode {
+fn run_writable_pty_for(
+    local_auth_case: Option<local_auth::Case>,
+    stage_login_artifacts: bool,
+) -> std::process::ExitCode {
     use std::process::ExitCode;
     let mut args = std::env::args_os().skip(1);
     let retain = match if local_auth_case.is_none() {
@@ -3231,11 +3242,12 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
             .zip(upstream_network.as_ref())
             .zip(permit.as_ref())
             .map(|((case, namespace), permit)| (case, namespace, permit));
-        let diagnostic = if matches!(local_auth_case, Some(local_auth::Case::Match)) {
-            Diagnostic::PtyWithLoginArtifacts
-        } else {
-            Diagnostic::Pty
-        };
+        let diagnostic =
+            if stage_login_artifacts || matches!(local_auth_case, Some(local_auth::Case::Match)) {
+                Diagnostic::PtyWithLoginArtifacts
+            } else {
+                Diagnostic::Pty
+            };
         let verified_artifacts = if diagnostic == Diagnostic::PtyWithLoginArtifacts {
             match pin_artifacts(artifacts_for(diagnostic)) {
                 Ok(artifacts) => Some(artifacts),
