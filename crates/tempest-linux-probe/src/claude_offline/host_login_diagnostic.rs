@@ -341,37 +341,42 @@ pub(crate) fn run_host_login_responder() -> ExitCode {
 
 pub(crate) fn run_host_login_diagnostic() -> ExitCode {
     if std::env::args_os().len() != 1 || unsafe { libc::geteuid() } != 0 {
-        eprintln!("host login diagnostic refused: dedicated administrator entry required");
+        report_without_waiting(
+            "host login diagnostic refused: dedicated administrator entry required",
+        );
     } else {
         match open_management_parent().and_then(|parent| read_inputs(&parent)) {
-            Err(_) => {
-                eprintln!("host login diagnostic refused: management inputs unavailable or invalid")
-            }
-            Ok(inputs) => match verify_receipt_from_stdin(
+            Err(_) => report_without_waiting(
+                "host login diagnostic refused: management inputs unavailable or invalid",
+            ),
+            Ok(inputs) => match verify_receipt_from_stdio(
                 &inputs,
                 Instant::now() + Duration::from_secs(5),
                 false,
             ) {
-                Ok(_) => eprintln!("host login diagnostic: receipt verified; launch disabled"),
-                Err(_) => {
-                    eprintln!("host login diagnostic refused: receipt unavailable or invalid")
-                }
+                Ok(_) => report_without_waiting(
+                    "host login diagnostic: receipt verified; launch disabled",
+                ),
+                Err(_) => report_without_waiting(
+                    "host login diagnostic refused: receipt unavailable or invalid",
+                ),
             },
         }
     }
     ExitCode::FAILURE
 }
 
-struct DeadlineInput {
-    terminal: File,
+struct DeadlineIo {
+    file: File,
     deadline: Instant,
 }
 
-impl Read for DeadlineInput {
-    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        if bytes.is_empty() {
-            return Ok(0);
-        }
+impl DeadlineIo {
+    fn perform<T>(
+        &mut self,
+        events: libc::c_short,
+        mut operation: impl FnMut(&mut File) -> io::Result<T>,
+    ) -> io::Result<T> {
         loop {
             let remaining = self.deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -380,11 +385,13 @@ impl Read for DeadlineInput {
                     "host receipt deadline expired",
                 ));
             }
-            let millis = remaining.as_nanos().div_ceil(1_000_000);
-            let timeout = millis.min(libc::c_int::MAX as u128) as libc::c_int;
+            let timeout = remaining
+                .as_nanos()
+                .div_ceil(1_000_000)
+                .min(libc::c_int::MAX as u128) as libc::c_int;
             let mut descriptor = libc::pollfd {
-                fd: self.terminal.as_raw_fd(),
-                events: libc::POLLIN,
+                fd: self.file.as_raw_fd(),
+                events,
                 revents: 0,
             };
             let ready = unsafe { libc::poll(&mut descriptor, 1, timeout) };
@@ -398,7 +405,7 @@ impl Read for DeadlineInput {
             if ready == 0 || Instant::now() >= self.deadline {
                 continue;
             }
-            match self.terminal.read(bytes) {
+            match operation(&mut self.file) {
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -410,20 +417,65 @@ impl Read for DeadlineInput {
     }
 }
 
-fn verify_receipt_from_stdin(
+impl Read for DeadlineIo {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        self.perform(libc::POLLIN, |file| file.read(bytes))
+    }
+}
+
+impl Write for DeadlineIo {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        self.perform(libc::POLLOUT, |file| file.write(bytes))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn open_nonblocking(fd: libc::c_int, write: bool) -> io::Result<File> {
+    OpenOptions::new()
+        .read(!write)
+        .write(write)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(format!("/proc/self/fd/{fd}"))
+}
+
+pub(super) fn report_without_waiting(message: &str) {
+    if let Ok(mut output) = open_nonblocking(libc::STDERR_FILENO, true) {
+        let _ = output.write(format!("{message}\n").as_bytes());
+    }
+}
+
+fn verify_receipt_from_stdio(
     inputs: &HostInputs,
     deadline: Instant,
     same_pty: bool,
 ) -> io::Result<Commit> {
-    let terminal = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-        .open("/proc/self/fd/0")?;
+    let input = open_nonblocking(libc::STDIN_FILENO, false)?;
+    let output = open_nonblocking(libc::STDOUT_FILENO, true)?;
     if same_pty {
-        super::verify_shared_terminal(terminal.as_raw_fd(), libc::STDIN_FILENO)?;
+        super::verify_shared_terminal(input.as_raw_fd(), libc::STDIN_FILENO)?;
+        super::verify_shared_terminal(output.as_raw_fd(), libc::STDOUT_FILENO)?;
     }
-    let reader = BufReader::new(DeadlineInput { terminal, deadline });
-    verify_receipt(inputs, reader, io::stdout().lock())
+    let reader = BufReader::new(DeadlineIo {
+        file: input,
+        deadline,
+    });
+    verify_receipt(
+        inputs,
+        reader,
+        DeadlineIo {
+            file: output,
+            deadline,
+        },
+    )
 }
 
 pub(super) fn verify_for_supervision(
@@ -434,7 +486,7 @@ pub(super) fn verify_for_supervision(
 ) -> io::Result<File> {
     let parent = open_management_parent()?;
     let inputs = read_inputs(&parent)?;
-    let receipt = verify_receipt_from_stdin(&inputs, deadline, true)?;
+    let receipt = verify_receipt_from_stdio(&inputs, deadline, true)?;
     let expected = Scope {
         target_id: target_id.to_owned(),
         permit_id: format!("{permit_id:032x}"),

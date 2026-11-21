@@ -172,11 +172,66 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
         calls = [line.split(maxsplit=1)[1] for line in trace.read_text().splitlines()]
         if (sum(line.startswith("execve(") for line in calls) != 1
                 or any(line.split("(", 1)[0] not in allowed
-                       or any(flag in line for flag in ("O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC"))
+                       or any(flag in line for flag in ("O_RDWR", "O_CREAT", "O_TRUNC"))
+                       or ("O_WRONLY" in line and not (
+                           "O_NONBLOCK" in line and any(f'"/proc/self/fd/{fd}"' in line for fd in (1, 2))
+                       ))
                        for line in calls)):
             raise RuntimeError(f"{label}: unexpected child, network or writing syscall: {calls}")
         print(f"{label}: exit 1, no child, network or ledger mutation")
         return MATCH in output and HANDOFF in output
+
+    def check_blocked_output(commit):
+        prepare(commit)
+        subprocess.run([publisher], check=True, timeout=5)
+        master, slave = pty.openpty()
+        trace = root / "blocked-output-trace"
+        lock = ["flock", "-n", "-x", config / "claude-login-publication/lock", "true"]
+        try:
+            filler = os.open(os.ttyname(slave), os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY)
+            try:
+                # Let already queued bytes move into the master buffer without draining it.
+                for _ in range(8):
+                    try:
+                        while True:
+                            os.write(filler, b"x" * 4096)
+                    except BlockingIOError:
+                        time.sleep(0.025)
+                try:
+                    os.write(filler, b"x" * 65)
+                except BlockingIOError:
+                    pass
+                else:
+                    raise RuntimeError("PTY output queue still accepts a challenge")
+            finally:
+                os.close(filler)
+            with subprocess.Popen(
+                ["strace", "-f", "-qq", "-o", trace, "-e", "trace=poll,%process,%network",
+                 binary], stdin=slave, stdout=slave, stderr=slave,
+            ) as diagnostic:
+                try:
+                    started = time.monotonic() + 5
+                    while subprocess.run(lock, timeout=3).returncode != 1:
+                        if diagnostic.poll() is not None or time.monotonic() >= started:
+                            raise RuntimeError("combined diagnostic did not hold publication lock")
+                        time.sleep(0.025)
+                    state = config / "claude-login-authority/revocation-state"
+                    deadline = json.loads(state.read_bytes().split(b"\0", 1)[1])["expires_unix_seconds"]
+                    if diagnostic.wait(timeout=27) != 1 or time.time() > deadline + 1:
+                        raise RuntimeError("blocked challenge did not refuse by the signed deadline")
+                    subprocess.run(lock, check=True, timeout=3)
+                finally:
+                    if diagnostic.poll() is None:
+                        diagnostic.kill()
+            calls = trace.read_text().splitlines()
+            if (not any("events=POLLOUT" in line and "(Timeout)" in line for line in calls)
+                    or sum("execve(" in line for line in calls) != 1
+                    or any("socket(" in line or "connect(" in line for line in calls)):
+                raise RuntimeError(f"blocked challenge did not exercise local output waiting: {calls!r}")
+            print("full PTY output queue: deadline refusal and exclusive publication lock recovered")
+        finally:
+            os.close(slave)
+            os.close(master)
 
     def signed_fixture(refresh_publication):
         if staging_test:
@@ -220,6 +275,8 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
         for label, value, expected, options in scenarios:
             refresh_publication()
             run_case(label, value, expected, **options)
+        refresh_publication()
+        check_blocked_output(commit)
 
     check_signed_publication(config, local_ledger, None, combined_check=signed_fixture)
 
