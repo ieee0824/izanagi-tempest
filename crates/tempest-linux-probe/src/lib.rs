@@ -100,3 +100,9 @@ pub fn claude_manual_login() -> std::process::ExitCode {
 pub fn host_login_diagnostic() -> std::process::ExitCode {
     claude_offline::run_host_login_diagnostic()
 }
+
+/// Sign one diagnostic response for a verified host-managed consumption.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn host_login_responder() -> std::process::ExitCode {
+    claude_offline::run_host_login_responder()
+}

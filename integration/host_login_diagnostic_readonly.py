@@ -20,7 +20,7 @@ INVALID_RECEIPT = "receipt unavailable or invalid"
 INVALID_INPUTS = "management inputs unavailable or invalid"
 
 
-def exercise(binary, root):
+def exercise(binary, root, responder=None):
     parent = root / "izanagi-tempest"
     authority = parent / "host-login-authority"
     recovery = parent / "host-login-recovery"
@@ -109,22 +109,74 @@ def exercise(binary, root):
         check(INVALID_INPUTS)
         key.symlink_to("test-key")
         check(INVALID_INPUTS)
+        if responder is not None:
+            key.unlink()
+            (authority / "test-key").rename(key)
+            ledger = parent / "host-login-ledger"
+            signer_directory = parent / "host-login-signer"
+            ledger.mkdir(mode=0o700)
+            signer_directory.mkdir(mode=0o700)
+            seed = signer_directory / "signing-seed"
+            seed.write_bytes(bytes(range(32)))
+            seed.chmod(0o600)
+            record = ledger / "record.json"
+
+            def write_record(value):
+                record.write_text(json.dumps(asdict(value)), encoding="ascii")
+                record.chmod(0o600)
+
+            def request(challenge, status):
+                trace = root / "responder-syscalls"
+                before = record.read_bytes(), checkpoint.read_bytes()
+                result = subprocess.run(
+                    ["strace", "-f", "-qq", "-o", str(trace), "-e", "trace=%network,%process",
+                     responder], input=challenge + "\n", capture_output=True, text=True, timeout=10,
+                )
+                calls = trace.read_text(encoding="utf-8").splitlines()
+                if (result.returncode != status or len(calls) != 2 or "execve(" not in calls[0]
+                        or f"exit_group({status})" not in calls[1]):
+                    raise RuntimeError(f"unexpected responder result: {result}, {calls}")
+                if before != (record.read_bytes(), checkpoint.read_bytes()):
+                    raise RuntimeError("responder changed the management records")
+                if status:
+                    if result.stdout:
+                        raise RuntimeError("refusal emitted a response")
+                    return None
+                return json.loads(result.stdout)
+
+            def lose_response(challenge):
+                request(challenge, 0)
+                return None
+
+            write_record(commit)
+            check(VERIFIED_INPUTS, reply=lambda challenge: request(challenge, 0))
+            check(INVALID_RECEIPT, reply=lose_response)
+            pending = replace(commit, state="pending")
+            write_record(pending)
+            write_checkpoint(pending)
+            check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
+            write_checkpoint(commit)
+            write_record(replace(commit, sequence=1))
+            check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
+            print("PASS: real responder connected, pending/rollback/dropped response refused")
         print("PASS: isolated signature verification, scope/checkpoint/replay refusal, no child/network activity")
     finally:
         subprocess.run(["umount", "/var/lib"], check=True)
 
 
 def main():
-    if len(sys.argv) != 3:
-        binary = str(Path(sys.argv[1]).resolve(strict=True))
+    if sys.argv[1:2] != ["--isolated"]:
+        if len(sys.argv) not in (2, 3):
+            return 2
+        binaries = [str(Path(path).resolve(strict=True)) for path in sys.argv[1:]]
         return subprocess.call([
             "unshare", "--mount", "--net", "--propagation", "private",
-            sys.executable, str(Path(__file__).resolve()), binary, "isolated",
+            sys.executable, str(Path(__file__).resolve()), "--isolated", *binaries,
         ])
-    if sys.argv[2] != "isolated" or os.geteuid() != 0:
+    if len(sys.argv) not in (3, 4) or os.geteuid() != 0:
         return 2
     with tempfile.TemporaryDirectory(prefix="tempest-host-diagnostic-") as directory:
-        exercise(sys.argv[1], Path(directory))
+        exercise(sys.argv[2], Path(directory), *sys.argv[3:])
     return 0
 
 
