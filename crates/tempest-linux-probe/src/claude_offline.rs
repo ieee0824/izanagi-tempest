@@ -79,6 +79,27 @@ const ARTIFACTS: &[Artifact<'static>] = &[
     },
 ];
 
+const TLS_FIXTURE_ARTIFACTS: &[Artifact<'static>] = &[
+    Artifact {
+        source: "/usr/bin/openssl",
+        bytes: 1005368,
+        sha256: "b4f547c0f16272d1cc7f870330a6f2c243710c335e7a99c734ff7a0c6fdb2503",
+        targets: &["bin/openssl"],
+    },
+    Artifact {
+        source: "/usr/lib/x86_64-linux-gnu/libssl.so.3",
+        bytes: 696512,
+        sha256: "a40e7b67489bbd257e432c700ff8f6a1ad796425b5eccecdc2930127fdd86624",
+        targets: &["lib/x86_64-linux-gnu/libssl.so.3"],
+    },
+    Artifact {
+        source: "/usr/lib/x86_64-linux-gnu/libcrypto.so.3",
+        bytes: 5309400,
+        sha256: "6866ed711dab8927e1bf82bf1cd30e828bdfc34f3cc1e83b1c9eb01ce6c37d9a",
+        targets: &["lib/x86_64-linux-gnu/libcrypto.so.3"],
+    },
+];
+
 fn copy_checked(
     input: impl Read,
     mut output: impl Write,
@@ -921,7 +942,13 @@ impl FixtureClosure {
     }
 }
 
+struct FixtureTls {
+    artifacts: Vec<File>,
+    certificate: Vec<u8>,
+}
+
 struct FixturePermit {
+    tls: Option<FixtureTls>,
     verified_executable: Option<File>,
     grant: Option<FixtureGrant>,
     closure: Option<FixtureClosure>,
@@ -1041,6 +1068,15 @@ fn run_pty_child(
             IFS= read -r established < /tunnel-ready
             test "$established" = ready
             kill -0 "$tunnel"
+            if test -x /bin/openssl; then
+                tls_request() {
+                    /bin/openssl s_client -quiet -proxy 127.0.0.1:39271 \
+                        -connect platform.claude.com:443 -servername platform.claude.com \
+                        -CAfile /fixture-tls-ca.pem -verify_return_error -verify_hostname "$1"
+                }
+                test "$(printf PING | tls_request platform.claude.com)" = K
+                if printf PING | tls_request invalid.example; then exit 1; fi
+            fi
             for port in 39272 39273 39274; do
                 if /bin/busybox nc -w 1 127.0.0.1 "$port" -e /bin/busybox true; then exit 1; fi
             done
@@ -1125,6 +1161,7 @@ fn verify_mount_table_for(
     root: &Path,
     diagnostic: Diagnostic,
     writable: bool,
+    tls_fixture: bool,
 ) -> Result<(), Fault> {
     use std::collections::BTreeSet;
     let mut expected = BTreeSet::from([root.to_path_buf()]);
@@ -1134,6 +1171,14 @@ fn verify_mount_table_for(
             .flat_map(|entry| entry.targets)
             .map(|path| root.join(path)),
     );
+    if tls_fixture {
+        expected.extend(
+            TLS_FIXTURE_ARTIFACTS
+                .iter()
+                .flat_map(|entry| entry.targets)
+                .map(|path| root.join(path)),
+        );
+    }
     if diagnostic != Diagnostic::Version {
         expected.insert(root.join("bin/busybox"));
     }
@@ -1153,6 +1198,8 @@ fn verify_mount_table_for(
         let flags: BTreeSet<_> = flags.split(',').collect();
         let required = if writable && target == config {
             &["rw", "nosuid", "nodev", "noexec"][..]
+        } else if tls_fixture && target == root.join("bin/claude") {
+            &["ro", "nosuid", "nodev", "noexec"][..]
         } else {
             &["ro", "nosuid", "nodev"][..]
         };
@@ -1278,6 +1325,32 @@ fn run_fixture_with_config(
         artifacts_for(diagnostic),
         staging.verified_artifacts,
     )?;
+    let tls_fixture = local_auth.and_then(|(_, _, permit)| permit.tls.as_ref());
+    if let Some(tls) = tls_fixture {
+        use std::os::unix::fs::PermissionsExt;
+        os::mount(
+            None,
+            &root.join("bin/claude"),
+            None,
+            libc::MS_BIND
+                | libc::MS_REMOUNT
+                | libc::MS_RDONLY
+                | libc::MS_NOSUID
+                | libc::MS_NODEV
+                | libc::MS_NOEXEC,
+            None,
+        )?;
+        for (index, (artifact, file)) in
+            TLS_FIXTURE_ARTIFACTS.iter().zip(&tls.artifacts).enumerate()
+        {
+            let destination = scratch.join(format!("artifact-{}", ARTIFACTS.len() + index));
+            let staged = stage_pinned_artifact(file, artifact, &destination)?;
+            mount_artifact(root, artifact, &staged)?;
+        }
+        let certificate = root.join("fixture-tls-ca.pem");
+        fs::write(&certificate, &tls.certificate)?;
+        fs::set_permissions(certificate, fs::Permissions::from_mode(0o444))?;
+    }
     let private_config = staging.config;
     let staged_busybox = if diagnostic != Diagnostic::Version {
         let destination = scratch.join("artifact-busybox");
@@ -1331,7 +1404,12 @@ fn run_fixture_with_config(
         libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
         None,
     )?;
-    verify_mount_table_for(root, diagnostic, private_config.is_some())?;
+    verify_mount_table_for(
+        root,
+        diagnostic,
+        private_config.is_some(),
+        tls_fixture.is_some(),
+    )?;
     if diagnostic == Diagnostic::PtyWithLoginArtifacts {
         // Build the production invocation after validating the mount table.
         // The fixture exercises the same arguments and environment with BusyBox.
@@ -1618,7 +1696,7 @@ impl WorkArea {
                 }
                 b"stdout" | b"stderr" | b"artifact-busybox" if file_type.is_file() => 0,
                 name if file_type.is_file()
-                    && (0..ARTIFACTS.len())
+                    && (0..ARTIFACTS.len() + TLS_FIXTURE_ARTIFACTS.len())
                         .any(|index| name == format!("artifact-{index}").as_bytes()) =>
                 {
                     0
@@ -3021,6 +3099,7 @@ fn run_writable_pty_for(
         let mut permit = local_auth_case.map(|case| {
             let now = std::time::Instant::now();
             FixturePermit {
+                tls: None,
                 verified_executable: None,
                 grant: None,
                 closure: None,
@@ -3057,6 +3136,15 @@ fn run_writable_pty_for(
         })?;
         let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
         let config_parent = lock_parent(config_path)?;
+        if stage_login_artifacts {
+            let certificate = read_login_child(&config_parent, ".synthetic-tls-ca.pem", 4096)?;
+            let artifacts = pin_artifacts(TLS_FIXTURE_ARTIFACTS)
+                .map_err(|fault| io::Error::other(fault.reason()))?;
+            permit.as_mut().ok_or(io::ErrorKind::InvalidInput)?.tls = Some(FixtureTls {
+                artifacts,
+                certificate,
+            });
+        }
         let mut signed_permit_id = None;
         let mut signed_revocation_key = None;
         if matches!(
