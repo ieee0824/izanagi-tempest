@@ -571,3 +571,27 @@ Python 3.11 以上と `image/requirements.txt` に含まれる cryptography が
 照合点の欠落・破損、消費前の台帳の復元を拒否することを確認します。
 このオプションには cryptography が必要です。管理ディレクトリは試験用で、
 台帳と管理記録を同時に巻き戻せる環境への耐性は検証範囲外です。
+
+#### 専用 Linux ホストの管理入力診断
+
+`tempest-host-login-diagnostic` はホスト管理者向けの読み取り専用の
+受け口です。専用 Linux ホスト上の信頼された管理環境でのみ使用します。
+固定の `/var/lib/izanagi-tempest` 配下から、管理側の検証鍵
+（`host-login-authority/verification-key`）と独立確定点
+（`host-login-recovery/checkpoint.json`）を読み取ります。入力を指定する
+引数・環境変数・ゲストから引き継いだ FD は使用しません。管理ディレクトリは
+root 所有でモード 0700、入力は root 所有の通常ファイルでモード 0600 です。
+確定点は正の `sequence` と小文字16進64桁の `digest` を持ちます。
+
+現段階では管理入力の有無と形式を診断します。要求値に対する管理側の
+署名応答の配送と署名照合は未接続のため、形式が正しい場合も終了コード
+1 を返します。公開ゲスト CLI とは独立しており、試験は実ファイルを
+配置せず、隔離したマウント名前空間内の試験用管理領域を読み取ります。
+
+```sh
+cargo build --locked -p tempest-linux-probe --bin tempest-host-login-diagnostic
+sudo python3 integration/host_login_diagnostic_readonly.py \
+  target/debug/tempest-host-login-diagnostic
+```
+
+試験には Linux の `unshare`、`mount`、`strace` が必要です。

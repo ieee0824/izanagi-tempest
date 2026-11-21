@@ -94,3 +94,9 @@ pub fn claude_offline_local_auth_pty() -> std::process::ExitCode {
 pub fn claude_manual_login() -> std::process::ExitCode {
     claude_offline::run_manual_login()
 }
+
+/// Read the fixed host management inputs without enabling login or consumption.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn host_login_diagnostic() -> std::process::ExitCode {
+    claude_offline::run_host_login_diagnostic()
+}
