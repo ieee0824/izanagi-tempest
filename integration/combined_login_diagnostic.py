@@ -9,6 +9,7 @@ from pathlib import Path
 import pty
 import re
 import select
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -17,6 +18,9 @@ import termios
 
 from claude_manual_login_refusal import FIXED_CLI, check_signed_publication
 from host_permit_receipt import Commit, Scope
+from claude_local_auth_pty_smoke import check_signed_permits
+from claude_supervised_pty_smoke import WORK
+from claude_writable_pty_smoke import CONFIG
 
 
 MATCH = b"host and PTY inputs match"
@@ -28,7 +32,7 @@ def write(path, data):
     path.chmod(0o600)
 
 
-def exercise(root, binary, responder, publisher):
+def exercise(root, binary, responder, publisher, dummy=None):
     config = root / "etc/tempest"
     config.mkdir(parents=True, mode=0o700)
     local_ledger = config / "claude-login-diagnostic-ledger"
@@ -124,8 +128,29 @@ def exercise(root, binary, responder, publisher):
                        for line in calls)):
             raise RuntimeError(f"{label}: unexpected child, network or writing syscall: {calls}")
         print(f"{label}: exit 1, no child, network or ledger mutation")
+        return MATCH in output and HANDOFF in output
 
     def signed_fixture(refresh_publication):
+        if dummy is not None:
+            def verify_dummy(record, payload):
+                _, pair = payload.read_bytes().split(b"\0", 1)
+                handoff = json.loads(pair)
+                expected = Scope(handoff["target_id"], handoff["permit_id"], 1)
+                if expected.permit_id != record.name:
+                    raise RuntimeError("fixture handoff does not match the intended permit and generation")
+                commit = Commit("fixture-ledger", 1, expected, "consumed")
+                refresh_publication(expected.permit_id, expected.target_id)
+                wrong = replace(commit, scope=replace(expected, generation=2))
+                if run_case("dummy prevented on generation mismatch", wrong, False):
+                    raise RuntimeError("mismatch reached the dummy gate")
+                if any(WORK.iterdir()) or record.exists():
+                    raise RuntimeError("mismatch started the dummy or consumed its local permit")
+                refresh_publication(expected.permit_id, expected.target_id)
+                if not run_case("matched dummy gate", commit, True):
+                    raise RuntimeError("matched diagnostic failed to reach the dummy gate")
+
+            check_signed_permits(dummy, integration_gate=verify_dummy)
+            return
         commit = Commit("fixture-ledger", 1, scope, "consumed")
         scenarios = [
             ("matching host and PTY", commit, True, {}),
@@ -145,14 +170,14 @@ def exercise(root, binary, responder, publisher):
 
 def main():
     if sys.argv[1:2] != ["--isolated"]:
-        if len(sys.argv) != 4 or os.geteuid() != 0:
+        if len(sys.argv) not in (4, 5) or os.geteuid() != 0:
             return 2
         binaries = [str(Path(arg).resolve(strict=True)) for arg in sys.argv[1:]]
         return subprocess.call(["unshare", "-mn", "--propagation", "private", sys.executable,
                                 str(Path(__file__).resolve()), "--isolated",
                                 os.readlink("/proc/self/ns/mnt"), os.readlink("/proc/self/ns/net"),
                                 *binaries])
-    if len(sys.argv) != 7 or os.geteuid() != 0 or any(
+    if len(sys.argv) not in (7, 8) or os.geteuid() != 0 or any(
         os.readlink(f"/proc/self/ns/{kind}") == original
         for kind, original in zip(("mnt", "net"), sys.argv[2:4])
     ):
@@ -160,6 +185,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="tempest-combined-") as directory:
         root = Path(directory)
         (root / "etc").mkdir()
+        if len(sys.argv) == 8:
+            # nft renders protocol names from the local system databases.
+            for name in ("protocols", "services", "ethertypes"):
+                shutil.copyfile(Path("/etc") / name, root / "etc" / name)
         synthetic_cli = root / "lib/tempest-claude-offline/claude"
         synthetic_cli.parent.mkdir(parents=True)
         synthetic_cli.touch()
@@ -172,8 +201,21 @@ def main():
                        check=True)
         try:
             subprocess.run(["mount", "-o", "remount,bind,ro,noexec", FIXED_CLI], check=True)
+            if len(sys.argv) == 8:
+                if any(subprocess.check_output(["ip", family, "route", "show"]).strip()
+                       for family in ("-4", "-6")):
+                    raise RuntimeError("external route in test namespace")
+                subprocess.run(["ip", "link", "set", "lo", "up"], check=True)
+                for path in (WORK, CONFIG):
+                    path.mkdir(mode=0o700)
+                    subprocess.run(["mount", "-t", "tmpfs", "-o", "mode=0700,size=1024m",
+                                    "tmpfs", path], check=True)
             exercise(root, *sys.argv[4:])
         finally:
+            if len(sys.argv) == 8:
+                for path in (CONFIG, WORK):
+                    if path.is_mount():
+                        subprocess.run(["umount", path], check=True)
             for path in (FIXED_CLI, "/var/lib", "/etc", original):
                 subprocess.run(["umount", path], check=True)
     return 0

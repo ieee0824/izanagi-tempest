@@ -404,7 +404,7 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
           "direct ports denied, child and gateway reaped, both generations recovered")
 
 
-def check_signed_permits(binary, tls=False):
+def check_signed_permits(binary, tls=False, *, integration_gate=None):
     policy = CONFIG / ".synthetic-login-policy.json"
     payload = CONFIG / ".synthetic-handoff"
     signature = CONFIG / ".synthetic-handoff-signature"
@@ -599,6 +599,9 @@ def check_signed_permits(binary, tls=False):
                     if (entry.st_uid, entry.st_gid, entry.st_mode & 0o777) != (999, 988, 0o600):
                         raise RuntimeError("signed fixture configuration was not owner-private")
 
+            if integration_gate is not None:
+                integration_gate(used, payload)
+
             fixture(
                 [binary, "signed-permit"],
                 {
@@ -617,6 +620,15 @@ def check_signed_permits(binary, tls=False):
                 "signed PTY: exact child environment and arguments; owner-private settings and write probe; fixed local ACK; "
                 "other host and three direct ports denied; descendant, tunnel and generations recovered"
             )
+            if integration_gate is not None:
+                case, record, reason = closure_cases[0]
+                write_handoff(key, record, 45)
+                integration_gate(record, payload)
+                check_closure_quarantine(case, reason)
+                if not record.is_file():
+                    raise RuntimeError("quarantined run lost the matching consumption record")
+                print(f"{case}: same permit consumed; child reaped and both generations quarantined")
+                return
             assert_denied("signed-permit", b"already consumed or revoked", inputs | {used})
             recorded = inputs | {used}
             for case, record in mismatches.items():

@@ -702,3 +702,12 @@ sudo python3 integration/combined_login_diagnostic.py \
   target/debug/tempest-combined-login-diagnostic target/debug/tempest-host-login-responder \
   target/debug/tempest-host-login-publisher
 ```
+
+統合診断から固定ダミーの回収まで試験する場合は、上の統合試験に
+`target/debug/tempest-claude-offline-local-auth-pty` を第4引数として追加します。
+試験ハーネスは固定ダミーの署名済みハンドオフと同じ許可 ID・対象で管理
+世代1の公開記録を用意し、不一致では固定ダミーを起動しません。一致した
+場合だけ既存の固定ダミー試験を実行し、同じ許可のローカル消費記録と、
+実際の作業・設定ディレクトリの識別情報を回収証拠に照合します。終了証拠を
+落とす対照では、停止後も同じ実行世代を隔離します。外向きルートのない
+試験専用名前空間と一時作業領域を使用します。
