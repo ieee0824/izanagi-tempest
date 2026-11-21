@@ -23,7 +23,7 @@ INVALID_RECEIPT = "receipt unavailable or invalid"
 INVALID_INPUTS = "management inputs unavailable or invalid"
 
 
-def exercise(binary, root, responder=None, publisher=None):
+def exercise(binary, root, responder=None, publisher=None, writer=None):
     parent = root / "izanagi-tempest"
     authority = parent / "host-login-authority"
     recovery = parent / "host-login-recovery"
@@ -224,6 +224,71 @@ def exercise(binary, root, responder=None, publisher=None):
                 (ledger / "record.new").unlink()
                 pending.unlink()
                 print("PASS: publication, writer contention, missing/pending/rolled-back source and interrupted-publication refusal")
+            if writer is not None:
+                ledger_id = authority / "ledger-id.json"
+                ledger_id.write_text(json.dumps(commit.ledger_id), encoding="ascii")
+                ledger_id.chmod(0o600)
+
+                def reset_writer_fixture():
+                    database.unlink()
+                    with closing(sqlite3.connect(database)) as db, db:
+                        db.executescript(schema.read_text(encoding="ascii"))
+                    database.chmod(0o600)
+                    write_checkpoint(replace(commit, sequence=0, state="empty"))
+
+                def transition(action, expected, wrapper=()):
+                    subprocess.run(["mount", "-o", "remount,bind,rw", "/var/lib"], check=True)
+                    try:
+                        result = subprocess.run(
+                            [*wrapper, sys.executable, writer, action],
+                            capture_output=True, timeout=10,
+                        )
+                        if result.returncode != expected:
+                            raise RuntimeError(f"unexpected transition {action}: {result}")
+                    finally:
+                        subprocess.run(["mount", "-o", "remount,bind,ro", "/var/lib"], check=True)
+
+                reset_writer_fixture()
+                transition("issue", 0)
+                transition("revoke", 0)
+                revoked = database.read_bytes(), checkpoint.read_bytes()
+                transition("consume", 1)
+                if revoked != (database.read_bytes(), checkpoint.read_bytes()):
+                    raise RuntimeError("refused consumption changed the records")
+
+                reset_writer_fixture()
+                transition("issue", 0)
+                transition("consume", 0)
+                consumed = database.read_bytes(), checkpoint.read_bytes()
+                transition("consume", 1)
+                if consumed != (database.read_bytes(), checkpoint.read_bytes()):
+                    raise RuntimeError("duplicate consumption changed the records")
+                publish(0)
+                check(VERIFIED_INPUTS, reply=lambda challenge: request(challenge, 0))
+                transition("revoke", 0)
+                publish(1)
+                check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
+
+                reset_writer_fixture()
+                transition("issue", 0)
+                transition("consume", 0)
+                publish(0)
+                before_checkpoint = checkpoint.read_bytes()
+                transition("revoke", 1, ("strace", "-qq", "-e", "trace=rename,renameat,renameat2",
+                                         "-e", "inject=rename,renameat,renameat2:error=EIO"))
+                with closing(sqlite3.connect(database)) as db:
+                    latest = db.execute(
+                        "SELECT sequence, state FROM permit_commits ORDER BY sequence DESC LIMIT 1"
+                    ).fetchone()
+                if latest != (3, "revoked") or checkpoint.read_bytes() != before_checkpoint:
+                    raise RuntimeError("expected a committed revocation and old checkpoint")
+                publish(1)
+                check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
+                (recovery / "checkpoint.new").unlink()
+                transition("revoke", 1)
+                write_source(commit)
+                write_checkpoint(commit)
+                print("PASS: fixed ledger transitions and interrupted checkpoint update refused")
             check(INVALID_RECEIPT, reply=lose_response)
             pending = replace(commit, state="pending")
             write_record(pending)
@@ -240,14 +305,14 @@ def exercise(binary, root, responder=None, publisher=None):
 
 def main():
     if sys.argv[1:2] != ["--isolated"]:
-        if len(sys.argv) not in (2, 3, 4):
+        if len(sys.argv) not in (2, 3, 4, 5):
             return 2
         binaries = [str(Path(path).resolve(strict=True)) for path in sys.argv[1:]]
         return subprocess.call([
             "unshare", "--mount", "--net", "--propagation", "private",
             sys.executable, str(Path(__file__).resolve()), "--isolated", *binaries,
         ])
-    if len(sys.argv) not in (3, 4, 5) or os.geteuid() != 0:
+    if len(sys.argv) not in (3, 4, 5, 6) or os.geteuid() != 0:
         return 2
     with tempfile.TemporaryDirectory(prefix="tempest-host-diagnostic-") as directory:
         exercise(sys.argv[2], Path(directory), *sys.argv[3:])
