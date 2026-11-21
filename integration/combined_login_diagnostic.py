@@ -181,32 +181,36 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
         print(f"{label}: exit 1, no child, network or ledger mutation")
         return MATCH in output and HANDOFF in output
 
-    def check_blocked_output(commit):
+    def check_blocked_output(commit, after_receipt=False):
         prepare(commit)
         subprocess.run([publisher], check=True, timeout=5)
         master, slave = pty.openpty()
         trace = root / "blocked-output-trace"
         lock = ["flock", "-n", "-x", config / "claude-login-publication/lock", "true"]
         try:
-            filler = os.open(os.ttyname(slave), os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY)
-            try:
-                # Let already queued bytes move into the master buffer without draining it.
-                for _ in range(8):
-                    try:
-                        while True:
-                            os.write(filler, b"x" * 4096)
-                    except BlockingIOError:
-                        time.sleep(0.025)
+            def fill_queue():
+                filler = os.open(os.ttyname(slave), os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY)
                 try:
-                    os.write(filler, b"x" * 65)
-                except BlockingIOError:
-                    pass
-                else:
-                    raise RuntimeError("PTY output queue still accepts a challenge")
-            finally:
-                os.close(filler)
+                    # Let already queued bytes move into the master buffer without draining it.
+                    for _ in range(8):
+                        try:
+                            while True:
+                                os.write(filler, b"x" * 4096)
+                        except BlockingIOError:
+                            time.sleep(0.025)
+                    try:
+                        os.write(filler, b"x" * 65)
+                    except BlockingIOError:
+                        pass
+                    else:
+                        raise RuntimeError("PTY output queue still accepts a challenge")
+                finally:
+                    os.close(filler)
+
+            if not after_receipt:
+                fill_queue()
             with subprocess.Popen(
-                ["strace", "-f", "-qq", "-o", trace, "-e", "trace=poll,%process,%network",
+                ["strace", "-f", "-qq", "-o", trace, "-e", "trace=poll,write,%process,%network", "-s", "150",
                  binary], stdin=slave, stdout=slave, stderr=slave,
             ) as diagnostic:
                 try:
@@ -215,6 +219,18 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
                         if diagnostic.poll() is not None or time.monotonic() >= started:
                             raise RuntimeError("combined diagnostic did not hold publication lock")
                         time.sleep(0.025)
+                    if after_receipt:
+                        output = b""
+                        while not (match := re.search(rb"(?:^|\n)([a-f0-9]{64})\r?\n", output)):
+                            if not select.select([master], [], [], 10)[0]:
+                                raise RuntimeError("missing challenge before filling the output queue")
+                            output += os.read(master, 4096)
+                        response = subprocess.run(
+                            [responder], input=match[1] + b"\n", capture_output=True,
+                            check=True, timeout=5,
+                        )
+                        fill_queue()
+                        os.write(master, response.stdout)
                     state = config / "claude-login-authority/revocation-state"
                     deadline = json.loads(state.read_bytes().split(b"\0", 1)[1])["expires_unix_seconds"]
                     if diagnostic.wait(timeout=27) != 1 or time.time() > deadline + 1:
@@ -224,11 +240,17 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
                     if diagnostic.poll() is None:
                         diagnostic.kill()
             calls = trace.read_text().splitlines()
-            if (not any("events=POLLOUT" in line and "(Timeout)" in line for line in calls)
-                    or sum("execve(" in line for line in calls) != 1
+            if after_receipt:
+                blocked = any("host and PTY inputs match" in line and "EAGAIN" in line
+                              for line in calls)
+                label = "output full after signature acceptance"
+            else:
+                blocked = any("events=POLLOUT" in line and "(Timeout)" in line for line in calls)
+                label = "output full before challenge"
+            if (not blocked or sum("execve(" in line for line in calls) != 1
                     or any("socket(" in line or "connect(" in line for line in calls)):
-                raise RuntimeError(f"blocked challenge did not exercise local output waiting: {calls!r}")
-            print("full PTY output queue: deadline refusal and exclusive publication lock recovered")
+                raise RuntimeError(f"{label}: unexpected output trace {calls!r}")
+            print(f"{label}: refused and exclusive publication lock recovered")
         finally:
             os.close(slave)
             os.close(master)
@@ -277,6 +299,8 @@ def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=Fal
             run_case(label, value, expected, **options)
         refresh_publication()
         check_blocked_output(commit)
+        refresh_publication()
+        check_blocked_output(commit, after_receipt=True)
 
     check_signed_publication(config, local_ledger, None, combined_check=signed_fixture)
 
