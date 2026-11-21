@@ -529,6 +529,22 @@ with socket.create_server(("127.0.0.1", 0)) as listener:
         let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let proxy_address = proxy.local_addr().unwrap();
         let upstream_address = upstream.local_addr().unwrap();
+        let dns_answers = [IpAddr::from([127, 0, 0, 2]), upstream_address.ip()];
+        let selected = approved_peer(
+            &dns_answers,
+            &[upstream_address.ip()],
+            upstream_address.port(),
+        )
+        .unwrap();
+        assert_eq!(selected, upstream_address);
+        assert!(
+            approved_peer(
+                &dns_answers[..1],
+                &[upstream_address.ip()],
+                upstream_address.port()
+            )
+            .is_err()
+        );
         let deadline = || Instant::now() + Duration::from_secs(2);
 
         let mut rejected = TcpStream::connect(proxy_address).unwrap();
@@ -537,7 +553,7 @@ with socket.create_server(("127.0.0.1", 0)) as listener:
             .unwrap();
         let (mut client, _) = proxy.accept().unwrap();
         assert_eq!(
-            open_tunnel(&mut client, deadline(), upstream_address, |_, _| panic!(
+            open_tunnel(&mut client, deadline(), selected, |_, _| panic!(
                 "unexpected upstream dial"
             ))
             .unwrap_err()
@@ -553,12 +569,9 @@ with socket.create_server(("127.0.0.1", 0)) as listener:
             .write_all(b"CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\nTLS")
             .unwrap();
         let (mut client, _) = proxy.accept().unwrap();
-        let tunnel = open_tunnel(
-            &mut client,
-            deadline(),
-            upstream_address,
-            |address, timeout| TcpStream::connect_timeout(&address, timeout),
-        )
+        let tunnel = open_tunnel(&mut client, deadline(), selected, |address, timeout| {
+            TcpStream::connect_timeout(&address, timeout)
+        })
         .unwrap();
         let (mut server, _) = upstream.accept().unwrap();
         server
