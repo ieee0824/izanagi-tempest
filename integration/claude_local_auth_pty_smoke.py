@@ -266,7 +266,8 @@ def probe_local_tls(cert_pem, expire=False, revoke=False):
                 raise RuntimeError("new CONNECT was not rejected after expiry")
 
 
-def check_signed_tls(binary, temporary, record, check_evidence, expire=False, signing_key=None):
+def check_signed_tls(binary, temporary, record, check_evidence, expire=False, signing_key=None,
+                     *, stage_login_artifacts=False):
     revoke = signing_key is not None
     terminal_case = expire or revoke
     notice = CONFIG / ".synthetic-live-revocation.json"
@@ -277,7 +278,7 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
     cert = Path(temporary) / "tls-cert.pem"
     private_key = Path(temporary) / "tls-key.pem"
     subprocess.run([
-        "/usr/bin/openssl", "req", "-x509", "-newkey", "ed25519", "-nodes", "-days", "1",
+        "/usr/bin/openssl", "req", "-x509", "-newkey", "ed25519", "-nodes", "-days", "1", "-config", "/dev/null",
         "-subj", "/CN=platform.claude.com", "-addext", "subjectAltName=DNS:platform.claude.com",
         "-keyout", private_key, "-out", cert,
     ], check=True, capture_output=True)
@@ -370,11 +371,17 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
 
 
     with socket.create_server(("127.0.0.1", 39275)) as listener, ThreadPoolExecutor(1) as pool:
-        listener.settimeout(8)
+        listener.settimeout(30 if stage_login_artifacts else 8)
         served = pool.submit(exchanges, listener)
+        case = "signed-tls-staged" if stage_login_artifacts else "signed-tls"
+        if revoke:
+            case = "signed-tls-revocation"
+        elif expire:
+            case = "signed-tls-expiry"
         fixture(
-            [binary, "signed-tls-revocation" if revoke else ("signed-tls-expiry" if expire else "signed-tls")],
+            [binary, case],
             {}, complete_probe=True,
+            startup_timeout=25 if stage_login_artifacts else 3,
             success=(b"synthetic administrator stop: PID namespace reaped\n" if revoke else b"")
             + POSITIVE + REMOVED,
             observe_child=None if terminal_case else observe_and_probe,
@@ -628,6 +635,13 @@ def check_signed_permits(binary, tls=False, *, integration_gate=None):
                 if not record.is_file():
                     raise RuntimeError("quarantined run lost the matching consumption record")
                 print(f"{case}: same permit consumed; child reaped and both generations quarantined")
+                if tls:
+                    write_handoff(key, tls_record, 45)
+                    integration_gate(tls_record, payload)
+                    check_signed_tls(binary, tmp, tls_record, check_recovery_evidence,
+                                     stage_login_artifacts=True)
+                    if not tls_record.is_file():
+                        raise RuntimeError("recovered TLS run lost the matching consumption record")
                 return
             assert_denied("signed-permit", b"already consumed or revoked", inputs | {used})
             recorded = inputs | {used}
