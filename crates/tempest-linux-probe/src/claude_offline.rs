@@ -743,6 +743,7 @@ enum FixtureStop {
     Host(
         host_login_diagnostic::VerifiedHostCommit,
         std::time::Instant,
+        ScopedLoginRevocation,
     ),
     Notice(FixtureStopNotice),
 }
@@ -771,8 +772,8 @@ struct FixtureRevocationNotice {
 impl FixtureStop {
     fn requested(&self) -> bool {
         let notice = match self {
-            Self::Host(commit, expires) => {
-                if std::time::Instant::now() >= *expires {
+            Self::Host(commit, expires, revocation) => {
+                if std::time::Instant::now() >= *expires || revocation.deadline(false).is_err() {
                     return true;
                 }
                 return match commit.lock_current() {
@@ -2300,6 +2301,24 @@ fn verify_login_revocation(
     permit_id: u128,
     target_id: &str,
 ) -> io::Result<std::time::Instant> {
+    verify_login_revocation_with(
+        authority,
+        revision,
+        manifest_sha256,
+        permit_id,
+        target_id,
+        true,
+    )
+}
+
+fn verify_login_revocation_with(
+    authority: &File,
+    revision: u64,
+    manifest_sha256: &str,
+    permit_id: u128,
+    target_id: &str,
+    sync: bool,
+) -> io::Result<std::time::Instant> {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     match open_login_child(authority, std::ffi::OsStr::new("revocation-pending"), 0) {
@@ -2326,6 +2345,9 @@ fn verify_login_revocation(
         wall.as_secs(),
     )?;
     verify_revocation_commit(minimum, &committed, revocation_revision, &payload, || {
+        if !sync {
+            return Ok(());
+        }
         let sync_fd = File::open(format!("/proc/self/fd/{}", authority.as_raw_fd()))?;
         if fd_identity(&sync_fd)? != fd_identity(authority)? {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -2404,11 +2426,63 @@ fn verify_revocation_state_with_disposition(
 // Carries the result of the read-only checks to the launch refusal boundary.
 // There is no independently configured supervisor scope on this public route.
 struct VerifiedSupervisorInputs {
-    _publication_lock: File,
+    publication_lock: File,
+    revocation_authority: File,
+    approved_route: ApprovedLoginIps,
     _generation: File,
     _revision: u64,
     _manifest_sha256: String,
     _login: VerifiedLoginInputs,
+}
+
+struct ScopedLoginRevocation {
+    authority: File,
+    generation: u64,
+    manifest_sha256: String,
+    permit_id: u128,
+    target_id: String,
+}
+
+impl ScopedLoginRevocation {
+    fn deadline(&self, sync: bool) -> io::Result<std::time::Instant> {
+        verify_login_revocation_with(
+            &self.authority,
+            self.generation,
+            &self.manifest_sha256,
+            self.permit_id,
+            &self.target_id,
+            sync,
+        )
+    }
+}
+
+impl VerifiedSupervisorInputs {
+    fn revocation_deadline(&self) -> io::Result<std::time::Instant> {
+        verify_login_revocation(
+            &self.revocation_authority,
+            self._revision,
+            &self._manifest_sha256,
+            self._login.id,
+            &self._login.target_id,
+        )
+    }
+
+    fn runtime_revocation(&self) -> io::Result<ScopedLoginRevocation> {
+        Ok(ScopedLoginRevocation {
+            authority: self.revocation_authority.try_clone()?,
+            generation: self._revision,
+            manifest_sha256: self._manifest_sha256.clone(),
+            permit_id: self._login.id,
+            target_id: self._login.target_id.clone(),
+        })
+    }
+
+    fn release_publication_lock(&self) -> io::Result<()> {
+        if unsafe { libc::flock(self.publication_lock.as_raw_fd(), libc::LOCK_UN) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
 }
 
 fn verify_login_generation(
@@ -2498,7 +2572,9 @@ fn verify_login_generation(
         host_login_diagnostic::report_without_waiting("manual login final diagnostic verified");
     }
     Ok(VerifiedSupervisorInputs {
-        _publication_lock: lock,
+        publication_lock: lock,
+        revocation_authority: authority,
+        approved_route: scope.approved_route,
         _generation: generation,
         _revision: current,
         _manifest_sha256: manifest_sha256,
@@ -2839,7 +2915,7 @@ struct ScopedManualLoginPolicy {
     permit: LoginPolicyScope,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApprovedLoginIps {
     revision: u64,
@@ -2854,6 +2930,8 @@ struct LoginPolicyScope {
     authority: String,
     approved_ips_revision: u64,
     expires_unix_seconds: u64,
+    #[serde(skip)]
+    approved_route: ApprovedLoginIps,
 }
 
 fn validate_manual_login_policy(input: impl Read) -> io::Result<Option<LoginPolicyScope>> {
@@ -2908,7 +2986,10 @@ fn validate_manual_login_policy_at(
     if remaining.is_zero() || remaining > MAX_DIAGNOSTIC_REMAINING {
         return Err(invalid());
     }
-    Ok(Some(policy.permit))
+    Ok(Some(LoginPolicyScope {
+        approved_route: policy.approved_ips,
+        ..policy.permit
+    }))
 }
 
 fn verify_combined_login_inputs() -> io::Result<(
@@ -2948,14 +3029,7 @@ fn verify_combined_login_inputs_with(
         verified._revision,
         verified._login.expires,
     )?;
-    let authority = open_private_login_directory(&parent, "claude-login-authority")?;
-    let revocation_deadline = verify_login_revocation(
-        &authority,
-        verified._revision,
-        &verified._manifest_sha256,
-        verified._login.id,
-        &verified._login.target_id,
-    )?;
+    let revocation_deadline = verified.revocation_deadline()?;
     verified._login.expires = verified._login.expires.min(revocation_deadline);
     if std::time::Instant::now() >= verified._login.expires {
         return Err(io::Error::other("manual login inputs expired"));
@@ -3312,9 +3386,15 @@ fn run_writable_pty_for(
             host_commit = Some(commit);
             verified
         });
+        let runtime_revocation = verified_diagnostic
+            .map(VerifiedSupervisorInputs::runtime_revocation)
+            .transpose()?;
         let diagnostic_files = verified_diagnostic
             .map(|verified| {
-                if !stage_login_artifacts || verified._revision != 1 {
+                if !stage_login_artifacts
+                    || verified._revision != 1
+                    || verified.approved_route.revision != 1
+                {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "fixture management generation mismatch",
@@ -3454,6 +3534,10 @@ fn run_writable_pty_for(
                 .as_ref()
                 .map(host_login_diagnostic::VerifiedHostCommit::lock_current)
                 .transpose()?;
+            let expiry = match verified_diagnostic {
+                Some(verified) => expiry.min(verified.revocation_deadline()?),
+                None => expiry,
+            };
             let record = login_permit::consume(
                 unsyncable.as_ref().unwrap_or(&ledger),
                 &login_permit::Permit {
@@ -3471,6 +3555,9 @@ fn run_writable_pty_for(
                     error
                 }
             })?;
+            if let Some(verified) = verified_diagnostic {
+                verified.release_publication_lock()?;
+            }
             drop(management_gate);
             if permit.verified_executable.is_some() {
                 permit.grant = Some(FixtureGrant { id, ledger, record });
@@ -3528,8 +3615,9 @@ fn run_writable_pty_for(
                     }),
                 }));
             }
-            if let Some(host_commit) = host_commit {
-                permit.administrator_stop = Some(FixtureStop::Host(host_commit, permit.expires));
+            if let Some((host_commit, revocation)) = host_commit.zip(runtime_revocation) {
+                permit.administrator_stop =
+                    Some(FixtureStop::Host(host_commit, permit.expires, revocation));
             }
             permit.closure = Some(FixtureClosure::new(
                 case,

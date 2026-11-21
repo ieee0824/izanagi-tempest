@@ -89,10 +89,11 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, f
         filters = "%network,%process,%file" if stage is None else "%network,%process"
         command = ["strace", "-f", "-qq", "-o", trace, "-e", f"trace={filters}", binary]
         environment = None
-        if stage in ("direct-refusal", "direct-gate"):
+        gate = stage in ("direct-gate", "direct-authority-gate")
+        if stage == "direct-refusal" or gate:
             command[-1] = direct_test
             command += ["--ignored", "--nocapture", "supervise_verified_dummy_tls"]
-            environment = ({"TEMPEST_PAUSE_START_GATE": "1"} if stage == "direct-gate"
+            environment = ({"TEMPEST_PAUSE_START_GATE": "1"} if gate
                            else {"TEMPEST_EXPECT_DUMMY_REFUSAL": "1"})
         elif stage is not None:
             command += ["--ignored", "--nocapture", "stage_combined_diagnostic_descriptors"]
@@ -112,7 +113,7 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, f
                         )
                         if response.returncode != (0 if value.state == "consumed" else 1):
                             raise RuntimeError(f"{label}: unexpected responder result {response}")
-                        if stage == "direct-gate":
+                        if gate:
                             os.write(master, response.stdout)
                             while b"verified supervisor ready for start gate" not in output:
                                 if not select.select([master], [], [], 10)[0]:
@@ -127,7 +128,10 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, f
                                         value.scope.permit_id, value.scope.generation, "revoked",
                                     ))
                             before = tuple(path.read_bytes() for path in protected)
-                        if stage == "direct-gate":
+                        if gate:
+                            if stage == "direct-authority-gate":
+                                pending = config / "claude-login-authority/revocation-pending"
+                                write(pending, b"")
                             os.write(master, b"continue\n")
                         else:
                             os.write(master, response.stdout if response.stdout and not lose_response else b"\x04")
@@ -155,7 +159,7 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, f
             os.close(slave)
             os.close(master)
         if stage is not None:
-            direct = stage in ("direct-refusal", "direct-gate")
+            direct = stage == "direct-refusal" or gate
             marker = ("direct supervisor refused before launch" if direct
                       else f"staging case {stage}: expected outcome, mounts detached and generation removed")
             if marker.encode() not in output or (not direct and any(CONFIG.iterdir())):
@@ -301,6 +305,15 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, f
                                  stage="direct-gate")
                         if record.exists():
                             raise RuntimeError("start gate consumed a revoked permit")
+                        refresh_publication(expected.permit_id, expected.target_id, 30)
+                        pending = config / "claude-login-authority/revocation-pending"
+                        try:
+                            run_case("direct supervisor authority update pending at gate", commit,
+                                     False, stage="direct-authority-gate")
+                            if record.exists():
+                                raise RuntimeError("start gate consumed during authority update")
+                        finally:
+                            pending.unlink(missing_ok=True)
                     refresh_publication(expected.permit_id, expected.target_id,
                                         20 if outcome == "expired" else 30)
                     prepare(commit)
@@ -357,6 +370,11 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, f
                         if time.time() >= deadline:
                             raise RuntimeError("fixed child was observed only after expiry")
                         return deadline
+                    if outcome == "authority-pending":
+                        with (config / "claude-login-publication/lock").open("rb") as held:
+                            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            write(config / "claude-login-authority/revocation-pending", b"")
+                        return None
                     update = """
 import sqlite3
 import sys
@@ -386,7 +404,7 @@ with sqlite3.connect(sys.argv[1]) as db:
                         prepare_live, fixed_entry is not None)
 
             outcomes = ("revoked",) if fixed_entry is not None else (
-                "revoked", "missing", "disconnect", "expired"
+                "revoked", "missing", "disconnect", "expired", "authority-pending"
             )
             for outcome in outcomes:
                 check_signed_permits(
@@ -395,6 +413,7 @@ with sqlite3.connect(sys.argv[1]) as db:
                         record, payload, outcome
                     ),
                 )
+                (config / "claude-login-authority/revocation-pending").unlink(missing_ok=True)
                 print(f"fixed supervisor recovered after {outcome}")
             return
         if dummy is not None:
