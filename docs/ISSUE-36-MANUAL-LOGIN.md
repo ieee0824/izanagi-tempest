@@ -62,16 +62,14 @@ owner の操作範囲に依存します。ネットワークで操作単位ま�
 ## 固定入口の起動前確認
 
 `tempest-claude-manual-login` は引数を受け付けず、管理者と標準入出力・
-標準エラーが共有する PTY を確認します。管理者設定の候補位置は
-`/etc/tempest/claude-manual-login.json` です。管理者所有・0600・単一リンクの
-通常ファイルを固定パスから開き、4 KiB 以下の JSON を検証します。
-現段階で有効な項目は `{"version":1,"authority":"platform.claude.com:443"}`
-です。この設定は認証先候補を確認するもので、起動許可を表しません。
-管理 DNS、許可する
-アドレス、認証ファイルの保存条件と保持期限、および TLS 透過の制約への
-合意を得てから、設定を受理する処理を実装します。owner の承認は実施ごとに
-確認します。現段階の入口はいずれのケースでも子プロセスやゲートウェイを
-起動せず、設定世代の作成も行いません。
+標準エラーが共有する PTY を確認します。配備情報がない場合は、固定パスの
+`/etc/tempest/claude-manual-login.json` を診断用に検証します。管理者所有・0600・
+単一リンクの通常ファイルを開き、4 KiB 以下の JSON を検証します。
+v1 の `{"version":1,"authority":"platform.claude.com:443"}` は認証先候補を確認する
+診断用設定です。この経路では子やゲートウェイの起動と設定世代の作成を拒否します。
+配備済みの入口は次節を参照してください。
+
+以下は隔離したローカル認証フィクスチャの試験コマンドです。
 
 ```sh
 cargo build -p tempest-linux-probe --locked --bin tempest-claude-manual-login --bin tempest-claude-offline-local-auth-pty
