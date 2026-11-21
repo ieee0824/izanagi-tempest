@@ -10,3 +10,6 @@ serde_json.workspace = true
 sha2.workspace = true
 libc = "0.2"
 ring = "0.17"
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+rusqlite = { version = "0.32.1", features = ["bundled"] }
