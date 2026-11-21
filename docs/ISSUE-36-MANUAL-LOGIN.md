@@ -603,7 +603,7 @@ sudo python3 integration/host_login_diagnostic_readonly.py \
 
 `tempest-host-login-responder` は専用 Linux ホストで、診断の要求値を
 標準入力から1行読み取ります。固定管理領域の
-`host-login-ledger/record.json` にある単一の台帳公開レコードを、独立した
+`host-login-ledger/record.json` と SQLite 台帳の最新行を、独立した
 確定点と管理スコープに読み取り専用で照合します。対象が消費済みで、
 番号とダイジェストが一致する場合に限り、`host-login-signer/signing-seed`
 の32バイトの Ed25519 シードを使って応答を署名します。シードから導出した
@@ -617,17 +617,16 @@ sudo python3 integration/host_login_diagnostic_readonly.py \
 ```
 
 統合試験は読み取り専用の試験領域で2つのバイナリを接続し、未確定、
-台帳の巻き戻し、応答喪失での拒否を確認します。台帳公開の生成と
-実運用への配備は、この診断とは別の作業です。
+台帳の巻き戻し、応答喪失での拒否を確認します。実運用への配備は別の作業です。
 
 `tempest-host-login-publisher` は固定管理領域の
-`host-login-ledger-source/committed.json` から確定済み台帳の単一レコードを
-読み、管理スコープ・独立確定点と照合して `host-login-ledger/record.json`
-へ公開します。台帳本体から元レコードを取り出す処理は、台帳の管理側が
-担います。元レコード・確定点・スコープの管理側の更新は、公開先内の
-root 所有、モード 0600 の固定 `lock` を共有し、排他ロック内で行います。
-公開側も排他ロックを取得し、応答側は共有ロックの間に元レコードと
-公開済みレコードを照合してから署名します。
+`host-login-ledger-source/ledger.sqlite3` を読み取り専用の単一
+トランザクションで照合し、確認済みの行から `host-login-ledger/record.json`
+を生成します。排他ロックは SQLite の読み取り開始から公開の同期完了まで
+保持します。台帳・確定点・スコープの更新側も公開先の root 所有、モード
+0600 の固定 `lock` を共有します。応答側は共有ロックの下で SQLite の
+最新行を読み直し、公開済みレコードと照合してから署名します。公開後に
+許可が失効した場合は、古い確定点と公開レコードが残っていても拒否します。
 
 公開時は `pending` を永続化し、同期済みの `record.new` をアトミックに
 置き換えます。ディレクトリの同期を確認してから `pending` を除去します。
@@ -654,8 +653,7 @@ sudo python3 integration/host_login_diagnostic_readonly.py \
 開きます。一つの読み取りトランザクションで許可の最新行を取得し、
 消費済み状態、管理スコープ、独立確定点との完全一致を確認した場合だけ、
 照合済みの JSON を標準出力に返します。台帳が欠落している場合は拒否し、
-自動作成しません。この読取処理から `committed.json` への原子的な公開は
-別の接続作業です。
+自動作成しません。通常の公開・署名経路は上記の Rust バイナリです。
 
 ```sh
 python3 integration/host_ledger_snapshot_offline.py -v

@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{
     ffi::OsStr,
     fs::{File, OpenOptions},
-    io::{self, BufRead, Write},
+    io::{self, BufRead, Read, Write},
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::Path,
     process::ExitCode,
@@ -184,7 +184,49 @@ fn lock_publication(parent: &File, mode: libc::c_int) -> io::Result<File> {
 
 fn read_source(parent: &File, inputs: &HostInputs) -> io::Result<Commit> {
     let source = open_private_login_directory(parent, "host-login-ledger-source")?;
-    let commit = serde_json::from_slice(&read_login_child(&source, "committed.json", 2048)?)
+    let database = OsStr::new("ledger.sqlite3");
+    let mut input = open_pinned_login_policy(open_login_child(&source, database, 0)?)?;
+    let mut header = [0; 20];
+    input.read_exact(&mut header)?;
+    if &header[..16] != b"SQLite format 3\0" || header[18..] != [1, 1] {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    // The managed parent is root-owned and the management lock prevents replacement.
+    let path = Path::new(MANAGEMENT_PARENT)
+        .join("host-login-ledger-source")
+        .join(database);
+    let mut db = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(io::Error::other)?;
+    db.busy_timeout(std::time::Duration::ZERO)
+        .map_err(io::Error::other)?;
+    let transaction = db.transaction().map_err(io::Error::other)?;
+    let version: u32 = transaction
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(io::Error::other)?;
+    if version != 1 {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let commit = transaction
+        .query_row(
+            "SELECT ledger_id, target_id, permit_id, generation, sequence, state
+         FROM permit_commits WHERE permit_id = ? ORDER BY sequence DESC LIMIT 1",
+            [&inputs.scope.permit_id],
+            |row| {
+                Ok(Commit {
+                    ledger_id: row.get(0)?,
+                    scope: Scope {
+                        target_id: row.get(1)?,
+                        permit_id: row.get(2)?,
+                        generation: row.get(3)?,
+                    },
+                    sequence: row.get(4)?,
+                    state: row.get(5)?,
+                })
+            },
+        )
         .map_err(io::Error::other)?;
     check_commit(inputs, &commit)?;
     Ok(commit)

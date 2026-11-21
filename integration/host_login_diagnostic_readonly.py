@@ -1,11 +1,13 @@
 """Check the dedicated host management reader in isolated mount and network namespaces."""
 
+from contextlib import closing
 from dataclasses import asdict, replace
 import fcntl
 import json
 import os
 from pathlib import Path
 import select
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -120,7 +122,20 @@ def exercise(binary, root, responder=None, publisher=None):
             lock.touch(mode=0o600)
             source = parent / "host-login-ledger-source"
             source.mkdir(mode=0o700)
-            source_record = source / "committed.json"
+            database = source / "ledger.sqlite3"
+            schema = Path(__file__).resolve().parents[1] / "tools/host_ledger/schema.sql"
+
+            def write_source(value):
+                if not database.exists():
+                    with closing(sqlite3.connect(database)) as db, db:
+                        db.executescript(schema.read_text(encoding="ascii"))
+                    database.chmod(0o600)
+                with closing(sqlite3.connect(database)) as db, db:
+                    db.execute("DELETE FROM permit_commits")
+                    db.execute("INSERT INTO permit_commits VALUES (?, ?, ?, ?, ?, ?)", (
+                        value.sequence, value.ledger_id, value.scope.target_id,
+                        value.scope.permit_id, value.scope.generation, value.state,
+                    ))
             signer_directory.mkdir(mode=0o700)
             seed = signer_directory / "signing-seed"
             seed.write_bytes(bytes(range(32)))
@@ -154,7 +169,7 @@ def exercise(binary, root, responder=None, publisher=None):
                 request(challenge, 0)
                 return None
 
-            write_record(commit, source_record)
+            write_source(commit)
             if publisher is None:
                 write_record(commit)
             else:
@@ -176,19 +191,29 @@ def exercise(binary, root, responder=None, publisher=None):
                     publish(1)
                     check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
                 check(VERIFIED_INPUTS, reply=lambda challenge: request(challenge, 0))
-                pending_source = replace(commit, state="pending")
-                write_record(pending_source, source_record)
+                with lock.open("rb") as updating:
+                    fcntl.flock(updating, fcntl.LOCK_EX)
+                    with closing(sqlite3.connect(database)) as db, db:
+                        db.execute("INSERT INTO permit_commits VALUES (?, ?, ?, ?, ?, ?)", (
+                            commit.sequence + 1, commit.ledger_id, scope.target_id,
+                            scope.permit_id, scope.generation, "revoked",
+                        ))
+                # Keep both the old checkpoint and public record. The live DB must veto signing.
+                check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
+                publish(1)
+                pending_source = replace(commit, state="issued")
+                write_source(pending_source)
                 write_checkpoint(pending_source)
                 publish(1)
                 check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
                 write_checkpoint(commit)
-                source_record.unlink()
+                database.unlink()
                 publish(1)
                 check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
-                write_record(replace(commit, sequence=1), source_record)
+                write_source(replace(commit, sequence=1))
                 publish(1)
                 check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
-                write_record(commit, source_record)
+                write_source(commit)
                 pending = ledger / "pending"
                 publish(1, ("strace", "-qq", "-e", "trace=rename,renameat,renameat2",
                             "-e", "inject=rename,renameat,renameat2:error=EIO"))
