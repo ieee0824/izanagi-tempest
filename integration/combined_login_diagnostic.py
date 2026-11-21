@@ -455,6 +455,56 @@ with socket.create_connection(("127.0.0.1", 39271), timeout=3) as client:
                     raise RuntimeError(f"managed tunnel survived {outcome}")
             return master
 
+        def assert_staging_enospc():
+            # WORK is a private mount created by main; the host filesystem is untouched.
+            if not WORK.is_mount():
+                raise RuntimeError("managed ENOSPC requires the private work mount")
+            subprocess.run(["mount", "-o", "remount,size=128m", WORK], check=True)
+            master, slave = pty.openpty()
+            try:
+                attrs = termios.tcgetattr(slave)
+                attrs[3] &= ~termios.ECHO
+                termios.tcsetattr(slave, termios.TCSANOW, attrs)
+                trace = root / "managed-enospc.trace"
+                with subprocess.Popen(
+                    ["strace", "-f", "-qq", "-o", trace, "-e", "trace=%process,%network",
+                     fixed_entry], stdin=slave, stdout=slave, stderr=slave,
+                ) as login:
+                    try:
+                        challenge = rb"(?:^|\n)([a-f0-9]{64})\r?\n"
+                        output = read_through(master, lambda data: re.search(challenge, data), 15)
+                        response = subprocess.run(
+                            [responder], input=re.search(challenge, output)[1] + b"\n",
+                            capture_output=True, check=True, timeout=5,
+                        )
+                        os.write(master, response.stdout)
+                        status = login.wait(timeout=20)
+                        output = read_through(master, lambda data: b"work removed" in data, 2)
+                    finally:
+                        if login.poll() is None:
+                            login.terminate()
+                calls = trace.read_text().splitlines()
+                if (status != 1 or b"errno=28" not in output
+                        or b"failed during staging" not in output
+                        or sum("execve(" in call for call in calls) != 1
+                        or any(re.search(r"\bsocket\(AF_INET6?\b|\bconnect\(", call)
+                               for call in calls)
+                        or not record.is_file() or any(WORK.iterdir()) or any(managed_config.iterdir())):
+                    raise RuntimeError(f"managed ENOSPC did not fail closed: {output!r}")
+                print("managed staging ENOSPC: no child exec or IP traffic, generations removed, permit retained")
+            finally:
+                os.close(slave)
+                os.close(master)
+                subprocess.run(["mount", "-o", "remount,size=1024m", WORK], check=True)
+
+        managed_scope = replace(scope, permit_id=f"{5:032x}")
+        record = local_ledger / managed_scope.permit_id
+        commit = Commit("fixture-ledger", 1, managed_scope, "consumed")
+        prepare(commit)
+        subprocess.run([publisher], check=True, timeout=5)
+        write_provision()
+        assert_staging_enospc()
+
         for index, outcome in enumerate(("revoked", "partial-header", "disconnect"), start=2):
             managed_scope = replace(scope, permit_id=f"{index:032x}")
             record = local_ledger / managed_scope.permit_id
