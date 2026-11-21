@@ -51,13 +51,24 @@ def fixture(
     command: list[str], env: dict[str, str], complete_probe: bool, success: bytes = SUCCESS,
     *, startup_timeout: float = 3, before_probe=None, observe_child=None,
     quarantine=None, check_evidence=None, after_probe=None, before_ready=None,
+    shared_entry=False,
 ) -> None:
     master, slave = pty.openpty()
-    descendant = -1
+    descendant = evidence_read = evidence_write = -1
     try:
+        stderr = subprocess.PIPE
+        pass_fds = ()
+        if shared_entry:
+            evidence_read, evidence_write = os.pipe()
+            env = {**env, "TEMPEST_FIXTURE_EVIDENCE_FD": str(evidence_write)}
+            stderr = slave
+            pass_fds = (evidence_write,)
         with subprocess.Popen(
-            command, stdin=slave, stdout=slave, stderr=subprocess.PIPE, env=env
+            command, stdin=slave, stdout=slave, stderr=stderr, env=env, pass_fds=pass_fds,
         ) as child:
+            if shared_entry:
+                os.close(evidence_write)
+                evidence_write = -1
             os.close(slave)
             slave = -1
             readiness_error = None
@@ -88,6 +99,10 @@ def fixture(
                     _, result = child.communicate()
                     if readiness_error is None:
                         raise RuntimeError(f"supervised PTY did not exit: stderr={result!r}")
+        if shared_entry:
+            with os.fdopen(evidence_read, "rb") as evidence:
+                evidence_read = -1
+                result = evidence.read()
         if readiness_error is not None:
             raise RuntimeError(
                 f"supervised PTY failed before readiness: exit={child.returncode}, "
@@ -110,7 +125,7 @@ def fixture(
         elif any(WORK.iterdir()):
             raise RuntimeError("supervised work area remains after disconnect")
     finally:
-        for fd in (master, slave, descendant):
+        for fd in (master, slave, descendant, evidence_read, evidence_write):
             if fd != -1:
                 os.close(fd)
 
