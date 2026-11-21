@@ -1,6 +1,7 @@
 """Check the dedicated host management reader in isolated mount and network namespaces."""
 
 from dataclasses import asdict, replace
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -169,6 +170,18 @@ def exercise(binary, root, responder=None, publisher=None):
                 publish(0)
             check(VERIFIED_INPUTS, reply=lambda challenge: request(challenge, 0))
             if publisher is not None:
+                # Model the ledger manager holding the shared contract's exclusive lock.
+                with lock.open("rb") as updating:
+                    fcntl.flock(updating, fcntl.LOCK_EX)
+                    publish(1)
+                    check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
+                check(VERIFIED_INPUTS, reply=lambda challenge: request(challenge, 0))
+                pending_source = replace(commit, state="pending")
+                write_record(pending_source, source_record)
+                write_checkpoint(pending_source)
+                publish(1)
+                check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
+                write_checkpoint(commit)
                 source_record.unlink()
                 publish(1)
                 check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
@@ -185,7 +198,7 @@ def exercise(binary, root, responder=None, publisher=None):
                 check(INVALID_RECEIPT, reply=lambda challenge: request(challenge, 1))
                 (ledger / "record.new").unlink()
                 pending.unlink()
-                print("PASS: publication, source loss/rollback and interrupted-publication refusal")
+                print("PASS: publication, writer contention, missing/pending/rolled-back source and interrupted-publication refusal")
             check(INVALID_RECEIPT, reply=lose_response)
             pending = replace(commit, state="pending")
             write_record(pending)
