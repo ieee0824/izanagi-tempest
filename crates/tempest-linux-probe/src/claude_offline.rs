@@ -2978,15 +2978,7 @@ pub(super) fn run_combined_login_diagnostic() -> std::process::ExitCode {
 }
 
 pub(super) fn run_manual_login() -> std::process::ExitCode {
-    use std::process::ExitCode;
-    if std::env::args_os().len() != 1 {
-        eprintln!("manual login refused: arguments are unsupported");
-    } else if unsafe { libc::geteuid() } != 0
-        || verify_shared_terminal(libc::STDIN_FILENO, libc::STDOUT_FILENO).is_err()
-        || verify_shared_terminal(libc::STDOUT_FILENO, libc::STDERR_FILENO).is_err()
-    {
-        eprintln!("manual login refused: dedicated administrator PTY required");
-    } else {
+    manual_login_entry(std::env::args_os().len(), || {
         let reason = match check_manual_login_policy(Path::new(MANUAL_LOGIN_POLICY)) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => "administrator policy missing",
             Err(error) if error.kind() == io::ErrorKind::Unsupported => {
@@ -2995,6 +2987,24 @@ pub(super) fn run_manual_login() -> std::process::ExitCode {
             _ => "administrator policy unavailable or invalid",
         };
         host_login_diagnostic::report_without_waiting(&format!("manual login refused: {reason}"));
+        std::process::ExitCode::FAILURE
+    })
+}
+
+fn manual_login_entry(
+    argument_count: usize,
+    dispatch: impl FnOnce() -> std::process::ExitCode,
+) -> std::process::ExitCode {
+    use std::process::ExitCode;
+    if argument_count != 1 {
+        eprintln!("manual login refused: arguments are unsupported");
+    } else if unsafe { libc::geteuid() } != 0
+        || verify_shared_terminal(libc::STDIN_FILENO, libc::STDOUT_FILENO).is_err()
+        || verify_shared_terminal(libc::STDOUT_FILENO, libc::STDERR_FILENO).is_err()
+    {
+        eprintln!("manual login refused: dedicated administrator PTY required");
+    } else {
+        return dispatch();
     }
     ExitCode::FAILURE
 }
@@ -3904,27 +3914,43 @@ mod tests {
     #[test]
     #[ignore = "run through the isolated fixed TLS supervisor harness"]
     fn supervise_verified_dummy_tls() {
-        assert_eq!(unsafe { libc::geteuid() }, 0);
-        verify_shared_terminal(libc::STDIN_FILENO, libc::STDOUT_FILENO).unwrap();
-        let verification = verify_combined_login_inputs();
-        if std::env::var_os("TEMPEST_EXPECT_DUMMY_REFUSAL").is_some() {
-            assert!(verification.is_err());
+        use std::os::fd::{AsRawFd, BorrowedFd};
+        use std::process::ExitCode;
+
+        // Enter with the same administrator PTY on all three descriptors.
+        // After the entry checks, restore the harness's evidence pipe so it
+        // can read recovery records even after it disconnects the PTY.
+        let evidence = unsafe { BorrowedFd::borrow_raw(libc::STDERR_FILENO) }
+            .try_clone_to_owned()
+            .unwrap();
+        assert!(unsafe { libc::dup2(libc::STDOUT_FILENO, libc::STDERR_FILENO) } >= 0);
+        let expect_refusal = std::env::var_os("TEMPEST_EXPECT_DUMMY_REFUSAL").is_some();
+        let expect_gate_refusal = std::env::var_os("TEMPEST_PAUSE_START_GATE").is_some();
+        let mut entered = false;
+        let exit = manual_login_entry(1, || {
+            entered = true;
+            assert!(unsafe { libc::dup2(evidence.as_raw_fd(), libc::STDERR_FILENO) } >= 0);
+            drop(evidence);
+            let verification = verify_combined_login_inputs();
+            if expect_refusal {
+                assert!(verification.is_err());
+                return ExitCode::FAILURE;
+            }
+            let (verified, host_commit, host_lock) = verification.unwrap();
+            drop(host_lock);
+            run_writable_pty_for(
+                Some(local_auth::Case::SignedTls),
+                true,
+                Some((&verified, host_commit)),
+            )
+        });
+        assert!(entered, "manual login entry refused the fixture PTY");
+        if expect_refusal || expect_gate_refusal {
+            assert_eq!(exit, ExitCode::FAILURE);
             println!("direct supervisor refused before launch");
             return;
         }
-        let (verified, host_commit, host_lock) = verification.unwrap();
-        drop(host_lock);
-        let exit = run_writable_pty_for(
-            Some(local_auth::Case::SignedTls),
-            true,
-            Some((&verified, host_commit)),
-        );
-        if std::env::var_os("TEMPEST_PAUSE_START_GATE").is_some() {
-            assert_eq!(exit, std::process::ExitCode::FAILURE);
-            println!("direct supervisor refused before launch");
-            return;
-        }
-        assert_eq!(exit, std::process::ExitCode::SUCCESS);
+        assert_eq!(exit, ExitCode::SUCCESS);
         // The PTY master is closed to exercise recovery, so libtest cannot report to stdout.
         std::process::exit(0);
     }

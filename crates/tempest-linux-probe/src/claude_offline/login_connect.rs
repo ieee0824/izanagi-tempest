@@ -314,9 +314,13 @@ fn relay_until_revoked(
         let watcher = std::thread::Builder::new().spawn_scoped(scope, move || {
             loop {
                 if stop.requested() {
-                    client_pin.shutdown(Shutdown::Both)?;
-                    upstream_pin.shutdown(Shutdown::Both)?;
-                    return Ok(());
+                    let shutdown = |stream: &TcpStream| match stream.shutdown(Shutdown::Both) {
+                        Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+                        result => result,
+                    };
+                    let client_result = shutdown(&client_pin);
+                    let upstream_result = shutdown(&upstream_pin);
+                    return client_result.and(upstream_result);
                 }
                 if Instant::now() >= deadline {
                     return Err(io::Error::other("signed revocation not observed"));
