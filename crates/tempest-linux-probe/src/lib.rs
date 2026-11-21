@@ -112,3 +112,9 @@ pub fn host_login_responder() -> std::process::ExitCode {
 pub fn host_login_publisher() -> std::process::ExitCode {
     claude_offline::run_host_login_publisher()
 }
+
+/// Compare host receipts with the administrator PTY publication and refuse launch.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn combined_login_diagnostic() -> std::process::ExitCode {
+    claude_offline::run_combined_login_diagnostic()
+}

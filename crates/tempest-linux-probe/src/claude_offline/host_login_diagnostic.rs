@@ -112,10 +112,10 @@ fn valid_id(value: &str) -> bool {
 }
 
 fn verify_receipt(
-    inputs: HostInputs,
+    inputs: &HostInputs,
     reader: impl BufRead,
     mut output: impl Write,
-) -> io::Result<()> {
+) -> io::Result<Commit> {
     let mut random = [0_u8; 32];
     SystemRandom::new()
         .fill(&mut random)
@@ -127,7 +127,7 @@ fn verify_receipt(
     let line = read_line(reader, 4096)?;
     let receipt: Receipt = serde_json::from_slice(&line).map_err(io::Error::other)?;
     let commit = &receipt.commit;
-    check_commit(&inputs, commit)?;
+    check_commit(inputs, commit)?;
     if receipt.challenge != challenge || receipt.signature.len() != 128 {
         return Err(io::ErrorKind::InvalidData.into());
     }
@@ -141,7 +141,8 @@ fn verify_receipt(
     }
     signature::UnparsedPublicKey::new(&signature::ED25519, inputs.key)
         .verify(&signed_bytes(&challenge, commit)?, &signature_bytes)
-        .map_err(|_| io::ErrorKind::InvalidData.into())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+    Ok(receipt.commit)
 }
 
 fn signed_bytes(challenge: &str, commit: &Commit) -> io::Result<Vec<u8>> {
@@ -345,8 +346,8 @@ pub(crate) fn run_host_login_diagnostic() -> ExitCode {
             Err(_) => {
                 eprintln!("host login diagnostic refused: management inputs unavailable or invalid")
             }
-            Ok(inputs) => match verify_receipt(inputs, io::stdin().lock(), io::stdout().lock()) {
-                Ok(()) => eprintln!("host login diagnostic: receipt verified; launch disabled"),
+            Ok(inputs) => match verify_receipt(&inputs, io::stdin().lock(), io::stdout().lock()) {
+                Ok(_) => eprintln!("host login diagnostic: receipt verified; launch disabled"),
                 Err(_) => {
                     eprintln!("host login diagnostic refused: receipt unavailable or invalid")
                 }
@@ -354,4 +355,30 @@ pub(crate) fn run_host_login_diagnostic() -> ExitCode {
         }
     }
     ExitCode::FAILURE
+}
+
+pub(super) fn verify_for_supervision(
+    target_id: &str,
+    permit_id: u128,
+    generation: u64,
+) -> io::Result<File> {
+    let parent = open_management_parent()?;
+    let inputs = read_inputs(&parent)?;
+    let receipt = verify_receipt(&inputs, io::stdin().lock(), io::stdout().lock())?;
+    let expected = Scope {
+        target_id: target_id.to_owned(),
+        permit_id: format!("{permit_id:032x}"),
+        generation,
+    };
+    let lock = lock_publication(&parent, libc::LOCK_SH)?;
+    let publication = open_private_login_directory(&parent, "host-login-ledger")?;
+    require_no_pending(&publication)?;
+    let current = read_inputs(&parent)?;
+    if receipt.scope != expected
+        || current.key != inputs.key
+        || read_source(&parent, &current)? != receipt
+    {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok(lock)
 }
