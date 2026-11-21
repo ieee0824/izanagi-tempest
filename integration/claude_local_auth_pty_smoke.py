@@ -300,6 +300,8 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
             raise RuntimeError("missing fixture CA did not refuse before staging or consumption")
         with os.fdopen(os.open(tls_ca, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as out:
             out.write(cert_pem.encode())
+    if supervision is not None and supervision[3] is not None:
+        supervision[3]()
     identities = {}
 
     def exchanges(listener):
@@ -395,17 +397,19 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
             case = "signed-tls-revocation"
         elif expire:
             case = "signed-tls-expiry"
-        command, before_ready, host_revoke = (
-            ([binary, case], None, None) if supervision is None else supervision
+        command, before_ready, host_revoke, _ = (
+            ([binary, case], None, None, None) if supervision is None else supervision
         )
 
         def revoke_live_host(pid):
             child = verify_signed_child_environment(pid)
             child_fd = os.pidfd_open(child)
             try:
-                host_revoke()
-                if not select.select([child_fd], [], [], 5)[0]:
-                    raise RuntimeError("fixed child survived the management revocation")
+                deadline = host_revoke()
+                if not select.select([child_fd], [], [], 8)[0]:
+                    raise RuntimeError("fixed child survived the management stop")
+                if deadline is not None and time.time() < deadline:
+                    raise RuntimeError("fixed child exited before the signed deadline")
             finally:
                 os.close(child_fd)
         fixture(
