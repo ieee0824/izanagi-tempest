@@ -641,3 +641,22 @@ sudo python3 integration/host_login_diagnostic_readonly.py \
   target/debug/tempest-host-login-diagnostic target/debug/tempest-host-login-responder \
   target/debug/tempest-host-login-publisher
 ```
+
+#### ホスト台帳から確定済みスナップショットを読む
+
+`tools/host_ledger/schema.sql` は SQLite 3.37 以降のホスト管理用台帳の
+形式です。確定番号は台帳内で一意とし、各行に台帳 ID、対象登録 ID、
+許可 ID、管理世代と状態を保持します。台帳管理側は共通の排他ロックで
+更新を直列化し、ロールバックジャーナル方式を使います。
+
+`tools/host_ledger/read_snapshot.py` は固定管理領域の
+`host-login-ledger-source/ledger.sqlite3` を共有ロックの下で読み取り専用で
+開きます。一つの読み取りトランザクションで許可の最新行を取得し、
+消費済み状態、管理スコープ、独立確定点との完全一致を確認した場合だけ、
+照合済みの JSON を標準出力に返します。台帳が欠落している場合は拒否し、
+自動作成しません。この読取処理から `committed.json` への原子的な公開は
+別の接続作業です。
+
+```sh
+python3 integration/host_ledger_snapshot_offline.py -v
+```
