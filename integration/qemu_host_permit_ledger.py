@@ -114,7 +114,11 @@ def main():
     parser.add_argument("--kernel", required=True, type=Path, help="Readable local x86-64 Linux kernel")
     parser.add_argument("--busybox", type=Path, default=Path("/usr/bin/busybox"),
                         help="Local statically linked x86-64 BusyBox")
+    parser.add_argument("--verify-receipt", action="store_true",
+                        help="Check the persistent checkpoint with fresh host processes")
     args = parser.parse_args()
+    if args.verify_receipt:
+        from host_permit_receipt_persistent import persist_checkpoint, verify_in_fresh_processes
 
     with tempfile.TemporaryDirectory(prefix="tempest-qemu-permit-") as directory:
         root = Path(directory).resolve()
@@ -123,12 +127,21 @@ def main():
         with closing(sqlite3.connect(ledger)) as db, db:
             db.execute("CREATE TABLE permits (id TEXT PRIMARY KEY, state TEXT NOT NULL)")
             db.execute("INSERT INTO permits VALUES (?, 'issued')", (PERMIT,))
+        if args.verify_receipt:
+            checkpoint = root / "management" / "commit.json"
+            checkpoint.parent.mkdir()
+            issued_backup = root / "issued.sqlite3"
+            shutil.copyfile(ledger, issued_backup)
         run_guest(args.kernel, image, ledger, drop_ack=True)
+        if args.verify_receipt:
+            persist_checkpoint(ledger, checkpoint, PERMIT)
         run_guest(args.kernel, image, ledger, drop_ack=False)
         with closing(sqlite3.connect(ledger)) as db:
             if db.execute("SELECT id, state FROM permits").fetchall() != [(PERMIT, "consumed")]:
                 raise RuntimeError("host ledger lost the committed consumption")
         print("PASS: host consumption survived VM shutdown without acknowledgement")
+        if args.verify_receipt:
+            verify_in_fresh_processes(ledger, checkpoint, issued_backup, PERMIT)
 
 
 if __name__ == "__main__":
