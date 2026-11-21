@@ -658,3 +658,26 @@ sudo python3 integration/host_login_diagnostic_readonly.py \
 ```sh
 python3 integration/host_ledger_snapshot_offline.py -v
 ```
+
+#### 固定スコープの発行・消費・失効
+
+`tools/host_ledger/write_transition.py` は専用 Linux ホスト管理者向けの
+固定操作です。固定の `scope.json` と `host-login-authority/ledger-id.json`
+（台帳 ID の JSON 文字列）を使います。引数は `issue`、`consume`、
+`revoke` のいずれかです。初回は管理側がスキーマで作成した空の台帳と、
+同じ台帳 ID・スコープに対する確定番号0、状態 `empty` のダイジェストを
+持つ独立確定点が必要です。
+
+台帳の最新行が独立確定点に一致するときだけ、共通排他ロック内で SQLite の
+新しい行を同期・確定し、独立確定点を原子的に置き換えて同期します。
+失効後の消費、二重消費、同じ許可 ID の再発行を拒否します。途中で中断して
+台帳と確定点に差が残った場合は、自動修復せず、次の遷移・公開・署名を
+拒否します。ホスト管理側が独立した証拠を照合して復旧を判断します。
+
+隔離統合試験では、既存の3つのバイナリに書き込みスクリプトを追加で渡します。
+
+```sh
+sudo python3 integration/host_login_diagnostic_readonly.py \
+  target/debug/tempest-host-login-diagnostic target/debug/tempest-host-login-responder \
+  target/debug/tempest-host-login-publisher tools/host_ledger/write_transition.py
+```
