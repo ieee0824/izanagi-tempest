@@ -88,6 +88,19 @@ def exercise(binary, root, responder=None, publisher=None, writer=None):
         initial = checkpoint.read_bytes()
         accepted = check(VERIFIED_INPUTS, reply=lambda challenge: sign(challenge, commit))
         check(INVALID_RECEIPT, reply=lambda _: accepted)
+        with subprocess.Popen([binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True) as silent:
+            try:
+                if not select.select([silent.stdout], [], [], 3)[0]:
+                    raise RuntimeError("missing standalone diagnostic challenge")
+                challenge = silent.stdout.readline().strip()
+                if len(challenge) != 64 or silent.wait(timeout=7) != 1:
+                    raise RuntimeError("standalone diagnostic did not bound the open pipe")
+                if INVALID_RECEIPT not in silent.stderr.read():
+                    raise RuntimeError("standalone diagnostic did not reject the missing response")
+            finally:
+                if silent.poll() is None:
+                    silent.kill()
         check(INVALID_RECEIPT)
         other_key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
         check(INVALID_RECEIPT, reply=lambda challenge: sign(challenge, commit, other_key))
