@@ -739,7 +739,12 @@ struct FixtureStopTarget {
     inode: u64,
 }
 
-struct FixtureStop {
+enum FixtureStop {
+    Host(host_login_diagnostic::VerifiedHostCommit),
+    Notice(FixtureStopNotice),
+}
+
+struct FixtureStopNotice {
     request: std::path::PathBuf,
     target: FixtureStopTarget,
     signed: Option<FixtureRevocation>,
@@ -762,10 +767,19 @@ struct FixtureRevocationNotice {
 
 impl FixtureStop {
     fn requested(&self) -> bool {
-        if let Some(signed) = &self.signed {
+        let notice = match self {
+            Self::Host(commit) => {
+                return match commit.lock_current() {
+                    Ok(_) => false,
+                    Err(error) => error.kind() != io::ErrorKind::WouldBlock,
+                };
+            }
+            Self::Notice(notice) => notice,
+        };
+        if let Some(signed) = &notice.signed {
             let verified = (|| -> io::Result<()> {
                 let notice: FixtureRevocationNotice =
-                    serde_json::from_slice(&read_login_input(&self.request, 4096)?)
+                    serde_json::from_slice(&read_login_input(&notice.request, 4096)?)
                         .map_err(io::Error::other)?;
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -788,10 +802,10 @@ impl FixtureStop {
             })();
             return verified.is_ok();
         }
-        read_login_input(&self.request, 512)
+        read_login_input(&notice.request, 512)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<FixtureStopTarget>(&bytes).ok())
-            .is_some_and(|request| request == self.target)
+            .is_some_and(|request| request == notice.target)
     }
 }
 
@@ -2891,7 +2905,11 @@ fn validate_manual_login_policy_at(
     Ok(Some(policy.permit))
 }
 
-fn verify_combined_login_inputs() -> io::Result<(VerifiedSupervisorInputs, File)> {
+fn verify_combined_login_inputs() -> io::Result<(
+    VerifiedSupervisorInputs,
+    host_login_diagnostic::VerifiedHostCommit,
+    File,
+)> {
     let parent = pin_login_path(
         Path::new(MANUAL_LOGIN_POLICY)
             .parent()
@@ -2903,8 +2921,8 @@ fn verify_combined_login_inputs() -> io::Result<(VerifiedSupervisorInputs, File)
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let publication = open_private_login_directory(&parent, "claude-login-publication")?;
-    let verified = verify_login_generation(&parent, &publication, false)?;
-    let host_lock = host_login_diagnostic::verify_for_supervision(
+    let mut verified = verify_login_generation(&parent, &publication, false)?;
+    let (host_commit, host_lock) = host_login_diagnostic::verify_for_supervision(
         &verified._login.target_id,
         verified._login.id,
         verified._revision,
@@ -2918,10 +2936,11 @@ fn verify_combined_login_inputs() -> io::Result<(VerifiedSupervisorInputs, File)
         verified._login.id,
         &verified._login.target_id,
     )?;
-    if std::time::Instant::now() >= verified._login.expires.min(revocation_deadline) {
+    verified._login.expires = verified._login.expires.min(revocation_deadline);
+    if std::time::Instant::now() >= verified._login.expires {
         return Err(io::Error::other("manual login inputs expired"));
     }
-    Ok((verified, host_lock))
+    Ok((verified, host_commit, host_lock))
 }
 
 pub(super) fn run_combined_login_diagnostic() -> std::process::ExitCode {
@@ -2935,7 +2954,7 @@ pub(super) fn run_combined_login_diagnostic() -> std::process::ExitCode {
         return ExitCode::FAILURE;
     }
     let (matched, result) = match verify_combined_login_inputs() {
-        Ok((verified, _host_lock)) => (true, refuse_supervised_login(verified)),
+        Ok((verified, _, _host_lock)) => (true, refuse_supervised_login(verified)),
         Err(error) => (false, Err(error)),
     };
     if matched {
@@ -3072,7 +3091,10 @@ fn read_fixture_permit(parent: &File) -> io::Result<(FixtureApproval, std::time:
 fn run_writable_pty_for(
     local_auth_case: Option<local_auth::Case>,
     stage_login_artifacts: bool,
-    verified_diagnostic: Option<&VerifiedSupervisorInputs>,
+    verified_diagnostic: Option<(
+        &VerifiedSupervisorInputs,
+        host_login_diagnostic::VerifiedHostCommit,
+    )>,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
     let mut args = std::env::args_os().skip(1);
@@ -3146,6 +3168,11 @@ fn run_writable_pty_for(
                 certificate,
             });
         }
+        let mut host_commit = None;
+        let verified_diagnostic = verified_diagnostic.map(|(verified, commit)| {
+            host_commit = Some(commit);
+            verified
+        });
         let diagnostic_files = verified_diagnostic
             .map(|verified| {
                 if !stage_login_artifacts || verified._revision != 1 {
@@ -3274,6 +3301,11 @@ fn run_writable_pty_for(
             } else {
                 None
             };
+            // Serialize the fixture's start authorization with management updates.
+            let management_gate = host_commit
+                .as_ref()
+                .map(host_login_diagnostic::VerifiedHostCommit::lock_current)
+                .transpose()?;
             let record = login_permit::consume(
                 unsyncable.as_ref().unwrap_or(&ledger),
                 &login_permit::Permit {
@@ -3291,6 +3323,7 @@ fn run_writable_pty_for(
                     error
                 }
             })?;
+            drop(management_gate);
             if permit.verified_executable.is_some() {
                 permit.grant = Some(FixtureGrant { id, ledger, record });
             }
@@ -3308,7 +3341,7 @@ fn run_writable_pty_for(
                 let (device, inode) = fd_identity(&work.pinned)?;
                 let permit_id = format!("{id:032x}");
                 eprintln!("synthetic stop target: {permit_id} {device} {inode}");
-                permit.administrator_stop = Some(FixtureStop {
+                permit.administrator_stop = Some(FixtureStop::Notice(FixtureStopNotice {
                     request: config_path.join(".synthetic-stop-request.json"),
                     signed: None,
                     target: FixtureStopTarget {
@@ -3316,7 +3349,7 @@ fn run_writable_pty_for(
                         device,
                         inode,
                     },
-                });
+                }));
             }
             writable_config::Generation::create(&config_parent, config_path, &work)
         })()
@@ -3331,7 +3364,7 @@ fn run_writable_pty_for(
                 let (device, inode) = fd_identity(&work.pinned)?;
                 let (config_dev, config_ino) = config.identity()?;
                 let generation = format!("{device}:{inode}:{config_dev}:{config_ino}");
-                permit.administrator_stop = Some(FixtureStop {
+                permit.administrator_stop = Some(FixtureStop::Notice(FixtureStopNotice {
                     request: config_path.join(".synthetic-live-revocation.json"),
                     target: FixtureStopTarget {
                         permit_id: format!("{id:032x}"),
@@ -3345,7 +3378,10 @@ fn run_writable_pty_for(
                         manifest: format!("{:x}", Sha256::digest(generation.as_bytes())),
                         revision: 1,
                     }),
-                });
+                }));
+            }
+            if let Some(host_commit) = host_commit {
+                permit.administrator_stop = Some(FixtureStop::Host(host_commit));
             }
             permit.closure = Some(FixtureClosure::new(
                 case,
@@ -3861,13 +3897,17 @@ mod tests {
             println!("direct supervisor refused before launch");
             return;
         }
-        let (verified, _host_lock) = verification.unwrap();
+        let (verified, host_commit, host_lock) = verification.unwrap();
+        drop(host_lock);
         assert_eq!(
-            run_writable_pty_for(Some(local_auth::Case::SignedTls), true, Some(&verified)),
+            run_writable_pty_for(
+                Some(local_auth::Case::SignedTls),
+                true,
+                Some((&verified, host_commit))
+            ),
             std::process::ExitCode::SUCCESS,
         );
         // The PTY master is closed to exercise recovery, so libtest cannot report to stdout.
-        drop(_host_lock);
         std::process::exit(0);
     }
 
@@ -3902,7 +3942,7 @@ mod tests {
         assert_eq!(unsafe { libc::geteuid() }, 0);
         verify_shared_terminal(libc::STDIN_FILENO, libc::STDOUT_FILENO).unwrap();
         verify_shared_terminal(libc::STDOUT_FILENO, libc::STDERR_FILENO).unwrap();
-        let (verified, _host_lock) = verify_combined_login_inputs().unwrap();
+        let (verified, _, _host_lock) = verify_combined_login_inputs().unwrap();
         let mut files = DiagnosticArtifactSet::new(&verified).unwrap();
         if std::env::var("TEMPEST_STAGE_CASE").as_deref() == Ok("generation") {
             files.generation += 1;

@@ -478,12 +478,33 @@ fn verify_receipt_from_stdio(
     )
 }
 
+pub(super) struct VerifiedHostCommit {
+    key: [u8; 32],
+    commit: Commit,
+}
+
+impl VerifiedHostCommit {
+    /// Recheck the same authorization without holding the publication lock
+    /// during child supervision.
+    pub(super) fn lock_current(&self) -> io::Result<File> {
+        let parent = open_management_parent()?;
+        let lock = lock_publication(&parent, libc::LOCK_SH)?;
+        let publication = open_private_login_directory(&parent, "host-login-ledger")?;
+        require_no_pending(&publication)?;
+        let inputs = read_inputs(&parent)?;
+        if inputs.key != self.key || read_source(&parent, &inputs)? != self.commit {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(lock)
+    }
+}
+
 pub(super) fn verify_for_supervision(
     target_id: &str,
     permit_id: u128,
     generation: u64,
     deadline: Instant,
-) -> io::Result<File> {
+) -> io::Result<(VerifiedHostCommit, File)> {
     let parent = open_management_parent()?;
     let inputs = read_inputs(&parent)?;
     let receipt = verify_receipt_from_stdio(&inputs, deadline, true)?;
@@ -492,15 +513,13 @@ pub(super) fn verify_for_supervision(
         permit_id: format!("{permit_id:032x}"),
         generation,
     };
-    let lock = lock_publication(&parent, libc::LOCK_SH)?;
-    let publication = open_private_login_directory(&parent, "host-login-ledger")?;
-    require_no_pending(&publication)?;
-    let current = read_inputs(&parent)?;
-    if receipt.scope != expected
-        || current.key != inputs.key
-        || read_source(&parent, &current)? != receipt
-    {
+    if receipt.scope != expected {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    Ok(lock)
+    let verified = VerifiedHostCommit {
+        key: inputs.key,
+        commit: receipt,
+    };
+    let lock = verified.lock_current()?;
+    Ok((verified, lock))
 }
