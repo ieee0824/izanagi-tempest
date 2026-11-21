@@ -2316,6 +2316,7 @@ struct VerifiedSupervisorInputs {
 fn verify_login_generation(
     parent: &File,
     publication: &File,
+    report: bool,
 ) -> io::Result<VerifiedSupervisorInputs> {
     use sha2::{Digest, Sha256};
 
@@ -2376,6 +2377,7 @@ fn verify_login_generation(
         |id, target_id| {
             verify_login_revocation(&authority, current, &manifest_sha256, id, target_id).map(Some)
         },
+        report,
     )?
     .ok_or_else(|| io::Error::other("publication handoff missing"))?;
     recheck_login_generation(
@@ -2394,7 +2396,9 @@ fn verify_login_generation(
         &inputs.target_id,
     )?;
     inputs.recheck(parent, &ARTIFACTS[0], revocation)?;
-    eprintln!("manual login final diagnostic verified");
+    if report {
+        eprintln!("manual login final diagnostic verified");
+    }
     Ok(VerifiedSupervisorInputs {
         _publication_lock: lock,
         _generation: generation,
@@ -2436,7 +2440,6 @@ fn recheck_login_generation(
 }
 
 fn refuse_supervised_login(_verified: VerifiedSupervisorInputs) -> io::Result<()> {
-    eprintln!("manual login verified inputs handed off");
     Err(manual_login_disabled())
 }
 
@@ -2458,11 +2461,13 @@ fn check_manual_login_policy(path: &Path) -> io::Result<()> {
     }
     match open_private_login_directory(&parent, "claude-login-publication") {
         Ok(publication) => {
-            let verified = verify_login_generation(&parent, &publication).map_err(|error| {
-                eprintln!("manual login publication diagnostic refused: {error}");
-                io::Error::from(io::ErrorKind::InvalidData)
-            })?;
+            let verified =
+                verify_login_generation(&parent, &publication, true).map_err(|error| {
+                    eprintln!("manual login publication diagnostic refused: {error}");
+                    io::Error::from(io::ErrorKind::InvalidData)
+                })?;
             eprintln!("manual login publication diagnostic verified");
+            eprintln!("manual login verified inputs handed off");
             return refuse_supervised_login(verified);
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -2565,6 +2570,7 @@ fn diagnose_manual_login_handoff(parent: &File, scope: &LoginPolicyScope) -> io:
         scope,
         |name, limit| read_login_child(parent, name, limit),
         |_, _| Ok(None),
+        true,
     )
     .map(drop)
 }
@@ -2574,6 +2580,7 @@ fn diagnose_manual_login_handoff_with(
     scope: &LoginPolicyScope,
     read: impl Fn(&str, u64) -> io::Result<Vec<u8>>,
     revocation_deadline: impl Fn(u128, &str) -> io::Result<Option<std::time::Instant>>,
+    report: bool,
 ) -> io::Result<Option<VerifiedLoginInputs>> {
     let payload = match read("claude-login-diagnostic-handoff", 4096) {
         Ok(payload) => payload,
@@ -2606,19 +2613,29 @@ fn diagnose_manual_login_handoff_with(
         Ok::<_, io::Error>((id, expires, target_id))
     })();
     let (id, mut expires, target_id) = result.map_err(|error| {
-        eprintln!("manual login handoff diagnostic refused: {error}");
+        if report {
+            eprintln!("manual login handoff diagnostic refused: {error}");
+        }
         io::Error::from(io::ErrorKind::InvalidData)
     })?;
-    eprintln!("manual login handoff diagnostic verified");
+    if report {
+        eprintln!("manual login handoff diagnostic verified");
+    }
     if let Some(deadline) = revocation_deadline(id, &target_id)? {
         expires = expires.min(deadline);
-        eprintln!("manual login revocation diagnostic verified");
+        if report {
+            eprintln!("manual login revocation diagnostic verified");
+        }
     }
     let executable = verify_fixed_artifact(&ARTIFACTS[0]).map_err(|fault| {
-        stage_failure("manual_login_fixed_cli", &fault);
+        if report {
+            stage_failure("manual_login_fixed_cli", &fault);
+        }
         io::Error::new(io::ErrorKind::InvalidData, "manual login fixed CLI refused")
     })?;
-    eprintln!("manual login fixed CLI verified");
+    if report {
+        eprintln!("manual login fixed CLI verified");
+    }
     let ledger = open_login_ledger(parent);
     let ledger_result = (|| {
         let inputs = VerifiedLoginInputs {
@@ -2635,10 +2652,14 @@ fn diagnose_manual_login_handoff_with(
         Ok::<_, io::Error>(inputs)
     })();
     let inputs = ledger_result.map_err(|error| {
-        eprintln!("manual login ledger diagnostic refused: {error}");
+        if report {
+            eprintln!("manual login ledger diagnostic refused: {error}");
+        }
         io::Error::from(io::ErrorKind::InvalidData)
     })?;
-    eprintln!("manual login ledger diagnostic verified");
+    if report {
+        eprintln!("manual login ledger diagnostic verified");
+    }
     Ok(Some(inputs))
 }
 
@@ -2789,7 +2810,7 @@ fn verify_combined_login_inputs() -> io::Result<(VerifiedSupervisorInputs, File)
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let publication = open_private_login_directory(&parent, "claude-login-publication")?;
-    let verified = verify_login_generation(&parent, &publication)?;
+    let verified = verify_login_generation(&parent, &publication, false)?;
     let host_lock = host_login_diagnostic::verify_for_supervision(
         &verified._login.target_id,
         verified._login.id,
@@ -2820,12 +2841,20 @@ pub(super) fn run_combined_login_diagnostic() -> std::process::ExitCode {
         eprintln!("combined login diagnostic refused: dedicated administrator PTY required");
         return ExitCode::FAILURE;
     }
-    let result = verify_combined_login_inputs().and_then(|(verified, _host_lock)| {
-        eprintln!("combined login diagnostic: host and PTY inputs match");
-        refuse_supervised_login(verified)
-    });
+    let (matched, result) = match verify_combined_login_inputs() {
+        Ok((verified, _host_lock)) => (true, refuse_supervised_login(verified)),
+        Err(error) => (false, Err(error)),
+    };
+    if matched {
+        host_login_diagnostic::report_without_waiting(
+            "combined login diagnostic: host and PTY inputs match",
+        );
+        host_login_diagnostic::report_without_waiting("manual login verified inputs handed off");
+    }
     if let Err(error) = result {
-        eprintln!("combined login diagnostic refused: {error}");
+        host_login_diagnostic::report_without_waiting(&format!(
+            "combined login diagnostic refused: {error}"
+        ));
     }
     ExitCode::FAILURE
 }
