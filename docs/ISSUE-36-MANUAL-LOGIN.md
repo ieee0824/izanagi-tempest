@@ -681,3 +681,24 @@ sudo python3 integration/host_login_diagnostic_readonly.py \
   target/debug/tempest-host-login-diagnostic target/debug/tempest-host-login-responder \
   target/debug/tempest-host-login-publisher tools/host_ledger/write_transition.py
 ```
+
+#### 同一ホストでの PTY と管理応答の照合
+
+`tempest-combined-login-diagnostic` は専用 Linux ホスト上の管理者の
+同一 PTY で、既存の署名付き公開世代を読み取り検証します。その後、同じ
+PTY で単回要求値を出し、ホスト管理側の署名応答を1行読み取ります。
+署名済みの対象登録 ID・許可 ID・管理世代を公開世代の検証結果と照合し、
+ホスト台帳と既存の失効記録を読み直します。正常な場合も既存の起動拒否で
+終了コード1を返します。この診断は参加 VM 側の公開 CLI と独立しています。
+
+次の統合試験は、固定 CLI 実体を読み取り専用かつ実行不可でマウントし、
+隔離した名前空間内で管理側の署名応答を PTY に配送します。固定実体は
+既存の署名付き公開試験と同じものが必要です。
+
+```sh
+cargo build --locked -p tempest-linux-probe --bin tempest-combined-login-diagnostic \
+  --bin tempest-host-login-responder --bin tempest-host-login-publisher
+sudo python3 integration/combined_login_diagnostic.py \
+  target/debug/tempest-combined-login-diagnostic target/debug/tempest-host-login-responder \
+  target/debug/tempest-host-login-publisher
+```

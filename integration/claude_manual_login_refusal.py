@@ -16,7 +16,7 @@ FIXED_CLI = "/var/lib/tempest-claude-offline/claude"
 SIGNED = "--signed-publication"
 
 
-def check_signed_publication(config, ledger, check):
+def check_signed_publication(config, ledger, check, *, combined_check=None):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -97,6 +97,10 @@ def check_signed_publication(config, ledger, check):
         write(authority / "revocation-committed", encode({
             "revision": 2 if case == "revocation" else 1, "state_sha256": digest(revocation),
         }))
+
+    if combined_check is not None:
+        combined_check(lambda: publish("normal"))
+        return
 
     stages = (
         b"manual login handoff diagnostic verified",

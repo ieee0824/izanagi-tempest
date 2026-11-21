@@ -2744,6 +2744,54 @@ fn validate_manual_login_policy_at(
     Ok(Some(policy.permit))
 }
 
+pub(super) fn run_combined_login_diagnostic() -> std::process::ExitCode {
+    use std::process::ExitCode;
+    if std::env::args_os().len() != 1
+        || unsafe { libc::geteuid() } != 0
+        || verify_shared_terminal(libc::STDIN_FILENO, libc::STDOUT_FILENO).is_err()
+        || verify_shared_terminal(libc::STDOUT_FILENO, libc::STDERR_FILENO).is_err()
+    {
+        eprintln!("combined login diagnostic refused: dedicated administrator PTY required");
+        return ExitCode::FAILURE;
+    }
+    let result = (|| {
+        let parent = pin_login_path(
+            Path::new(MANUAL_LOGIN_POLICY)
+                .parent()
+                .ok_or(io::ErrorKind::InvalidInput)?,
+            libc::O_DIRECTORY,
+        )?;
+        let metadata = parent.metadata()?;
+        if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        let publication = open_private_login_directory(&parent, "claude-login-publication")?;
+        let verified = verify_login_generation(&parent, &publication)?;
+        let _host_lock = host_login_diagnostic::verify_for_supervision(
+            &verified._login.target_id,
+            verified._login.id,
+            verified._revision,
+        )?;
+        let authority = open_private_login_directory(&parent, "claude-login-authority")?;
+        let revocation_deadline = verify_login_revocation(
+            &authority,
+            verified._revision,
+            &verified._manifest_sha256,
+            verified._login.id,
+            &verified._login.target_id,
+        )?;
+        if std::time::Instant::now() >= verified._login.expires.min(revocation_deadline) {
+            return Err(io::Error::other("manual login inputs expired"));
+        }
+        eprintln!("combined login diagnostic: host and PTY inputs match");
+        refuse_supervised_login(verified)
+    })();
+    if let Err(error) = result {
+        eprintln!("combined login diagnostic refused: {error}");
+    }
+    ExitCode::FAILURE
+}
+
 pub(super) fn run_manual_login() -> std::process::ExitCode {
     use std::process::ExitCode;
     if std::env::args_os().len() != 1 {
