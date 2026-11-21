@@ -1213,9 +1213,41 @@ fn run_fixture(
         control,
         namespace_reaped,
         diagnostic,
-        None,
+        FixtureStaging::default(),
         None,
     )
+}
+
+#[derive(Default)]
+struct FixtureStaging<'a> {
+    config: Option<&'a writable_config::Generation>,
+    verified_artifacts: Option<&'a [File]>,
+}
+
+fn pin_artifacts(artifacts: &[Artifact<'_>]) -> Result<Vec<File>, Fault> {
+    artifacts.iter().map(verify_fixed_artifact).collect()
+}
+
+fn stage_fixed_artifacts(
+    scratch: &Path,
+    root: &Path,
+    artifacts: &[Artifact<'_>],
+    verified: Option<&[File]>,
+) -> Result<(), Fault> {
+    if verified.is_some_and(|files| files.len() != artifacts.len()) {
+        return Err(Fault::Identity);
+    }
+    for (index, artifact) in artifacts.iter().enumerate() {
+        let destination = scratch.join(format!("artifact-{index}"));
+        let staged = match verified {
+            Some(files) => stage_pinned_artifact(&files[index], artifact, &destination),
+            None => stage_artifact(artifact, &destination),
+        }
+        .inspect_err(|fault| stage_failure(artifact.source, fault))?;
+        mount_artifact(root, artifact, &staged)
+            .inspect_err(|fault| stage_failure("artifact_mount", fault))?;
+    }
+    Ok(())
 }
 
 fn run_fixture_with_config(
@@ -1224,7 +1256,7 @@ fn run_fixture_with_config(
     control: &mut UnixStream,
     namespace_reaped: &mut bool,
     diagnostic: Diagnostic,
-    private_config: Option<&writable_config::Generation>,
+    staging: FixtureStaging<'_>,
     local_auth: Option<(local_auth::Case, &File, &FixturePermit)>,
 ) -> Result<(u64, u64), Fault> {
     use super::os;
@@ -1240,12 +1272,13 @@ fn run_fixture_with_config(
     ] {
         fs::create_dir(root.join(dir))?;
     }
-    for (index, artifact) in artifacts_for(diagnostic).iter().enumerate() {
-        let staged = stage_artifact(artifact, &scratch.join(format!("artifact-{index}")))
-            .inspect_err(|fault| stage_failure(artifact.source, fault))?;
-        mount_artifact(root, artifact, &staged)
-            .inspect_err(|fault| stage_failure("artifact_mount", fault))?;
-    }
+    stage_fixed_artifacts(
+        scratch,
+        root,
+        artifacts_for(diagnostic),
+        staging.verified_artifacts,
+    )?;
+    let private_config = staging.config;
     let staged_busybox = if diagnostic != Diagnostic::Version {
         let destination = scratch.join("artifact-busybox");
         let staged =
@@ -3149,6 +3182,23 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
             .zip(upstream_network.as_ref())
             .zip(permit.as_ref())
             .map(|((case, namespace), permit)| (case, namespace, permit));
+        let diagnostic = if matches!(local_auth_case, Some(local_auth::Case::Match)) {
+            Diagnostic::PtyWithLoginArtifacts
+        } else {
+            Diagnostic::Pty
+        };
+        let verified_artifacts = if diagnostic == Diagnostic::PtyWithLoginArtifacts {
+            match pin_artifacts(artifacts_for(diagnostic)) {
+                Ok(artifacts) => Some(artifacts),
+                Err(fault) => {
+                    work.remove(&parent)?;
+                    config.finish(&config_parent, writable_config::Disposition::Remove, false)?;
+                    return Err(io::Error::other(fault.reason()));
+                }
+            }
+        } else {
+            None
+        };
         let mut observation = None;
         let run = supervised_with_network(
             &parent,
@@ -3159,12 +3209,11 @@ fn run_writable_pty_for(local_auth_case: Option<local_auth::Case>) -> std::proce
                     root,
                     control,
                     reaped,
-                    if matches!(local_auth_case, Some(local_auth::Case::Match)) {
-                        Diagnostic::PtyWithLoginArtifacts
-                    } else {
-                        Diagnostic::Pty
+                    diagnostic,
+                    FixtureStaging {
+                        config: Some(&config),
+                        verified_artifacts: verified_artifacts.as_deref(),
                     },
-                    Some(&config),
                     local_auth,
                 )
             },
@@ -3620,6 +3669,48 @@ mod tests {
             Err(Fault::Identity)
         ));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires fixed artifacts and disposable root-owned work and config mounts"]
+    fn pinned_login_artifact_set_stages_without_executing() {
+        let work_path = Path::new(WORK_PARENT);
+        let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
+        let parent = lock_parent(work_path).unwrap();
+        let config_parent = lock_parent(config_path).unwrap();
+        let work = WorkArea::create(&parent, work_path).unwrap();
+        let config =
+            writable_config::Generation::create(&config_parent, config_path, &work).unwrap();
+        let files = pin_artifacts(ARTIFACTS).unwrap();
+        let mut detached = false;
+        let result = trial_with_detach(&work.path, &mut detached, |scratch, root| {
+            for path in [
+                "bin",
+                "lib64",
+                "lib",
+                "lib/x86_64-linux-gnu",
+                "home",
+                "home/fixture",
+                "home/fixture/config",
+            ] {
+                fs::create_dir(root.join(path))?;
+            }
+            assert!(matches!(
+                stage_fixed_artifacts(scratch, root, ARTIFACTS, Some(&files[..files.len() - 1])),
+                Err(Fault::Identity)
+            ));
+            assert!(!scratch.join("artifact-0").exists());
+            stage_fixed_artifacts(scratch, root, ARTIFACTS, Some(&files))?;
+            config.bind(root)?;
+            assert_eq!(fs::read_dir(root.join("home/fixture/config"))?.count(), 1);
+            Ok(())
+        });
+        assert!(detached);
+        config
+            .finish(&config_parent, writable_config::Disposition::Remove, false)
+            .unwrap();
+        work.remove(&parent).unwrap();
+        result.unwrap();
     }
 
     #[test]
