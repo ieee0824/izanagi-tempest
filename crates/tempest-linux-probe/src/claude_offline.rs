@@ -1051,6 +1051,11 @@ fn managed_login_command(
             test "$(/bin/busybox id -g)" = 988
             umask 077
             printf 'synthetic credential\n' > "$CLAUDE_CONFIG_DIR/.credentials.json"
+            if test "$MANAGED_DUMMY_IDLE" = 1; then
+                printf 'managed-dummy-idle\n'
+                /bin/busybox sleep 60
+                exit 0
+            fi
             /bin/busybox nc -w 5 127.0.0.1 39271 -e /bin/busybox sh -eu -c '
                 printf "CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\n"
                 IFS= read -r status
@@ -1065,6 +1070,14 @@ fn managed_login_command(
             '
         "#, "managed-login-dummy"]);
         configure_login_command(&mut command);
+        command.env(
+            "MANAGED_DUMMY_IDLE",
+            if std::env::var_os("TEMPEST_FIXTURE_IDLE").is_some() {
+                "1"
+            } else {
+                "0"
+            },
+        );
         command.stdin(Stdio::inherit()).stdout(Stdio::inherit());
         return Ok(command);
     }
@@ -1611,6 +1624,7 @@ fn run_fixture_with_config(
                 Ok(())
                 | Err(Fault::AdministratorStop | Fault::ReportEof | Fault::ReportTimeout)
                     if *namespace_reaped => {}
+                Err(Fault::Identity) if *namespace_reaped && stop.requested() => {}
                 Err(error) => return Err(error),
                 Ok(()) => return Err(Fault::Identity),
             }
@@ -1636,7 +1650,7 @@ fn run_fixture_with_config(
     if let Some(policy) = policy {
         policy.finish(launch.is_ok(), managed)?;
         if managed {
-            eprintln!("manual login network policy closed");
+            host_login_diagnostic::report_without_waiting("manual login network policy closed");
         } else if launch.is_ok() {
             eprintln!(
                 "local auth: tunnel accepted, other host refused, three direct ports denied; listeners and policy closed"
@@ -3985,11 +3999,15 @@ fn run_writable_pty_for(
             ExitCode::SUCCESS
         }
         Ok(_) => {
-            eprintln!("offline writable PTY: recovered; synthetic configuration removed");
+            host_login_diagnostic::report_without_waiting(
+                "offline writable PTY: recovered; synthetic configuration removed",
+            );
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("offline writable PTY fixture failed: {error}");
+            host_login_diagnostic::report_without_waiting(&format!(
+                "offline writable PTY fixture failed: {error}"
+            ));
             ExitCode::FAILURE
         }
     }
