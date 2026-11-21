@@ -285,6 +285,21 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
     server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server_context.load_cert_chain(cert, private_key)
     cert_pem = cert.read_text()
+    tls_ca = CONFIG / ".synthetic-tls-ca.pem"
+    if stage_login_artifacts:
+        master, slave = pty.openpty()
+        try:
+            missing_ca = subprocess.run(
+                [binary, "signed-tls-staged"], stdin=slave, stdout=slave,
+                stderr=subprocess.PIPE, timeout=5,
+            )
+        finally:
+            os.close(master)
+            os.close(slave)
+        if missing_ca.returncode != 1 or record.exists() or any(WORK.iterdir()):
+            raise RuntimeError("missing fixture CA did not refuse before staging or consumption")
+        with os.fdopen(os.open(tls_ca, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as out:
+            out.write(cert_pem.encode())
     identities = {}
 
     def exchanges(listener):
@@ -331,6 +346,8 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
         for directory in (work, CONFIG / work.name):
             metadata = directory.stat()
             identities[directory] = (metadata.st_dev, metadata.st_ino)
+        if stage_login_artifacts:
+            return
         probe = "--probe-revoked-tls" if revoke else (
             "--probe-expiring-tls" if expire else "--probe-local-tls"
         )
@@ -397,6 +414,8 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
         else:
             unexpected.close()
             raise RuntimeError("unexpected TLS upstream connection")
+    if stage_login_artifacts:
+        tls_ca.unlink()
     if any(directory.exists() for directory in identities):
         raise RuntimeError("TLS fixture generation was not recovered")
     if revoke:
@@ -407,7 +426,8 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
         print("signed TLS freshness: both TLS peers closed; next CONNECT denied without upstream; "
               "same permit and generations recovered")
         return
-    print("signed TLS: same permit and generation, exact certificate, wrong name refused, "
+    origin = "fixed PTY child TLS" if stage_login_artifacts else "signed TLS probe"
+    print(f"{origin}: same permit and generation, exact certificate, wrong name refused, "
           "direct ports denied, child and gateway reaped, both generations recovered")
 
 
@@ -432,7 +452,8 @@ def check_signed_permits(binary, tls=False, *, integration_gate=None):
     tls_expiry_record = CONFIG / f"{14:032x}"
     tls_revoked_record = CONFIG / f"{15:032x}"
     revocation_files = {CONFIG / ".synthetic-live-revocation.json",
-                        CONFIG / ".synthetic-live-revocation.pending"}
+                        CONFIG / ".synthetic-live-revocation.pending",
+                        CONFIG / ".synthetic-tls-ca.pem"}
     closure_records = {record for _, record, _ in closure_cases} | {missing_sync, failed_sync}
     stop_request = CONFIG / ".synthetic-stop-request.json"
     pending_stop = CONFIG / ".synthetic-stop-request.pending"
