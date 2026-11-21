@@ -600,3 +600,22 @@ sudo python3 integration/host_login_diagnostic_readonly.py \
 ```
 
 試験には Linux の `unshare`、`mount`、`strace` と Python の cryptography が必要です。
+
+`tempest-host-login-responder` は専用 Linux ホストで、診断の要求値を
+標準入力から1行読み取ります。固定管理領域の
+`host-login-ledger/record.json` にある単一の台帳公開レコードを、独立した
+確定点と管理スコープに読み取り専用で照合します。対象が消費済みで、
+番号とダイジェストが一致する場合に限り、`host-login-signer/signing-seed`
+の32バイトの Ed25519 シードを使って応答を署名します。シードから導出した
+公開鍵が管理側の検証鍵と異なる場合も拒否します。起動や台帳更新は行いません。
+
+```sh
+cargo build --locked -p tempest-linux-probe \
+  --bin tempest-host-login-diagnostic --bin tempest-host-login-responder
+sudo python3 integration/host_login_diagnostic_readonly.py \
+  target/debug/tempest-host-login-diagnostic target/debug/tempest-host-login-responder
+```
+
+統合試験は読み取り専用の試験領域で2つのバイナリを接続し、未確定、
+台帳の巻き戻し、応答喪失での拒否を確認します。台帳公開の生成と
+実運用への配備は、この診断とは別の作業です。
