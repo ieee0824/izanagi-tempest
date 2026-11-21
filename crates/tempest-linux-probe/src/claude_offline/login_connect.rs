@@ -168,6 +168,149 @@ fn approved_peer(resolved: &[IpAddr], approved: &[IpAddr], port: u16) -> io::Res
         .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "no approved login address"))
 }
 
+fn require_active(stop: &(dyn Fn() -> bool + Sync), deadline: Instant) -> io::Result<Duration> {
+    if stop() {
+        return Err(io::Error::other("managed login authorization ended"));
+    }
+    time_remaining(deadline)
+}
+
+fn connect_managed(
+    peer: SocketAddr,
+    deadline: Instant,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> io::Result<TcpStream> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    require_active(stop, deadline)?;
+    let domain = if peer.is_ipv4() {
+        libc::AF_INET
+    } else {
+        libc::AF_INET6
+    };
+    let fd = unsafe {
+        libc::socket(
+            domain,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let connect = |address, length| unsafe { libc::connect(fd.as_raw_fd(), address, length) };
+    require_active(stop, deadline)?;
+    let status = match peer {
+        SocketAddr::V4(peer) => {
+            let address = libc::sockaddr_in {
+                sin_family: libc::AF_INET as libc::sa_family_t,
+                sin_port: peer.port().to_be(),
+                sin_addr: libc::in_addr {
+                    s_addr: u32::from_ne_bytes(peer.ip().octets()),
+                },
+                sin_zero: [0; 8],
+            };
+            connect(
+                (&raw const address).cast(),
+                size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            )
+        }
+        SocketAddr::V6(peer) => {
+            let address = libc::sockaddr_in6 {
+                sin6_family: libc::AF_INET6 as libc::sa_family_t,
+                sin6_port: peer.port().to_be(),
+                sin6_flowinfo: peer.flowinfo().to_be(),
+                sin6_addr: libc::in6_addr {
+                    s6_addr: peer.ip().octets(),
+                },
+                sin6_scope_id: peer.scope_id(),
+            };
+            connect(
+                (&raw const address).cast(),
+                size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+            )
+        }
+    };
+    if status != 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINPROGRESS) {
+            return Err(error);
+        }
+        loop {
+            let remaining = require_active(stop, deadline)?;
+            let mut event = libc::pollfd {
+                fd: fd.as_raw_fd(),
+                events: libc::POLLOUT,
+                revents: 0,
+            };
+            let wait_ms = remaining.as_millis().clamp(1, 20) as libc::c_int;
+            let ready = unsafe { libc::poll(&mut event, 1, wait_ms) };
+            match ready {
+                1 => break,
+                0 => {}
+                _ => {
+                    let error = io::Error::last_os_error();
+                    if error.kind() != io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+    }
+    let stream = TcpStream::from(fd);
+    if let Some(error) = stream.take_error()? {
+        return Err(error);
+    }
+    require_active(stop, deadline)?;
+    stream.set_nonblocking(false)?;
+    Ok(stream)
+}
+
+struct ManagedHeader<'a> {
+    client: &'a mut TcpStream,
+    deadline: Instant,
+    stop: &'a (dyn Fn() -> bool + Sync),
+}
+
+impl Read for ManagedHeader<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        loop {
+            let remaining = require_active(self.stop, self.deadline)?;
+            self.client
+                .set_read_timeout(Some(remaining.min(Duration::from_millis(20))))?;
+            match self.client.read(output) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) => {}
+                result => return result,
+            }
+        }
+    }
+}
+
+fn open_managed_tunnel(
+    client: &mut TcpStream,
+    peer: SocketAddr,
+    deadline: Instant,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> io::Result<TcpStream> {
+    read_request(ManagedHeader {
+        client,
+        deadline,
+        stop,
+    })?;
+    let upstream = connect_managed(peer, deadline, stop)?;
+    if upstream.peer_addr()? != peer {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    client.set_write_timeout(Some(require_active(stop, deadline)?))?;
+    client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
+    Ok(upstream)
+}
+
 /// Use a pinned numeric peer after validating the fixed CONNECT authority.
 fn relay_fixed_request(
     mut client: TcpStream,
@@ -175,9 +318,14 @@ fn relay_fixed_request(
     deadline: Instant,
     stop: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> io::Result<()> {
-    let tunnel = match open_tunnel(&mut client, deadline, peer, |address, timeout| {
-        TcpStream::connect_timeout(&address, timeout)
-    }) {
+    let result = if let Some(stop) = stop {
+        open_managed_tunnel(&mut client, peer, deadline, stop)
+    } else {
+        open_tunnel(&mut client, deadline, peer, |address, timeout| {
+            TcpStream::connect_timeout(&address, timeout)
+        })
+    };
+    let tunnel = match result {
         Ok(tunnel) => tunnel,
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
             client.set_write_timeout(Some(time_remaining(deadline)?))?;
@@ -429,6 +577,53 @@ fn finish_expiring_relay(result: io::Result<()>, expires: Instant) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_gateway_aborts_partial_headers_before_dialing() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let gateway = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        gateway.set_nonblocking(true).unwrap();
+        let revoke = AtomicBool::new(false);
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                serve_managed(&gateway, upstream.local_addr().unwrap(), deadline, &|| {
+                    checks.fetch_add(1, Ordering::Release);
+                    revoke.load(Ordering::Acquire)
+                })
+                .unwrap();
+            });
+            let mut client = TcpStream::connect(gateway.local_addr().unwrap()).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            client
+                .write_all(b"CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: ")
+                .unwrap();
+            let start = Instant::now();
+            while checks.load(Ordering::Acquire) < 10 {
+                assert!(start.elapsed() < Duration::from_secs(1));
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            revoke.store(true, Ordering::Release);
+            let mut byte = [0; 1];
+            match client.read(&mut byte) {
+                Ok(0) => {}
+                Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {}
+                result => panic!("partial request survived stop: {result:?}"),
+            }
+            let _ = client.write_all(b"platform.claude.com:443\r\n\r\n");
+            worker.join().unwrap();
+            assert_eq!(
+                upstream.accept().unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+        });
+    }
 
     #[test]
     fn managed_gateway_rejects_wrong_authority_and_closes_live_tunnel_on_stop() {

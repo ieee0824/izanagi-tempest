@@ -1031,6 +1031,48 @@ fn fixed_login_command(root: &Path) -> Result<std::process::Command, Fault> {
     Ok(command)
 }
 
+fn managed_login_command(
+    root: &Path,
+    _route: &ManagedLoginRoute,
+) -> Result<std::process::Command, Fault> {
+    #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
+    if _route.fixed_dummy {
+        use std::process::Stdio;
+        let mut command = isolated_command(
+            root,
+            "/bin/busybox",
+            OpenOptions::new().write(true).open("/dev/null")?,
+            OpenOptions::new().write(true).open("/dev/null")?,
+            Diagnostic::PtyWithLoginArtifacts,
+        )?;
+        command.args(["sh", "-eu", "-c", r#"
+            test "$#" = 2 && test "$1" = auth && test "$2" = login
+            test "$(/bin/busybox id -u)" = 999
+            test "$(/bin/busybox id -g)" = 988
+            umask 077
+            printf 'synthetic credential\n' > "$CLAUDE_CONFIG_DIR/.credentials.json"
+            /bin/busybox nc -w 5 127.0.0.1 39271 -e /bin/busybox sh -eu -c '
+                printf "CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\n"
+                IFS= read -r status
+                test "$status" = "$(printf "HTTP/1.1 200 Connection Established\r")"
+                IFS= read -r separator
+                test "$separator" = "$(printf "\r")"
+                printf "PING"
+                IFS= read -r response
+                test "$response" = ACK
+                printf "READY\n"
+                IFS= read -r stop
+            '
+        "#, "managed-login-dummy"]);
+        configure_login_command(&mut command);
+        command.stdin(Stdio::inherit()).stdout(Stdio::inherit());
+        return Ok(command);
+    }
+    let mut command = fixed_login_command(root)?;
+    command.env("NODE_EXTRA_CA_CERTS", "/manual-login-ca.pem");
+    Ok(command)
+}
+
 fn run_pty_child(
     root: &Path,
     namespace_reaped: &mut bool,
@@ -1385,6 +1427,21 @@ fn run_fixture_with_config(
     let managed = managed_route.is_some();
     if let Some(route) = managed_route {
         use std::os::unix::fs::PermissionsExt;
+        #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
+        if route.fixed_dummy {
+            os::mount(
+                None,
+                &root.join("bin/claude"),
+                None,
+                libc::MS_BIND
+                    | libc::MS_REMOUNT
+                    | libc::MS_RDONLY
+                    | libc::MS_NOSUID
+                    | libc::MS_NODEV
+                    | libc::MS_NOEXEC,
+                None,
+            )?;
+        }
         let path = root.join("manual-login-ca.pem");
         fs::write(&path, &route.ca)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o444))?;
@@ -1537,8 +1594,7 @@ fn run_fixture_with_config(
             if stop.requested() {
                 return Err(Fault::AdministratorStop);
             }
-            let mut command = fixed_login_command(root)?;
-            command.env("NODE_EXTRA_CA_CERTS", "/manual-login-ca.pem");
+            let command = managed_login_command(root, managed_route.ok_or(Fault::Identity)?)?;
             let child = supervise_pid_namespace(
                 command,
                 permit
@@ -2243,7 +2299,16 @@ fn open_login_ledger(parent: &File) -> io::Result<File> {
             "invalid ledger ownership or mode",
         ));
     }
-    Ok(ledger)
+    // openat can create a record through O_PATH, but fsync requires an
+    // ordinary directory descriptor bound to the very same inode.
+    let readable = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+        .open(format!("/proc/self/fd/{}", ledger.as_raw_fd()))?;
+    if fd_identity(&readable)? != fd_identity(&ledger)? {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    Ok(readable)
 }
 
 fn check_unused_login_permit(ledger: &File, permit_id: u128) -> io::Result<()> {
@@ -3122,6 +3187,7 @@ pub(super) fn run_combined_login_diagnostic() -> std::process::ExitCode {
     ExitCode::FAILURE
 }
 
+#[derive(Clone, Copy)]
 enum ManualLoginBackend {
     Distribution,
     #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
@@ -3140,11 +3206,14 @@ struct ManualLoginDeployment {
 struct ManagedLoginRoute {
     peer: std::net::SocketAddr,
     ca: Vec<u8>,
+    #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
+    fixed_dummy: bool,
 }
 
 fn preflight_managed_manual_login(
     deployment: &ManualLoginDeployment,
     verified: &VerifiedSupervisorInputs,
+    backend: ManualLoginBackend,
 ) -> io::Result<ManagedLoginRoute> {
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::MetadataExt;
@@ -3176,16 +3245,32 @@ fn preflight_managed_manual_login(
     {
         return Err(io::ErrorKind::InvalidData.into());
     }
+    let port = match backend {
+        ManualLoginBackend::Distribution => 443,
+        #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
+        ManualLoginBackend::FixedDummy if deployment.peer.is_loopback() => 39275,
+        #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
+        ManualLoginBackend::FixedDummy => return Err(io::ErrorKind::PermissionDenied.into()),
+    };
     Ok(ManagedLoginRoute {
-        peer: std::net::SocketAddr::new(deployment.peer, 443),
+        peer: std::net::SocketAddr::new(deployment.peer, port),
         ca,
+        #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
+        fixed_dummy: matches!(backend, ManualLoginBackend::FixedDummy),
     })
 }
 
-fn run_deployed_manual_login(deployment: ManualLoginDeployment) -> std::process::ExitCode {
+fn run_deployed_manual_login(
+    deployment: ManualLoginDeployment,
+    backend: ManualLoginBackend,
+) -> std::process::ExitCode {
     let mut route = None;
     match verify_combined_login_inputs_with(|verified| {
-        route = Some(preflight_managed_manual_login(&deployment, verified)?);
+        route = Some(preflight_managed_manual_login(
+            &deployment,
+            verified,
+            backend,
+        )?);
         Ok(())
     }) {
         Ok((verified, commit, lock)) => {
@@ -3213,22 +3298,22 @@ pub(super) fn run_manual_login() -> std::process::ExitCode {
 fn run_manual_login_with(backend: ManualLoginBackend) -> std::process::ExitCode {
     use std::process::ExitCode;
     manual_login_entry(std::env::args_os().len(), || {
+        match read_login_input(Path::new(MANUAL_LOGIN_DEPLOYMENT), 4096) {
+            Ok(bytes) => {
+                if let Ok(deployment) = serde_json::from_slice(&bytes) {
+                    return run_deployed_manual_login(deployment, backend);
+                }
+                eprintln!("manual login refused: invalid deployment");
+                return ExitCode::FAILURE;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => {
+                eprintln!("manual login refused: deployment unavailable");
+                return ExitCode::FAILURE;
+            }
+        }
         let reason = match backend {
             ManualLoginBackend::Distribution => {
-                match read_login_input(Path::new(MANUAL_LOGIN_DEPLOYMENT), 4096) {
-                    Ok(bytes) => {
-                        if let Ok(deployment) = serde_json::from_slice(&bytes) {
-                            return run_deployed_manual_login(deployment);
-                        }
-                        eprintln!("manual login refused: invalid deployment");
-                        return ExitCode::FAILURE;
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(_) => {
-                        eprintln!("manual login refused: deployment unavailable");
-                        return ExitCode::FAILURE;
-                    }
-                }
                 match check_manual_login_policy(Path::new(MANUAL_LOGIN_POLICY)) {
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {
                         "administrator policy missing"
