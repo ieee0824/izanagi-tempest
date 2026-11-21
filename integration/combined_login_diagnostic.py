@@ -89,10 +89,11 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *
         filters = "%network,%process,%file" if stage is None else "%network,%process"
         command = ["strace", "-f", "-qq", "-o", trace, "-e", f"trace={filters}", binary]
         environment = None
-        if stage == "direct-refusal":
+        if stage in ("direct-refusal", "direct-gate"):
             command[-1] = direct_test
             command += ["--ignored", "--nocapture", "supervise_verified_dummy_tls"]
-            environment = {"TEMPEST_EXPECT_DUMMY_REFUSAL": "1"}
+            environment = ({"TEMPEST_PAUSE_START_GATE": "1"} if stage == "direct-gate"
+                           else {"TEMPEST_EXPECT_DUMMY_REFUSAL": "1"})
         elif stage is not None:
             command += ["--ignored", "--nocapture", "stage_combined_diagnostic_descriptors"]
             environment = {"TEMPEST_STAGE_CASE": stage}
@@ -111,7 +112,13 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *
                         )
                         if response.returncode != (0 if value.state == "consumed" else 1):
                             raise RuntimeError(f"{label}: unexpected responder result {response}")
-                        if revoke_after_response:
+                        if stage == "direct-gate":
+                            os.write(master, response.stdout)
+                            while b"verified supervisor ready for start gate" not in output:
+                                if not select.select([master], [], [], 10)[0]:
+                                    raise RuntimeError(f"{label}: start gate not reached: {output!r}")
+                                output += os.read(master, 4096)
+                        if revoke_after_response or stage == "direct-gate":
                             with (published / "lock").open("rb") as held:
                                 fcntl.flock(held, fcntl.LOCK_EX)
                                 with closing(sqlite3.connect(database)) as db, db:
@@ -120,7 +127,10 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *
                                         value.scope.permit_id, value.scope.generation, "revoked",
                                     ))
                             before = tuple(path.read_bytes() for path in protected)
-                        os.write(master, response.stdout if response.stdout and not lose_response else b"\x04")
+                        if stage == "direct-gate":
+                            os.write(master, b"continue\n")
+                        else:
+                            os.write(master, response.stdout if response.stdout and not lose_response else b"\x04")
                     else:
                         lock_path = config / "claude-login-publication/lock"
                         lock = ["flock", "-n", "-x", lock_path, "true"]
@@ -145,11 +155,12 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *
             os.close(slave)
             os.close(master)
         if stage is not None:
-            marker = ("direct supervisor refused before launch" if stage == "direct-refusal"
+            direct = stage in ("direct-refusal", "direct-gate")
+            marker = ("direct supervisor refused before launch" if direct
                       else f"staging case {stage}: expected outcome, mounts detached and generation removed")
-            if marker.encode() not in output or (stage != "direct-refusal" and any(CONFIG.iterdir())):
+            if marker.encode() not in output or (not direct and any(CONFIG.iterdir())):
                 raise RuntimeError(f"{label}: unexpected staging output {output!r}")
-            expected_work = set() if stage == "direct-refusal" else {WORK / "staging-source"}
+            expected_work = set() if direct else {WORK / "staging-source"}
             if set(WORK.iterdir()) != expected_work:
                 raise RuntimeError(f"{label}: staging retained work unexpectedly")
             calls = [line.split(maxsplit=1)[1] for line in trace.read_text().splitlines()]
@@ -268,7 +279,7 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *
                 run_case(mode, commit, False, stage=mode)
             return
         if direct_test is not None:
-            def connect_verified_supervisor(record, payload):
+            def connect_verified_supervisor(record, payload, outcome):
                 handoff = json.loads(payload.read_bytes().split(b"\0", 1)[1])
                 expected = Scope(handoff["target_id"], record.name, 1)
                 if expected.permit_id != handoff["permit_id"]:
@@ -276,15 +287,24 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *
                 commit = Commit("fixture-ledger", 1, expected, "consumed")
                 refresh_publication(expected.permit_id, expected.target_id)
                 mismatch = replace(commit, scope=replace(expected, generation=2))
-                run_case("direct supervisor generation mismatch", mismatch, False,
-                         stage="direct-refusal")
-                run_case("direct supervisor revoked before start", commit, False,
-                         revoke_after_response=True, stage="direct-refusal")
+                if outcome == "revoked":
+                    run_case("direct supervisor generation mismatch", mismatch, False,
+                             stage="direct-refusal")
+                    run_case("direct supervisor revoked before start", commit, False,
+                             revoke_after_response=True, stage="direct-refusal")
                 if record.exists():
                     raise RuntimeError("refused supervisor consumed the permit")
-                refresh_publication(expected.permit_id, expected.target_id, 30)
-                prepare(commit)
-                subprocess.run([publisher], check=True, timeout=5)
+                def prepare_live():
+                    if outcome == "revoked":
+                        refresh_publication(expected.permit_id, expected.target_id, 30)
+                        run_case("direct supervisor revoked at gate", commit, False,
+                                 stage="direct-gate")
+                        if record.exists():
+                            raise RuntimeError("start gate consumed a revoked permit")
+                    refresh_publication(expected.permit_id, expected.target_id,
+                                        20 if outcome == "expired" else 30)
+                    prepare(commit)
+                    subprocess.run([publisher], check=True, timeout=5)
 
                 def relay_challenge(master):
                     output = b""
@@ -298,29 +318,48 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, *
                     os.write(master, response.stdout)
 
                 def revoke_live_host():
+                    if outcome == "expired":
+                        state = config / "claude-login-authority/revocation-state"
+                        deadline = json.loads(state.read_bytes().split(b"\0", 1)[1])[
+                            "expires_unix_seconds"
+                        ]
+                        if time.time() >= deadline:
+                            raise RuntimeError("fixed child was observed only after expiry")
+                        return deadline
                     update = """
 import sqlite3
 import sys
 
 with sqlite3.connect(sys.argv[1]) as db:
-    updated = db.execute(
-        "INSERT INTO permit_commits "
-        "SELECT sequence + 1, ledger_id, target_id, permit_id, generation, 'revoked' "
-        "FROM permit_commits WHERE sequence = 1"
-    )
+    if sys.argv[2] == "missing":
+        updated = db.execute("DELETE FROM permit_commits WHERE sequence = 1")
+    else:
+        updated = db.execute(
+            "INSERT INTO permit_commits "
+            "SELECT sequence + 1, ledger_id, target_id, permit_id, generation, 'revoked' "
+            "FROM permit_commits WHERE sequence = 1"
+        )
     if updated.rowcount != 1:
-        raise RuntimeError("active management permit was not revoked")
+        raise RuntimeError("active management record was not updated")
 """
                     subprocess.run(
                         ["flock", "-x", "-w", "3", published / "lock",
-                         sys.executable, "-c", update, database],
+                         sys.executable, "-c", update, database, outcome],
                         check=True, timeout=5,
                     )
 
                 command = [direct_test, "--ignored", "--nocapture", "supervise_verified_dummy_tls"]
-                return command, relay_challenge, revoke_live_host
+                return (command, relay_challenge,
+                        revoke_live_host if outcome != "disconnect" else None, prepare_live)
 
-            check_signed_permits(dummy, direct_tls=connect_verified_supervisor)
+            for outcome in ("revoked", "missing", "disconnect", "expired"):
+                check_signed_permits(
+                    dummy,
+                    direct_tls=lambda record, payload: connect_verified_supervisor(
+                        record, payload, outcome
+                    ),
+                )
+                print(f"fixed supervisor recovered after {outcome}")
             return
         if dummy is not None:
             def verify_dummy(record, payload):

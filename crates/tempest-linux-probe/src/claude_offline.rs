@@ -740,7 +740,10 @@ struct FixtureStopTarget {
 }
 
 enum FixtureStop {
-    Host(host_login_diagnostic::VerifiedHostCommit),
+    Host(
+        host_login_diagnostic::VerifiedHostCommit,
+        std::time::Instant,
+    ),
     Notice(FixtureStopNotice),
 }
 
@@ -768,7 +771,10 @@ struct FixtureRevocationNotice {
 impl FixtureStop {
     fn requested(&self) -> bool {
         let notice = match self {
-            Self::Host(commit) => {
+            Self::Host(commit, expires) => {
+                if std::time::Instant::now() >= *expires {
+                    return true;
+                }
                 return match commit.lock_current() {
                     Ok(_) => false,
                     Err(error) => error.kind() != io::ErrorKind::WouldBlock,
@@ -3301,6 +3307,15 @@ fn run_writable_pty_for(
             } else {
                 None
             };
+            #[cfg(test)]
+            if host_commit.is_some() && std::env::var_os("TEMPEST_PAUSE_START_GATE").is_some() {
+                eprintln!("verified supervisor ready for start gate");
+                let mut release = String::new();
+                std::io::stdin().read_line(&mut release)?;
+                if release.trim_end() != "continue" {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+            }
             // Serialize the fixture's start authorization with management updates.
             let management_gate = host_commit
                 .as_ref()
@@ -3381,7 +3396,7 @@ fn run_writable_pty_for(
                 }));
             }
             if let Some(host_commit) = host_commit {
-                permit.administrator_stop = Some(FixtureStop::Host(host_commit));
+                permit.administrator_stop = Some(FixtureStop::Host(host_commit, permit.expires));
             }
             permit.closure = Some(FixtureClosure::new(
                 case,
@@ -3899,14 +3914,17 @@ mod tests {
         }
         let (verified, host_commit, host_lock) = verification.unwrap();
         drop(host_lock);
-        assert_eq!(
-            run_writable_pty_for(
-                Some(local_auth::Case::SignedTls),
-                true,
-                Some((&verified, host_commit))
-            ),
-            std::process::ExitCode::SUCCESS,
+        let exit = run_writable_pty_for(
+            Some(local_auth::Case::SignedTls),
+            true,
+            Some((&verified, host_commit)),
         );
+        if std::env::var_os("TEMPEST_PAUSE_START_GATE").is_some() {
+            assert_eq!(exit, std::process::ExitCode::FAILURE);
+            println!("direct supervisor refused before launch");
+            return;
+        }
+        assert_eq!(exit, std::process::ExitCode::SUCCESS);
         // The PTY master is closed to exercise recovery, so libtest cannot report to stdout.
         std::process::exit(0);
     }

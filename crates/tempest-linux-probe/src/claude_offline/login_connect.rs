@@ -282,8 +282,8 @@ pub(super) fn serve_fixture(
         } else {
             None
         };
-        let relayed = if let Some(stop @ super::FixtureStop::Host(_)) = stop {
-            relay_until_revoked(client, tunnel, deadline.min(expires), stop)
+        let relayed = if let Some(stop @ super::FixtureStop::Host(..)) = stop {
+            relay_until_revoked(client, tunnel, deadline, stop)
         } else if matches!(case, Case::SignedTlsExpiry) {
             finish_expiring_relay(relay(client, tunnel, expires), expires)
         } else {
@@ -308,19 +308,33 @@ fn relay_until_revoked(
 ) -> io::Result<()> {
     let client_pin = client.try_clone()?;
     let upstream_pin = tunnel.try_clone()?;
+    let host = matches!(stop, super::FixtureStop::Host(..));
+    let (finished, finished_relay) = std::sync::mpsc::channel::<()>();
     std::thread::scope(|scope| {
-        let watcher = std::thread::Builder::new().spawn_scoped(scope, || {
-            while Instant::now() < deadline {
+        let watcher = std::thread::Builder::new().spawn_scoped(scope, move || {
+            loop {
                 if stop.requested() {
                     client_pin.shutdown(Shutdown::Both)?;
                     upstream_pin.shutdown(Shutdown::Both)?;
                     return Ok(());
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                if Instant::now() >= deadline {
+                    return Err(io::Error::other("signed revocation not observed"));
+                }
+                if host {
+                    if finished_relay
+                        .recv_timeout(Duration::from_millis(10))
+                        .is_ok()
+                    {
+                        return Ok(());
+                    }
+                } else {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
-            Err(io::Error::other("signed revocation not observed"))
         })?;
         let relayed = relay(client, tunnel, deadline);
+        let _ = finished.send(());
         watcher
             .join()
             .map_err(|_| io::Error::other("revocation watcher failed"))??;
