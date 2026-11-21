@@ -1,13 +1,22 @@
 """Check the dedicated host management reader in isolated mount and network namespaces."""
 
+from dataclasses import asdict, replace
+import json
 import os
 from pathlib import Path
+import select
 import subprocess
 import sys
 import tempfile
 
 
-READ_INPUTS = "management inputs read; receipt verification unavailable"
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from host_permit_receipt import Commit, Scope, receipt_bytes
+
+
+VERIFIED_INPUTS = "receipt verified; launch disabled"
+INVALID_RECEIPT = "receipt unavailable or invalid"
 INVALID_INPUTS = "management inputs unavailable or invalid"
 
 
@@ -20,29 +29,73 @@ def exercise(binary, root):
     key = authority / "verification-key"
     key.write_bytes(bytes.fromhex("03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"))
     key.chmod(0o600)
+    signer = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    scope = Scope("qemu-fixture-target", "permit-fixture", 1)
+    commit = Commit("host-fixture-ledger", 2, scope, "consumed")
+    scope_path = authority / "scope.json"
+    scope_path.write_text(json.dumps(asdict(scope)), encoding="ascii")
+    scope_path.chmod(0o600)
     checkpoint = recovery / "checkpoint.json"
-    checkpoint.write_text('{"sequence":2,"digest":"' + "ab" * 32 + '"}', encoding="ascii")
-    checkpoint.chmod(0o600)
+
+    def write_checkpoint(value):
+        checkpoint.write_text(json.dumps({
+            "sequence": value.sequence, "digest": value.digest().hex(),
+        }), encoding="ascii")
+        checkpoint.chmod(0o600)
+
+    def sign(challenge, value, signing_key=signer):
+        signature = signing_key.sign(receipt_bytes(bytes.fromhex(challenge), value))
+        return {"challenge": challenge, "commit": asdict(value), "signature": signature.hex()}
+
+    write_checkpoint(commit)
     subprocess.run(["mount", "--bind", str(root), "/var/lib"], check=True)
     subprocess.run(["mount", "-o", "remount,bind,ro", "/var/lib"], check=True)
     try:
-        def check(expected, *arguments):
+        def check(expected, *arguments, reply=None):
             trace = root / "syscalls"
-            result = subprocess.run(
+            with subprocess.Popen(
                 ["strace", "-f", "-qq", "-o", str(trace), "-e", "trace=%network,%process",
                  binary, *arguments],
                 env={"HOME": str(root), "TEMPEST_HOST_LOGIN_DIRECTORY": str(root)},
-                capture_output=True, text=True, timeout=10,
-            )
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            ) as process:
+                response = None
+                try:
+                    if reply is not None:
+                        if not select.select([process.stdout], [], [], 10)[0]:
+                            raise RuntimeError("missing host challenge")
+                        challenge = process.stdout.readline().strip()
+                        if len(challenge) != 64 or len(bytes.fromhex(challenge)) != 32:
+                            raise RuntimeError(f"invalid host challenge: {challenge!r}")
+                        response = reply(challenge)
+                    _, stderr = process.communicate(
+                        "" if response is None else json.dumps(response) + "\n", timeout=10,
+                    )
+                finally:
+                    if process.poll() is None:
+                        process.kill()
             calls = trace.read_text(encoding="utf-8").splitlines()
-            if result.returncode != 1 or expected not in result.stderr:
-                raise RuntimeError(f"unexpected diagnostic result: {result}")
+            if process.returncode != 1 or expected not in stderr:
+                raise RuntimeError(f"unexpected diagnostic result: {stderr}")
             # The initial exec and the diagnostic's own exit are the only traced calls.
             if len(calls) != 2 or "execve(" not in calls[0] or "exit_group(1)" not in calls[1]:
                 raise RuntimeError(f"unexpected child or network activity: {calls}")
+            return response
 
         initial = checkpoint.read_bytes()
-        check(READ_INPUTS)
+        accepted = check(VERIFIED_INPUTS, reply=lambda challenge: sign(challenge, commit))
+        check(INVALID_RECEIPT, reply=lambda _: accepted)
+        check(INVALID_RECEIPT)
+        other_key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
+        check(INVALID_RECEIPT, reply=lambda challenge: sign(challenge, commit, other_key))
+        check(INVALID_RECEIPT, reply=lambda challenge: sign(challenge, replace(commit, sequence=3)))
+        check(INVALID_RECEIPT, reply=lambda challenge: sign(challenge, replace(commit, ledger_id="other")))
+        for wrong in (replace(scope, target_id="other"), replace(scope, permit_id="other"),
+                      replace(scope, generation=2)):
+            wrong_commit = replace(commit, scope=wrong)
+            write_checkpoint(wrong_commit)
+            check(INVALID_RECEIPT, reply=lambda challenge: sign(challenge, wrong_commit))
+        write_checkpoint(commit)
         check("dedicated administrator entry required", str(root))
         if checkpoint.read_bytes() != initial:
             raise RuntimeError("diagnostic changed the checkpoint")
@@ -56,7 +109,7 @@ def exercise(binary, root):
         check(INVALID_INPUTS)
         key.symlink_to("test-key")
         check(INVALID_INPUTS)
-        print("PASS: fixed management reader, missing/corrupt inputs, no child/network activity")
+        print("PASS: isolated signature verification, scope/checkpoint/replay refusal, no child/network activity")
     finally:
         subprocess.run(["umount", "/var/lib"], check=True)
 

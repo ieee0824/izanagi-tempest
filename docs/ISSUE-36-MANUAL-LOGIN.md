@@ -583,10 +583,15 @@ Python 3.11 以上と `image/requirements.txt` に含まれる cryptography が
 root 所有でモード 0700、入力は root 所有の通常ファイルでモード 0600 です。
 確定点は正の `sequence` と小文字16進64桁の `digest` を持ちます。
 
-現段階では管理入力の有無と形式を診断します。要求値に対する管理側の
-署名応答の配送と署名照合は未接続のため、形式が正しい場合も終了コード
-1 を返します。公開ゲスト CLI とは独立しており、試験は実ファイルを
-配置せず、隔離したマウント名前空間内の試験用管理領域を読み取ります。
+管理側は `host-login-authority/scope.json` に対象登録 ID、許可 ID、
+管理世代を置きます。診断は毎回32バイトの要求値を生成し、標準出力に
+小文字16進で1行出力します。ホストの管理プロセスは標準入力に
+`challenge`、`commit`、16進の Ed25519 `signature` を含む JSON を
+1行（改行込み4096バイト以内）で返します。署名の対象は固定ダミー試験
+`integration/host_permit_receipt.py` の形式です。診断は固定入力と照合し、
+正常でも終了コード1を返します。実運用の応答経路は未配備です。
+公開ゲスト CLI とは独立しており、試験では隔離したマウント名前空間内の
+管理領域を使い、別プロセスが固定試験鍵で応答します。
 
 ```sh
 cargo build --locked -p tempest-linux-probe --bin tempest-host-login-diagnostic
@@ -594,4 +599,4 @@ sudo python3 integration/host_login_diagnostic_readonly.py \
   target/debug/tempest-host-login-diagnostic
 ```
 
-試験には Linux の `unshare`、`mount`、`strace` が必要です。
+試験には Linux の `unshare`、`mount`、`strace` と Python の cryptography が必要です。

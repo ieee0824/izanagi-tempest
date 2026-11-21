@@ -1,5 +1,15 @@
 use super::{open_private_login_directory, pin_login_path, read_login_child};
-use std::{io, path::Path, process::ExitCode};
+use ring::{
+    rand::{SecureRandom, SystemRandom},
+    signature,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    io::{self, BufRead, Write},
+    path::Path,
+    process::ExitCode,
+};
 
 const MANAGEMENT_PARENT: &str = "/var/lib/izanagi-tempest";
 
@@ -10,9 +20,42 @@ struct CommittedCheckpoint {
     digest: String,
 }
 
+#[derive(Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct Scope {
+    generation: u64,
+    permit_id: String,
+    target_id: String,
+}
+
+// Declaration order matches the sorted JSON used by the existing fixture.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Commit {
+    ledger_id: String,
+    scope: Scope,
+    sequence: u64,
+    state: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Receipt {
+    challenge: String,
+    commit: Commit,
+    signature: String,
+}
+
+#[derive(Serialize)]
+struct SignedReceipt<'a> {
+    challenge: &'a str,
+    commit: &'a Commit,
+}
+
 struct HostInputs {
-    _key: [u8; 32],
-    _checkpoint: CommittedCheckpoint,
+    key: [u8; 32],
+    checkpoint: CommittedCheckpoint,
+    scope: Scope,
 }
 
 fn read_inputs() -> io::Result<HostInputs> {
@@ -39,21 +82,93 @@ fn read_inputs() -> io::Result<HostInputs> {
     {
         return Err(io::ErrorKind::InvalidData.into());
     }
+    let scope: Scope = serde_json::from_slice(&read_login_child(&authority, "scope.json", 1024)?)
+        .map_err(io::Error::other)?;
+    if scope.generation == 0 || !valid_id(&scope.permit_id) || !valid_id(&scope.target_id) {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
     Ok(HostInputs {
-        _key: key,
-        _checkpoint: checkpoint,
+        key,
+        checkpoint,
+        scope,
     })
+}
+
+fn valid_id(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn verify_receipt(
+    inputs: HostInputs,
+    reader: impl BufRead,
+    mut output: impl Write,
+) -> io::Result<()> {
+    let mut random = [0_u8; 32];
+    SystemRandom::new()
+        .fill(&mut random)
+        .map_err(|_| io::Error::other("randomness unavailable"))?;
+    let challenge: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    writeln!(output, "{challenge}")?;
+    output.flush()?;
+
+    let mut line = Vec::new();
+    reader.take(4097).read_until(b'\n', &mut line)?;
+    if line.len() > 4096 || line.last() != Some(&b'\n') {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let receipt: Receipt = serde_json::from_slice(&line).map_err(io::Error::other)?;
+    let commit = &receipt.commit;
+    let digest = Sha256::digest(serde_json::to_vec(commit).map_err(io::Error::other)?);
+    if receipt.challenge != challenge
+        || commit.scope != inputs.scope
+        || !valid_id(&commit.ledger_id)
+        || commit.state != "consumed"
+        || commit.sequence != inputs.checkpoint.sequence
+        || format!("{digest:x}") != inputs.checkpoint.digest
+        || receipt.signature.len() != 128
+    {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let mut signature_bytes = [0; 64];
+    for (output, pair) in signature_bytes
+        .iter_mut()
+        .zip(receipt.signature.as_bytes().chunks_exact(2))
+    {
+        let digits = std::str::from_utf8(pair).map_err(io::Error::other)?;
+        *output = u8::from_str_radix(digits, 16).map_err(io::Error::other)?;
+    }
+    let mut message = b"izanagi-tempest:host-permit-receipt:fixture-v1\0".to_vec();
+    serde_json::to_writer(
+        &mut message,
+        &SignedReceipt {
+            challenge: &challenge,
+            commit,
+        },
+    )
+    .map_err(io::Error::other)?;
+    signature::UnparsedPublicKey::new(&signature::ED25519, inputs.key)
+        .verify(&message, &signature_bytes)
+        .map_err(|_| io::ErrorKind::InvalidData.into())
 }
 
 pub(crate) fn run_host_login_diagnostic() -> ExitCode {
     if std::env::args_os().len() != 1 || unsafe { libc::geteuid() } != 0 {
         eprintln!("host login diagnostic refused: dedicated administrator entry required");
-    } else if read_inputs().is_err() {
-        eprintln!("host login diagnostic refused: management inputs unavailable or invalid");
     } else {
-        eprintln!(
-            "host login diagnostic: management inputs read; receipt verification unavailable"
-        );
+        match read_inputs() {
+            Err(_) => {
+                eprintln!("host login diagnostic refused: management inputs unavailable or invalid")
+            }
+            Ok(inputs) => match verify_receipt(inputs, io::stdin().lock(), io::stdout().lock()) {
+                Ok(()) => eprintln!("host login diagnostic: receipt verified; launch disabled"),
+                Err(_) => {
+                    eprintln!("host login diagnostic refused: receipt unavailable or invalid")
+                }
+            },
+        }
     }
     ExitCode::FAILURE
 }
