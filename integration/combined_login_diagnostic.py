@@ -32,7 +32,7 @@ def write(path, data):
     path.chmod(0o600)
 
 
-def exercise(root, binary, responder, publisher, dummy=None):
+def exercise(root, binary, responder, publisher, dummy=None, *, staging_test=False):
     config = root / "etc/tempest"
     config.mkdir(parents=True, mode=0o700)
     local_ledger = config / "claude-login-diagnostic-ledger"
@@ -68,7 +68,7 @@ def exercise(root, binary, responder, publisher, dummy=None):
                 value.scope.generation, value.state,
             ))
 
-    def run_case(label, value, expected, lose_response=False, revoke_after_response=False):
+    def run_case(label, value, expected, lose_response=False, revoke_after_response=False, stage=None):
         prepare(value)
         publication = subprocess.run([publisher], capture_output=True, timeout=5)
         if publication.returncode != (0 if value.state == "consumed" else 1):
@@ -81,10 +81,15 @@ def exercise(root, binary, responder, publisher, dummy=None):
         protected = (database, published / "record.json", recovery / "checkpoint.json")
         before = tuple(path.read_bytes() for path in protected)
         output = b""
+        filters = "%network,%process,%file" if stage is None else "%network,%process"
+        command = ["strace", "-f", "-qq", "-o", trace, "-e", f"trace={filters}", binary]
+        environment = None
+        if stage is not None:
+            command += ["--ignored", "--nocapture", "stage_combined_diagnostic_descriptors"]
+            environment = {"TEMPEST_STAGE_CASE": stage}
         try:
             with subprocess.Popen(
-                ["strace", "-f", "-qq", "-o", trace, "-e", "trace=%network,%process,%file",
-                 binary], stdin=slave, stdout=slave, stderr=slave,
+                command, stdin=slave, stdout=slave, stderr=slave, env=environment,
             ) as diagnostic:
                 try:
                     while not (match := re.search(rb"(?:^|\n)([a-f0-9]{64})\r?\n", output)):
@@ -106,8 +111,8 @@ def exercise(root, binary, responder, publisher, dummy=None):
                                 ))
                         before = tuple(path.read_bytes() for path in protected)
                     os.write(master, response.stdout if response.stdout and not lose_response else b"\x04")
-                    if diagnostic.wait(timeout=10) != 1:
-                        raise RuntimeError(f"{label}: diagnostic did not refuse")
+                    if diagnostic.wait(timeout=25) != (1 if stage is None else 0):
+                        raise RuntimeError(f"{label}: unexpected diagnostic status")
                 finally:
                     if diagnostic.poll() is None:
                         diagnostic.kill()
@@ -116,6 +121,28 @@ def exercise(root, binary, responder, publisher, dummy=None):
         finally:
             os.close(slave)
             os.close(master)
+        if stage is not None:
+            marker = f"staging case {stage}: expected outcome, mounts detached and generation removed"
+            if marker.encode() not in output or any(CONFIG.iterdir()):
+                raise RuntimeError(f"{label}: unexpected staging output {output!r}")
+            expected_work = {WORK / "staging-source"}
+            if set(WORK.iterdir()) != expected_work:
+                raise RuntimeError(f"{label}: staging retained work unexpectedly")
+            calls = [line.split(maxsplit=1)[1] for line in trace.read_text().splitlines()]
+            # The offline route check uses only the kernel's local rtnetlink socket.
+            allowed = {"execve", "exit_group", "exit", "clone", "clone3", "socket",
+                       "bind", "getsockname", "sendto", "recvmsg"}
+            if sum(line.startswith("execve(") for line in calls) != 1 or any(
+                line.split("(", 1)[0] not in allowed
+                or (line.startswith("socket(") and "AF_NETLINK" not in line)
+                or (line.startswith(("clone(", "clone3(")) and "CLONE_THREAD" not in line)
+                for line in calls
+            ):
+                raise RuntimeError(f"{label}: unexpected execution or network call: {calls}")
+            if tuple(path.read_bytes() for path in protected) != before:
+                raise RuntimeError(f"{label}: staging changed the ledger")
+            print(marker)
+            return True
         if (MATCH in output) != expected or (HANDOFF in output) != expected:
             raise RuntimeError(f"{label}: unexpected diagnostic output {output!r}")
         if tuple(path.read_bytes() for path in protected) != before or any(local_ledger.iterdir()):
@@ -131,6 +158,12 @@ def exercise(root, binary, responder, publisher, dummy=None):
         return MATCH in output and HANDOFF in output
 
     def signed_fixture(refresh_publication):
+        if staging_test:
+            commit = Commit("fixture-ledger", 1, scope, "consumed")
+            for mode in ("replace", "missing", "generation", "modify"):
+                refresh_publication()
+                run_case(mode, commit, False, stage=mode)
+            return
         if dummy is not None:
             def verify_dummy(record, payload):
                 _, pair = payload.read_bytes().split(b"\0", 1)
@@ -169,6 +202,9 @@ def exercise(root, binary, responder, publisher, dummy=None):
 
 
 def main():
+    staging_test = sys.argv[-1:] == ["--staging-test"]
+    if staging_test:
+        sys.argv.pop()
     if sys.argv[1:2] != ["--isolated"]:
         if len(sys.argv) not in (4, 5) or os.geteuid() != 0:
             return 2
@@ -176,7 +212,7 @@ def main():
         return subprocess.call(["unshare", "-mn", "--propagation", "private", sys.executable,
                                 str(Path(__file__).resolve()), "--isolated",
                                 os.readlink("/proc/self/ns/mnt"), os.readlink("/proc/self/ns/net"),
-                                *binaries])
+                                *binaries, *(["--staging-test"] if staging_test else [])])
     if len(sys.argv) not in (7, 8) or os.geteuid() != 0 or any(
         os.readlink(f"/proc/self/ns/{kind}") == original
         for kind, original in zip(("mnt", "net"), sys.argv[2:4])
@@ -197,26 +233,36 @@ def main():
         subprocess.run(["mount", "--bind", "/var/lib", original], check=True)
         subprocess.run(["mount", "--bind", root / "etc", "/etc"], check=True)
         subprocess.run(["mount", "--bind", root / "lib", "/var/lib"], check=True)
-        subprocess.run(["mount", "--bind", original / "tempest-claude-offline/claude", FIXED_CLI],
-                       check=True)
         try:
-            subprocess.run(["mount", "-o", "remount,bind,ro,noexec", FIXED_CLI], check=True)
-            if len(sys.argv) == 8:
+            if len(sys.argv) == 8 or staging_test:
                 if any(subprocess.check_output(["ip", family, "route", "show"]).strip()
                        for family in ("-4", "-6")):
                     raise RuntimeError("external route in test namespace")
-                subprocess.run(["ip", "link", "set", "lo", "up"], check=True)
+                if not staging_test:
+                    subprocess.run(["ip", "link", "set", "lo", "up"], check=True)
                 for path in (WORK, CONFIG):
                     path.mkdir(mode=0o700)
                     subprocess.run(["mount", "-t", "tmpfs", "-o", "mode=0700,size=1024m",
                                     "tmpfs", path], check=True)
-            exercise(root, *sys.argv[4:])
+            artifact = original / "tempest-claude-offline/claude"
+            if staging_test:
+                copy = WORK / "staging-source"
+                shutil.copyfile(artifact, copy)
+                copy.chmod(0o755)
+                artifact = copy
+            subprocess.run(["mount", "--bind", artifact, FIXED_CLI], check=True)
+            subprocess.run(["mount", "-o", "remount,bind,ro,noexec", FIXED_CLI], check=True)
+            exercise(root, *sys.argv[4:], staging_test=staging_test)
         finally:
-            if len(sys.argv) == 8:
+            if os.path.ismount(FIXED_CLI) or any(
+                    row.split()[4] == FIXED_CLI
+                    for row in Path("/proc/self/mountinfo").read_text().splitlines()):
+                subprocess.run(["umount", FIXED_CLI], check=True)
+            if len(sys.argv) == 8 or staging_test:
                 for path in (CONFIG, WORK):
                     if path.is_mount():
                         subprocess.run(["umount", path], check=True)
-            for path in (FIXED_CLI, "/var/lib", "/etc", original):
+            for path in ("/var/lib", "/etc", original):
                 subprocess.run(["umount", path], check=True)
     return 0
 

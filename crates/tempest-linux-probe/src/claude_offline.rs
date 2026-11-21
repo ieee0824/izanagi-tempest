@@ -2777,6 +2777,38 @@ fn validate_manual_login_policy_at(
     Ok(Some(policy.permit))
 }
 
+fn verify_combined_login_inputs() -> io::Result<(VerifiedSupervisorInputs, File)> {
+    let parent = pin_login_path(
+        Path::new(MANUAL_LOGIN_POLICY)
+            .parent()
+            .ok_or(io::ErrorKind::InvalidInput)?,
+        libc::O_DIRECTORY,
+    )?;
+    let metadata = parent.metadata()?;
+    if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    let publication = open_private_login_directory(&parent, "claude-login-publication")?;
+    let verified = verify_login_generation(&parent, &publication)?;
+    let host_lock = host_login_diagnostic::verify_for_supervision(
+        &verified._login.target_id,
+        verified._login.id,
+        verified._revision,
+    )?;
+    let authority = open_private_login_directory(&parent, "claude-login-authority")?;
+    let revocation_deadline = verify_login_revocation(
+        &authority,
+        verified._revision,
+        &verified._manifest_sha256,
+        verified._login.id,
+        &verified._login.target_id,
+    )?;
+    if std::time::Instant::now() >= verified._login.expires.min(revocation_deadline) {
+        return Err(io::Error::other("manual login inputs expired"));
+    }
+    Ok((verified, host_lock))
+}
+
 pub(super) fn run_combined_login_diagnostic() -> std::process::ExitCode {
     use std::process::ExitCode;
     if std::env::args_os().len() != 1
@@ -2787,38 +2819,10 @@ pub(super) fn run_combined_login_diagnostic() -> std::process::ExitCode {
         eprintln!("combined login diagnostic refused: dedicated administrator PTY required");
         return ExitCode::FAILURE;
     }
-    let result = (|| {
-        let parent = pin_login_path(
-            Path::new(MANUAL_LOGIN_POLICY)
-                .parent()
-                .ok_or(io::ErrorKind::InvalidInput)?,
-            libc::O_DIRECTORY,
-        )?;
-        let metadata = parent.metadata()?;
-        if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        let publication = open_private_login_directory(&parent, "claude-login-publication")?;
-        let verified = verify_login_generation(&parent, &publication)?;
-        let _host_lock = host_login_diagnostic::verify_for_supervision(
-            &verified._login.target_id,
-            verified._login.id,
-            verified._revision,
-        )?;
-        let authority = open_private_login_directory(&parent, "claude-login-authority")?;
-        let revocation_deadline = verify_login_revocation(
-            &authority,
-            verified._revision,
-            &verified._manifest_sha256,
-            verified._login.id,
-            &verified._login.target_id,
-        )?;
-        if std::time::Instant::now() >= verified._login.expires.min(revocation_deadline) {
-            return Err(io::Error::other("manual login inputs expired"));
-        }
+    let result = verify_combined_login_inputs().and_then(|(verified, _host_lock)| {
         eprintln!("combined login diagnostic: host and PTY inputs match");
         refuse_supervised_login(verified)
-    })();
+    });
     if let Err(error) = result {
         eprintln!("combined login diagnostic refused: {error}");
     }
@@ -3669,6 +3673,99 @@ mod tests {
             Err(Fault::Identity)
         ));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    struct DiagnosticArtifactSet {
+        generation: u64,
+        files: Vec<File>,
+    }
+
+    impl DiagnosticArtifactSet {
+        fn new(verified: &VerifiedSupervisorInputs) -> io::Result<Self> {
+            let mut files = vec![verified._login.executable.try_clone()?];
+            files.extend(
+                pin_artifacts(&ARTIFACTS[1..]).map_err(|fault| io::Error::other(fault.reason()))?,
+            );
+            Ok(Self {
+                generation: verified._revision,
+                files,
+            })
+        }
+
+        fn stage(&self, generation: u64, scratch: &Path, root: &Path) -> Result<(), Fault> {
+            if self.generation != generation {
+                return Err(Fault::Identity);
+            }
+            stage_fixed_artifacts(scratch, root, ARTIFACTS, Some(&self.files))
+        }
+    }
+
+    #[test]
+    #[ignore = "run through the isolated combined diagnostic staging harness"]
+    fn stage_combined_diagnostic_descriptors() {
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        verify_shared_terminal(libc::STDIN_FILENO, libc::STDOUT_FILENO).unwrap();
+        verify_shared_terminal(libc::STDOUT_FILENO, libc::STDERR_FILENO).unwrap();
+        let (verified, _host_lock) = verify_combined_login_inputs().unwrap();
+        let mut files = DiagnosticArtifactSet::new(&verified).unwrap();
+        if std::env::var("TEMPEST_STAGE_CASE").as_deref() == Ok("generation") {
+            files.generation += 1;
+        }
+        let mode = std::env::var("TEMPEST_STAGE_CASE").unwrap();
+        let work_path = Path::new(WORK_PARENT);
+        let config_path = Path::new("/var/lib/tempest-claude-config-fixture");
+        let parent = lock_parent(work_path).unwrap();
+        let config_parent = lock_parent(config_path).unwrap();
+        let work = WorkArea::create(&parent, work_path).unwrap();
+        let config =
+            writable_config::Generation::create(&config_parent, config_path, &work).unwrap();
+        let mut detached = false;
+        let result = trial_with_detach(&work.path, &mut detached, |scratch, root| {
+            for path in [
+                "bin",
+                "lib64",
+                "lib",
+                "lib/x86_64-linux-gnu",
+                "home",
+                "home/fixture",
+                "home/fixture/config",
+            ] {
+                fs::create_dir(root.join(path))?;
+            }
+            let source = std::ffi::CString::new(ARTIFACTS[0].source).unwrap();
+            if mode == "replace" {
+                super::super::os::syscall(unsafe {
+                    libc::umount2(source.as_ptr(), libc::MNT_DETACH)
+                })?;
+                assert_ne!(fs::metadata(ARTIFACTS[0].source)?.len(), ARTIFACTS[0].bytes);
+            }
+            if mode == "modify" {
+                use std::os::unix::fs::FileExt;
+                let changed = OpenOptions::new()
+                    .write(true)
+                    .open(work_path.join("staging-source"))?;
+                assert_eq!(fd_identity(&changed)?, fd_identity(&files.files[0])?);
+                changed.write_at(b"\0", 0)?;
+            }
+            if mode == "missing" {
+                files.files.pop();
+            }
+            files.stage(verified._revision, scratch, root)?;
+            config.bind(root)?;
+            assert_eq!(fs::read_dir(root.join("home/fixture/config"))?.count(), 1);
+            Ok(())
+        });
+        assert!(detached);
+        config
+            .finish(&config_parent, writable_config::Disposition::Remove, false)
+            .unwrap();
+        work.remove(&parent).unwrap();
+        match mode.as_str() {
+            "replace" => result.unwrap(),
+            "modify" | "missing" | "generation" => assert!(matches!(result, Err(Fault::Identity))),
+            _ => panic!("unknown staging case"),
+        }
+        eprintln!("staging case {mode}: expected outcome, mounts detached and generation removed");
     }
 
     #[test]
