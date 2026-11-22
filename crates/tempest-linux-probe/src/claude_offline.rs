@@ -3,6 +3,7 @@ use super::os::Fault;
 mod host_login_diagnostic;
 mod local_auth;
 mod login_connect;
+mod manual_socket_policy;
 pub(super) use host_login_diagnostic::{
     run_host_login_diagnostic, run_host_login_publisher, run_host_login_responder,
 };
@@ -564,6 +565,7 @@ fn isolated_command(
             {
                 return Err(io::Error::last_os_error());
             }
+            manual_socket_policy::install()?;
             Ok(())
         });
     }
