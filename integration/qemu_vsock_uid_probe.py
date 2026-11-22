@@ -65,7 +65,7 @@ def main():
                     shutil.copyfile(token, target)
                     target.chmod(0o755)
             init += '/bin/busybox mkdir -p /var/lib\n/bin/verify --ignored --exact claude_offline::tests::manual_child_vsock_is_denied --quiet --nocapture\n'
-        init += '/bin/busybox poweroff -f\n' 
+        init += '/bin/busybox poweroff -f\n'
         (guest / 'init').write_text(init)
         (guest / 'init').chmod(0o755)
         names = ['.'] + [str(path.relative_to(guest)) for path in guest.rglob('*')]
