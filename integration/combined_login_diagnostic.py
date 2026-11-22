@@ -573,6 +573,9 @@ with socket.create_connection(("127.0.0.1", 39271), timeout=3) as client:
                 run_case(mode, commit, False, stage=mode)
             return
         if direct_test is not None:
+            remote_tls = os.environ.get('TEMPEST_REMOTE_TLS') == '1'
+            if remote_tls:
+                from remote_tls_host import control_request
             def connect_verified_supervisor(record, payload, outcome):
                 handoff = json.loads(payload.read_bytes().split(b"\0", 1)[1])
                 expected = Scope(handoff["target_id"], record.name, 1)
@@ -581,7 +584,7 @@ with socket.create_connection(("127.0.0.1", 39271), timeout=3) as client:
                 commit = Commit("fixture-ledger", 1, expected, "consumed")
                 refresh_publication(expected.permit_id, expected.target_id)
                 mismatch = replace(commit, scope=replace(expected, generation=2))
-                if outcome == "revoked":
+                if outcome == "revoked" and not remote_tls:
                     run_case("direct supervisor generation mismatch", mismatch, False,
                              stage="direct-refusal")
                     run_case("direct supervisor revoked before start", commit, False,
@@ -589,7 +592,7 @@ with socket.create_connection(("127.0.0.1", 39271), timeout=3) as client:
                 if record.exists():
                     raise RuntimeError("refused supervisor consumed the permit")
                 def prepare_live():
-                    if outcome == "revoked":
+                    if outcome == "revoked" and not remote_tls:
                         refresh_publication(expected.permit_id, expected.target_id, 30)
                         run_case("direct supervisor revoked at gate", commit, False,
                                  stage="direct-gate")
@@ -606,8 +609,14 @@ with socket.create_connection(("127.0.0.1", 39271), timeout=3) as client:
                             pending.unlink(missing_ok=True)
                     refresh_publication(expected.permit_id, expected.target_id,
                                         20 if outcome == "expired" else 30)
-                    prepare(commit)
-                    subprocess.run([publisher], check=True, timeout=5)
+                    if remote_tls:
+                        reply = control_request(dict(operation='prepare', scope=asdict(expected),
+                            expires_unix_ms=int((time.time()+30)*1000)))
+                        write(config / 'host-channel.json', json.dumps(reply['registration']).encode())
+                        write(config / 'host-channel-key', bytes.fromhex(reply['key']))
+                    else:
+                        prepare(commit)
+                        subprocess.run([publisher], check=True, timeout=5)
 
                 def relay_challenge(master):
                     output = b""
@@ -621,6 +630,12 @@ with socket.create_connection(("127.0.0.1", 39271), timeout=3) as client:
                     os.write(master, response.stdout)
 
                 def revoke_live_host():
+                    if remote_tls:
+                        stats = control_request(dict(operation='stats'))['counts']
+                        if stats.get('consume') != 1 or stats.get('query', 0) < 2:
+                            raise RuntimeError(f'remote TLS did not start with consume and normal queries: {stats}')
+                        control_request(dict(operation='revoke' if outcome == 'revoked' else 'lose-response'))
+                        return None
                     if outcome == "expired":
                         state = config / "claude-login-authority/revocation-state"
                         deadline = json.loads(state.read_bytes().split(b"\0", 1)[1])[
@@ -657,13 +672,13 @@ with sqlite3.connect(sys.argv[1]) as db:
                     )
 
                 command = [direct_test, "--ignored", "--nocapture", "--quiet", "supervise_verified_dummy_tls"]
-                return (command, relay_challenge,
+                return (command, None if remote_tls else relay_challenge,
                         revoke_live_host if outcome != "disconnect" else None,
                         prepare_live, False)
 
-            outcomes = (
+            outcomes = (("revoked", "response-lost") if remote_tls else (
                 "revoked", "missing", "disconnect", "expired", "authority-pending"
-            )
+            ))
             for outcome in outcomes:
                 check_signed_permits(
                     dummy,

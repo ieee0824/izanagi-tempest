@@ -13,7 +13,10 @@ def main():
     parser.add_argument('--kernel-release', required=True)
     parser.add_argument('--runtime', required=True, type=Path)
     parser.add_argument('--tls-fixture', action='store_true')
+    parser.add_argument('--remote-tls', action='store_true')
     args = parser.parse_args()
+    if args.remote_tls and not args.tls_fixture:
+        parser.error("--remote-tls requires --tls-fixture")
     with tempfile.TemporaryDirectory(prefix='tempest-login-boot-', dir='/var/lib') as temporary:
         root = Path(temporary)
         guest = root / 'guest'
@@ -92,6 +95,8 @@ echo LOGIN_VM_RUNTIME_OK
                 '/opt/bin/tempest-combined-login-diagnostic /opt/bin/tempest-host-login-responder '
                 '/opt/bin/tempest-host-login-publisher /opt/bin/tempest-claude-offline-local-auth-pty '
                 '/opt/bin/libtest\necho LOGIN_VM_TLS_FIXTURE_OK\necho LOGIN_VM_RUNTIME_OK')
+        if args.remote_tls:
+            init = init.replace('export PYTHONDONTWRITEBYTECODE=1', 'export PYTHONDONTWRITEBYTECODE=1\nexport TEMPEST_REMOTE_TLS=1')
         (guest / 'init').write_text(init)
         (guest / 'init').chmod(0o755)
         names = ['.'] + [str(path.relative_to(guest)) for path in guest.rglob('*')]
@@ -107,14 +112,23 @@ echo LOGIN_VM_RUNTIME_OK
                 '-kernel', str(args.kernel), '-initrd', str(image),
                 '-append', 'console=ttyS0 panic=-1 quiet',
                 '-device', 'vhost-vsock-pci,id=ledger,guest-cid=234',
+                '-qmp', 'unix:' + str(root / 'qmp.sock') + ',server=on,wait=off',
                 '-virtfs', f'local,path={args.runtime.resolve()},mount_tag=runtime,security_model=none,readonly=on'],
                 stdout=log, stderr=subprocess.STDOUT)
+            controller = None
             try:
+                if args.remote_tls:
+                    from remote_tls_host import HostController
+                    controller = HostController(root / 'host-management', root / 'qmp.sock')
+                    controller.start(vm)
                 code = vm.wait(timeout=300 if args.tls_fixture else 60)
             finally:
                 if vm.poll() is None:
                     vm.kill()
                     vm.wait()
+                print(log_path.read_text(errors="replace")[-6000:], flush=True)
+                if controller is not None:
+                    controller.close()
         output = log_path.read_text(errors='replace')
         print(output[-6000:])
         if code != 0 or 'LOGIN_VM_RUNTIME_OK' not in output:

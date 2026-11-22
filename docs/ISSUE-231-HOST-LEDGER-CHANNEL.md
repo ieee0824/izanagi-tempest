@@ -306,3 +306,17 @@ open_managed_tunnel を使い、TLS 接続も同じ stop を渡す。中継本�
 期限〜期限+1秒の間のpidfd signaled（子の実行不能）、gatewayと世代回収を確認した。
 これらは平文relay/CONNECTの境界対照と実子の終了確認であり、remote TLS実経路の
 証拠は引き続き次段階で取得する。
+
+## remote TLS callback（実行接続済み、起動前の更新不足を修正中）
+
+`qemu_login_runtime.py --tls-fixture --remote-tls` は test-only controller を起動し、
+prepare_live から一時ホスト台帳の issue、guest の公開設定と信頼鍵の配置を行う。
+認可ポートは実 AF_VSOCK と production broker を使用する。試験用制御ポート23102は
+CID234の一時ダミー台帳だけを変更し、prepare/revoke/応答喪失/statsを扱う。
+本番サービスとして使用しない。署名秘密鍵と台帳原本はホストに保持する。
+
+初回試験では host issue/consume/query に到達したが、固定 CLI の copy/hash 中に
+2秒 lease を更新せず、起動 grant の前に認可を失った。TLS の remote 回収成功とは
+扱わない。親の起動待ちと子の配置/検証中の継続照会、および fork 後の照会直列化を
+次の修正対象とする。期限を緩めたり、失効した lease から起動したりしない。
+controller終了時のaccept待ちは有界化し、失敗時もVMログを保持して出力する。
