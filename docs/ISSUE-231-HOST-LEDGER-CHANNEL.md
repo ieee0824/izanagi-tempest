@@ -232,3 +232,26 @@ EOF/reset となる。その後、ゲスト native verifier が正常な応答�
 
 この試験は実 broker の accept、同一 CID の並行要求拒否、要求 timeout、slot の
 回復を扱う。異なる CID で全8slotを埋める試験や、終了中の接続の公平性までは含まない。
+
+## TLS ハーネス用 userspace の準備（接続作業中）
+
+`integration/prepare_login_vm_runtime.py` は private mount namespace 内に、
+既存 TLS ハーネスが必要とするツール、Python 標準ライブラリ、暗号ライブラリ、
+固定 CLI/bundle、試験バイナリ、integration スクリプトだけを bind mount した
+ディレクトリを作る。QEMU の9pエクスポートは必ず読み取り専用にし、このスクリプトの
+`--command` 内から起動する。ホスト全体や認証ディレクトリは公開しない。
+
+```sh
+sudo unshare -m --propagation private python3 integration/prepare_login_vm_runtime.py \
+  --output /var/lib/tempest-login-runtime-test \
+  --binary-directory /absolute/path/to/target/debug \
+  --libtest /absolute/path/to/the/libtest/executable \
+  --command chroot /var/lib/tempest-login-runtime-test /usr/bin/python3 \
+  -c 'import ssl, sqlite3, pty; print("LOGIN_VM_PYTHON_RUNTIME_OK")'
+```
+
+処理後は bind mount を逆順で解除し、一時ディレクトリを削除する。固定実体を
+コピーまたは hardlink せず、nlink=1 の検証条件を維持する。ホストの chroot で
+SSL/SQLite/PTY、cryptography の Ed25519 生成、OpenSSL 起動を確認済み。
+最初の試験で不足していた OpenSSL provider ディレクトリも追加した。
+実 VM の9pマウントと TLS ハーネス実行、ホスト側台帳への callback 分離は未完了。
