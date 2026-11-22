@@ -102,7 +102,7 @@ class SmokeWiringTests(unittest.TestCase):
                     self.assertEqual(kwargs['errors'], 'surrogateescape')
                     return subprocess.CompletedProcess(argv, 1, '', 'PRIVATE-DUMMY')
             namespace = {'subprocess': Process, 'base': ['pinned'], 'box': type('Box', (), {'workspace': directory})(),
-                         'environment': {}, 'exec_evidence': evidence, 'secret_markers': ['PRIVATE-DUMMY'],
+                         'environment': {}, 'vm_identity': {}, 'exec_evidence': evidence, 'secret_markers': ['PRIVATE-DUMMY'],
                          'MarkerLeak': E.MarkerLeak, 'report': report, 'save': lambda: saved.append(True)}
             exec(compile(ast.Module(body=[execute], type_ignores=[]), str(source), 'exec'), namespace)
             with self.assertRaises(E.MarkerLeak):
