@@ -157,9 +157,15 @@ class EgressController(HostController):
                   approved_ips_revision=1, authority='platform.claude.com:443',
                   peer=dict(address='127.0.0.1',port=443), expires_unix_ms=min(value['expires_unix_ms'],expires*1000))
         self.write('host-login-authority/egress-policy.json',dict(payload=body,signature=policy_key.sign(POLICY_DOMAIN+canonical_json(body)).hex()))
-        self.bootstrap_source = {str(path.relative_to(self.root)):path.read_bytes()
-            for name in ('claude-login-authority', 'claude-login-publication')
-            for path in (self.root/name).rglob('*') if path.is_file()}
+        public_names = ['claude-login-authority/'+name for name in (
+            'minimum','trust-key','approved-generation','revocation-state','revocation-signature',
+            'revocation-key','revocation-minimum','revocation-committed')]
+        public_names += ['claude-login-publication/'+name for name in ('lock','current','1/manifest')]
+        public_names += ['claude-login-publication/1/'+name for name in inputs]
+        self.bootstrap_source = {name:(self.root/name).read_bytes() for name in public_names}
+        with self.delivery_lock:
+            self.pending_delivery = None
+            self.delivery_ack.clear()
         registration, policy, authorization, signer, deadline, originals=load_run(self.root)
         self.operation_deadline = deadline
         self.run_stop=threading.Event()
