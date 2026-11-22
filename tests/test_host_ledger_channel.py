@@ -2,6 +2,10 @@
 
 from pathlib import Path
 import socket
+import os
+from unittest.mock import patch
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import json
 import sys
 import time
 import unittest
@@ -34,6 +38,28 @@ class ChannelTests(unittest.TestCase):
         duplicate = payload[:-1] + b',"operation":"consume"}'
         with self.assertRaises(ValueError):
             channel.validate_request(duplicate, self.registration, 231)
+
+    def test_signed_query_binds_request_and_short_expiry(self):
+        reader, writer = socket.socketpair()
+        signer = Ed25519PrivateKey.generate()
+        commit = {"scope": {key: self.registration[key] for key in
+                             ("target_id", "permit_id", "generation")},
+                  "ledger_id": "ledger", "sequence": 2, "state": "consumed"}
+        registration = dict(self.registration, expires_unix_ms=time.time_ns() // 1_000_000 + 10000)
+        with reader, writer, patch('channel.require_live_instance',
+                                   side_effect=lambda *args: os.pidfd_open(os.getpid())), \
+                patch('read_snapshot.read_management_snapshot', return_value=commit):
+            writer.sendall(channel.canonical_json(self.request) + b'\n')
+            channel.serve_query(reader, 231, registration, Path('/unused'), signer,
+                                time.monotonic() + 1)
+            reply = json.loads(channel.read_frame(writer, channel.RESPONSE_LIMIT,
+                                                  time.monotonic() + 1))
+        payload = reply['payload']
+        signer.public_key().verify(bytes.fromhex(reply['signature']),
+                                   channel.RECEIPT_DOMAIN + channel.canonical_json(payload))
+        self.assertEqual(payload['request'], self.request)
+        self.assertEqual(payload['commit'], commit)
+        self.assertLessEqual(payload['expires_unix_ms'] - payload['issued_unix_ms'], 2000)
 
     def test_frame_limit_and_disconnect(self):
         reader, writer = socket.socketpair()

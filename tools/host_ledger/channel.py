@@ -97,33 +97,81 @@ def require_live_instance(registration, deadline):
     pid = registration["qemu_pid"]
     if type(pid) is not int or pid <= 0:
         raise ValueError("invalid QEMU process")
-    stat = Path(f"/proc/{pid}/stat").read_text()
-    start_ticks = int(stat[stat.rindex(")") + 2:].split()[19])
-    if start_ticks != registration["qemu_start_ticks"]:
-        raise ValueError("QEMU process lifetime mismatch")
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as qmp:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("instance check deadline expired")
-        qmp.settimeout(remaining)
-        qmp.connect(registration["qmp_socket"])
-        peer_pid, _, _ = struct.unpack("3i", qmp.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-        if peer_pid != pid:
-            raise ValueError("QMP peer process mismatch")
-        greeting = json.loads(read_frame(qmp, RESPONSE_LIMIT, deadline))
-        if "QMP" not in greeting:
-            raise ValueError("invalid QMP greeting")
-        for operation in ("qmp_capabilities", "query-status"):
-            write_frame(qmp, canonical_json({"execute": operation}), REQUEST_LIMIT, deadline)
-            while True:
-                reply = json.loads(read_frame(qmp, RESPONSE_LIMIT, deadline))
-                if "event" in reply:
-                    continue
-                if "error" in reply or "return" not in reply:
-                    raise ValueError("QMP check refused")
-                break
-        if reply["return"].get("status") != "running":
-            raise ValueError("QEMU is not running")
-        # Retain a process handle so callers can detect exit before signing.
-        descriptor = os.pidfd_open(pid)
-    return descriptor
+    import select
+    descriptor = os.pidfd_open(pid)
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        start_ticks = int(stat[stat.rindex(")") + 2:].split()[19])
+        if start_ticks != registration["qemu_start_ticks"]:
+            raise ValueError("QEMU process lifetime mismatch")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as qmp:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("instance check deadline expired")
+            qmp.settimeout(remaining)
+            qmp.connect(registration["qmp_socket"])
+            peer_pid, _, _ = struct.unpack("3i", qmp.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            if peer_pid != pid:
+                raise ValueError("QMP peer process mismatch")
+            greeting = json.loads(read_frame(qmp, RESPONSE_LIMIT, deadline))
+            if "QMP" not in greeting:
+                raise ValueError("invalid QMP greeting")
+            for operation in ("qmp_capabilities", "query-status"):
+                write_frame(qmp, canonical_json({"execute": operation}), REQUEST_LIMIT, deadline)
+                while True:
+                    reply = json.loads(read_frame(qmp, RESPONSE_LIMIT, deadline))
+                    if "event" in reply:
+                        continue
+                    if "error" in reply or "return" not in reply:
+                        raise ValueError("QMP check refused")
+                    break
+            if reply["return"].get("status") != "running":
+                raise ValueError("QEMU is not running")
+            # Retain a process handle so callers can detect exit before signing.
+        poller = select.poll()
+        poller.register(descriptor, select.POLLIN)
+        if poller.poll(0):
+            raise ValueError("registered QEMU exited")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+RECEIPT_DOMAIN = b"izanagi-tempest:host-ledger-channel:v1\0"
+
+
+def serve_query(connection, peer_cid, registration, management, signer, deadline):
+    """Handle a query using the host's independently checked committed ledger."""
+    import os
+    import select
+    from read_snapshot import read_management_snapshot
+
+    request = validate_request(read_frame(connection, REQUEST_LIMIT, deadline),
+                               registration, peer_cid)
+    if request["operation"] != "query":
+        raise ValueError("consumption requires the host transition handler")
+    process = require_live_instance(registration, deadline)
+    try:
+        commit = read_management_snapshot(management)
+        expected = {key: request[key] for key in ("target_id", "permit_id", "generation")}
+        if commit["scope"] != expected:
+            raise ValueError("host ledger scope mismatch")
+        # A consumed record is necessary, while a separately approved expiry
+        # prevents a stale management registration from authorizing new work.
+        now = time.time_ns() // 1_000_000
+        expires = min(now + 2000, registration["expires_unix_ms"])
+        if expires <= now:
+            raise ValueError("host registration expired")
+        poller = select.poll()
+        poller.register(process, select.POLLIN)
+        if poller.poll(0):
+            raise ValueError("registered QEMU exited")
+        response = {"request": request, "commit": commit,
+                    "issued_unix_ms": now, "expires_unix_ms": expires}
+        payload = canonical_json(response)
+        signed = {"payload": response,
+                  "signature": signer.sign(RECEIPT_DOMAIN + payload).hex()}
+        write_frame(connection, canonical_json(signed), RESPONSE_LIMIT, deadline)
+    finally:
+        os.close(process)
