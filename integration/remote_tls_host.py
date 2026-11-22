@@ -152,22 +152,18 @@ class HostController:
 
         broker.serve_query = observed
         self.original_handler = original_handler
-        for port, target in ((23102, self.control_loop), (23100, lambda listener: broker.serve(listener, self.registration, self.root, self.signer))):
+        for port, target in ((23102, self.control_loop), (23100, lambda listener: broker.serve(listener, self.registration, self.root, self.signer, self.stopping))):
             listener = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
             listener.bind((socket.VMADDR_CID_HOST, port))
             listener.listen(8)
             listener.settimeout(0.5)
             self.listeners.append(listener)
             def run(listener=listener, target=target):
-                while not self.stopping.is_set():
-                    try:
-                        target(listener)
-                    except TimeoutError:
-                        continue
-                    except OSError as error:
-                        if not self.stopping.is_set():
-                            self.errors.append(str(error))
-                        return
+                try:
+                    target(listener)
+                except OSError as error:
+                    if not self.stopping.is_set():
+                        self.errors.append(str(error))
             thread = threading.Thread(target=run, daemon=True)
             thread.start()
             self.threads.append(thread)

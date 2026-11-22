@@ -15,7 +15,7 @@ PORT = 23100
 CONNECTION_LIMIT = 8
 
 
-def serve(listener, registration, management, signer):
+def serve(listener, registration, management, signer, stop_event=None):
     slots = threading.BoundedSemaphore(CONNECTION_LIMIT)
     active = set()
     lock = threading.Lock()
@@ -41,8 +41,19 @@ def serve(listener, registration, management, signer):
             slots.release()
 
     with ThreadPoolExecutor(max_workers=CONNECTION_LIMIT) as workers:
-        while True:
-            connection, peer = listener.accept()
+        while stop_event is None or not stop_event.is_set():
+            try:
+                connection, peer = listener.accept()
+            except TimeoutError:
+                # Polling a shutdown event must not recreate worker/CID state.
+                continue
+            except OSError:
+                if stop_event is not None and stop_event.is_set():
+                    break
+                raise
+            if stop_event is not None and stop_event.is_set():
+                connection.close()
+                break
             deadline = time.monotonic() + REQUEST_SECONDS
             if not slots.acquire(blocking=False):
                 connection.close()
