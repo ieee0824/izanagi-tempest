@@ -299,7 +299,7 @@ impl LocalPolicy {
         upstream_network: &File,
         expires: std::time::Instant,
         stop: Option<&super::FixtureStop>,
-        managed_peer: Option<std::net::SocketAddr>,
+        managed_route: Option<&super::ManagedLoginRoute>,
     ) -> io::Result<Gateway> {
         if matches!(case, Case::MissingGateway) {
             return Err(io::Error::other("fixed gateway unavailable"));
@@ -333,13 +333,16 @@ impl LocalPolicy {
                         "fixed login gateway namespace unavailable",
                     ));
                 }
-                if let Some(peer) = managed_peer {
+                if let Some(route) = managed_route {
                     let stop = stop.ok_or(io::ErrorKind::InvalidInput)?;
                     sender.write_all(b"G")?;
                     drop(sender);
+                    if let Some(egress) = &route.egress {
+                        return egress.serve(&self.listeners[0], expires, &|| stop.requested());
+                    }
                     return login_connect::serve_managed(
                         &self.listeners[0],
-                        peer,
+                        route.peer,
                         expires,
                         &|| stop.requested(),
                     );

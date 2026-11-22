@@ -483,7 +483,7 @@ pub(super) struct HostGuard {
     _lease: Option<crate::host_channel::ReceiptLease>,
 }
 
-fn remote_client(
+pub(super) fn remote_client(
     target: &str,
     permit: u128,
     generation: u64,

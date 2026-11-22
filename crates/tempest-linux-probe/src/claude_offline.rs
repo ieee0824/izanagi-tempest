@@ -3,6 +3,7 @@ use super::os::Fault;
 mod host_login_diagnostic;
 mod local_auth;
 mod login_connect;
+mod login_egress;
 mod manual_socket_policy;
 pub(super) use host_login_diagnostic::{
     run_host_login_diagnostic, run_host_login_publisher, run_host_login_responder,
@@ -1611,7 +1612,7 @@ fn run_fixture_with_config(
                         upstream_network,
                         permit.expires,
                         permit.administrator_stop.as_ref(),
-                        managed_route.map(|route| route.peer),
+                        managed_route,
                     )
                     .map_err(|error| {
                         eprintln!("local auth gateway refused before grant: {error}");
@@ -3321,6 +3322,7 @@ struct ManualLoginDeployment {
 }
 
 struct ManagedLoginRoute {
+    egress: Option<login_egress::Route>,
     peer: std::net::SocketAddr,
     ca: Vec<u8>,
     #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
@@ -3369,7 +3371,16 @@ fn preflight_managed_manual_login(
         #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
         ManualLoginBackend::FixedDummy => return Err(io::ErrorKind::PermissionDenied.into()),
     };
+    let egress = match backend {
+        ManualLoginBackend::Distribution => Some(login_egress::Route::load(
+            verified,
+            std::net::SocketAddr::new(deployment.peer, port),
+        )?),
+        #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]
+        ManualLoginBackend::FixedDummy => None,
+    };
     Ok(ManagedLoginRoute {
+        egress,
         peer: std::net::SocketAddr::new(deployment.peer, port),
         ca,
         #[cfg(all(debug_assertions, feature = "isolated-manual-login-fixture"))]

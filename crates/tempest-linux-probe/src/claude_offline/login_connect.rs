@@ -10,7 +10,7 @@ pub(super) const AUTHORITY: &str = "platform.claude.com:443";
 const MAX_REQUEST_BYTES: usize = 4096;
 
 /// Read only through the header terminator so subsequent TLS bytes remain unread.
-fn read_request(mut input: impl Read) -> io::Result<()> {
+pub(super) fn read_request(mut input: impl Read) -> io::Result<()> {
     let mut request = Vec::new();
     for _ in 0..MAX_REQUEST_BYTES {
         let mut byte = [0];
@@ -267,10 +267,10 @@ fn connect_managed(
     Ok(stream)
 }
 
-struct ManagedHeader<'a> {
-    client: &'a mut TcpStream,
-    deadline: Instant,
-    stop: &'a (dyn Fn() -> bool + Sync),
+pub(super) struct ManagedHeader<'a> {
+    pub(super) client: &'a mut TcpStream,
+    pub(super) deadline: Instant,
+    pub(super) stop: &'a (dyn Fn() -> bool + Sync),
 }
 
 impl Read for ManagedHeader<'_> {

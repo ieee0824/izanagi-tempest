@@ -3,7 +3,7 @@
 ## 範囲
 
 承認済み[B案](ISSUE-36-EGRESS-B-DRAFT.md)のホスト側を実装している。
-この段階ではguest gatewayの新transport、実VMでの新経路の受入、実配備は未完了。
+guest gatewayの新transportとready検証まで接続した。実VMでの新経路の受入、実配備は未完了。
 Claude loginや実認証先への試験接続は行わない。
 
 ## 原本と起動境界
@@ -37,6 +37,18 @@ QMP peer、QEMU lifetime/CID、台帳/checkpoint、世代変更、失効、期�
 検査する。更新失敗は同一実行を不可逆stopにする。監視処理はcontrol leaseを更新しない。
 control署名応答を正常送信した後だけ、host受理時の単調時計を起点に最長2秒更新する。
 
+## guestの鍵とtransport
+
+guestのready検証は、既存root原本`/etc/tempest/host-channel-key`を使う。
+これはhostの`host-login-signer/signing-seed`に対応するcontrol信頼鍵であり、
+ホストのegress-policy検証用`egress-trust-key`とは別である。配備時に双方の対応を確認する。
+署名domainもreadyとcontrolでは異なるため、control receiptをreadyへ流用できない。
+
+distribution入口は既存のhost-channel登録、公開manifest、承認peerを固定して新経路へ進む。
+AF_VSOCKは専用OwnedFd型で保持し、getpeernameのsockaddr_vmでCID2/port23105を照合する。
+CONNECT検査後にchallengeを生成し、2秒以内の署名readyを検証してから200を返す。
+relayはparentの共有stopを各I/O直前に確認する。テスト専用FixedDummyの既存TCP対照は維持する。
+
 ## ローカル検証
 
 Python 3.11以降と`image/requirements.txt`の依存を使う。
@@ -64,6 +76,6 @@ TLSの終端/復号やpayload記録は行わず、ready後は方向ごと64KiB�
 
 ## 残る受入
 
-guest Rust transport/独立receipt検証の接続、dummy TLSの実vsock中継、実manual childの
+dummy TLSの実vsock中継、実manual childの
 迂回拒否との両立、失効/更新停止/QEMU停止と全接続回収を確認する。
 ホスト原本の生成・公開・配備手順も最終成果物と照合する。既存の本人login担当は変更しない。
