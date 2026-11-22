@@ -6,6 +6,7 @@ from hashlib import sha256
 import os
 import sqlite3
 import sys
+import time
 
 from read_snapshot import (
     IDENTIFIER, MANAGEMENT, canonical_json, check_directory, check_file, read_json,
@@ -38,7 +39,7 @@ def replace_checkpoint(path, checkpoint):
         os.close(directory)
 
 
-def advance(root, operation, expected_scope=None):
+def advance(root, operation, expected_scope=None, deadline=None):
     for ancestor in reversed(root.parents):
         check_directory(ancestor)
     check_directory(root, 0o700)
@@ -52,9 +53,13 @@ def advance(root, operation, expected_scope=None):
     check_file(lock)
     with lock.open("rb") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("host transition deadline expired")
         if expected_scope is not None and read_json(authority / "scope.json") != expected_scope:
             raise ValueError("requested ledger scope mismatch")
         advance_locked(authority, recovery, ledger, operation)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("host transition completed after deadline")
 
 
 def advance_locked(authority, recovery, ledger, operation):

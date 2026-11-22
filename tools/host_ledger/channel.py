@@ -169,7 +169,7 @@ def serve_query(connection, peer_cid, registration, management, signer, deadline
                 raise TimeoutError("consumption deadline expired")
             if registration["expires_unix_ms"] <= time.time_ns() // 1_000_000:
                 raise ValueError("host registration expired")
-            advance(management, "consume", expected_scope=expected)
+            advance(management, "consume", expected_scope=expected, deadline=deadline)
         commit = read_management_snapshot(management)
         if commit["scope"] != expected:
             raise ValueError("host ledger scope mismatch")
@@ -185,6 +185,8 @@ def serve_query(connection, peer_cid, registration, management, signer, deadline
             raise ValueError("registered QEMU exited")
         response = {"request": request, "commit": commit,
                     "issued_unix_ms": now, "expires_unix_ms": expires}
+        if time.monotonic() >= deadline:
+            raise TimeoutError("signing deadline expired")
         payload = canonical_json(response)
         signed = {"payload": response,
                   "signature": signer.sign(RECEIPT_DOMAIN + payload).hex()}
