@@ -41,7 +41,8 @@ unsignedのIP一覧だけでdialを許可しない。受理するのは既存ver
 - DNS再解決、request由来の任意IP/port、未承認redirect先、別VM/別bootを受け入れない。
 
 既存のcontrolが成功した後だけ、scope/sequenceと単調時計のfresh期限を短く公開する。
-公開は署名応答の送信成功後。親の要求開始相当より後を起点として寿命を延ばさない。
+公開は署名応答の送信成功後。期限はhost受理時の単調時計＋署名寿命以下と原本の
+最早期限の早い方とし、送信時を寿命の起点にしない。guestの単調時計はhostへ持ち込まない。
 このfresh状態は新しいdialと既存relayの両方に必要とし、relay自身の処理では更新しない。
 control更新が止まれば最後の最長2秒の期限で閉鎖する。SQLite lockを中継中に保持しない。
 
