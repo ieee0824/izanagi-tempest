@@ -198,3 +198,14 @@ require_live_instance と serve_query の両方へ再投入する検証も行う
 どちらも pidfd_open の ESRCH で拒否し、署名呼び出しが0回、応答が空であることを
 確認する。既存登録の値を人工的に変えるだけでなく、終了済みの実プロセスに対する
 確認である。PID 再利用、同じ CID の新 VM への登録持ち越しはまだ別の試験が必要。
+
+`--managed-ledger --peer-lifecycle-test` は supervisor-test を付けず、native verifier
+バイナリを指定する。独立した QEMU を CID 232 と233で同時起動し、両方の実 vsock
+接続を受ける。CID233 の実要求を CID232 の登録で serve_query に渡すと、
+peer mismatch、署名0回、空応答となる。各 VM は別々の PID/start ticks/QMP socket
+を持ち、両方が running であることと実デバイス CID を確認する。それぞれ自身の
+登録では署名応答を受けて native verifier が成功し、正常終了する。
+
+試験は実ソケットから取得したフレームと peer CID を保持し、拒否確認と正しい登録での
+確認を行うため、ハンドラへの再投入に socketpair を用いる。broker の accept 経路と
+接続枯渇制御の試験は別である。同じ CID の再起動持ち越しと PID 再利用も未完了。

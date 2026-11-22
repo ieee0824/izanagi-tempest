@@ -22,12 +22,15 @@ def main():
     parser.add_argument("--stop-mode", choices=("revoke", "disconnect", "silence", "renew", "late-receipt", "wrong-cid", "old-boot", "old-process", "wrong-device-cid"), default="revoke")
     parser.add_argument("--supervisor-test", action="store_true")
     parser.add_argument("--caller-deadline-test", action="store_true")
+    parser.add_argument("--peer-lifecycle-test", action="store_true")
     parser.add_argument("--managed-ledger", action="store_true")
     args = parser.parse_args()
     if args.managed_ledger and args.native_verifier is None:
         parser.error("--managed-ledger requires --native-verifier")
     if args.caller_deadline_test and not (args.managed_ledger and args.supervisor_test):
         parser.error("--caller-deadline-test requires --managed-ledger --supervisor-test")
+    if args.peer_lifecycle_test and (not args.managed_ledger or args.supervisor_test):
+        parser.error("--peer-lifecycle-test requires --managed-ledger without --supervisor-test")
     native = args.native_verifier is not None
     with tempfile.TemporaryDirectory(prefix='tempest-vsock-', dir='/var/lib' if args.managed_ledger else None) as temporary:
         root = Path(temporary)
@@ -115,8 +118,27 @@ def main():
                     '-append', 'console=ttyS0 panic=-1 quiet',
                     '-device', 'vhost-vsock-pci,id=ledger,guest-cid=232'],
                     stdout=log, stderr=subprocess.STDOUT)
+                second_vm = None
+                second_connection = None
                 try:
-                    connection, peer = listener.accept()
+                    if args.peer_lifecycle_test:
+                        second_command = list(vm.args)
+                        second_command[second_command.index('-qmp')+1] = (
+                            'unix:' + str(root / 'qmp2.sock') + ',server=on,wait=off')
+                        second_command[second_command.index('-device')+1] = (
+                            'vhost-vsock-pci,id=ledger,guest-cid=233')
+                        second_vm = subprocess.Popen(second_command, stdout=log, stderr=subprocess.STDOUT)
+                        connections = {}
+                        for _ in range(2):
+                            candidate, candidate_peer = listener.accept()
+                            if candidate_peer[0] in connections:
+                                candidate.close()
+                                raise RuntimeError('duplicate live guest CID')
+                            connections[candidate_peer[0]] = (candidate, candidate_peer)
+                        connection, peer = connections[232]
+                        second_connection, second_peer = connections[233]
+                    else:
+                        connection, peer = listener.accept()
                     with connection:
                         connection.settimeout(2)
                         if args.managed_ledger:
@@ -153,6 +175,48 @@ def main():
                             path = management / 'host-login-authority/channel-approval.json'
                             path.write_bytes(canonical_json(approval))
                             path.chmod(0o600)
+                            if args.peer_lifecycle_test:
+                                from channel import read_frame, REQUEST_LIMIT, require_live_instance
+                                raw = read_frame(second_connection, REQUEST_LIMIT, time.monotonic()+2)
+                                class RejectSigning:
+                                    calls = 0
+                                    def sign(self, payload):
+                                        self.calls += 1
+                                        return signer.sign(payload)
+                                rejected_signer = RejectSigning()
+                                upstream, downstream = socket.socketpair()
+                                with upstream:
+                                    upstream.sendall(raw + b'\n')
+                                    with downstream:
+                                        try:
+                                            serve_query(downstream, second_peer[0], registration,
+                                                        management, rejected_signer, time.monotonic()+2)
+                                        except ValueError as error:
+                                            if str(error) != 'management peer mismatch':
+                                                raise
+                                        else:
+                                            raise RuntimeError('second actual VM impersonated registered VM')
+                                    upstream.settimeout(1)
+                                    if upstream.recv(1) != b'' or rejected_signer.calls != 0:
+                                        raise RuntimeError('second VM received an unauthorized signed receipt')
+                                second_stat = Path(f'/proc/{second_vm.pid}/stat').read_text()
+                                second_ticks = int(second_stat[second_stat.rindex(')')+2:].split()[19])
+                                second_registration = dict(registration, cid=233, qemu_pid=second_vm.pid,
+                                    qemu_start_ticks=second_ticks, qmp_socket=str(root / 'qmp2.sock'))
+                                import os
+                                for instance in (registration, second_registration):
+                                    os.close(require_live_instance(instance, time.monotonic()+2))
+                                # Replay the real second VM's frame into the handler only after
+                                # the actual transport identity was captured and independently checked.
+                                upstream, downstream = socket.socketpair()
+                                with upstream, downstream:
+                                    upstream.sendall(raw + b'\n')
+                                    serve_query(downstream, second_peer[0], second_registration,
+                                                management, signer, time.monotonic()+2)
+                                    response = read_frame(upstream, 4096, time.monotonic()+2)
+                                second_connection.sendall(response + b'\n')
+                                second_connection.close()
+                                print('two live VMs: actual CID233 refused as CID232; both QMP identities valid', flush=True)
                             if args.caller_deadline_test:
                                 serve_query(connection, peer[0], registration, management, signer, time.monotonic()+2)
                                 caller_connection, caller_peer = listener.accept()
@@ -285,6 +349,8 @@ def main():
                                 connection.sendall(b'ok\n')
                     if vm.wait(timeout=20) != 0:
                         raise RuntimeError('probe VM failed')
+                    if second_vm is not None and second_vm.wait(timeout=20) != 0:
+                        raise RuntimeError("second peer VM failed")
                     if args.managed_ledger:
                         # The exact registered QEMU has now exited and been reaped.
                         # Reusing its actual registration must fail before signing.
@@ -331,6 +397,11 @@ def main():
                     print((root / 'serial.log').read_text(errors='replace')[-6000:])
                     raise
                 finally:
+                    if second_connection is not None:
+                        second_connection.close()
+                    if second_vm is not None and second_vm.poll() is None:
+                        second_vm.kill()
+                        second_vm.wait()
                     if vm.poll() is None:
                         vm.kill()
                         vm.wait()
