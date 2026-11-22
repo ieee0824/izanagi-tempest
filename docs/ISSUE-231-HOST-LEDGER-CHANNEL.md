@@ -116,3 +116,36 @@ expires を発行時刻+2000 ms と管理登録の失効時刻の早い方に制
 要求開始Instant + (expires-issued) を期限とする。要求開始は発行より前なので、
 通信時間とホスト処理時間も寿命から差し引く。受信時を起点にしない。
 壁時計による offline 診断は別の検証経路として保持する。
+
+再照会は旧 lease の期限内に受信・検証を終える。成功後は新しい要求開始時刻に
+新署名の寿命を加えた期限へ更新する。旧期限で新 lease を恒久的に制限しない。
+既存の overall 許可期限は supervisor 側で継続して制限する。
+同期前の fresh 経路はホストの絶対時刻をゲストの壁時計と比較せず、署名寿命、
+要求一致、ホスト側残存期限 cap を照合する。この設計は cc-sakura #18163 の確認による。
+
+## 独立した承認期限
+
+ホスト管理者は原本の通信終了・単回許可終了・公開世代終了の UTC 時刻を
+`host-login-authority/channel-approval.json` にミリ秒単位で登録する。
+対象の target_id、permit_id、generation、boot_id と、
+communication_expires_unix_ms、permit_expires_unix_ms、generation_expires_unix_ms を記録する。
+root 所有・0600 の単一リンク通常ファイルとし、登録 expires_unix_ms を
+これらの最小値以下へ設定する。ブローカーは各要求で独立承認を再読取りし、
+対象不一致と期限超過設定を拒否する。
+
+## 実 supervisor の失効試験
+
+```sh
+cargo test --locked -p tempest-linux-probe --lib --no-run
+sudo python3 integration/qemu_vsock_probe.py \
+  --kernel /boot/vmlinuz-6.8.0-149-generic \
+  --kernel-release 6.8.0-149-generic \
+  --native-verifier /absolute/path/to/the/libtest/executable \
+  --managed-ledger --supervisor-test
+```
+
+ゲストの ignored 試験を単一スレッドの子で実行し、preflight、consume、query を
+実SQLiteとQMP登録を経由して処理する。次の照会前にホスト台帳を revoke し、
+実 supervise_pid_namespace が AdministratorStop と namespace_reaped を返すこと、
+試験全体が4秒未満であることを確認した。TLSゲートウェイ・通信経路の回収と
+応答停止の対照は未完了。

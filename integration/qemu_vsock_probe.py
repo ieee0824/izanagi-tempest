@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--kernel', required=True, type=Path)
     parser.add_argument('--kernel-release', required=True)
     parser.add_argument("--native-verifier", type=Path)
+    parser.add_argument("--supervisor-test", action="store_true")
     parser.add_argument("--managed-ledger", action="store_true")
     args = parser.parse_args()
     if args.managed_ledger and args.native_verifier is None:
@@ -72,7 +73,19 @@ def main():
                         target.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copyfile(token, target)
                         target.chmod(0o755)
-            init += '/bin/verify /key /request 0 fixture --vsock\necho NATIVE_RECEIPT_OK\n/bin/busybox poweroff -f\n'
+            if args.supervisor_test:
+                config = guest / 'etc/tempest'
+                config.mkdir(parents=True, mode=0o700)
+                registration = dict(target_id='vm', permit_id='a'*32, generation=1,
+                                    boot_id='boot1', ledger_id='fixture', minimum_sequence=1)
+                (config / 'host-channel.json').write_bytes(canonical_json(registration))
+                (config / 'host-channel-key').write_bytes((guest / 'key').read_bytes())
+                for entry in config.iterdir():
+                    entry.chmod(0o600)
+                init += '/bin/verify --ignored --exact claude_offline::tests::remote_channel_stops_and_reaps_dummy_namespace --nocapture\n/bin/busybox poweroff -f\n'
+            else:
+                init += '/bin/verify /key /request 0 fixture --vsock\necho NATIVE_RECEIPT_OK\n/bin/busybox poweroff -f\n'
+
         else:
             init += '/bin/probe\n/bin/busybox poweroff -f\n'
 
@@ -120,13 +133,34 @@ def main():
                                 db.executescript((Path(__file__).resolve().parents[1] / 'tools/host_ledger/schema.sql').read_text())
                             database.chmod(0o600)
                             advance(management, 'issue')
-                            advance(management, 'consume')
+                            if not args.supervisor_test:
+                                advance(management, 'consume')
                             process_stat = Path(f'/proc/{vm.pid}/stat').read_text()
                             ticks = int(process_stat[process_stat.rindex(')')+2:].split()[19])
                             registration = dict(scope, boot_id='boot1', cid=232, qemu_pid=vm.pid,
                                                 qemu_start_ticks=ticks, qmp_socket=str(root / 'qmp.sock'),
                                                 qemu_device_id='ledger', expires_unix_ms=time.time_ns()//1_000_000+10000)
+                            approval = dict(registration, communication_expires_unix_ms=registration['expires_unix_ms'],
+                                            permit_expires_unix_ms=registration['expires_unix_ms'],
+                                            generation_expires_unix_ms=registration['expires_unix_ms'])
+                            path = management / 'host-login-authority/channel-approval.json'
+                            path.write_bytes(canonical_json(approval))
+                            path.chmod(0o600)
                             serve_query(connection, peer[0], registration, management, signer, time.monotonic()+2)
+                            if args.supervisor_test:
+                                for phase in ('consume', 'query', 'revoke'):
+                                    next_connection, next_peer = listener.accept()
+                                    with next_connection:
+                                        if phase == 'revoke':
+                                            time.sleep(0.2)
+                                            advance(management, 'revoke')
+                                        try:
+                                            serve_query(next_connection, next_peer[0], registration,
+                                                        management, signer, time.monotonic()+2)
+                                        except ValueError:
+                                            if phase != 'revoke':
+                                                raise
+
                         else:
                             with connection.makefile('rb') as stream:
                                 data = stream.readline(1025)
@@ -156,7 +190,7 @@ def main():
                         vm.kill()
                         vm.wait()
             output = (root / 'serial.log').read_text(errors='replace')
-            if ('NATIVE_RECEIPT_OK' if native else 'VSOCK_PROBE_OK') not in output:
+            if ('HOST_CHANNEL_SUPERVISION_OK' if args.supervisor_test else 'NATIVE_RECEIPT_OK' if native else 'VSOCK_PROBE_OK') not in output:
                 raise RuntimeError(output[:1500])
         print('Actual guest CID 232 verified; guest exchange and shutdown succeeded')
 

@@ -44,6 +44,12 @@ def main(delay_commit=False):
         advance(root, 'issue')
         registration = dict(scope, boot_id='boot1', cid=231,
                             expires_unix_ms=time.time_ns() // 1_000_000 + 10000)
+        approval = dict(registration, communication_expires_unix_ms=registration['expires_unix_ms'],
+                        permit_expires_unix_ms=registration['expires_unix_ms'],
+                        generation_expires_unix_ms=registration['expires_unix_ms'])
+        path = root / 'host-login-authority/channel-approval.json'
+        path.write_bytes(channel.canonical_json(approval))
+        path.chmod(0o600)
         request = dict(scope, version=1, operation='consume', boot_id='boot1', challenge='b' * 64)
         signer = Mock(wraps=Ed25519PrivateKey.generate())
         with patch('channel.require_live_instance', side_effect=lambda *args: os.pidfd_open(os.getpid())):

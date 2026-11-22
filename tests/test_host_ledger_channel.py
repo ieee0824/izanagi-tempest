@@ -35,6 +35,16 @@ class ChannelTests(unittest.TestCase):
                 channel.validate_request(channel.canonical_json(dict(self.request, **{field: value})),
                                          self.registration, 231)
 
+    def test_registration_cannot_outlive_any_approval(self):
+        registration = dict(self.registration, expires_unix_ms=2000)
+        approval = dict(self.registration, communication_expires_unix_ms=2000,
+                        permit_expires_unix_ms=3000, generation_expires_unix_ms=4000)
+        channel.validate_registration_deadline(registration, approval)
+        for name in ('communication_expires_unix_ms', 'permit_expires_unix_ms',
+                     'generation_expires_unix_ms'):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                channel.validate_registration_deadline(registration, dict(approval, **{name: 1999}))
+
     def test_duplicate_fields_are_rejected(self):
         payload = channel.canonical_json(self.request)
         duplicate = payload[:-1] + b',"operation":"consume"}'
@@ -50,7 +60,11 @@ class ChannelTests(unittest.TestCase):
         registration = dict(self.registration, expires_unix_ms=time.time_ns() // 1_000_000 + 250)
         with reader, writer, patch('channel.require_live_instance',
                                    side_effect=lambda *args: os.pidfd_open(os.getpid())), \
-                patch('read_snapshot.read_management_snapshot', return_value=commit):
+                patch('read_snapshot.read_management_snapshot', return_value=commit), \
+                patch('read_snapshot.read_json', return_value=dict(registration,
+                    communication_expires_unix_ms=registration['expires_unix_ms'],
+                    permit_expires_unix_ms=registration['expires_unix_ms'],
+                    generation_expires_unix_ms=registration['expires_unix_ms'])):
             writer.sendall(channel.canonical_json(self.request) + b'\n')
             channel.serve_query(reader, 231, registration, Path('/unused'), signer,
                                 time.monotonic() + 1)

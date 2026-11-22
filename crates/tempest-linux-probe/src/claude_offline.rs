@@ -5609,6 +5609,52 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "run inside the dedicated vsock management VM fixture"]
+    fn remote_channel_stops_and_reaps_dummy_namespace() {
+        let worker = unsafe { libc::fork() };
+        assert!(worker >= 0);
+        if worker > 0 {
+            let mut status = 0;
+            assert_eq!(unsafe { libc::waitpid(worker, &mut status, 0) }, worker);
+            assert_eq!(status, 0);
+            return;
+        }
+        use std::time::{Duration, Instant};
+        let permit = u128::from_str_radix("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 16).unwrap();
+        host_login_diagnostic::preflight_for_supervision("vm", permit, 1).unwrap();
+        let (commit, guard) = host_login_diagnostic::verify_for_supervision(
+            "vm",
+            permit,
+            1,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+        drop(guard);
+        let mut command = std::process::Command::new("/bin/busybox");
+        command.args(["sh", "-c", "/bin/busybox sleep 60 & wait"]);
+        let mut reaped = false;
+        let started = Instant::now();
+        let result = supervise_pid_namespace(
+            command,
+            Duration::from_secs(10),
+            &mut reaped,
+            0,
+            None,
+            ChildNetwork::NewOffline,
+            || commit.lock_current().is_err(),
+        );
+        assert!(matches!(result, Err(Fault::AdministratorStop)));
+        assert!(reaped);
+        assert!(started.elapsed() < Duration::from_secs(4));
+        let message = b"HOST_CHANNEL_SUPERVISION_OK\n";
+        assert_eq!(
+            unsafe { libc::write(1, message.as_ptr().cast(), message.len()) },
+            message.len() as isize
+        );
+        unsafe { libc::_exit(0) };
+    }
+
+    #[test]
     #[ignore = "requires root and private mount, network and PID namespaces"]
     fn fixed_dummy_descendants_are_reaped_on_exit_and_timeout() {
         use std::{process::Command, time::Duration};

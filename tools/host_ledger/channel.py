@@ -152,14 +152,29 @@ def require_live_instance(registration, deadline):
 RECEIPT_DOMAIN = b"izanagi-tempest:host-ledger-channel:v1\0"
 
 
+def validate_registration_deadline(registration, approval):
+    for name in ("target_id", "permit_id", "generation", "boot_id"):
+        if approval.get(name) != registration[name]:
+            raise ValueError("channel approval scope mismatch")
+    names = ("communication_expires_unix_ms", "permit_expires_unix_ms",
+             "generation_expires_unix_ms")
+    values = [approval.get(name) for name in names]
+    expires = registration.get("expires_unix_ms")
+    if (any(type(value) is not int or value <= 0 for value in values)
+            or type(expires) is not int or expires <= 0 or expires > min(values)):
+        raise ValueError("channel registration exceeds approved deadline")
+
+
 def serve_query(connection, peer_cid, registration, management, signer, deadline):
     """Handle a query using the host's independently checked committed ledger."""
     import os
     import select
-    from read_snapshot import read_management_snapshot
+    from read_snapshot import read_management_snapshot, read_json
 
     request = validate_request(read_frame(connection, REQUEST_LIMIT, deadline),
                                registration, peer_cid)
+    approval = read_json(management / "host-login-authority/channel-approval.json")
+    validate_registration_deadline(registration, approval)
     process = require_live_instance(registration, deadline)
     try:
         expected = {key: request[key] for key in ("target_id", "permit_id", "generation")}
