@@ -488,6 +488,45 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "run only inside the NIC-free vsock egress acceptance VM"]
+    fn gateway_vsock_fixture() {
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let bytes = super::super::read_login_input(
+            std::path::Path::new("/run/tempest-egress-fixture.json"),
+            4096,
+        )
+        .unwrap();
+        let context: Value = serde_json::from_slice(&bytes).unwrap();
+        let key = context["key"].as_str().unwrap();
+        assert_eq!(key.len(), 64);
+        let key: Vec<u8> = (0..64)
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&key[i..i + 2], 16).unwrap())
+            .collect();
+        let route = Route {
+            request: context["request"].clone(),
+            peer: context["peer"].as_str().unwrap().parse().unwrap(),
+            key: key.try_into().unwrap(),
+            minimum_sequence: 1,
+        };
+        assert!(route.peer.ip().is_loopback());
+        assert_eq!(route.peer.port(), 443);
+        assert_eq!(
+            route.request["authority"],
+            super::super::login_connect::AUTHORITY
+        );
+        let listener = TcpListener::bind("127.0.0.1:39271").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        println!("VSOCK_GATEWAY_READY");
+        route
+            .serve(&listener, Instant::now() + Duration::from_secs(25), &|| {
+                std::path::Path::new("/run/tempest-egress-stop").exists()
+            })
+            .unwrap();
+        println!("VSOCK_GATEWAY_RECOVERED");
+    }
+
+    #[test]
     fn ready_binds_challenge_peer_sequence_and_request_start() {
         let key = Ed25519KeyPair::from_seed_unchecked(&[7; 32]).unwrap();
         let request = json!({"challenge":"a".repeat(64),"scope":{"target_id":"vm"}});
