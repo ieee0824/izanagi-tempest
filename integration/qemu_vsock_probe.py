@@ -285,6 +285,45 @@ def main():
                                 connection.sendall(b'ok\n')
                     if vm.wait(timeout=20) != 0:
                         raise RuntimeError('probe VM failed')
+                    if args.managed_ledger:
+                        # The exact registered QEMU has now exited and been reaped.
+                        # Reusing its actual registration must fail before signing.
+                        from channel import require_live_instance
+                        import errno
+                        try:
+                            descriptor = require_live_instance(registration, time.monotonic()+2)
+                        except OSError as error:
+                            if error.errno != errno.ESRCH:
+                                raise
+                        else:
+                            import os
+                            os.close(descriptor)
+                            raise RuntimeError('exited QEMU registration accepted')
+                        stale_request = dict(request)
+                        stale_request.update({name: registration[name] for name in
+                                              ('target_id', 'permit_id', 'generation', 'boot_id')})
+                        class SigningSpy:
+                            calls = 0
+                            def sign(self, payload):
+                                self.calls += 1
+                                return signer.sign(payload)
+                        spy = SigningSpy()
+                        upstream, downstream = socket.socketpair()
+                        with upstream:
+                            upstream.sendall(canonical_json(stale_request) + b'\n')
+                            with downstream:
+                                try:
+                                    serve_query(downstream, registration['cid'], registration,
+                                                management, spy, time.monotonic()+2)
+                                except OSError as error:
+                                    if error.errno != errno.ESRCH:
+                                        raise
+                                else:
+                                    raise RuntimeError('exited QEMU served a receipt')
+                            upstream.settimeout(1)
+                            if upstream.recv(1) != b'' or spy.calls != 0:
+                                raise RuntimeError('exited QEMU received a signed response')
+                        print('reaped QEMU registration refused before signing (ESRCH)', flush=True)
                     if args.supervisor_test:
                         print("fault_to_vm_exit_seconds", round(time.monotonic() - fault_at, 3), flush=True)
                 except Exception:
