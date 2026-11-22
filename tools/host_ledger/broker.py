@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import os
 import socket
+import sqlite3
 import threading
 import time
 
@@ -33,7 +34,7 @@ def serve(listener, registration, management, signer, stop_event=None, authoriza
                 signed = serve_query(connection, cid, registration, management, signer, deadline)
                 if authorization is not None:
                     authorization.observe(signed, deadline - REQUEST_SECONDS)
-        except (OSError, ValueError, KeyError):
+        except (OSError, ValueError, KeyError, sqlite3.Error):
             # A rejected request gets no signed authorization.
             if authorization is not None and claimed:
                 authorization.stop()

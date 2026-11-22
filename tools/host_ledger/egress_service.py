@@ -25,6 +25,7 @@ def watch_originals(authorization, validate_current, stop_event):
         stop_event.set()
     finally:
         authorization.stop()
+        stop_event.set()
 
 
 def serve_data(listener, registration, policy, authorization, signer,

@@ -1,6 +1,7 @@
 """Control success/failure drives the same-process egress stop latch."""
 from pathlib import Path
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -51,7 +52,7 @@ class ControlBridgeTests(unittest.TestCase):
         authorization.stop.assert_not_called()
 
     def test_rejection_or_failed_send_stops_instead_of_renewing(self):
-        for failure in (ValueError('refused'), BrokenPipeError('failed send'), TimeoutError('late')):
+        for failure in (ValueError('refused'), BrokenPipeError('failed send'), TimeoutError('late'), sqlite3.OperationalError('locked')):
             with self.subTest(failure=failure):
                 authorization, _, _ = self.run_bridge(failure)
                 authorization.observe.assert_not_called()
