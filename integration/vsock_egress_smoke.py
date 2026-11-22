@@ -190,21 +190,11 @@ def probe(context):
 
 
 def guest():
-    from channel import query_host
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     for index,mode in enumerate(('revoked','response-lost')):
         scope=dict(target_id='egress-vm',permit_id=f'{100+index:032x}',generation=1)
         reply=control_request(dict(operation='prepare',scope=scope,boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),expires_unix_ms=int((time.time()+25)*1000)))
-        key=Ed25519PublicKey.from_public_bytes(bytes.fromhex(reply['key']))
         config=Path('/run/tempest-egress-fixture.json'); config.write_text(json.dumps(reply));config.chmod(0o600)
         stopfile=Path('/run/tempest-egress-stop');stopfile.unlink(missing_ok=True)
-        query_host(scope,reply['registration']['boot_id'],key,'consume',time.monotonic()+2)
-        stopped=threading.Event()
-        def renew():
-            while not stopped.wait(0.2):
-                try: query_host(scope,reply['registration']['boot_id'],key,'query',time.monotonic()+2)
-                except (OSError,ValueError): return
-        thread=threading.Thread(target=renew);thread.start()
         gateway=subprocess.Popen(['/opt/bin/libtest','--ignored','--exact','claude_offline::login_egress::tests::gateway_vsock_fixture','--nocapture'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1)
         client=None
         try:
@@ -229,7 +219,7 @@ def guest():
             control_request(dict(operation='revoke' if mode=='revoked' else 'lose-response'))
             read_line(client,'TLS_CLOSED',4)
             if client.wait(timeout=2)!=0: raise RuntimeError(client.stderr.read())
-            stopped.set();thread.join(3);stopfile.touch()
+            stopfile.touch()
             if gateway.wait(timeout=3)!=0: raise RuntimeError(gateway.stdout.read())
             until=time.monotonic()+2
             while time.monotonic()<until:
@@ -239,7 +229,7 @@ def guest():
             if stats.get('tls_closed')!=1:raise RuntimeError('host TLS endpoint stayed open')
             print(f'VSOCK_EGRESS_ACCEPTED mode={mode} stop_ms={(time.monotonic()-began)*1000:.0f} counts={stats}',flush=True)
         finally:
-            stopped.set();thread.join(3);stopfile.touch()
+            stopfile.touch()
             for process in (client,gateway):
                 if process is not None and process.poll() is None:process.kill();process.wait()
             config.unlink(missing_ok=True);stopfile.unlink(missing_ok=True)

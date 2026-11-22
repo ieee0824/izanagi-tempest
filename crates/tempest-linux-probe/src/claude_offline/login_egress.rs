@@ -515,14 +515,45 @@ mod tests {
             route.request["authority"],
             super::super::login_connect::AUTHORITY
         );
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let mut control = crate::host_channel::Client {
+            registration: serde_json::from_value(context["registration"].clone()).unwrap(),
+            key: route.key,
+        };
+        control
+            .query("consume", Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let child_stop = stopped.clone();
+        let updater = std::thread::spawn(move || {
+            while !child_stop.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(200));
+                if child_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                if control
+                    .query("query", Instant::now() + Duration::from_secs(2))
+                    .is_err()
+                {
+                    child_stop.store(true, Ordering::Release);
+                    break;
+                }
+            }
+        });
         let listener = TcpListener::bind("127.0.0.1:39271").unwrap();
         listener.set_nonblocking(true).unwrap();
         println!("VSOCK_GATEWAY_READY");
         route
             .serve(&listener, Instant::now() + Duration::from_secs(25), &|| {
-                std::path::Path::new("/run/tempest-egress-stop").exists()
+                stopped.load(Ordering::Acquire)
+                    || std::path::Path::new("/run/tempest-egress-stop").exists()
             })
             .unwrap();
+        stopped.store(true, Ordering::Release);
+        updater.join().unwrap();
         println!("VSOCK_GATEWAY_RECOVERED");
     }
 
