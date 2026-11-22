@@ -406,7 +406,8 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
             child_fd = os.pidfd_open(child)
             try:
                 deadline = host_revoke()
-                if not select.select([child_fd], [], [], 8)[0]:
+                stop_wait = 8 if deadline is None else max(0, deadline - time.time()) + 2
+                if not select.select([child_fd], [], [], stop_wait)[0]:
                     raise RuntimeError("fixed child survived the management stop")
                 if deadline is not None and time.time() < deadline:
                     raise RuntimeError("fixed child exited before the signed deadline")

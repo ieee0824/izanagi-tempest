@@ -272,3 +272,21 @@ loopback と nft table の作成・削除も成功した。さらに既存の pi
 nlink/size/digest 検証が成功した（ignored試験1件、約22秒）。
 これは userspace と固定実体の準備確認であり、TLS/FixtureStop remote 回収自体の
 完了を示さない。VM終了後は起動プロセスを回収してから全bind mountを解除する。
+
+## 既存 TLS baseline の実 VM 検証
+
+上記 qemu_login_runtime.py に `--tls-fixture` を追加し、release の試験バイナリと
+libtest を渡す。既存 combined_login_diagnostic の local 台帳経路を実 VM で実行し、
+revoked / missing / disconnect / expired / authority-pending の全5ケースで、
+固定子の TLS・証明書・誤名拒否・直接接続拒否、子と gateway の回収、同じ許可と
+作業/設定世代の回収を確認した。起動前の拒否4件も成功した。ゲスト全体約84秒。
+
+準備時の修正は、専用 bundle の隔離領域へのコピー、入れ子の元実体 mount を
+保存する rbind と再帰解除、libtest の quiet 出力、固定 /usr/sbin/ip の別名、
+/dev/stdin 等の標準 fd リンク。期限切れ対照は署名期限まで待つよう修正した。
+また Host を監視する TLS fixture の固定8秒上限が署名期限より先に切れてしまう
+不整合を直し、期限+1秒の回収猶予まで watcher を維持する。認可停止は引き続き
+FixtureStop が署名期限で行い、認可期間を延長しない。
+
+これは local baseline の完了であり、外部ホスト台帳から vsock を通した
+remote callback と TLS 回収の組合せは次の段階である。

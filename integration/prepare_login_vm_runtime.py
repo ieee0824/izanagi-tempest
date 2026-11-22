@@ -56,6 +56,7 @@ def main():
             if source is None:
                 raise RuntimeError(f'missing runtime tool: {tool}')
             executable(source)
+            bind(source, Path(source).relative_to('/'))
             # Preserve both merged-/usr spellings used by the fixed fixture.
             if tool in ('busybox', 'mount', 'umount'):
                 bind(source, 'bin/' + tool)

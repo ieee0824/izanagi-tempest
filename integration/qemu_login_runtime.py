@@ -12,6 +12,7 @@ def main():
     parser.add_argument('--kernel', required=True, type=Path)
     parser.add_argument('--kernel-release', required=True)
     parser.add_argument('--runtime', required=True, type=Path)
+    parser.add_argument('--tls-fixture', action='store_true')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='tempest-login-boot-', dir='/var/lib') as temporary:
         root = Path(temporary)
@@ -37,6 +38,9 @@ def main():
                 data = (subprocess.check_output(['zstd', '-dc', str(source)])
                         if source.suffix == '.zst' else source.read_bytes())
                 (guest / 'modules' / name).write_bytes(data)
+        policy_source = (Path(__file__).resolve().parents[1] / 'crates/tempest-linux-probe/src/claude_offline/local_auth.rs').read_text()
+        policy = policy_source.split('const POLICY: &str = "', 1)[1].split('";', 1)[0]
+        (guest / 'policy.nft').write_text(policy)
         init = '''#!/bin/busybox sh
 set -eu
 /bin/busybox mount -t proc proc /proc
@@ -44,10 +48,14 @@ set -eu
 /bin/busybox mount -t devtmpfs devtmpfs /dev
 /bin/busybox mkdir -p /dev/pts
 /bin/busybox mount -t devpts devpts /dev/pts
+/bin/busybox ln -s /proc/self/fd /dev/fd
+/bin/busybox ln -s /proc/self/fd/0 /dev/stdin
+/bin/busybox ln -s /proc/self/fd/1 /dev/stdout
+/bin/busybox ln -s /proc/self/fd/2 /dev/stderr
 /bin/busybox chmod 1777 /tmp
 '''
         init += ''.join('/bin/busybox insmod /modules/' + name + '\n' for name in modules)
-        init += '''/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,ro runtime /runtime
+        init += '''/bin/busybox mount -t 9p -o trans=virtio,version=9p2000.L,ro,cache=loose,msize=1048576 runtime /runtime
 '''
         for name in ('usr', 'lib', 'lib64', 'opt', 'var/lib/tempest-claude-offline'):
             init += f'/bin/busybox mount --bind /runtime/{name} /{name}\n'
@@ -71,9 +79,19 @@ READONLY
 ip link set lo up
 nft add table inet runtime_smoke
 nft delete table inet runtime_smoke
+/usr/sbin/ip link set lo up
+nft -f /policy.nft
+nft delete table inet tempest_local_auth
+echo LOGIN_VM_POLICY_OK
 echo LOGIN_VM_RUNTIME_OK
 /bin/busybox poweroff -f
 '''
+        if args.tls_fixture:
+            init = init.replace('echo LOGIN_VM_RUNTIME_OK',
+                '/usr/bin/python3 /opt/tempest/integration/combined_login_diagnostic.py '
+                '/opt/bin/tempest-combined-login-diagnostic /opt/bin/tempest-host-login-responder '
+                '/opt/bin/tempest-host-login-publisher /opt/bin/tempest-claude-offline-local-auth-pty '
+                '/opt/bin/libtest\necho LOGIN_VM_TLS_FIXTURE_OK\necho LOGIN_VM_RUNTIME_OK')
         (guest / 'init').write_text(init)
         (guest / 'init').chmod(0o755)
         names = ['.'] + [str(path.relative_to(guest)) for path in guest.rglob('*')]
@@ -84,7 +102,7 @@ echo LOGIN_VM_RUNTIME_OK
         log_path = root / 'serial.log'
         with log_path.open('wb') as log:
             vm = subprocess.Popen([
-                'qemu-system-x86_64', '-machine', 'q35,accel=kvm:tcg', '-m', '768',
+                'qemu-system-x86_64', '-machine', 'q35,accel=kvm:tcg', '-m', '1536' if args.tls_fixture else '768',
                 '-nodefaults', '-display', 'none', '-serial', 'stdio', '-no-reboot', '-net', 'none',
                 '-kernel', str(args.kernel), '-initrd', str(image),
                 '-append', 'console=ttyS0 panic=-1 quiet',
@@ -92,7 +110,7 @@ echo LOGIN_VM_RUNTIME_OK
                 '-virtfs', f'local,path={args.runtime.resolve()},mount_tag=runtime,security_model=none,readonly=on'],
                 stdout=log, stderr=subprocess.STDOUT)
             try:
-                code = vm.wait(timeout=60)
+                code = vm.wait(timeout=300 if args.tls_fixture else 60)
             finally:
                 if vm.poll() is None:
                     vm.kill()

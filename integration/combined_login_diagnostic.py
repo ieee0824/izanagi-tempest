@@ -94,11 +94,11 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, f
         gate = stage in ("direct-gate", "direct-authority-gate")
         if stage == "direct-refusal" or gate:
             command[-1] = direct_test
-            command += ["--ignored", "--nocapture", "supervise_verified_dummy_tls"]
+            command += ["--ignored", "--nocapture", "--quiet", "supervise_verified_dummy_tls"]
             environment = ({"TEMPEST_PAUSE_START_GATE": "1"} if gate
                            else {"TEMPEST_EXPECT_DUMMY_REFUSAL": "1"})
         elif stage is not None:
-            command += ["--ignored", "--nocapture", "stage_combined_diagnostic_descriptors"]
+            command += ["--ignored", "--nocapture", "--quiet", "stage_combined_diagnostic_descriptors"]
             environment = {"TEMPEST_STAGE_CASE": stage}
         try:
             with subprocess.Popen(
@@ -656,7 +656,7 @@ with sqlite3.connect(sys.argv[1]) as db:
                         check=True, timeout=5,
                     )
 
-                command = [direct_test, "--ignored", "--nocapture", "supervise_verified_dummy_tls"]
+                command = [direct_test, "--ignored", "--nocapture", "--quiet", "supervise_verified_dummy_tls"]
                 return (command, relay_challenge,
                         revoke_live_host if outcome != "disconnect" else None,
                         prepare_live, False)
@@ -744,9 +744,10 @@ def main():
         synthetic_cli = root / "lib/tempest-claude-offline/claude"
         synthetic_cli.parent.mkdir(parents=True)
         synthetic_cli.touch()
+        shutil.copytree(Path(FIXED_CLI).parent / "lib", synthetic_cli.parent / "lib")
         original = root / "original-lib"
         original.mkdir()
-        subprocess.run(["mount", "--bind", "/var/lib", original], check=True)
+        subprocess.run(["mount", "--rbind", "/var/lib", original], check=True)
         subprocess.run(["mount", "--bind", root / "etc", "/etc"], check=True)
         subprocess.run(["mount", "--bind", root / "lib", "/var/lib"], check=True)
         try:
@@ -779,7 +780,8 @@ def main():
                     if path.is_mount():
                         subprocess.run(["umount", path], check=True)
             for path in ("/var/lib", "/etc", original):
-                subprocess.run(["umount", path], check=True)
+                command = ["umount", "--recursive", path] if path == original else ["umount", path]
+                subprocess.run(command, check=True)
     return 0
 
 

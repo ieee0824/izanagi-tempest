@@ -407,7 +407,14 @@ pub(super) fn serve_fixture(
     expires: Instant,
     stop: Option<&super::FixtureStop>,
 ) -> io::Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(8);
+    // Host freshness may expire after the ordinary eight-second dummy exchange.
+    // Keep the fixture watcher alive until that signed expiry, with a small
+    // cleanup margin; FixtureStop still closes authorization at expires.
+    let deadline = if matches!(stop, Some(super::FixtureStop::Host(..))) {
+        expires + Duration::from_secs(1)
+    } else {
+        Instant::now() + Duration::from_secs(8)
+    };
     let mut rejected = accept_before(listener, deadline)?;
     match read_request(DeadlineReader {
         client: &mut rejected,
