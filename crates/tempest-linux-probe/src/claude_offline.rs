@@ -5608,6 +5608,29 @@ mod tests {
         fs::remove_dir_all(fixture).unwrap();
     }
 
+    fn exit_fork_worker_on_panic() {
+        // Unwinding into libtest in a fork child can produce a false success.
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            previous_hook(info);
+            unsafe { libc::_exit(101) };
+        }));
+    }
+
+    #[test]
+    fn fork_worker_panic_reaches_parent_as_failure() {
+        let worker = unsafe { libc::fork() };
+        assert!(worker >= 0);
+        if worker == 0 {
+            exit_fork_worker_on_panic();
+            panic!("intentional fork worker failure control");
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(worker, &mut status, 0) }, worker);
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 101);
+    }
+
     #[test]
     #[ignore = "run inside the dedicated vsock management VM fixture"]
     fn remote_channel_stops_and_reaps_dummy_namespace() {
@@ -5619,6 +5642,7 @@ mod tests {
             assert_eq!(status, 0);
             return;
         }
+        exit_fork_worker_on_panic();
         use std::time::{Duration, Instant};
         let permit = u128::from_str_radix("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 16).unwrap();
         host_login_diagnostic::preflight_for_supervision("vm", permit, 1).unwrap();
