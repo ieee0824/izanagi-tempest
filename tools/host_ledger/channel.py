@@ -47,11 +47,20 @@ def write_frame(connection, payload, limit, deadline):
     connection.sendall(payload + b"\n")
 
 
+def unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate management field")
+        result[key] = value
+    return result
+
+
 def validate_request(payload, registration, peer_cid):
     """Bind requests to a host-selected VM registration and actual peer CID."""
     if len(payload) > REQUEST_LIMIT:
         raise ValueError("management request too large")
-    request = json.loads(payload)
+    request = json.loads(payload, object_pairs_hook=unique_fields)
     if not isinstance(request, dict) or set(request) != FIELDS:
         raise ValueError("invalid management request fields")
     if type(request["version"]) is not int or request["version"] != 1:
