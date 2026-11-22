@@ -3,7 +3,8 @@
 ## 範囲
 
 承認済み[B案](ISSUE-36-EGRESS-B-DRAFT.md)のホスト側を実装している。
-guest gatewayの新transportとready検証まで接続した。実VMでの新経路の受入、実配備は未完了。
+guest gatewayの新transportとready検証を接続し、NICなしVMでdummy経路を受入した。
+owner VMへの実配備と最終配置チェックは未完了。
 Claude loginや実認証先への試験接続は行わない。
 
 ## 原本と起動境界
@@ -74,8 +75,50 @@ sudo python3 tools/host_ledger/egress_daemon.py
 起動自体はpermitを発行/consumeしない。未配備/失効済み/未承認原本では拒否する。
 TLSの終端/復号やpayload記録は行わず、ready後は方向ごと64KiB以下の不透明中継だけを行う。
 
-## 残る受入
+## NICなしVMでの実測
 
-dummy TLSの実vsock中継、実manual childの
-迂回拒否との両立、失効/更新停止/QEMU停止と全接続回収を確認する。
-ホスト原本の生成・公開・配備手順も最終成果物と照合する。既存の本人login担当は変更しない。
+2026-11-22、fixture `9385293`、Rust libtest source `5f3c960`で終了code0。
+専用non-login `tempest-kvm`ユーザーのKVM、kernel `6.8.0-149-generic`、NICなし、
+curated readonly9pで実施した。上流はhost `127.0.0.1:443`のdummy TLSだけである。
+
+- production `load_run` / `HostOriginals` / `serve_both`とguest `Route`の実AF_VSOCKを接続した。
+  専用ready署名、CONNECT200、UID999のTLS証明書/名前検証、PING/PONGを確認。
+- 拒否CONNECTの直後に上流TCP accept=0をassertし、その確認後だけ正常TLSへ進む。
+  正常後はTCP accept=1、TLS accept=1。TLS handshake成功だけをdialなしの根拠にはしない。
+- revokedは209ms、response-lostは211msで両TLS端close。
+  各run consume=1/query=2の更新成功後に停止を発生させ、TLS close=1を確認した。
+- 同じVMで実`isolated_command`を通るmanual childがUID999/AF_VSOCK EPERM、
+  namespace_reaped=trueを確認。TLS probe自体を実Claude CLIと同一視しない。
+- gateway正常終了、host worker join、VM poweroff、readonly exportの削除を確認。
+  終了後hostの23100/23102/23105 listenerとdummy443 listenerは残っていなかった。
+
+logは`/var/tmp/tempest-egress-vm-final.log`、SHA256
+`c723f46c436d834c0336eeb3a34da57cf07390554abe821e056fba41a9443553`。
+libtest SHA256は`5e439b35ed63b249acb981a7a77e20d00b1988bcd010988686960f72dd3e0fd9`。
+前の試行ではfixtureのPython制御clientの鍵型/壁時計検証、および空行のreadiness判定で停止した。
+最終試行は本番と同じRust control clientのrequest-start単調時計検証を使い、
+全readを期限付きにした。productionの認可条件は緩めていない。
+
+この環境での再現コマンドは以下。release各binaryとlibtestを準備し、未使用のexport名を使う。
+
+```bash
+CARGO_TARGET_DIR=/var/tmp/tempest-fixed-dependency-bundle/target cargo test --locked --offline --release -p tempest-linux-probe --lib --no-run
+sudo unshare --mount --propagation private python3 integration/prepare_login_vm_runtime.py \
+  --output /var/lib/tempest-egress-runtime-final \
+  --binary-directory /var/tmp/tempest-fixed-dependency-bundle/target/release \
+  --libtest /var/tmp/tempest-fixed-dependency-bundle/target/release/build/tempest-linux-probe/f7ee4b13e2926d7f/out/tempest_linux_probe-f7ee4b13e2926d7f \
+  --command python3 integration/qemu_login_runtime.py \
+  --kernel /boot/vmlinuz-6.8.0-149-generic --kernel-release 6.8.0-149-generic \
+  --runtime /var/lib/tempest-egress-runtime-final --egress-fixture
+```
+
+libtestのhash付きpathはtoolchainで変わるため、最初のcommandの出力を使う。
+実VMでの全data slot占有は行っていない。5本目data拒否とcontrol独立性は既存ローカル試験の範囲。
+新経路のactual distribution入口による本人login、実credential、実認証先への接続は未実施。
+
+## 残る配置チェック
+
+マージ済み成果物のentry/host relay、root原本と独立鍵、owner VMのQEMU lifetime/CIDを
+再照合して配備する。固定CLIや全世代の監督・回収契約は既存入口のものを維持する。
+新経路のdummy transport試験を、実Claude loginや全manual supervisorの再受入へ拡張しては扱わない。
+ホスト原本の生成・公開・配備手順も最終成果物と照合する。本人login担当はownerのままである。
