@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--caller-deadline-test", action="store_true")
     parser.add_argument("--peer-lifecycle-test", action="store_true")
     parser.add_argument("--restart-lifecycle-test", action="store_true")
+    parser.add_argument("--broker-limit-test", action="store_true")
     parser.add_argument("--managed-ledger", action="store_true")
     args = parser.parse_args()
     if args.managed_ledger and args.native_verifier is None:
@@ -35,6 +36,8 @@ def main():
         parser.error("--peer-lifecycle-test requires --managed-ledger without --supervisor-test")
     if args.restart_lifecycle_test and (not args.managed_ledger or args.supervisor_test):
         parser.error("--restart-lifecycle-test requires --managed-ledger without --supervisor-test")
+    if args.broker_limit_test and (not args.managed_ledger or args.supervisor_test or args.peer_lifecycle_test or args.restart_lifecycle_test):
+        parser.error("--broker-limit-test requires only --managed-ledger and --native-verifier")
     native = args.native_verifier is not None
     with tempfile.TemporaryDirectory(prefix='tempest-vsock-', dir='/var/lib' if args.managed_ledger else None) as temporary:
         root = Path(temporary)
@@ -98,7 +101,10 @@ def main():
                              else 'remote_channel_stops_and_reaps_dummy_namespace')
                 init += f'/bin/verify --ignored --exact claude_offline::tests::{test_name} --nocapture\n/bin/busybox poweroff -f\n'
             else:
-                init += '/bin/verify /key /request 0 fixture --vsock\necho NATIVE_RECEIPT_OK\n/bin/busybox poweroff -f\n'
+                init += '/bin/verify /key /request 0 fixture --vsock\n'
+                if args.broker_limit_test:
+                    init += '/bin/probe --broker-limit\n/bin/verify /key /request 0 fixture --vsock\n'
+                init += 'echo NATIVE_RECEIPT_OK\n/bin/busybox poweroff -f\n'
 
         else:
             init += '/bin/probe\n/bin/busybox poweroff -f\n'
@@ -124,6 +130,7 @@ def main():
                     stdout=log, stderr=subprocess.STDOUT)
                 second_vm = None
                 restarted_vm = None
+                broker_process = None
                 second_connection = None
                 try:
                     if args.peer_lifecycle_test:
@@ -245,6 +252,12 @@ def main():
                                     print('valid preflight response delayed 300ms against caller 100ms', flush=True)
                             else:
                                 serve_query(connection, peer[0], registration, management, signer, time.monotonic()+2)
+                            if args.broker_limit_test:
+                                import multiprocessing
+                                from broker import serve
+                                broker_process = multiprocessing.get_context('fork').Process(
+                                    target=serve, args=(listener, registration, management, signer))
+                                broker_process.start()
                             if args.supervisor_test and not args.caller_deadline_test:
                                 print('accepted preflight from actual guest CID', peer[0], flush=True)
                                 phases = ['consume'] + ['query'] * (6 if args.stop_mode == 'renew' else 3) + ['stop']
@@ -452,6 +465,12 @@ def main():
                     print((root / 'serial.log').read_text(errors='replace')[-6000:])
                     raise
                 finally:
+                    if broker_process is not None:
+                        broker_process.terminate()
+                        broker_process.join(timeout=5)
+                        if broker_process.is_alive():
+                            broker_process.kill()
+                            broker_process.join()
                     if restarted_vm is not None and restarted_vm.poll() is None:
                         restarted_vm.kill()
                         restarted_vm.wait()
@@ -464,10 +483,13 @@ def main():
                         vm.kill()
                         vm.wait()
             output = (root / 'serial.log').read_text(errors='replace')
+            if args.broker_limit_test and ('BROKER_LIMIT_RECOVERY_OK' not in output
+                    or output.count('host channel receipt verified') != 2):
+                raise RuntimeError('broker did not reject the parallel connection and recover its slot')
             if ('HOST_CHANNEL_CALLER_DEADLINE_OK' if args.caller_deadline_test else 'HOST_CHANNEL_SUPERVISION_OK' if args.supervisor_test else 'NATIVE_RECEIPT_OK' if native else 'VSOCK_PROBE_OK') not in output:
                 raise RuntimeError(output[:1500])
         for line in output.splitlines():
-            if 'HOST_CHANNEL_SUPERVISION_OK' in line or 'HOST_CHANNEL_CALLER_DEADLINE_OK' in line:
+            if any(marker in line for marker in ('HOST_CHANNEL_SUPERVISION_OK', 'HOST_CHANNEL_CALLER_DEADLINE_OK', 'BROKER_LIMIT_RECOVERY_OK')):
                 print(line)
         print('Actual guest CID 232 verified; guest exchange and shutdown succeeded')
 

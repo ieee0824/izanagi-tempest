@@ -220,3 +220,15 @@ verifier が検証して正常終了することを確認した。
 これはゲスト OS 内の reboot コマンドではなく、QEMU プロセスを終了して新規起動する
 ライフサイクル境界の試験である。boot_id はホストが登録する公開世代識別子を使う。
 カーネルの boot UUID 自動取得や PID 再利用を強制する試験は含まない。
+
+## 実ブローカーの同一 VM 接続上限と回復
+
+`--managed-ledger --broker-limit-test` は実 AF_VSOCK listener を fork した
+broker.serve に渡す。VM の初回正常応答の後、ゲスト C probe が未完了の `{` 要求を
+保持する。150 ms の間その接続が開いていることを確認し、同じ実 CID から2本目を
+接続すると500 ms以内に EOF/reset で拒否される。最初の未完了要求も2.5秒以内に
+EOF/reset となる。その後、ゲスト native verifier が正常な応答を取得する。
+初回・回復後の両方の署名検証成功と probe の成功記録を照合する。
+
+この試験は実 broker の accept、同一 CID の並行要求拒否、要求 timeout、slot の
+回復を扱う。異なる CID で全8slotを埋める試験や、終了中の接続の公平性までは含まない。
