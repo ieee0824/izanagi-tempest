@@ -53,6 +53,7 @@ class EgressController(HostController):
                 except OSError:
                     if self.stopping.is_set(): return
                     raise
+                self.counts['tcp_accepts'] = self.counts.get('tcp_accepts', 0) + 1
                 try:
                     peer.settimeout(4)
                     with context.wrap_socket(peer, server_side=True) as connection:
@@ -161,10 +162,21 @@ class EgressController(HostController):
         super().close()
 
 
+def bounded_line(process, deadline):
+    data=bytearray()
+    while not data.endswith(b'\n'):
+        remaining=deadline-time.monotonic()
+        if remaining<=0 or not select.select([process.stdout],[],[],remaining)[0]:
+            raise RuntimeError('dummy process output deadline expired')
+        byte=os.read(process.stdout.fileno(),1)
+        if not byte: raise RuntimeError('dummy process output ended before marker')
+        data.extend(byte)
+        if len(data)>4096: raise RuntimeError('dummy process output line too long')
+    return data.decode().strip()
+
+
 def read_line(process, expected, timeout=8):
-    if not select.select([process.stdout], [], [], timeout)[0]:
-        raise RuntimeError('dummy process did not report '+expected)
-    line=process.stdout.readline().decode().strip()
+    line=bounded_line(process,time.monotonic()+timeout)
     if line != expected:
         raise RuntimeError(f'dummy process expected {expected}, got {line}')
 
@@ -175,10 +187,15 @@ def probe(context):
         rejected.sendall(b'CONNECT other.invalid:443 HTTP/1.1\r\nHost: other.invalid:443\r\n\r\n')
         if rejected.recv(1): raise RuntimeError('unapproved CONNECT accepted')
     print('CONNECT_DENIED',flush=True)
+    if sys.stdin.readline() != 'GO\n': raise RuntimeError('missing upstream-counter acknowledgement')
     with socket.create_connection(('127.0.0.1',39271),timeout=3) as raw:
         raw.sendall(b'CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\n')
         header=b''
-        while not header.endswith(b'\r\n\r\n'): header+=raw.recv(1)
+        while not header.endswith(b'\r\n\r\n'):
+            byte=raw.recv(1)
+            if not byte: raise RuntimeError('gateway closed before CONNECT ready')
+            header+=byte
+            if len(header)>4096: raise RuntimeError('CONNECT response too large')
         if header != b'HTTP/1.1 200 Connection Established\r\n\r\n': raise RuntimeError('CONNECT not ready')
         tls=ssl.create_default_context(cadata=context['cert'])
         with tls.wrap_socket(raw,server_hostname='platform.claude.com') as stream:
@@ -195,21 +212,23 @@ def guest():
         reply=control_request(dict(operation='prepare',scope=scope,boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),expires_unix_ms=int((time.time()+25)*1000)))
         config=Path('/run/tempest-egress-fixture.json'); config.write_text(json.dumps(reply));config.chmod(0o600)
         stopfile=Path('/run/tempest-egress-stop');stopfile.unlink(missing_ok=True)
-        gateway=subprocess.Popen(['/opt/bin/libtest','--ignored','--exact','claude_offline::login_egress::tests::gateway_vsock_fixture','--nocapture'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1)
+        gateway=subprocess.Popen(['/opt/bin/libtest','--ignored','--exact','claude_offline::login_egress::tests::gateway_vsock_fixture','--nocapture'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,bufsize=0)
         client=None
         try:
             until=time.monotonic()+8
             while True:
-                if time.monotonic()>=until: raise RuntimeError('gateway readiness timed out')
-                line=gateway.stdout.readline()
+                line=bounded_line(gateway,until)
                 if 'VSOCK_GATEWAY_READY' in line: break
                 if not line: raise RuntimeError('gateway exited before readiness')
             client=subprocess.Popen(['setpriv','--reuid=999','--regid=999','--clear-groups','/usr/bin/python3',__file__,'probe'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0)
             client.stdin.write((json.dumps(reply)+'\n').encode());client.stdin.flush()
             read_line(client,'CONNECT_DENIED')
+            stats=control_request(dict(operation='stats'))['counts']
+            if stats.get('tcp_accepts',0)!=0: raise RuntimeError(f'rejected CONNECT dialed upstream: {stats}')
+            client.stdin.write(b'GO\n');client.stdin.flush()
             read_line(client,'TLS_UP')
             stats=control_request(dict(operation='stats'))['counts']
-            if stats.get('tls_accepts')!=1: raise RuntimeError(f'unapproved upstream dial: {stats}')
+            if stats.get('tls_accepts')!=1 or stats.get('tcp_accepts')!=1: raise RuntimeError(f'unapproved upstream dial: {stats}')
             # Prove normal control renewals before either stop condition.
             until=time.monotonic()+2
             while stats.get('query',0)<2 and time.monotonic()<until:
