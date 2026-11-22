@@ -674,7 +674,7 @@ with sqlite3.connect(sys.argv[1]) as db:
                 command = [direct_test, "--ignored", "--nocapture", "--quiet", "supervise_verified_dummy_tls"]
                 return (command, None if remote_tls else relay_challenge,
                         revoke_live_host if outcome != "disconnect" else None,
-                        prepare_live, False)
+                        prepare_live, False, remote_tls and outcome == "revoked")
 
             outcomes = (("revoked", "response-lost") if remote_tls else (
                 "revoked", "missing", "disconnect", "expired", "authority-pending"

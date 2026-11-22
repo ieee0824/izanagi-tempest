@@ -474,6 +474,27 @@ pub(super) fn serve_fixture(
                         result => result?,
                     }
                 }
+                // A Host exercise may keep an additional TLS peer live until
+                // management stop. Existing two-handshake fixtures need not
+                // connect again: their stop ends this optional accept loop.
+                if host {
+                    while require_active(&stopped, deadline).is_ok() {
+                        match listener.accept() {
+                            Ok((client, _)) => {
+                                let result =
+                                    relay_fixed_request(client, peer, deadline, Some(&stopped));
+                                if stopped() {
+                                    return Ok(());
+                                }
+                                result?;
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                std::thread::sleep(Duration::from_millis(10));
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                }
                 Ok::<_, io::Error>(())
             })?)
         } else if matches!(case, Case::SignedTlsExpiry | Case::SignedTlsRevocation) {
