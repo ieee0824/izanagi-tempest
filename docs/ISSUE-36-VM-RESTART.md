@@ -15,9 +15,10 @@
 
 ## 配備準備済みの成果物
 
-マージSHA b52d36360661d77e914e0c0c97a93e6e6852f7c5 から release/locked/offline で入口をbuildした。
-入口は3631992 bytes、SHA256は
-43b1dd9f72b5493183fab3b7ab61e52c706f7807f8d66f90f5305b76a16f59ce。
+マージSHA 4245d9c1a829922adf4ef93694c3766b274c8298 から release/locked/offline で入口をbuildした。
+入口は3631736 bytes、SHA256は
+f687897685483c780577ae0caaeac58658469c0b8c310342d9bf02b8df0b0a30。
+旧b52d363成果物にはCLIのvsock拒否がないため配備せず、旧manifestもsupersededへ更新した。
 root0555でホストに準備済みだが、guestへの配置・サービス起動はまだ行っていない。
 同じSHAのbroker一式とroot0600のartifact記録も準備した。
 
