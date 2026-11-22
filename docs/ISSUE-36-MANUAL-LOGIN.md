@@ -88,6 +88,33 @@ cc-sakura #17589 への承認 #17590 は、認証ホストとポートを制限�
 以後はバイト列をそのまま中継します。現行試験では上流の応答をループバックに
 置き、宛先不一致時に成功応答や中継を行わないことを確認します。
 
+### 固定依存ライブラリの配布
+
+入口は `/var/lib/tempest-claude-offline/claude` と、同領域の `lib/` にある
+ローダー・libc・libdl・libm・libpthread・librt を検証します。
+配布元は `claude_offline.rs` の `ARTIFACTS` に記録したサイズと SHA-256 に
+一致するファイルを用意します。各ファイルは root 所有の通常ファイル、単一リンク、
+グループ・その他による書き込み不可とし、親ディレクトリも root 所有で書き込みを制限します。
+ローダーは隔離先の `/lib64` と `/lib/x86_64-linux-gnu` の両パスへ配置します。
+
+管理者は照合済みの配布ディレクトリを `bundle_source` に指定して配備します。
+
+```sh
+sudo install -d -o root -g root -m 0755 /var/lib/tempest-claude-offline/lib
+for name in ld-linux-x86-64.so.2 libc.so.6 libdl.so.2 libm.so.6 libpthread.so.0 librt.so.1; do
+  sudo install -o root -g root -m 0555 -- "$bundle_source/$name" "/var/lib/tempest-claude-offline/lib/$name"
+done
+```
+
+配備前後の SHA-256 とサイズを固定マニフェストに照合し、入口の配布ハッシュも
+修正後のビルドに更新して実施票へ記録します。
+
+検証では Ubuntu 24.04.5 のゲスト（libc6 2.39-0ubuntu8.9）へ固定 bundle
+（2.39-0ubuntu8.12）を配置し、ネットワーク namespace 内で専用ローダーから
+Claude Code 2.1.325 の `--version` が成功しました。入口と同じ `pin_artifacts` の
+検証も成功し、private mount namespace 内で bundle を隠した場合と libc を
+無効なファイルへ置換した場合は検証を拒否しました。
+
 ### 管理者配備の入口
 
 標準入口は管理者 PTY の検査後、固定パス
