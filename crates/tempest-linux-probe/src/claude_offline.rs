@@ -3131,7 +3131,7 @@ fn validate_manual_login_policy_at(
 fn verify_combined_login_inputs() -> io::Result<(
     VerifiedSupervisorInputs,
     host_login_diagnostic::VerifiedHostCommit,
-    File,
+    host_login_diagnostic::HostGuard,
 )> {
     verify_combined_login_inputs_with(|_| Ok(()))
 }
@@ -3141,7 +3141,7 @@ fn verify_combined_login_inputs_with(
 ) -> io::Result<(
     VerifiedSupervisorInputs,
     host_login_diagnostic::VerifiedHostCommit,
-    File,
+    host_login_diagnostic::HostGuard,
 )> {
     let parent = pin_login_path(
         Path::new(MANUAL_LOGIN_POLICY)

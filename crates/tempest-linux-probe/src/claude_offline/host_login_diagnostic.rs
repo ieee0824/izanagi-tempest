@@ -478,15 +478,65 @@ fn verify_receipt_from_stdio(
     )
 }
 
+pub(super) struct HostGuard {
+    _local: Option<File>,
+    _lease: Option<crate::host_channel::ReceiptLease>,
+}
+
+fn remote_client(
+    target: &str,
+    permit: u128,
+    generation: u64,
+) -> io::Result<Option<crate::host_channel::Client>> {
+    let path = Path::new("/etc/tempest/host-channel.json");
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+        Ok(_) => {}
+    }
+    let bytes = super::read_login_input(path, 4096)?;
+    let registration: crate::host_channel::ChannelRegistration =
+        serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    if registration.target_id != target
+        || registration.permit_id != format!("{permit:032x}")
+        || registration.generation != generation
+    {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let key = super::read_login_input(Path::new("/etc/tempest/host-channel-key"), 32)?
+        .try_into()
+        .map_err(|_| io::ErrorKind::InvalidData)?;
+    Ok(Some(crate::host_channel::Client { registration, key }))
+}
+
 pub(super) struct VerifiedHostCommit {
     key: [u8; 32],
     commit: Commit,
+    remote: Option<Box<std::sync::Mutex<(crate::host_channel::Client, Instant)>>>,
 }
 
 impl VerifiedHostCommit {
     /// Recheck the same authorization without holding the publication lock
     /// during child supervision.
-    pub(super) fn lock_current(&self) -> io::Result<File> {
+    pub(super) fn lock_current(&self) -> io::Result<HostGuard> {
+        if let Some(remote) = &self.remote {
+            let mut state = remote
+                .lock()
+                .map_err(|_| io::Error::other("channel state poisoned"))?;
+            let expiry = state.1;
+            if Instant::now() >= expiry {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            let lease = state
+                .0
+                .query("query", expiry)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            state.1 = lease.expires_at;
+            return Ok(HostGuard {
+                _local: None,
+                _lease: Some(lease),
+            });
+        }
         let parent = open_management_parent()?;
         let lock = lock_publication(&parent, libc::LOCK_SH)?;
         let publication = open_private_login_directory(&parent, "host-login-ledger")?;
@@ -495,7 +545,10 @@ impl VerifiedHostCommit {
         if inputs.key != self.key || read_source(&parent, &inputs)? != self.commit {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        Ok(lock)
+        Ok(HostGuard {
+            _local: Some(lock),
+            _lease: None,
+        })
     }
 }
 
@@ -504,6 +557,12 @@ pub(super) fn preflight_for_supervision(
     permit_id: u128,
     generation: u64,
 ) -> io::Result<()> {
+    if let Some(mut client) = remote_client(target_id, permit_id, generation)? {
+        client
+            .query("preflight", Instant::now() + Duration::from_secs(2))
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        return Ok(());
+    }
     let parent = open_management_parent()?;
     let _lock = lock_publication(&parent, libc::LOCK_SH)?;
     let publication = open_private_login_directory(&parent, "host-login-ledger")?;
@@ -528,7 +587,34 @@ pub(super) fn verify_for_supervision(
     permit_id: u128,
     generation: u64,
     deadline: Instant,
-) -> io::Result<(VerifiedHostCommit, File)> {
+) -> io::Result<(VerifiedHostCommit, HostGuard)> {
+    if let Some(mut client) = remote_client(target_id, permit_id, generation)? {
+        let lease = client
+            .query("consume", deadline)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let commit = Commit {
+            ledger_id: client.registration.ledger_id.clone(),
+            scope: Scope {
+                target_id: target_id.to_owned(),
+                permit_id: format!("{permit_id:032x}"),
+                generation,
+            },
+            sequence: lease.sequence,
+            state: "consumed".to_owned(),
+        };
+        let verified = VerifiedHostCommit {
+            key: client.key,
+            commit,
+            remote: Some(Box::new(std::sync::Mutex::new((client, lease.expires_at)))),
+        };
+        return Ok((
+            verified,
+            HostGuard {
+                _local: None,
+                _lease: Some(lease),
+            },
+        ));
+    }
     let parent = open_management_parent()?;
     let inputs = read_inputs(&parent)?;
     let receipt = verify_receipt_from_stdio(&inputs, deadline, true)?;
@@ -543,6 +629,7 @@ pub(super) fn verify_for_supervision(
     let verified = VerifiedHostCommit {
         key: inputs.key,
         commit: receipt,
+        remote: None,
     };
     let lock = verified.lock_current()?;
     Ok((verified, lock))

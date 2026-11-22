@@ -21,7 +21,7 @@ def canonical_json(record):
     return json.dumps(record, sort_keys=True, separators=(",", ":")).encode("ascii")
 
 
-def read_committed_snapshot(database, scope, checkpoint):
+def read_committed_snapshot(database, scope, checkpoint, allowed_states=("consumed",)):
     """Caller holds the host management lock across this read and its inputs."""
     with database.open("rb") as stream:
         header = stream.read(20)
@@ -49,7 +49,7 @@ def read_committed_snapshot(database, scope, checkpoint):
                 "target_id": target, "permit_id": permit, "generation": generation,
             }, "sequence": sequence, "state": state,
         }
-        if (state != "consumed" or record["scope"] != scope
+        if (state not in allowed_states or record["scope"] != scope
                 or sequence != checkpoint["sequence"]
                 or sha256(canonical_json(record)).hexdigest() != checkpoint["digest"]):
             raise ValueError("commit does not match the independent checkpoint")
@@ -80,7 +80,7 @@ def read_json(path):
     return json.loads(data)
 
 
-def read_management_snapshot(root):
+def read_management_snapshot(root, allowed_states=("consumed",)):
     for ancestor in reversed(root.parents):
         check_directory(ancestor)
     check_directory(root, 0o700)
@@ -108,7 +108,7 @@ def read_management_snapshot(root):
             raise ValueError("invalid checkpoint")
         database = ledger / "ledger.sqlite3"
         check_file(database)
-        return read_committed_snapshot(database, scope, checkpoint)
+        return read_committed_snapshot(database, scope, checkpoint, allowed_states)
 
 
 def main():

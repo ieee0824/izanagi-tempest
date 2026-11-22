@@ -29,7 +29,10 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
         if args[5] != "--vsock" {
             return Err("invalid transport".into());
         }
-        input = tempest_linux_probe::host_channel::exchange(&serde_json::to_vec(&request)?)?;
+        input = tempest_linux_probe::host_channel::exchange(
+            &serde_json::to_vec(&request)?,
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        )?;
         now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis()

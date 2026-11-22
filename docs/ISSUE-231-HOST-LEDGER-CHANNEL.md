@@ -91,3 +91,17 @@ sudo python3 integration/qemu_vsock_probe.py \
 現在このモードはホストが固定ダミーの commit を署名し、ゲストの Rust 診断入口が
 公開鍵・要求・期限・独立に指定した台帳 ID を検証する。実 SQLite、管理登録、
 supervisor の接続を含む試験へ拡張する必要がある。
+
+## ゲスト supervisor の設定
+
+`/etc/tempest/host-channel.json` を root 所有・0600 の単一リンク通常ファイルで配置する。
+設定には target_id、permit_id、generation、boot_id、ledger_id、minimum_sequence を記録する。
+独立に照合した32バイト公開鍵は同条件の `/etc/tempest/host-channel-key` に配置する。
+対象・許可・世代は公開ログイン設定と一致させる。設定が存在する場合、形式や対象が
+不一致なら拒否する。
+
+開始前の preflight は issued または consumed の台帳を読み取り照合する。
+開始時の verify_for_supervision はホストで consume し、その署名応答から期限を取得する。
+開始ゲートと FixtureStop の lock_current は新challengeで照会する。
+再照会の期限は保持中の単調時計期限と2秒後の早い方で、受理した sequence を下限に更新する。
+現在、この経路の実 supervisor を使った VM 間の回収試験は未完了。

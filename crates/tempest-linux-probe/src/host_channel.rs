@@ -6,11 +6,10 @@ use std::{
     io::{self, Read},
 };
 
-pub fn exchange(request: &[u8]) -> io::Result<Vec<u8>> {
+pub fn exchange(request: &[u8], deadline: std::time::Instant) -> io::Result<Vec<u8>> {
     use std::io::Write;
     use std::os::fd::{AsRawFd, FromRawFd};
-    use std::time::{Duration, Instant};
-    let deadline = Instant::now() + Duration::from_secs(2);
+    use std::time::Instant;
     let descriptor = unsafe {
         libc::socket(
             libc::AF_VSOCK,
@@ -177,7 +176,8 @@ pub fn verify_receipt(
         || !["target_id", "permit_id", "generation"]
             .iter()
             .all(|key| scope.get(*key) == request.get(*key))
-        || commit["state"] != "consumed"
+        || !(commit["state"] == "consumed"
+            || (request["operation"] == "preflight" && commit["state"] == "issued"))
         || commit["sequence"].as_u64().is_none_or(|v| v == 0)
     {
         return Err("commit mismatch".into());
@@ -300,5 +300,66 @@ mod tests {
             lease.expires_at,
             received + std::time::Duration::from_millis(500)
         );
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelRegistration {
+    pub target_id: String,
+    pub permit_id: String,
+    pub generation: u64,
+    pub boot_id: String,
+    pub ledger_id: String,
+    pub minimum_sequence: u64,
+}
+
+pub struct Client {
+    pub registration: ChannelRegistration,
+    pub key: [u8; 32],
+}
+
+impl Client {
+    pub fn query(
+        &mut self,
+        operation: &str,
+        deadline: std::time::Instant,
+    ) -> Result<ReceiptLease, Box<dyn std::error::Error>> {
+        use ring::rand::{SecureRandom, SystemRandom};
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+        if !matches!(operation, "preflight" | "query" | "consume") {
+            return Err("invalid channel operation".into());
+        }
+        let mut random = [0u8; 32];
+        SystemRandom::new()
+            .fill(&mut random)
+            .map_err(|_| "challenge randomness unavailable")?;
+        let challenge: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let request = serde_json::json!({
+            "version":1, "operation":operation, "target_id":self.registration.target_id,
+            "permit_id":self.registration.permit_id, "generation":self.registration.generation,
+            "boot_id":self.registration.boot_id, "challenge":challenge
+        });
+        let deadline = deadline.min(Instant::now() + Duration::from_secs(2));
+        let input = exchange(&serde_json::to_vec(&request)?, deadline)?;
+        let received = Instant::now();
+        let wall: u64 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_millis()
+            .try_into()?;
+        let lease = verify_lease(
+            &self.key,
+            &request,
+            &input,
+            received,
+            wall,
+            &self.registration.ledger_id,
+            self.registration.minimum_sequence,
+        )?;
+        if Instant::now() >= deadline {
+            return Err("channel verification deadline expired".into());
+        }
+        self.registration.minimum_sequence = lease.sequence;
+        Ok(lease)
     }
 }

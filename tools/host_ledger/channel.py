@@ -65,7 +65,7 @@ def validate_request(payload, registration, peer_cid):
         raise ValueError("invalid management request fields")
     if type(request["version"]) is not int or request["version"] != 1:
         raise ValueError("unsupported management request version")
-    if request["operation"] not in ("query", "consume"):
+    if request["operation"] not in ("preflight", "query", "consume"):
         raise ValueError("invalid management operation")
     for field in ("target_id", "boot_id"):
         value = request[field]
@@ -170,7 +170,7 @@ def serve_query(connection, peer_cid, registration, management, signer, deadline
             if registration["expires_unix_ms"] <= time.time_ns() // 1_000_000:
                 raise ValueError("host registration expired")
             advance(management, "consume", expected_scope=expected, deadline=deadline)
-        commit = read_management_snapshot(management)
+        commit = read_management_snapshot(management, allowed_states=("issued", "consumed")) if request["operation"] == "preflight" else read_management_snapshot(management)
         if commit["scope"] != expected:
             raise ValueError("host ledger scope mismatch")
         # A consumed record is necessary, while a separately approved expiry
@@ -220,7 +220,7 @@ def verify_response(payload, request, public_key, now_unix_ms):
     if not isinstance(commit, dict) or set(commit) != {"ledger_id", "scope", "sequence", "state"}:
         raise ValueError("invalid management commit")
     expected = {key: request[key] for key in ("target_id", "permit_id", "generation")}
-    if (commit["scope"] != expected or commit["state"] != "consumed"
+    if (commit["scope"] != expected or commit["state"] not in (("issued", "consumed") if request["operation"] == "preflight" else ("consumed",))
             or type(commit["sequence"]) is not int or commit["sequence"] <= 0
             or not isinstance(commit["ledger_id"], str)
             or not IDENTIFIER.fullmatch(commit["ledger_id"])):
