@@ -191,10 +191,11 @@ def probe(context):
 
 def guest():
     from channel import query_host
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     for index,mode in enumerate(('revoked','response-lost')):
         scope=dict(target_id='egress-vm',permit_id=f'{100+index:032x}',generation=1)
         reply=control_request(dict(operation='prepare',scope=scope,boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),expires_unix_ms=int((time.time()+25)*1000)))
-        key=bytes.fromhex(reply['key'])
+        key=Ed25519PublicKey.from_public_bytes(bytes.fromhex(reply['key']))
         config=Path('/run/tempest-egress-fixture.json'); config.write_text(json.dumps(reply));config.chmod(0o600)
         stopfile=Path('/run/tempest-egress-stop');stopfile.unlink(missing_ok=True)
         query_host(scope,reply['registration']['boot_id'],key,'consume',time.monotonic()+2)
