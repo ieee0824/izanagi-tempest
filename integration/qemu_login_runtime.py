@@ -25,8 +25,8 @@ def main():
         raise RuntimeError("dedicated non-login KVM user required")
     with tempfile.TemporaryDirectory(prefix='tempest-login-boot-', dir='/var/lib') as temporary:
         root = Path(temporary)
-        root.chmod(0o750)
-        os.chown(root, 0, user.pw_gid)
+        root.chmod(0o755)
+        os.chown(root, 0, 0)
         run = root / "qemu-run"
         run.mkdir(mode=0o700)
         os.chown(run, user.pw_uid, user.pw_gid)
