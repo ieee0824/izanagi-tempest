@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--kernel', required=True, type=Path)
     parser.add_argument('--kernel-release', required=True)
     parser.add_argument("--native-verifier", type=Path)
-    parser.add_argument("--stop-mode", choices=("revoke", "disconnect", "silence", "renew"), default="revoke")
+    parser.add_argument("--stop-mode", choices=("revoke", "disconnect", "silence", "renew", "late-receipt"), default="revoke")
     parser.add_argument("--supervisor-test", action="store_true")
     parser.add_argument("--managed-ledger", action="store_true")
     args = parser.parse_args()
@@ -83,6 +83,7 @@ def main():
                 (config / 'host-channel-key').write_bytes((guest / 'key').read_bytes())
                 for entry in config.iterdir():
                     entry.chmod(0o600)
+                (guest / 'expected-queries').write_text('6' if args.stop_mode == 'renew' else '3')
                 init += '/bin/verify --ignored --exact claude_offline::tests::remote_channel_stops_and_reaps_dummy_namespace --nocapture\n/bin/busybox poweroff -f\n'
             else:
                 init += '/bin/verify /key /request 0 fixture --vsock\necho NATIVE_RECEIPT_OK\n/bin/busybox poweroff -f\n'
@@ -151,14 +152,40 @@ def main():
                             if args.supervisor_test:
                                 print('accepted preflight from actual guest CID', peer[0], flush=True)
                                 phases = ['consume'] + ['query'] * (6 if args.stop_mode == 'renew' else 3) + ['stop']
-                                for phase in phases:
+                                for phase_index, phase in enumerate(phases):
                                     next_connection, next_peer = listener.accept()
                                     with next_connection:
                                         if phase == 'query' and args.stop_mode == 'renew':
                                             time.sleep(0.4)
+                                        if args.stop_mode == 'late-receipt' and phase_index == 3:
+                                            time.sleep(0.6)
                                         if phase == 'stop':
                                             fault_at = time.monotonic()
                                             print('injected', args.stop_mode, 'after normal queries', flush=True)
+                                            if args.stop_mode == 'late-receipt':
+                                                # Generate a valid fresh signed response while the VM is live,
+                                                # then deliver after the previous lease but before this
+                                                # response's own two-second lifetime ends.
+                                                from channel import read_frame, REQUEST_LIMIT, RESPONSE_LIMIT
+                                                raw = read_frame(next_connection, REQUEST_LIMIT, time.monotonic()+2)
+                                                upstream, downstream = socket.socketpair()
+                                                with upstream, downstream:
+                                                    upstream.sendall(raw + b'\n')
+                                                    serve_query(downstream, next_peer[0], registration,
+                                                                management, signer, time.monotonic()+2)
+                                                    receipt = read_frame(upstream, RESPONSE_LIMIT, time.monotonic()+2)
+                                                envelope = json.loads(receipt)
+                                                signer.public_key().verify(bytes.fromhex(envelope['signature']),
+                                                    RECEIPT_DOMAIN + canonical_json(envelope['payload']))
+                                                time.sleep(1.6)
+                                                if time.time_ns()//1_000_000 >= envelope['payload']['expires_unix_ms']:
+                                                    raise RuntimeError('late receipt expired independently; invalid control')
+                                                try:
+                                                    next_connection.sendall(receipt + b'\n')
+                                                except (BrokenPipeError, ConnectionResetError):
+                                                    pass
+                                                print('late valid receipt withheld beyond prior lease', flush=True)
+                                                break
                                             if args.stop_mode == 'disconnect':
                                                 break
                                             if args.stop_mode == 'silence':

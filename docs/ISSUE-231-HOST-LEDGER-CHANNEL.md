@@ -149,7 +149,7 @@ sudo python3 integration/qemu_vsock_probe.py \
 で sleep と TCP 待受けを起動する。IPv4/IPv6 両方の表で待受けと子の生存を確認し、
 正常な query を3回以上受理してから停止を注入する。
 
-`--stop-mode revoke|disconnect|silence|renew` を指定できる。renew は6回の更新に
+`--stop-mode revoke|disconnect|silence|renew|late-receipt` を指定できる。renew は6回の更新に
 各400 msの遅延を入れ、初回2秒 lease を超えて正常更新できることを確認してから revoke する。
 各ケースは AdministratorStop、namespace_reaped、記録した全子 PID の消滅、
 保持した network namespace 内の待受け消滅を確認する。fork 子の panic は専用 hook で
@@ -157,5 +157,12 @@ exit 101 とし、親が非0終了を検出する。意図的 panic の対照試
 
 無応答ケースのホスト側 fault_to_vm_exit_seconds は、ホストが意図的に2.5秒待つ時間を
 含む上限値であり、正確なゲストの停止遅延ではない。ゲストは elapsed_ms と
-accepted_queries を別に記録する。TLS ゲートウェイそのものの回収、旧 lease 期限を
-またぐ応答、別 VM/旧 boot の実 VM 拒否は引き続き未完了。
+accepted_queries を別に記録する。TLS ゲートウェイそのものの回収、別 VM/旧 boot の実 VM 拒否は引き続き未完了。
+
+`late-receipt` は最後の正常応答を600 ms遅延させ、旧 lease の残存期間を減らす。
+次の問い合わせには、生存中の実 QEMU と台帳を確認して正しく署名した応答を生成し、
+1600 ms 保持する。署名応答自体の期限がまだ有効であることをホストで照合してから
+送信する。ゲストは旧 lease の期限で停止し、正常受理回数が厳密に3回であることを
+確認する。実測ではゲスト全体2077 ms、正常3回、子 PID/ソケット回収を確認した。
+この試験は旧 lease をまたぐ受信を扱い、検証処理そのものの途中で期限を超える
+ケースは別途必要である。

@@ -5710,7 +5710,12 @@ wait"#,
             accepted.get()
         );
         assert!(reaped);
-        assert!(accepted.get() >= 3);
+        let expected: u32 = fs::read_to_string("/expected-queries")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(expected >= 3);
+        assert_eq!(accepted.get(), expected);
         assert!(Path::new("/tempest-dummy-ready").exists());
         let children = fs::read_to_string("/tempest-dummy-children").unwrap();
         assert!(children.split_whitespace().count() >= 2);
