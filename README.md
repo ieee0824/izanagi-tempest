@@ -79,6 +79,9 @@ VM の `--guest-probe`・`--guest-file`・`--agent-probe` と固定バイナリ�
 
 ## 開発: Linux direct 方式の隔離調査（Issue #36、WIP）
 
+承認済みvsock中継のホスト実装とローカル試験・起動境界は
+[ホスト中継の実装状況](docs/ISSUE-36-HOST-EGRESS.md)を参照してください。実VM受入・配備は進行中です。
+
 dummy HOME・連続2 runのcheckpointは`71ab7a4`で実測済みです。両run各21checkがtrue、
 最終ROOT/RUNは不在、guardianは正常終了・reap済みでした。全体statusは`incomplete`です。
 実HOME・Claude設定探索・本番実行許可へは拡張しません。
