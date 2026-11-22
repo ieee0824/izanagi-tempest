@@ -59,9 +59,24 @@ class GenerationTests(unittest.TestCase):
         result = verify_inputs(*self.fixture())
         self.assertEqual(result.addresses, ('127.0.0.1',))
         self.assertEqual(result.approved_ips_revision, 1)
-        self.assertEqual(result.expires_unix_ms, 125000)
+        self.assertEqual(result.operation_expires_unix_ms, 140000)
+        self.assertEqual(result.revocation_expires_unix_ms, 125000)
         self.assertEqual(result.revocation_revision, 2)
         self.assertEqual(result.route()['manifest_sha256'], result.manifest_sha256)
+
+    def test_five_minute_operation_does_not_extend_thirty_second_freshness(self):
+        self.policy['permit']['expires_unix_seconds'] = 400
+        self.handoff['expires_unix_seconds'] = 400
+        result = verify_inputs(*self.fixture())
+        self.assertEqual(result.operation_expires_unix_ms, 400000)
+        self.assertEqual(result.revocation_expires_unix_ms, 125000)
+        self.policy['permit']['expires_unix_seconds'] = 401
+        with self.assertRaises(ValueError):
+            verify_inputs(*self.fixture())
+        self.policy['permit']['expires_unix_seconds'] = 400
+        self.revocation['expires_unix_seconds'] = 131
+        with self.assertRaises(ValueError):
+            verify_inputs(*self.fixture())
 
     def test_hash_and_independent_trust_cannot_be_replaced_by_published_data(self):
         for index, value in [(0, b'{}'), (1, b'{"revision":2,"manifest_sha256":"bad"}'),

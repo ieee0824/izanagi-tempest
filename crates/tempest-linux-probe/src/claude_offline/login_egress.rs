@@ -519,6 +519,55 @@ mod tests {
             Arc,
             atomic::{AtomicBool, Ordering},
         };
+        let started = Instant::now();
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let remaining = context["operation_expires_unix_ms"]
+            .as_u64()
+            .unwrap()
+            .checked_sub(wall)
+            .unwrap();
+        assert!((1..=300000).contains(&remaining));
+        let operation_deadline = started + Duration::from_millis(remaining);
+        let root = super::super::pin_login_path(
+            std::path::Path::new(context["source_root"].as_str().unwrap()),
+            libc::O_DIRECTORY,
+        )
+        .unwrap();
+        let authority =
+            super::super::open_private_login_directory(&root, "claude-login-authority").unwrap();
+        let publication =
+            super::super::open_private_login_directory(&root, "claude-login-publication").unwrap();
+        let publication_lock = super::super::open_pinned_login_policy(
+            super::super::open_login_child(&publication, std::ffi::OsStr::new("lock"), 0).unwrap(),
+        )
+        .unwrap();
+        let scope = &context["request"]["scope"];
+        let generation = scope["generation"].as_u64().unwrap();
+        let manifest = context["request"]["manifest_sha256"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let permit = u128::from_str_radix(scope["permit_id"].as_str().unwrap(), 16).unwrap();
+        let target = scope["target_id"].as_str().unwrap().to_owned();
+        let initial = super::super::verify_login_revocation_snapshot_with(
+            &authority, generation, &manifest, permit, &target, true,
+        )
+        .unwrap();
+        let revocation = super::super::ScopedLoginRevocation {
+            freshness: Arc::new(
+                super::super::revocation_freshness::Freshness::new(initial, operation_deadline)
+                    .unwrap(),
+            ),
+            publication_lock,
+            authority,
+            generation,
+            manifest_sha256: manifest,
+            permit_id: permit,
+            target_id: target,
+        };
         let mut control = crate::host_channel::Client {
             registration: serde_json::from_value(context["registration"].clone()).unwrap(),
             key: route.key,
@@ -547,8 +596,9 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         println!("VSOCK_GATEWAY_READY");
         route
-            .serve(&listener, Instant::now() + Duration::from_secs(25), &|| {
+            .serve(&listener, operation_deadline, &|| {
                 stopped.load(Ordering::Acquire)
+                    || revocation.deadline(false).is_err()
                     || std::path::Path::new("/run/tempest-egress-stop").exists()
             })
             .unwrap();

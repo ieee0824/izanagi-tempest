@@ -516,7 +516,7 @@ struct SharedLeaseData {
     stopped: std::sync::atomic::AtomicBool,
 }
 
-struct SharedLease(*mut SharedLeaseData);
+pub(super) struct SharedLease(*mut SharedLeaseData);
 // Only atomics are accessed through the shared mapping; its lifetime is owned.
 unsafe impl Send for SharedLease {}
 unsafe impl Sync for SharedLease {}
@@ -534,7 +534,7 @@ fn monotonic_ns() -> io::Result<u64> {
 }
 
 impl SharedLease {
-    fn new(lease: &crate::host_channel::ReceiptLease) -> io::Result<Self> {
+    pub(super) fn new(lease: &crate::host_channel::ReceiptLease) -> io::Result<Self> {
         let pointer = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -559,7 +559,7 @@ impl SharedLease {
         shared.publish(lease)?;
         Ok(shared)
     }
-    fn publish(&self, lease: &crate::host_channel::ReceiptLease) -> io::Result<()> {
+    pub(super) fn publish(&self, lease: &crate::host_channel::ReceiptLease) -> io::Result<()> {
         use std::sync::atomic::Ordering;
         let now_ns = monotonic_ns()?;
         let remaining = lease.expires_at.saturating_duration_since(Instant::now());
@@ -567,6 +567,11 @@ impl SharedLease {
             .checked_add(remaining.as_nanos().try_into().map_err(io::Error::other)?)
             .ok_or(io::ErrorKind::InvalidData)?;
         let data = unsafe { &*self.0 };
+        let previous = data.expires_ns.load(Ordering::Acquire);
+        if previous != 0 && now_ns >= previous {
+            self.stop();
+            return Err(io::ErrorKind::TimedOut.into());
+        }
         if data.stopped.load(Ordering::Acquire) {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -574,12 +579,12 @@ impl SharedLease {
         data.expires_ns.store(expires, Ordering::Release);
         Ok(())
     }
-    fn stop(&self) {
+    pub(super) fn stop(&self) {
         unsafe { &*self.0 }
             .stopped
             .store(true, std::sync::atomic::Ordering::Release);
     }
-    fn current(&self) -> io::Result<crate::host_channel::ReceiptLease> {
+    pub(super) fn current(&self) -> io::Result<crate::host_channel::ReceiptLease> {
         use std::sync::atomic::Ordering;
         let data = unsafe { &*self.0 };
         let started = Instant::now();

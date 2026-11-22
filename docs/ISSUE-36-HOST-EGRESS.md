@@ -38,6 +38,27 @@ QMP peer、QEMU lifetime/CID、台帳/checkpoint、世代変更、失効、期�
 検査する。更新失敗は同一実行を不可逆stopにする。監視処理はcontrol leaseを更新しない。
 control署名応答を正常送信した後だけ、host受理時の単調時計を起点に最長2秒更新する。
 
+## 操作期限と更新される鮮度
+
+本人の操作hard capは300秒。通信承認、permit、handoff、公開世代の最早期限でさらにcapし、
+初回revocationの30秒期限を操作全体の期限へ混ぜない。control leaseは最長2秒のまま。
+revocation署名の各状態は最長30秒で、親だけがより大きなrevisionを検証して共有leaseを更新する。
+同revisionの再読で単調時計期限を延長せず、旧期限を越えた後の新署名でも復活しない。
+
+`refresh_revocation.py`はhostで署名し、host/guestそれぞれのroot原本へ公開する共通処理を提供する。
+秘密鍵はhostだけに保持し、guestへ配送するのは署名済みbytesのみ。操作期限は最初に単調時計へ
+固定し、updaterも期限で停止する。配送の上限は旧鮮度/操作期限/10秒の最早値である。
+これは管理側の原本配送であり、control/data handshakeの2秒期限を変更しない。
+
+正常refreshは新しいstate/signature/commit/floorをstageしてからpublication EX lockで切り替える。
+runtime readerがSHを取れない間は既存の未失効leaseだけを参照し、延長はしない。
+pending marker、署名不正、rollback、期限切れは引き続き不可逆stop。
+初回preflightはbusyでも拒否する。部分更新や配送失敗では不確定markerを残して隔離する。
+
+この分離とpublisherはローカル試験とNICなしVMで受入済み。実VMではvsockの試験carrierで
+署名状態を配送し、本番と同じguest固定root入口へ渡した。本番SSH carrierの対象VM実測は
+再配置時に行う。下の053cab8系の初回証拠と、後述の操作期限分離後の証拠を区別する。
+
 ## guestの鍵とtransport
 
 guestのready検証は、既存root原本`/etc/tempest/host-channel-key`を使う。
@@ -58,10 +79,11 @@ Python 3.11以降と`image/requirements.txt`の依存を使う。
 python3 -m unittest discover -s tests -p 'test_egress*.py' -v
 python3 -m unittest discover -s tests -p test_host_ledger_channel.py -v
 sudo python3 -m unittest discover -s tests -p test_egress_generation.py -v
+sudo python3 -m unittest discover -s tests -p test_egress_refresh.py -v
 ```
 
 最後のコマンドは`/run`内の一時dummy原本だけでroot metadataを検証し、終了時に削除する。
-通常実行ではその1件をskipする。試験はloopback/socketpairのみで、実credentialは使わない。
+通常実行ではgenerationの1件とpublisherの3件のroot試験をskipする。試験はloopback/socketpairのみで、実credentialは使わない。
 署名/独立承認/世代/失効の拒否、readyのchallenge/実peer/期限、binary双方向転送、
 失効/片方向EOF/backpressure時の両端閉鎖、data4枠飽和時のcontrol独立性を確認する。
 root metadata試験はpending marker、非private mode、symlinkの拒否も確認する。
@@ -116,9 +138,57 @@ libtestのhash付きpathはtoolchainで変わるため、最初のcommandの出�
 実VMでの全data slot占有は行っていない。5本目data拒否とcontrol独立性は既存ローカル試験の範囲。
 新経路のactual distribution入口による本人login、実credential、実認証先への接続は未実施。
 
+## 操作期限分離後の実VM受入（2026-11-22）
+
+source `8041852`、Rust libtest source `407769d`、session26352終了code0。
+専用non-login KVM user、kernel6.8.0-149、NICなし、readonly9p、host loopback dummy TLS。
+試験専用VMの壁時計だけをhostへ合わせた。owner VMの時刻は変更していない。
+
+- 本番と同じguest `--publish-stdin`入口でboot、署名、scope、revision、digest ACKを検証した。
+  初回source公開と定期状態の配送には試験vsock RPCを用い、秘密seedはhostに残した。
+  native `ScopedLoginRevocation`の親更新と共有leaseも実経路へ接続した。
+- freshness-lost: 設定operation cap90秒で、35秒時点までTLS生存、署名配送4回、control query165回。
+  更新を止めた後24851msで両TLS端を閉鎖。queryは280回まで継続しており、
+  control更新の停止ではなく最後のsigned freshnessの終了で回収した。operation期限90秒より早い。
+- operation-deadline: **試験用のoperation期限は50秒**。35秒時点まで生存・配送4回。
+  その後も更新を続けたが、設定期限に到達して閉鎖した（35秒確認後13976ms、最終配送5回/query229回）。
+  本番上限300秒の端点はローカル境界試験とvalidatorの静的確認による。300秒待つ実VM試験とは扱わない。
+- revoked149ms、response-lost200msでも両TLS端close。各run consume1、正常TCP/TLS accept1、TLS close1。
+  拒否CONNECTの直後は上流TCP accept0をassertした。
+- 同じVMで実manual-childのUID999/AF_VSOCK EPERM/namespace_reapedを確認。
+  gateway正常終了、host worker/updater join、VM poweroff、export削除、待受け不在を確認した。
+
+log `/var/tmp/tempest-operation-vm-8041852.log` SHA256:
+`4ac7c1464356b84aea12a4004d432c4e9d4ba05fa3640c177679b65b8998efae`。
+libtest SHA256: `a093afbcf9387769519b857270b0ef72a0f53fe7398f187368264d7aaf05a698`。
+
+全Python243件中239成功/root4skip、root publisher9件成功。
+workspace cargo test、workspace build、fixture featureを含む全target clippy、fmtが成功。
+再現は前節と同じ`--egress-fixture`コマンドを用い、sourceとlibtestを今回のものへ置き換える。
+
+## 本番の失効状態配送
+
+hostは`refresh_revocation.py --run-login-vm-updater`をrootで実行する。
+独立した`host-login-signer/revocation-seed`を使い、対応public keyとの一致を確認する。
+ownerが保持を指示した管理SSH鍵を、署名済み公開状態の固定配送に限って使用する。
+秘密署名鍵、CLI credential、TLS payloadはguestへの配送・ログ出力へ含めない。
+
+SSHは固定先`tempest@127.0.0.1:22333`、固定管理鍵とknown_hosts、agentなし、転送なし。
+remote commandは固定`sudo -n /usr/bin/python3 -B /usr/local/lib/tempest-login-host-ledger/refresh_revocation.py --publish-stdin`。
+受信側のsourceは固定`/etc/tempest`。stdinからpathやscopeを選択させず、root登録と実bootを照合する。
+受信済みの同一bytesの再送はファイルを再公開せず同じACKを返し、leaseも延長しない。
+
 ## 残る配置チェック
 
-マージ済み成果物のentry/host relay、root原本と独立鍵、owner VMのQEMU lifetime/CIDを
+マージ済み成果物のentry/host relay/publisher、root原本と独立鍵、owner VMのQEMU lifetime/CIDを
 再照合して配備する。固定CLIや全世代の監督・回収契約は既存入口のものを維持する。
+
+- 本番SSH carrierでdummy署名状態を1回配送し、正確なACKまで対象VMで確認する。
+  実permitの発行/消費、実認証先への接続は行わず、dummy sourceは確認後に回収する。
+- 本番管理設定で操作上限300秒を静的に照合する。初回30秒freshnessを操作期限へ混ぜない。
+- 本人の開始合図より前に、期限付きの通信/単回許可原本を発行しない。
+  開始直前に実承認2件の確定bytesからapproval_pair digestを計算しhandoffへ固定する。
+
 新経路のdummy transport試験を、実Claude loginや全manual supervisorの再受入へ拡張しては扱わない。
-ホスト原本の生成・公開・配備手順も最終成果物と照合する。本人login担当はownerのままである。
+本人への案内には起動command、発行後の実際の残秒（最大5分）、開始合図、停止方法を含める。
+本人login担当はownerのままである。

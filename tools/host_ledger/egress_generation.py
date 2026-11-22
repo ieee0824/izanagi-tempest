@@ -70,13 +70,15 @@ class ApprovedGeneration:
     manifest_sha256: str
     approved_ips_revision: int
     addresses: tuple
-    expires_unix_ms: int
+    operation_expires_unix_ms: int
     revocation_revision: int
+    revocation_expires_unix_ms: int
+    revocation_state_sha256: str
 
     def route(self):
         return dict(manifest_sha256=self.manifest_sha256,
                     approved_ips_revision=self.approved_ips_revision,
-                    addresses=list(self.addresses), expires_unix_ms=self.expires_unix_ms)
+                    addresses=list(self.addresses), expires_unix_ms=self.operation_expires_unix_ms)
 
 
 def verify_inputs(manifest, approved, inputs, trust_key, registration,
@@ -106,7 +108,7 @@ def verify_inputs(manifest, approved, inputs, trust_key, registration,
             or permit['approved_ips_revision'] != ips['revision']
             or not isinstance(ips['addresses'], list) or not ips['addresses']
             or not positive(permit['expires_unix_seconds'])
-            or not now_unix_ms < permit['expires_unix_seconds'] * 1000 <= now_unix_ms + 60000):
+            or not now_unix_ms < permit['expires_unix_seconds'] * 1000 <= now_unix_ms + 300000):
         raise ValueError('invalid scoped login policy')
     addresses = []
     for value in ips['addresses']:
@@ -143,11 +145,12 @@ def verify_inputs(manifest, approved, inputs, trust_key, registration,
             or not 0 < state['expires_unix_seconds'] - state['issued_unix_seconds'] <= 30
             or state['expires_unix_seconds'] * 1000 <= now_unix_ms):
         raise ValueError('published revocation state refused')
-    expires = 1000 * min(permit['expires_unix_seconds'], handoff['expires_unix_seconds'], state['expires_unix_seconds'])
-    return ApprovedGeneration(digest, ips['revision'], tuple(addresses), expires, state['revocation_revision'])
+    expires = 1000 * min(permit['expires_unix_seconds'], handoff['expires_unix_seconds'])
+    return ApprovedGeneration(digest, ips['revision'], tuple(addresses), expires, state['revocation_revision'],
+                              state['expires_unix_seconds'] * 1000, sha256(revocation_payload).hexdigest())
 
 
-def read_generation(root, registration, now_unix_ms):
+def read_generation(root, registration, now_unix_ms, *, defer_busy=False):
     """All source files are host root originals; hold no lock during relay I/O."""
     for ancestor in reversed(root.parents):
         check_directory(ancestor)
@@ -158,8 +161,17 @@ def read_generation(root, registration, now_unix_ms):
     check_directory(publication, 0o700)
     lock = publication / 'lock'
     check_file(lock)
+    no_pending(publication / 'pending')
+    no_pending(authority / 'revocation-pending')
     with lock.open('rb') as held:
-        fcntl.flock(held, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(held, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            no_pending(publication / 'pending')
+            no_pending(authority / 'revocation-pending')
+            if defer_busy:
+                return None
+            raise
         no_pending(publication / 'pending')
         no_pending(authority / 'revocation-pending')
         current = revision(publication / 'current')

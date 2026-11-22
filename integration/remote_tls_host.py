@@ -61,7 +61,7 @@ class HostController:
     def prepare(self, value):
         scope = value['scope']
         expires = value['expires_unix_ms']
-        if set(scope) != {'target_id', 'permit_id', 'generation'} or not time.time_ns()//1_000_000 < expires < time.time_ns()//1_000_000 + 60000:
+        if set(scope) != {'target_id', 'permit_id', 'generation'} or not time.time_ns()//1_000_000 < expires < time.time_ns()//1_000_000 + getattr(self, "maximum_window_ms", 60000):
             raise ValueError('invalid dummy scope or lifetime')
         stat = Path(f'/proc/{self.vm.pid}/stat').read_text()
         ticks = int(stat[stat.rindex(')')+2:].split()[19])
@@ -116,6 +116,8 @@ class HostController:
                             reply = dict(counts=self.counts)
                         elif operation == 'stats':
                             reply = dict(counts=self.counts)
+                        elif hasattr(self, 'extra_control'):
+                            reply = self.extra_control(value)
                         else:
                             raise ValueError('unknown dummy operation')
                     write_frame(connection, canonical_json(reply), 4096, time.monotonic()+5)
