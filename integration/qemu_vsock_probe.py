@@ -3,6 +3,7 @@
 import argparse
 import gzip
 import json
+import os
 import sys
 import time
 import hashlib
@@ -23,6 +24,7 @@ def main():
     parser.add_argument("--supervisor-test", action="store_true")
     parser.add_argument("--caller-deadline-test", action="store_true")
     parser.add_argument("--peer-lifecycle-test", action="store_true")
+    parser.add_argument("--restart-lifecycle-test", action="store_true")
     parser.add_argument("--managed-ledger", action="store_true")
     args = parser.parse_args()
     if args.managed_ledger and args.native_verifier is None:
@@ -31,6 +33,8 @@ def main():
         parser.error("--caller-deadline-test requires --managed-ledger --supervisor-test")
     if args.peer_lifecycle_test and (not args.managed_ledger or args.supervisor_test):
         parser.error("--peer-lifecycle-test requires --managed-ledger without --supervisor-test")
+    if args.restart_lifecycle_test and (not args.managed_ledger or args.supervisor_test):
+        parser.error("--restart-lifecycle-test requires --managed-ledger without --supervisor-test")
     native = args.native_verifier is not None
     with tempfile.TemporaryDirectory(prefix='tempest-vsock-', dir='/var/lib' if args.managed_ledger else None) as temporary:
         root = Path(temporary)
@@ -119,6 +123,7 @@ def main():
                     '-device', 'vhost-vsock-pci,id=ledger,guest-cid=232'],
                     stdout=log, stderr=subprocess.STDOUT)
                 second_vm = None
+                restarted_vm = None
                 second_connection = None
                 try:
                     if args.peer_lifecycle_test:
@@ -203,7 +208,6 @@ def main():
                                 second_ticks = int(second_stat[second_stat.rindex(')')+2:].split()[19])
                                 second_registration = dict(registration, cid=233, qemu_pid=second_vm.pid,
                                     qemu_start_ticks=second_ticks, qmp_socket=str(root / 'qmp2.sock'))
-                                import os
                                 for instance in (registration, second_registration):
                                     os.close(require_live_instance(instance, time.monotonic()+2))
                                 # Replay the real second VM's frame into the handler only after
@@ -303,7 +307,6 @@ def main():
                                                         raise
                                                     print('independent QMP CID rejection:', error, flush=True)
                                                 else:
-                                                    import os
                                                     os.close(descriptor)
                                                     raise RuntimeError('wrong QMP CID accepted')
                                                 break
@@ -362,7 +365,6 @@ def main():
                             if error.errno != errno.ESRCH:
                                 raise
                         else:
-                            import os
                             os.close(descriptor)
                             raise RuntimeError('exited QEMU registration accepted')
                         stale_request = dict(request)
@@ -390,6 +392,59 @@ def main():
                             if upstream.recv(1) != b'' or spy.calls != 0:
                                 raise RuntimeError('exited QEMU received a signed response')
                         print('reaped QEMU registration refused before signing (ESRCH)', flush=True)
+                    if args.restart_lifecycle_test:
+                        # Rebuild only the public request with a new boot identity.
+                        next_request = dict(request, boot_id='boot2')
+                        (guest / 'request').write_bytes(canonical_json(next_request))
+                        archive = subprocess.check_output(['cpio', '-o', '-H', 'newc', '--quiet'],
+                            cwd=guest, input=('\n'.join(names) + '\n').encode())
+                        image.write_bytes(gzip.compress(archive))
+                        restart_command = list(vm.args)
+                        restart_command[restart_command.index('-qmp')+1] = (
+                            'unix:' + str(root / 'qmp-restart.sock') + ',server=on,wait=off')
+                        restarted_vm = subprocess.Popen(restart_command, stdout=log, stderr=subprocess.STDOUT)
+                        fresh_connection, fresh_peer = listener.accept()
+                        with fresh_connection:
+                            from channel import read_frame, REQUEST_LIMIT
+                            raw = read_frame(fresh_connection, REQUEST_LIMIT, time.monotonic()+2)
+                            if fresh_peer[0] != registration['cid'] or json.loads(raw) != next_request:
+                                raise RuntimeError('restart did not reuse CID with a new boot identity')
+                            spy = SigningSpy()
+                            upstream, downstream = socket.socketpair()
+                            with upstream:
+                                upstream.sendall(raw + b'\n')
+                                with downstream:
+                                    try:
+                                        serve_query(downstream, fresh_peer[0], registration,
+                                                    management, spy, time.monotonic()+2)
+                                    except ValueError as error:
+                                        if str(error) != 'management identity mismatch':
+                                            raise
+                                    else:
+                                        raise RuntimeError('new boot accepted under old registration')
+                                if upstream.recv(1) != b'' or spy.calls != 0:
+                                    raise RuntimeError('old boot registration signed a new boot response')
+                            stat = Path(f'/proc/{restarted_vm.pid}/stat').read_text()
+                            ticks = int(stat[stat.rindex(')')+2:].split()[19])
+                            fresh_registration = dict(registration, boot_id='boot2',
+                                qemu_pid=restarted_vm.pid, qemu_start_ticks=ticks,
+                                qmp_socket=str(root / 'qmp-restart.sock'),
+                                expires_unix_ms=time.time_ns()//1_000_000+10000)
+                            approval.update(boot_id='boot2', **{name: fresh_registration['expires_unix_ms']
+                                for name in ('communication_expires_unix_ms', 'permit_expires_unix_ms',
+                                             'generation_expires_unix_ms')})
+                            path.write_bytes(canonical_json(approval))
+                            os.close(require_live_instance(fresh_registration, time.monotonic()+2))
+                            upstream, downstream = socket.socketpair()
+                            with upstream, downstream:
+                                upstream.sendall(raw + b'\n')
+                                serve_query(downstream, fresh_peer[0], fresh_registration,
+                                            management, signer, time.monotonic()+2)
+                                response = read_frame(upstream, 4096, time.monotonic()+2)
+                            fresh_connection.sendall(response + b'\n')
+                        if restarted_vm.wait(timeout=20) != 0:
+                            raise RuntimeError('new boot failed under fresh registration')
+                        print('same CID new QEMU boot2 refused old registration; fresh registration succeeded', flush=True)
                     if args.supervisor_test:
                         print("fault_to_vm_exit_seconds", round(time.monotonic() - fault_at, 3), flush=True)
                 except Exception:
@@ -397,6 +452,9 @@ def main():
                     print((root / 'serial.log').read_text(errors='replace')[-6000:])
                     raise
                 finally:
+                    if restarted_vm is not None and restarted_vm.poll() is None:
+                        restarted_vm.kill()
+                        restarted_vm.wait()
                     if second_connection is not None:
                         second_connection.close()
                     if second_vm is not None and second_vm.poll() is None:

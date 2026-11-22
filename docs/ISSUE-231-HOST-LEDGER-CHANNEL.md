@@ -209,3 +209,14 @@ peer mismatch、署名0回、空応答となる。各 VM は別々の PID/start 
 試験は実ソケットから取得したフレームと peer CID を保持し、拒否確認と正しい登録での
 確認を行うため、ハンドラへの再投入に socketpair を用いる。broker の accept 経路と
 接続枯渇制御の試験は別である。同じ CID の再起動持ち越しと PID 再利用も未完了。
+
+`--managed-ledger --restart-lifecycle-test` は、最初の実 QEMU の正常終了・回収と
+旧登録の ESRCH 拒否を確認した後、公開 request の boot_id を boot2 に変更して
+同じ CID 232 の新しい QEMU を起動する。新 VM の実要求を旧登録で処理すると
+identity mismatch、署名0回、空応答になる。新しい PID/start ticks/QMP socket と
+boot2 を登録し、独立承認も更新すると、同じ台帳を使った署名応答を新 VM の native
+verifier が検証して正常終了することを確認した。
+
+これはゲスト OS 内の reboot コマンドではなく、QEMU プロセスを終了して新規起動する
+ライフサイクル境界の試験である。boot_id はホストが登録する公開世代識別子を使う。
+カーネルの boot UUID 自動取得や PID 再利用を強制する試験は含まない。
