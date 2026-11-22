@@ -1,7 +1,7 @@
-# #36 ログイン VM の vsock 付き再起動手順案
+# #36 ログイン VM の vsock 付き再起動手順と結果
 
-この手順は実行前の案であり、現在の owner SSH を切断する時刻を調整してから実施する。
-#232 のマージ済み SHA と最終配置チェックを照合するまでは、実ログインを開始しない。
+2026-11-22、ownerの任意時刻での再起動とログイン以外の準備委任（#18284/#18285）に基づき実施した。
+実ログインは未実施。以下の手順と末尾の実行結果を分けて参照する。
 
 ## 確認済み状態（2026-11-22 UTC）
 
@@ -19,7 +19,7 @@
 入口は3631736 bytes、SHA256は
 f687897685483c780577ae0caaeac58658469c0b8c310342d9bf02b8df0b0a30。
 旧b52d363成果物にはCLIのvsock拒否がないため配備せず、旧manifestもsupersededへ更新した。
-root0555でホストに準備済みだが、guestへの配置・サービス起動はまだ行っていない。
+root0555でホストに準備済みだが、新入口のguest配置・認可/relayサービス起動はまだ行っていない。
 同じSHAのbroker一式とroot0600のartifact記録も準備した。
 
 専用userの実KVM証拠は[最小VM実測](LINUX_KVM_ARTIFACT.md)と
@@ -28,11 +28,12 @@ root0555でホストに準備済みだが、guestへの配置・サービス起�
 
 ## 切断前に揃えるもの
 
-1. coder が #232 のマージ SHA と #36 最終配置チェックを確認する。
+1. coder が #232/#234 のマージ SHA と #36 最終配置チェックを確認する。
 2. owner が接続中の VM で、一時管理鍵だけを新しい短い期限へ更新する。
    公開鍵はホストの既存 prelogin-key と照合し、from=10.0.2.2 と restrict を維持する。
    秘密鍵はホスト外へ出さない。更新後に管理側が BatchMode/StrictHostKeyChecking で接続確認する。
-3. owner が停止・再接続できる時刻を決める。VM の hostname、既存 host key、復帰する SSH port を照合する。
+3. 初回はownerが任意時刻の再起動を承認済み。準備操作はpronniaへ委任されている。
+   VMのhostname、既存host key、復帰するSSH portを照合する。
 4. 管理側が guest の sync と通常の shutdown を実施する。強制 kill を通常手順にしない。
    QMP 状態と旧 PID の終了を確認してからディスクを操作する。
 
@@ -93,7 +94,8 @@ seedはroot所有inputs 0750配下のroot:tempest-kvm 0440とし、専用userに
 - guestのvsockモジュールとhost CID2:23100への管理チャネルを確認する。
 - マージSHAの入口digest、固定CLI/bundle/BusyBox、root設定、CAと公開鍵、target/permit/generation、
   host台帳と独立承認の期限、brokerサービス、子/通信/世代の回収を最終チェックへ記録する。
-- guestには署名秘密鍵やホスト台帳原本を置かない。一時管理鍵は準備完了後に失効・削除する。
+- guestには署名秘密鍵やホスト台帳原本を置かない。ownerの直接指示により管理SSH鍵は維持する。
+  当該鍵だけexpiryを外し、from=10.0.2.2/restrictを残した。秘密鍵はhost root内、他のowner鍵は変更しない。
 - 通信候補 platform.claude.com:443 のIPは現在の管理原本と再照合し、通信時間枠の判断を受ける。
   08:17 UTCの候補記録だけでは外向き通信の実施判断にならない。
 - restrict=onのVMから承認先への実通信経路は別途具体化が必要。広い制限解除をこの手順に含めない。
@@ -106,3 +108,22 @@ seedはroot所有inputs 0750配下のroot:tempest-kvm 0440とし、専用userに
 その条件で復帰できない場合は停止したままownerへ状況を報告する。
 同じディスクを複数のQEMUから同時に開かない。ホスト鍵不一致時は記録を確認し、
 known_hostsを無条件に消さない。ownerには再接続状況と復帰先を案内する。
+
+
+## 実行結果（2026-11-22）
+
+- 旧guestでsync/systemctl poweroffを行い、旧QEMU PID558909の終了を確認してからコピーした。
+- disk/seedはcmp一致、qemu-img checkはエラーなし。旧入力は復旧用に保持している。
+- systemd tempest-manual-login-vm-36.serviceで起動。InvocationID c4e787face2d4ce08a624afc41546c9d。
+- PID792457/start ticks68804771、全UID999/GID988、kvm group993、NoNewPrivs=1。
+- QMP SO_PEERCREDは同じPID/UID/GID。running、query-kvm enabled、ledger guest-cid=231。
+- guest boot ID b2905502-e641-4a7a-b83e-834f151f5f9c、hostname tempest-login-test、user tempest。
+- 既存hostkeyとStrictHostKeyCheckingを維持してSSH/sudo復帰。root内へ同じknown_hostsも保存した。
+- guestのvsock driverを確認し、固定dummy bytesのguest→host実接続をCID231で照合した。
+  初回の待受けは15秒でtimeoutしたため、同一orchestrator内でlisten→SSH probeを直列化して再実行し成功した。
+- restrict=onと従来のNIC/SSH22333を維持。guestのrouteは10.0.2.0/24のみでdefault routeなし。
+- root0600のlive-instance draftに新boot/PID/QMP/CIDを記録し、merged require_live_instanceで照合した。
+  認可の発行・消費、外部接続、Claude loginは行っていない。
+- 管理SSH鍵はownerの直接指示で維持し、再接続でも検証済み。ownerがVM準備を操作する前提は外した。
+
+次はB案設計レビュー後のローカルrelay実装とdummy検証、その後の最新入口/relay配置である。
