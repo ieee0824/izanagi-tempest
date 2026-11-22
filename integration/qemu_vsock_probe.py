@@ -5,6 +5,8 @@ import gzip
 import json
 import sys
 import time
+import hashlib
+import sqlite3
 from pathlib import Path
 import shutil
 import socket
@@ -17,9 +19,12 @@ def main():
     parser.add_argument('--kernel', required=True, type=Path)
     parser.add_argument('--kernel-release', required=True)
     parser.add_argument("--native-verifier", type=Path)
+    parser.add_argument("--managed-ledger", action="store_true")
     args = parser.parse_args()
+    if args.managed_ledger and args.native_verifier is None:
+        parser.error("--managed-ledger requires --native-verifier")
     native = args.native_verifier is not None
-    with tempfile.TemporaryDirectory(prefix='tempest-vsock-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='tempest-vsock-', dir='/var/lib' if args.managed_ledger else None) as temporary:
         root = Path(temporary)
         guest = root / 'guest'
         for name in ('bin', 'dev', 'proc', 'sys', 'modules'):
@@ -86,7 +91,7 @@ def main():
                 vm = subprocess.Popen([
                     'qemu-system-x86_64', '-machine', 'q35,accel=kvm:tcg', '-m', '512',
                     '-nodefaults', '-display', 'none', '-serial', 'stdio', '-no-reboot',
-                    '-net', 'none', '-kernel', str(args.kernel), '-initrd', str(image),
+                    '-net', 'none', '-qmp', 'unix:' + str(root / 'qmp.sock') + ',server=on,wait=off', '-kernel', str(args.kernel), '-initrd', str(image),
                     '-append', 'console=ttyS0 panic=-1 quiet',
                     '-device', 'vhost-vsock-pci,id=ledger,guest-cid=232'],
                     stdout=log, stderr=subprocess.STDOUT)
@@ -94,23 +99,52 @@ def main():
                     connection, peer = listener.accept()
                     with connection:
                         connection.settimeout(2)
-                        with connection.makefile('rb') as stream:
-                            data = stream.readline(1025)
-                        if peer[0] != 232:
-                            raise RuntimeError('vsock peer mismatch')
-                        if native:
-                            if json.loads(data) != request:
-                                raise RuntimeError('native request mismatch')
-                            now = time.time_ns() // 1_000_000
+                        if args.managed_ledger:
+                            from channel import serve_query
+                            from write_transition import advance
+                            management = root / 'management'
+                            management.mkdir(mode=0o700)
+                            for name in ('host-login-authority', 'host-login-recovery', 'host-login-ledger-source', 'host-login-ledger'):
+                                (management / name).mkdir(mode=0o700)
                             scope = {key: request[key] for key in ('target_id', 'permit_id', 'generation')}
-                            body = dict(request=request, commit=dict(scope=scope, ledger_id='fixture',
-                                        sequence=2, state='consumed'), issued_unix_ms=now, expires_unix_ms=now+2000)
-                            reply = dict(payload=body, signature=signer.sign(RECEIPT_DOMAIN + canonical_json(body)).hex())
-                            connection.sendall(canonical_json(reply) + b'\n')
+                            record = dict(ledger_id='fixture', scope=scope, sequence=0, state='empty')
+                            checkpoint = dict(sequence=0, digest=hashlib.sha256(canonical_json(record)).hexdigest())
+                            for name, value in [('host-login-authority/scope.json', scope),
+                                                ('host-login-authority/ledger-id.json', 'fixture'),
+                                                ('host-login-recovery/checkpoint.json', checkpoint)]:
+                                (management / name).write_bytes(canonical_json(value))
+                                (management / name).chmod(0o600)
+                            (management / 'host-login-ledger/lock').touch(mode=0o600)
+                            database = management / 'host-login-ledger-source/ledger.sqlite3'
+                            with sqlite3.connect(database) as db:
+                                db.executescript((Path(__file__).resolve().parents[1] / 'tools/host_ledger/schema.sql').read_text())
+                            database.chmod(0o600)
+                            advance(management, 'issue')
+                            advance(management, 'consume')
+                            process_stat = Path(f'/proc/{vm.pid}/stat').read_text()
+                            ticks = int(process_stat[process_stat.rindex(')')+2:].split()[19])
+                            registration = dict(scope, boot_id='boot1', cid=232, qemu_pid=vm.pid,
+                                                qemu_start_ticks=ticks, qmp_socket=str(root / 'qmp.sock'),
+                                                qemu_device_id='ledger', expires_unix_ms=time.time_ns()//1_000_000+10000)
+                            serve_query(connection, peer[0], registration, management, signer, time.monotonic()+2)
                         else:
-                            if data != b'tempest-channel-probe\n':
-                                raise RuntimeError('probe mismatch')
-                            connection.sendall(b'ok\n')
+                            with connection.makefile('rb') as stream:
+                                data = stream.readline(1025)
+                            if peer[0] != 232:
+                                raise RuntimeError('vsock peer mismatch')
+                            if native:
+                                if json.loads(data) != request:
+                                    raise RuntimeError('native request mismatch')
+                                now = time.time_ns() // 1_000_000
+                                scope = {key: request[key] for key in ('target_id', 'permit_id', 'generation')}
+                                body = dict(request=request, commit=dict(scope=scope, ledger_id='fixture',
+                                            sequence=2, state='consumed'), issued_unix_ms=now, expires_unix_ms=now+2000)
+                                reply = dict(payload=body, signature=signer.sign(RECEIPT_DOMAIN + canonical_json(body)).hex())
+                                connection.sendall(canonical_json(reply) + b'\n')
+                            else:
+                                if data != b'tempest-channel-probe\n':
+                                    raise RuntimeError('probe mismatch')
+                                connection.sendall(b'ok\n')
                     if vm.wait(timeout=20) != 0:
                         raise RuntimeError('probe VM failed')
                 except Exception:
@@ -123,7 +157,7 @@ def main():
                         vm.wait()
             output = (root / 'serial.log').read_text(errors='replace')
             if ('NATIVE_RECEIPT_OK' if native else 'VSOCK_PROBE_OK') not in output:
-                raise RuntimeError(output)
+                raise RuntimeError(output[:1500])
         print('Actual guest CID 232 verified; guest exchange and shutdown succeeded')
 
 

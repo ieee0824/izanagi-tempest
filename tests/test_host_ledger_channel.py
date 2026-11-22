@@ -47,7 +47,7 @@ class ChannelTests(unittest.TestCase):
         commit = {"scope": {key: self.registration[key] for key in
                              ("target_id", "permit_id", "generation")},
                   "ledger_id": "ledger", "sequence": 2, "state": "consumed"}
-        registration = dict(self.registration, expires_unix_ms=time.time_ns() // 1_000_000 + 10000)
+        registration = dict(self.registration, expires_unix_ms=time.time_ns() // 1_000_000 + 250)
         with reader, writer, patch('channel.require_live_instance',
                                    side_effect=lambda *args: os.pidfd_open(os.getpid())), \
                 patch('read_snapshot.read_management_snapshot', return_value=commit):
@@ -79,6 +79,7 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(payload['request'], self.request)
         self.assertEqual(payload['commit'], commit)
         self.assertLessEqual(payload['expires_unix_ms'] - payload['issued_unix_ms'], 2000)
+        self.assertLessEqual(payload['expires_unix_ms'], registration['expires_unix_ms'])
 
     def test_qmp_peer_and_actual_device_cid_are_checked(self):
         stat = Path(f'/proc/{os.getpid()}/stat').read_text()

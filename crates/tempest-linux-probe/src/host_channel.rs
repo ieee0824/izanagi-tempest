@@ -156,7 +156,10 @@ pub fn verify_receipt(
             .checked_sub(issued)
             .is_none_or(|duration| duration == 0 || duration > 2000)
     {
-        return Err("receipt expired or invalid".into());
+        return Err(format!(
+            "receipt expired or invalid (issued={issued}, now={now}, expires={expires})"
+        )
+        .into());
     }
     let commit = response["payload"]["commit"]
         .as_object()
@@ -243,6 +246,31 @@ mod tests {
             .map(|b| format!("{b:02x}"))
             .collect();
         let encoded = serde_json::to_vec(&json!({"payload":body, "signature":signature})).unwrap();
+        for expires in [999u64, 1000, 3001] {
+            let mut invalid = body.clone();
+            invalid["expires_unix_ms"] = json!(expires);
+            let mut bytes = b"izanagi-tempest:host-ledger-channel:v1\0".to_vec();
+            bytes.extend(serde_json::to_vec(&invalid).unwrap());
+            let signature: String = key
+                .sign(&bytes)
+                .as_ref()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            let invalid =
+                serde_json::to_vec(&json!({"payload":invalid, "signature":signature})).unwrap();
+            assert!(
+                verify_fresh_lease(
+                    key.public_key().as_ref(),
+                    &request,
+                    &invalid,
+                    Instant::now(),
+                    "ledger",
+                    3
+                )
+                .is_err()
+            );
+        }
         let received = Instant::now();
         let lease = verify_lease(
             key.public_key().as_ref(),
@@ -257,6 +285,30 @@ mod tests {
         assert_eq!(
             lease.expires_at,
             received + std::time::Duration::from_millis(500)
+        );
+        let fresh = verify_fresh_lease(
+            key.public_key().as_ref(),
+            &request,
+            &encoded,
+            received,
+            "ledger",
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            fresh.expires_at,
+            received + std::time::Duration::from_millis(1000)
+        );
+        assert!(
+            verify_fresh_lease(
+                key.public_key().as_ref(),
+                &request,
+                &encoded,
+                received - std::time::Duration::from_secs(2),
+                "ledger",
+                3
+            )
+            .is_err()
         );
         assert_eq!(lease.sequence, 3);
         assert!(
@@ -303,6 +355,34 @@ mod tests {
     }
 }
 
+/// Validate a response to a newly generated challenge using a conservative
+/// lifetime measured from before the request was sent.
+pub fn verify_fresh_lease(
+    key: &[u8],
+    request: &Value,
+    input: &[u8],
+    started_at: std::time::Instant,
+    expected_ledger: &str,
+    minimum_sequence: u64,
+) -> Result<ReceiptLease, Box<dyn std::error::Error>> {
+    if input.len() > 4096 {
+        return Err("response too large".into());
+    }
+    let response: Value = serde_json::from_slice(input)?;
+    let issued = response["payload"]["issued_unix_ms"]
+        .as_u64()
+        .ok_or("invalid issued time")?;
+    verify_lease(
+        key,
+        request,
+        input,
+        started_at,
+        issued,
+        expected_ledger,
+        minimum_sequence,
+    )
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelRegistration {
@@ -326,10 +406,11 @@ impl Client {
         deadline: std::time::Instant,
     ) -> Result<ReceiptLease, Box<dyn std::error::Error>> {
         use ring::rand::{SecureRandom, SystemRandom};
-        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+        use std::time::{Duration, Instant};
         if !matches!(operation, "preflight" | "query" | "consume") {
             return Err("invalid channel operation".into());
         }
+        let started = Instant::now();
         let mut random = [0u8; 32];
         SystemRandom::new()
             .fill(&mut random)
@@ -340,19 +421,13 @@ impl Client {
             "permit_id":self.registration.permit_id, "generation":self.registration.generation,
             "boot_id":self.registration.boot_id, "challenge":challenge
         });
-        let deadline = deadline.min(Instant::now() + Duration::from_secs(2));
+        let deadline = deadline.min(started + Duration::from_secs(2));
         let input = exchange(&serde_json::to_vec(&request)?, deadline)?;
-        let received = Instant::now();
-        let wall: u64 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_millis()
-            .try_into()?;
-        let lease = verify_lease(
+        let lease = verify_fresh_lease(
             &self.key,
             &request,
             &input,
-            received,
-            wall,
+            started,
             &self.registration.ledger_id,
             self.registration.minimum_sequence,
         )?;

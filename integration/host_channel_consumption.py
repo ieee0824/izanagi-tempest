@@ -47,6 +47,15 @@ def main(delay_commit=False):
         request = dict(scope, version=1, operation='consume', boot_id='boot1', challenge='b' * 64)
         signer = Mock(wraps=Ed25519PrivateKey.generate())
         with patch('channel.require_live_instance', side_effect=lambda *args: os.pidfd_open(os.getpid())):
+            preflight = dict(request, operation='preflight')
+            reader, writer = socket.socketpair()
+            with reader, writer:
+                writer.sendall(channel.canonical_json(preflight) + b'\n')
+                channel.serve_query(reader, 231, registration, root, signer, time.monotonic() + 1)
+                encoded = channel.read_frame(writer, channel.RESPONSE_LIMIT, time.monotonic() + 1)
+                channel.verify_response(encoded, preflight, signer.public_key(), time.time_ns() // 1_000_000)
+                assert read_management_snapshot(root, allowed_states=('issued',))['sequence'] == 1
+            signer.reset_mock()
             reader, writer = socket.socketpair()
             import write_transition
             replace = write_transition.replace_checkpoint

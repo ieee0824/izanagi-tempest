@@ -24,6 +24,7 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
     }
     let request: Value = serde_json::from_slice(&request_bytes)?;
     let mut now: u64 = args[3].to_str().ok_or("invalid time")?.parse()?;
+    let started = std::time::Instant::now();
     let mut input = Vec::new();
     if args.len() == 6 {
         if args[5] != "--vsock" {
@@ -44,13 +45,24 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
         return Err("response too large".into());
     }
     let expected_ledger = args[4].to_str().ok_or("invalid expected ledger")?;
-    tempest_linux_probe::host_channel::verify_receipt(
-        &key,
-        &request,
-        &input,
-        now,
-        expected_ledger,
-    )?;
+    if args.len() == 6 {
+        tempest_linux_probe::host_channel::verify_fresh_lease(
+            &key,
+            &request,
+            &input,
+            started,
+            expected_ledger,
+            0,
+        )?;
+    } else {
+        tempest_linux_probe::host_channel::verify_receipt(
+            &key,
+            &request,
+            &input,
+            now,
+            expected_ledger,
+        )?;
+    }
     println!("host channel receipt verified");
     Ok(())
 }
