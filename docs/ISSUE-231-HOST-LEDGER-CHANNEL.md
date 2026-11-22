@@ -61,3 +61,19 @@ preflight_for_supervision と lock_current のローカル台帳読取りを専�
 ```sh
 python3 -m unittest discover -s tests -p test_host_ledger_channel.py -v
 ```
+
+## 専用チャネルの起動確認
+
+root 権限、QEMU、静的リンク用 C ツールチェーン、cpio、zstd、BusyBox、
+指定カーネル版の vsock モジュールを使用する。
+
+```sh
+sudo python3 integration/qemu_vsock_probe.py \
+  --kernel /boot/vmlinuz-6.8.0-149-generic \
+  --kernel-release 6.8.0-149-generic
+```
+
+ディスク・NIC のない最小ゲストを CID 232 で起動し、ホストがソケットから取得した
+実 CID と要求を照合する。ゲストの応答確認と電源断まで確認する。
+この試験は専用通信路の疎通を検証する。署名台帳、supervisor、失効時の回収を
+通す VM 間試験は別途追加する。
