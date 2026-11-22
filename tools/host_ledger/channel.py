@@ -206,6 +206,7 @@ def serve_query(connection, peer_cid, registration, management, signer, deadline
         signed = {"payload": response,
                   "signature": signer.sign(RECEIPT_DOMAIN + payload).hex()}
         write_frame(connection, canonical_json(signed), RESPONSE_LIMIT, deadline)
+        return signed
     finally:
         os.close(process)
 

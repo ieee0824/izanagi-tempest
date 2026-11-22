@@ -66,10 +66,11 @@ class ChannelTests(unittest.TestCase):
                     permit_expires_unix_ms=registration['expires_unix_ms'],
                     generation_expires_unix_ms=registration['expires_unix_ms'])):
             writer.sendall(channel.canonical_json(self.request) + b'\n')
-            channel.serve_query(reader, 231, registration, Path('/unused'), signer,
+            sent = channel.serve_query(reader, 231, registration, Path('/unused'), signer,
                                 time.monotonic() + 1)
             reply = json.loads(channel.read_frame(writer, channel.RESPONSE_LIMIT,
                                                   time.monotonic() + 1))
+        self.assertEqual(sent, reply)
         payload = reply['payload']
         signer.public_key().verify(bytes.fromhex(reply['signature']),
                                    channel.RECEIPT_DOMAIN + channel.canonical_json(payload))

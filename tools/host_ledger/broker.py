@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import os
 import socket
+import sqlite3
 import threading
 import time
 
@@ -15,7 +16,7 @@ PORT = 23100
 CONNECTION_LIMIT = 8
 
 
-def serve(listener, registration, management, signer, stop_event=None):
+def serve(listener, registration, management, signer, stop_event=None, authorization=None):
     slots = threading.BoundedSemaphore(CONNECTION_LIMIT)
     active = set()
     lock = threading.Lock()
@@ -30,10 +31,13 @@ def serve(listener, registration, management, signer, stop_event=None):
                         return
                     active.add(cid)
                     claimed = True
-                serve_query(connection, cid, registration, management, signer, deadline)
-        except (OSError, ValueError, KeyError):
+                signed = serve_query(connection, cid, registration, management, signer, deadline)
+                if authorization is not None:
+                    authorization.observe(signed, deadline - REQUEST_SECONDS)
+        except (OSError, ValueError, KeyError, sqlite3.Error):
             # A rejected request gets no signed authorization.
-            pass
+            if authorization is not None and claimed:
+                authorization.stop()
         finally:
             if claimed:
                 with lock:

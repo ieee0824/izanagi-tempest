@@ -17,7 +17,10 @@ def main():
     parser.add_argument('--runtime', required=True, type=Path)
     parser.add_argument('--tls-fixture', action='store_true')
     parser.add_argument('--remote-tls', action='store_true')
+    parser.add_argument('--egress-fixture', action='store_true')
     args = parser.parse_args()
+    if args.egress_fixture and (args.tls_fixture or args.remote_tls):
+        parser.error('--egress-fixture is a separate dummy transport acceptance')
     if args.remote_tls and not args.tls_fixture:
         parser.error("--remote-tls requires --tls-fixture")
     user = pwd.getpwnam("tempest-kvm")
@@ -108,6 +111,12 @@ echo LOGIN_VM_RUNTIME_OK
                 '/opt/bin/libtest\necho LOGIN_VM_TLS_FIXTURE_OK\necho LOGIN_VM_RUNTIME_OK')
         if args.remote_tls:
             init = init.replace('export PYTHONDONTWRITEBYTECODE=1', 'export PYTHONDONTWRITEBYTECODE=1\nexport TEMPEST_REMOTE_TLS=1')
+        if args.egress_fixture:
+            subprocess.run(['cc', '-static', '-O2', '-Wall', '-Wextra', '-Werror',
+                str(Path(__file__).parent / 'fixtures/vsock_uid_probe.c'), '-o', str(guest / 'bin/probe')], check=True)
+            init = init.replace('echo LOGIN_VM_RUNTIME_OK',
+                '/opt/bin/libtest --ignored --exact claude_offline::tests::manual_child_vsock_is_denied --nocapture\n'
+                '/usr/bin/python3 /opt/tempest/integration/vsock_egress_smoke.py guest\necho LOGIN_VM_RUNTIME_OK')
         (guest / 'init').write_text(init)
         (guest / 'init').chmod(0o755)
         names = ['.'] + [str(path.relative_to(guest)) for path in guest.rglob('*')]
@@ -134,11 +143,15 @@ echo LOGIN_VM_RUNTIME_OK
                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
             controller = None
             try:
-                if args.remote_tls:
+                if args.egress_fixture:
+                    from vsock_egress_smoke import EgressController
+                    controller = EgressController(root / 'host-management', run / 'qmp.sock')
+                    controller.start(vm)
+                elif args.remote_tls:
                     from remote_tls_host import HostController
                     controller = HostController(root / 'host-management', run / 'qmp.sock')
                     controller.start(vm)
-                code = vm.wait(timeout=300 if args.tls_fixture else 60)
+                code = vm.wait(timeout=300 if args.tls_fixture or args.egress_fixture else 60)
             finally:
                 if vm.poll() is None:
                     vm.kill()
@@ -148,6 +161,8 @@ echo LOGIN_VM_RUNTIME_OK
                     controller.close()
         output = log_path.read_text(errors='replace')
         print(output[-6000:])
+        if args.egress_fixture and ('VSOCK_EGRESS_VM_OK' not in output or 'MANUAL_CHILD_VSOCK_DENIED' not in output):
+            raise RuntimeError('vsock egress or actual manual child acceptance missing')
         if code != 0 or 'LOGIN_VM_RUNTIME_OK' not in output:
             raise RuntimeError('login userspace VM boot or runtime verification failed')
 
