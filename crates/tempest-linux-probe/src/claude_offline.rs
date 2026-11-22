@@ -39,7 +39,7 @@ const ARTIFACTS: &[Artifact<'static>] = &[
         targets: &["bin/claude"],
     },
     Artifact {
-        source: "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        source: "/var/lib/tempest-claude-offline/lib/ld-linux-x86-64.so.2",
         bytes: 236616,
         sha256: "5fc0940888e9d2e1a00e66d6b1a559c36364ee867683652e1074fa576952cc3f",
         targets: &[
@@ -48,31 +48,31 @@ const ARTIFACTS: &[Artifact<'static>] = &[
         ],
     },
     Artifact {
-        source: "/usr/lib/x86_64-linux-gnu/libc.so.6",
+        source: "/var/lib/tempest-claude-offline/lib/libc.so.6",
         bytes: 2129424,
         sha256: "755a371e86cc9f564ab54f66140747700fb0a103f698f659f2060f707897e09a",
         targets: &["lib/x86_64-linux-gnu/libc.so.6"],
     },
     Artifact {
-        source: "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+        source: "/var/lib/tempest-claude-offline/lib/libdl.so.2",
         bytes: 14408,
         sha256: "4dbcca3c01ca84d092b5b7b2610f5835b55fc70a0288dd9d766b40ac9386e2d9",
         targets: &["lib/x86_64-linux-gnu/libdl.so.2"],
     },
     Artifact {
-        source: "/usr/lib/x86_64-linux-gnu/libm.so.6",
+        source: "/var/lib/tempest-claude-offline/lib/libm.so.6",
         bytes: 952616,
         sha256: "5dcc4d25466e29ca390ed6fabb371c69b65dff6fa4e91c34561057a020d6994a",
         targets: &["lib/x86_64-linux-gnu/libm.so.6"],
     },
     Artifact {
-        source: "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+        source: "/var/lib/tempest-claude-offline/lib/libpthread.so.0",
         bytes: 14408,
         sha256: "cd34f895c9d2aa669d5d2654bed6b71210fc9003c3a1e96bb5311a40feb86039",
         targets: &["lib/x86_64-linux-gnu/libpthread.so.0"],
     },
     Artifact {
-        source: "/usr/lib/x86_64-linux-gnu/librt.so.1",
+        source: "/var/lib/tempest-claude-offline/lib/librt.so.1",
         bytes: 14624,
         sha256: "5a00236da5864e8d1123d74e616713110708d6e3e604188f4f256dab4c6941d4",
         targets: &["lib/x86_64-linux-gnu/librt.so.1"],
@@ -4957,6 +4957,17 @@ mod tests {
         }
         let status = wait_for_supervisor(worker).unwrap();
         assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+    }
+
+    #[test]
+    #[ignore = "requires the deployed root-owned fixed CLI bundle"]
+    fn deployed_bundle_passes_fixed_artifact_verification() {
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let files = pin_artifacts(ARTIFACTS).unwrap();
+        assert_eq!(files.len(), ARTIFACTS.len());
+        for (file, artifact) in files.iter().zip(ARTIFACTS) {
+            verify_artifact(file, artifact).unwrap();
+        }
     }
 
     #[test]
