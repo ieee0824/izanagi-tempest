@@ -127,7 +127,18 @@ def require_live_instance(registration, deadline):
                     break
             if reply["return"].get("status") != "running":
                 raise ValueError("QEMU is not running")
-            # Retain a process handle so callers can detect exit before signing.
+            device = registration["qemu_device_id"]
+            if not isinstance(device, str) or not IDENTIFIER.fullmatch(device):
+                raise ValueError("invalid registered channel device")
+            command = {"execute": "qom-get", "arguments": {
+                "path": "/machine/peripheral/" + device, "property": "guest-cid"}}
+            write_frame(qmp, canonical_json(command), REQUEST_LIMIT, deadline)
+            while True:
+                reply = json.loads(read_frame(qmp, RESPONSE_LIMIT, deadline))
+                if "event" not in reply:
+                    break
+            if type(reply.get("return")) is not int or reply["return"] != registration["cid"]:
+                raise ValueError("QEMU channel CID assignment mismatch")
         poller = select.poll()
         poller.register(descriptor, select.POLLIN)
         if poller.poll(0):
@@ -149,12 +160,17 @@ def serve_query(connection, peer_cid, registration, management, signer, deadline
 
     request = validate_request(read_frame(connection, REQUEST_LIMIT, deadline),
                                registration, peer_cid)
-    if request["operation"] != "query":
-        raise ValueError("consumption requires the host transition handler")
     process = require_live_instance(registration, deadline)
     try:
-        commit = read_management_snapshot(management)
         expected = {key: request[key] for key in ("target_id", "permit_id", "generation")}
+        if request["operation"] == "consume":
+            from write_transition import advance
+            if time.monotonic() >= deadline:
+                raise TimeoutError("consumption deadline expired")
+            if registration["expires_unix_ms"] <= time.time_ns() // 1_000_000:
+                raise ValueError("host registration expired")
+            advance(management, "consume", expected_scope=expected)
+        commit = read_management_snapshot(management)
         if commit["scope"] != expected:
             raise ValueError("host ledger scope mismatch")
         # A consumed record is necessary, while a separately approved expiry

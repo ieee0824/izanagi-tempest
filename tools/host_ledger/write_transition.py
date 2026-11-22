@@ -38,7 +38,7 @@ def replace_checkpoint(path, checkpoint):
         os.close(directory)
 
 
-def advance(root, operation):
+def advance(root, operation, expected_scope=None):
     for ancestor in reversed(root.parents):
         check_directory(ancestor)
     check_directory(root, 0o700)
@@ -52,6 +52,8 @@ def advance(root, operation):
     check_file(lock)
     with lock.open("rb") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if expected_scope is not None and read_json(authority / "scope.json") != expected_scope:
+            raise ValueError("requested ledger scope mismatch")
         advance_locked(authority, recovery, ledger, operation)
 
 

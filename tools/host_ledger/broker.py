@@ -1,8 +1,7 @@
-"""Serve bounded read-only permit queries on the dedicated host vsock port."""
+"""Serve bounded permit queries and consumption on the dedicated host vsock port."""
 
 from concurrent.futures import ThreadPoolExecutor
 import os
-from pathlib import Path
 import socket
 import threading
 import time
@@ -21,12 +20,11 @@ def serve(listener, registration, management, signer):
     active = set()
     lock = threading.Lock()
 
-    def handle(connection, peer):
+    def handle(connection, peer, deadline):
         cid = peer[0]
         claimed = False
         try:
             with connection:
-                deadline = time.monotonic() + REQUEST_SECONDS
                 with lock:
                     if cid in active:
                         return
@@ -45,11 +43,12 @@ def serve(listener, registration, management, signer):
     with ThreadPoolExecutor(max_workers=CONNECTION_LIMIT) as workers:
         while True:
             connection, peer = listener.accept()
+            deadline = time.monotonic() + REQUEST_SECONDS
             if not slots.acquire(blocking=False):
                 connection.close()
                 continue
             try:
-                workers.submit(handle, connection, peer)
+                workers.submit(handle, connection, peer, deadline)
             except BaseException:
                 connection.close()
                 slots.release()
