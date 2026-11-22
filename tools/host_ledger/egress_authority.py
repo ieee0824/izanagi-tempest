@@ -117,7 +117,8 @@ class FreshAuthorization:
 
 class RunAuthorization:
     """One run's irreversible stop latch; only successful control replies renew it."""
-    def __init__(self, scope, boot_id, ledger_id, absolute_deadline, clock=time.monotonic):
+    def __init__(self, scope, boot_id, ledger_id, absolute_deadline, clock=time.monotonic,
+                 freshness=None):
         if not math.isfinite(absolute_deadline):
             raise ValueError('invalid absolute egress deadline')
         self.scope = scope
@@ -125,6 +126,7 @@ class RunAuthorization:
         self.ledger_id = ledger_id
         self.absolute_deadline = absolute_deadline
         self.clock = clock
+        self.freshness = freshness
         self.lock = threading.Lock()
         self.last = None
         self.stopped = False
@@ -134,7 +136,9 @@ class RunAuthorization:
             self.stopped = True
 
     def _active(self, now):
-        if now >= self.absolute_deadline or (self.last is not None and now >= self.last.deadline):
+        if (now >= self.absolute_deadline
+                or self.last is not None and now >= self.last.deadline
+                or self.freshness is not None and self.freshness.deadline() is None):
             self.stopped = True
         return not self.stopped
 
@@ -171,4 +175,12 @@ class RunAuthorization:
 
     def current(self):
         with self.lock:
-            return self.last if self._active(self.clock()) else None
+            if not self._active(self.clock()) or self.last is None:
+                return None
+            if self.freshness is None:
+                return self.last
+            expires = self.freshness.deadline()
+            if expires is None:
+                self.stopped = True
+                return None
+            return FreshAuthorization(min(self.last.deadline, expires), self.last.sequence)
