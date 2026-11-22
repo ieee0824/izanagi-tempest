@@ -123,8 +123,12 @@ fn command(path: &str) -> Command {
 }
 
 fn output(path: &str, args: &[&str]) -> io::Result<String> {
-    let result = command(path).args(args).output()?;
+    let result = command(path).args(args).stderr(Stdio::piped()).output()?;
     if !result.status.success() {
+        eprintln!(
+            "fixed network command failed: {path} {args:?}: {}",
+            String::from_utf8_lossy(&result.stderr[..result.stderr.len().min(2048)])
+        );
         return Err(io::Error::other("fixed network command failed"));
     }
     String::from_utf8(result.stdout).map_err(io::Error::other)
@@ -270,11 +274,16 @@ impl LocalPolicy {
             let mut child = command(NFT)
                 .args(["-f", "-"])
                 .stdin(Stdio::piped())
+                .stderr(Stdio::piped())
                 .spawn()?;
             let input = child.stdin.take().unwrap().write_all(policy.as_bytes());
-            let status = child.wait()?;
+            let result = child.wait_with_output()?;
             input?;
-            if !status.success() {
+            if !result.status.success() {
+                eprintln!(
+                    "fixed login policy install failed: {}",
+                    String::from_utf8_lossy(&result.stderr[..result.stderr.len().min(2048)])
+                );
                 return Err(io::Error::other("fixed login policy install failed"));
             }
         }

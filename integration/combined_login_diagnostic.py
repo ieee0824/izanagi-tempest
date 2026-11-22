@@ -94,11 +94,11 @@ def exercise(root, binary, responder, publisher, dummy=None, direct_test=None, f
         gate = stage in ("direct-gate", "direct-authority-gate")
         if stage == "direct-refusal" or gate:
             command[-1] = direct_test
-            command += ["--ignored", "--nocapture", "supervise_verified_dummy_tls"]
+            command += ["--ignored", "--nocapture", "--quiet", "supervise_verified_dummy_tls"]
             environment = ({"TEMPEST_PAUSE_START_GATE": "1"} if gate
                            else {"TEMPEST_EXPECT_DUMMY_REFUSAL": "1"})
         elif stage is not None:
-            command += ["--ignored", "--nocapture", "stage_combined_diagnostic_descriptors"]
+            command += ["--ignored", "--nocapture", "--quiet", "stage_combined_diagnostic_descriptors"]
             environment = {"TEMPEST_STAGE_CASE": stage}
         try:
             with subprocess.Popen(
@@ -573,6 +573,9 @@ with socket.create_connection(("127.0.0.1", 39271), timeout=3) as client:
                 run_case(mode, commit, False, stage=mode)
             return
         if direct_test is not None:
+            remote_tls = os.environ.get('TEMPEST_REMOTE_TLS') == '1'
+            if remote_tls:
+                from remote_tls_host import control_request
             def connect_verified_supervisor(record, payload, outcome):
                 handoff = json.loads(payload.read_bytes().split(b"\0", 1)[1])
                 expected = Scope(handoff["target_id"], record.name, 1)
@@ -581,7 +584,7 @@ with socket.create_connection(("127.0.0.1", 39271), timeout=3) as client:
                 commit = Commit("fixture-ledger", 1, expected, "consumed")
                 refresh_publication(expected.permit_id, expected.target_id)
                 mismatch = replace(commit, scope=replace(expected, generation=2))
-                if outcome == "revoked":
+                if outcome == "revoked" and not remote_tls:
                     run_case("direct supervisor generation mismatch", mismatch, False,
                              stage="direct-refusal")
                     run_case("direct supervisor revoked before start", commit, False,
@@ -589,7 +592,7 @@ with socket.create_connection(("127.0.0.1", 39271), timeout=3) as client:
                 if record.exists():
                     raise RuntimeError("refused supervisor consumed the permit")
                 def prepare_live():
-                    if outcome == "revoked":
+                    if outcome == "revoked" and not remote_tls:
                         refresh_publication(expected.permit_id, expected.target_id, 30)
                         run_case("direct supervisor revoked at gate", commit, False,
                                  stage="direct-gate")
@@ -606,8 +609,14 @@ with socket.create_connection(("127.0.0.1", 39271), timeout=3) as client:
                             pending.unlink(missing_ok=True)
                     refresh_publication(expected.permit_id, expected.target_id,
                                         20 if outcome == "expired" else 30)
-                    prepare(commit)
-                    subprocess.run([publisher], check=True, timeout=5)
+                    if remote_tls:
+                        reply = control_request(dict(operation='prepare', scope=asdict(expected),
+                            expires_unix_ms=int((time.time()+30)*1000)))
+                        write(config / 'host-channel.json', json.dumps(reply['registration']).encode())
+                        write(config / 'host-channel-key', bytes.fromhex(reply['key']))
+                    else:
+                        prepare(commit)
+                        subprocess.run([publisher], check=True, timeout=5)
 
                 def relay_challenge(master):
                     output = b""
@@ -621,6 +630,12 @@ with socket.create_connection(("127.0.0.1", 39271), timeout=3) as client:
                     os.write(master, response.stdout)
 
                 def revoke_live_host():
+                    if remote_tls:
+                        stats = control_request(dict(operation='stats'))['counts']
+                        if stats.get('consume') != 1 or stats.get('query', 0) < 2:
+                            raise RuntimeError(f'remote TLS did not start with consume and normal queries: {stats}')
+                        control_request(dict(operation='revoke' if outcome == 'revoked' else 'lose-response'))
+                        return None
                     if outcome == "expired":
                         state = config / "claude-login-authority/revocation-state"
                         deadline = json.loads(state.read_bytes().split(b"\0", 1)[1])[
@@ -656,14 +671,14 @@ with sqlite3.connect(sys.argv[1]) as db:
                         check=True, timeout=5,
                     )
 
-                command = [direct_test, "--ignored", "--nocapture", "supervise_verified_dummy_tls"]
-                return (command, relay_challenge,
+                command = [direct_test, "--ignored", "--nocapture", "--quiet", "supervise_verified_dummy_tls"]
+                return (command, None if remote_tls else relay_challenge,
                         revoke_live_host if outcome != "disconnect" else None,
-                        prepare_live, False)
+                        prepare_live, False, remote_tls and outcome == "revoked")
 
-            outcomes = (
+            outcomes = (("revoked", "response-lost") if remote_tls else (
                 "revoked", "missing", "disconnect", "expired", "authority-pending"
-            )
+            ))
             for outcome in outcomes:
                 check_signed_permits(
                     dummy,
@@ -744,9 +759,10 @@ def main():
         synthetic_cli = root / "lib/tempest-claude-offline/claude"
         synthetic_cli.parent.mkdir(parents=True)
         synthetic_cli.touch()
+        shutil.copytree(Path(FIXED_CLI).parent / "lib", synthetic_cli.parent / "lib")
         original = root / "original-lib"
         original.mkdir()
-        subprocess.run(["mount", "--bind", "/var/lib", original], check=True)
+        subprocess.run(["mount", "--rbind", "/var/lib", original], check=True)
         subprocess.run(["mount", "--bind", root / "etc", "/etc"], check=True)
         subprocess.run(["mount", "--bind", root / "lib", "/var/lib"], check=True)
         try:
@@ -779,7 +795,8 @@ def main():
                     if path.is_mount():
                         subprocess.run(["umount", path], check=True)
             for path in ("/var/lib", "/etc", original):
-                subprocess.run(["umount", path], check=True)
+                command = ["umount", "--recursive", path] if path == original else ["umount", path]
+                subprocess.run(command, check=True)
     return 0
 
 

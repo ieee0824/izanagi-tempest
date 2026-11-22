@@ -5,6 +5,7 @@ import errno
 import hashlib
 import json
 import time
+import threading
 import os
 from pathlib import Path
 import pty
@@ -266,10 +267,27 @@ def probe_local_tls(cert_pem, expire=False, revoke=False):
                 raise RuntimeError("new CONNECT was not rejected after expiry")
 
 
+def probe_held_management_tls(cert_pem):
+    context = ssl.create_default_context(cadata=cert_pem)
+    with socket.create_connection(("127.0.0.1", 39271), timeout=5) as proxy:
+        if connect_response(proxy) != b"HTTP/1.1 200 Connection Established\r\n\r\n":
+            raise RuntimeError("held TLS CONNECT refused")
+        with context.wrap_socket(proxy, server_hostname="platform.claude.com") as tls:
+            tls.sendall(b"PING")
+            if tls.recv(1) != b"K":
+                raise RuntimeError("held TLS did not exchange authenticated bytes")
+            print("HELD_TLS_CLIENT_READY", flush=True)
+            if tls.recv(1) != b"":
+                raise RuntimeError("held TLS received unexpected data after stop")
+            print("HELD_TLS_CLIENT_CLOSED", flush=True)
+
+
 def check_signed_tls(binary, temporary, record, check_evidence, expire=False, signing_key=None,
                      *, stage_login_artifacts=False, supervision=None):
     revoke = signing_key is not None
     terminal_case = expire or revoke
+    hold_management = bool(supervision and len(supervision) > 5 and supervision[5])
+    held_server_ready = threading.Event()
     notice = CONFIG / ".synthetic-live-revocation.json"
     pending = CONFIG / ".synthetic-live-revocation.pending"
     if any(subprocess.check_output(["ip", family, "route", "show"]).strip()
@@ -305,7 +323,9 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
     identities = {}
 
     def exchanges(listener):
-        for expected in ((True,) if terminal_case else (True, False)):
+        expectations = (True,) if terminal_case else ((True, False, True) if hold_management else (True, False))
+        for index, expected in enumerate(expectations):
+            held = hold_management and index == 2
             client, _ = listener.accept()
             with client:
                 client.settimeout(6 if terminal_case else 4)
@@ -316,7 +336,13 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
                                 if not expected or incoming.read(4) != b"PING":
                                     raise RuntimeError("unexpected exchange with the TLS fixture")
                                 tls.sendall(b"K")
-                        if terminal_case:
+                        if held:
+                            held_server_ready.set()
+                            print("HELD_TLS_SERVER_READY", flush=True)
+                            if tls.recv(1) != b"":
+                                raise RuntimeError("held TLS upstream survived stop")
+                            print("HELD_TLS_SERVER_CLOSED", flush=True)
+                        elif terminal_case:
                             if tls.recv(1) != b"":
                                 raise RuntimeError("TLS upstream survived signed freshness expiry")
                         else:
@@ -398,19 +424,46 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
         elif expire:
             case = "signed-tls-expiry"
         command, before_ready, host_revoke, _, shared_entry = (
-            ([binary, case], None, None, None, False) if supervision is None else supervision
+            ([binary, case], None, None, None, False) if supervision is None else supervision[:5]
         )
 
         def revoke_live_host(pid):
             child = verify_signed_child_environment(pid)
             child_fd = os.pidfd_open(child)
+            held_process = None
             try:
+                if hold_management:
+                    command = ["/usr/bin/nsenter", "--net=" + str(Path(f"/proc/{child}/ns/net")), "--",
+                               "/usr/bin/setpriv", "--reuid", "999", "--regid", "988", "--clear-groups",
+                               sys.executable, str(Path(__file__).resolve()), "--probe-held-management-tls"]
+                    held_process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                                    stderr=subprocess.PIPE, text=True, env={})
+                    held_process.stdin.write(json.dumps(cert_pem) + "\n")
+                    held_process.stdin.close()
+                    if not select.select([held_process.stdout], [], [], 5)[0] or held_process.stdout.readline() != "HELD_TLS_CLIENT_READY\n":
+                        raise RuntimeError("held TLS client did not reach readiness")
+                    if not held_server_ready.wait(timeout=1) or held_process.poll() is not None:
+                        raise RuntimeError("held TLS peers were not both live before stop")
+                    print("HELD_TLS_BOTH_LIVE_BEFORE_STOP", flush=True)
+                stop_started = time.monotonic()
                 deadline = host_revoke()
-                if not select.select([child_fd], [], [], 8)[0]:
+                if held_process is not None:
+                    if held_process.wait(timeout=5) != 0 or held_process.stdout.read() != "HELD_TLS_CLIENT_CLOSED\n":
+                        raise RuntimeError("held TLS client did not close on management stop")
+                    print(f"HELD_TLS_CLIENT_CLOSED stop_ms={(time.monotonic()-stop_started)*1000:.0f}", flush=True)
+                stop_wait = 8 if deadline is None else max(0, deadline - time.time()) + 2
+                if not select.select([child_fd], [], [], stop_wait)[0]:
                     raise RuntimeError("fixed child survived the management stop")
                 if deadline is not None and time.time() < deadline:
                     raise RuntimeError("fixed child exited before the signed deadline")
+                if deadline is not None:
+                    if time.time() >= deadline + 1:
+                        raise RuntimeError("fixed child was not confirmed dead within cleanup grace")
+                    print("expiry grace: child pidfd signaled; further child operations impossible")
             finally:
+                if held_process is not None and held_process.poll() is None:
+                    held_process.kill()
+                    held_process.wait()
                 os.close(child_fd)
         fixture(
             command,
@@ -742,6 +795,9 @@ def check_signed_permits(binary, tls=False, *, integration_gate=None, direct_tls
 
 
 def main():
+    if sys.argv[1:] == ["--probe-held-management-tls"] and os.geteuid() == 999:
+        probe_held_management_tls(json.loads(sys.stdin.readline()))
+        return 0
     if sys.argv[1:] == ["--probe-revoked-tls"] and os.geteuid() == 999:
         probe_local_tls(json.loads(sys.stdin.readline()), revoke=True)
         return 0

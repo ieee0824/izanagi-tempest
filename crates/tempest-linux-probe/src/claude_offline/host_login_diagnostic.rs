@@ -478,15 +478,181 @@ fn verify_receipt_from_stdio(
     )
 }
 
+pub(super) struct HostGuard {
+    _local: Option<File>,
+    _lease: Option<crate::host_channel::ReceiptLease>,
+}
+
+fn remote_client(
+    target: &str,
+    permit: u128,
+    generation: u64,
+) -> io::Result<Option<crate::host_channel::Client>> {
+    let path = Path::new("/etc/tempest/host-channel.json");
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+        Ok(_) => {}
+    }
+    let bytes = super::read_login_input(path, 4096)?;
+    let registration: crate::host_channel::ChannelRegistration =
+        serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    if registration.target_id != target
+        || registration.permit_id != format!("{permit:032x}")
+        || registration.generation != generation
+    {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let key = super::read_login_input(Path::new("/etc/tempest/host-channel-key"), 32)?
+        .try_into()
+        .map_err(|_| io::ErrorKind::InvalidData)?;
+    Ok(Some(crate::host_channel::Client { registration, key }))
+}
+
+#[repr(C)]
+struct SharedLeaseData {
+    expires_ns: std::sync::atomic::AtomicU64,
+    sequence: std::sync::atomic::AtomicU64,
+    stopped: std::sync::atomic::AtomicBool,
+}
+
+struct SharedLease(*mut SharedLeaseData);
+// Only atomics are accessed through the shared mapping; its lifetime is owned.
+unsafe impl Send for SharedLease {}
+unsafe impl Sync for SharedLease {}
+
+fn monotonic_ns() -> io::Result<u64> {
+    let mut time = std::mem::MaybeUninit::<libc::timespec>::uninit();
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, time.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let time = unsafe { time.assume_init() };
+    (time.tv_sec as u64)
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(time.tv_nsec as u64))
+        .ok_or_else(|| io::ErrorKind::InvalidData.into())
+}
+
+impl SharedLease {
+    fn new(lease: &crate::host_channel::ReceiptLease) -> io::Result<Self> {
+        let pointer = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                std::mem::size_of::<SharedLeaseData>(),
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if pointer == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        let shared = Self(pointer.cast());
+        unsafe {
+            shared.0.write(SharedLeaseData {
+                expires_ns: std::sync::atomic::AtomicU64::new(0),
+                sequence: std::sync::atomic::AtomicU64::new(0),
+                stopped: std::sync::atomic::AtomicBool::new(false),
+            });
+        }
+        shared.publish(lease)?;
+        Ok(shared)
+    }
+    fn publish(&self, lease: &crate::host_channel::ReceiptLease) -> io::Result<()> {
+        use std::sync::atomic::Ordering;
+        let now_ns = monotonic_ns()?;
+        let remaining = lease.expires_at.saturating_duration_since(Instant::now());
+        let expires = now_ns
+            .checked_add(remaining.as_nanos().try_into().map_err(io::Error::other)?)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        let data = unsafe { &*self.0 };
+        if data.stopped.load(Ordering::Acquire) {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        data.sequence.store(lease.sequence, Ordering::Relaxed);
+        data.expires_ns.store(expires, Ordering::Release);
+        Ok(())
+    }
+    fn stop(&self) {
+        unsafe { &*self.0 }
+            .stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    fn current(&self) -> io::Result<crate::host_channel::ReceiptLease> {
+        use std::sync::atomic::Ordering;
+        let data = unsafe { &*self.0 };
+        let started = Instant::now();
+        let expires = data.expires_ns.load(Ordering::Acquire);
+        let remaining = expires
+            .checked_sub(monotonic_ns()?)
+            .filter(|value| *value > 0);
+        if data.stopped.load(Ordering::Acquire) || remaining.is_none() {
+            self.stop();
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        Ok(crate::host_channel::ReceiptLease {
+            expires_at: started + Duration::from_nanos(remaining.unwrap()),
+            sequence: data.sequence.load(Ordering::Acquire),
+        })
+    }
+}
+impl Drop for SharedLease {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.0.cast(), std::mem::size_of::<SharedLeaseData>());
+        }
+    }
+}
+
+struct RemoteHostState {
+    client: std::sync::Mutex<(crate::host_channel::Client, Instant)>,
+    owner: libc::pid_t,
+    shared: SharedLease,
+}
+
 pub(super) struct VerifiedHostCommit {
     key: [u8; 32],
     commit: Commit,
+    remote: Option<Box<RemoteHostState>>,
 }
 
 impl VerifiedHostCommit {
+    pub(super) fn stop_remote(&self) {
+        if let Some(remote) = &self.remote {
+            remote.shared.stop();
+        }
+    }
     /// Recheck the same authorization without holding the publication lock
     /// during child supervision.
-    pub(super) fn lock_current(&self) -> io::Result<File> {
+    pub(super) fn lock_current(&self) -> io::Result<HostGuard> {
+        if let Some(remote) = &self.remote {
+            if unsafe { libc::getpid() } != remote.owner {
+                return Ok(HostGuard {
+                    _local: None,
+                    _lease: Some(remote.shared.current()?),
+                });
+            }
+            let mut state = remote
+                .client
+                .lock()
+                .map_err(|_| io::Error::other("channel state poisoned"))?;
+            let expiry = state.1;
+            if Instant::now() >= expiry {
+                remote.shared.stop();
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            let lease = state.0.query("query", expiry).map_err(|error| {
+                remote.shared.stop();
+                io::Error::other(error.to_string())
+            })?;
+            remote.shared.publish(&lease)?;
+            state.1 = lease.expires_at;
+            return Ok(HostGuard {
+                _local: None,
+                _lease: Some(lease),
+            });
+        }
         let parent = open_management_parent()?;
         let lock = lock_publication(&parent, libc::LOCK_SH)?;
         let publication = open_private_login_directory(&parent, "host-login-ledger")?;
@@ -495,7 +661,10 @@ impl VerifiedHostCommit {
         if inputs.key != self.key || read_source(&parent, &inputs)? != self.commit {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        Ok(lock)
+        Ok(HostGuard {
+            _local: Some(lock),
+            _lease: None,
+        })
     }
 }
 
@@ -504,6 +673,12 @@ pub(super) fn preflight_for_supervision(
     permit_id: u128,
     generation: u64,
 ) -> io::Result<()> {
+    if let Some(mut client) = remote_client(target_id, permit_id, generation)? {
+        client
+            .query("preflight", Instant::now() + Duration::from_secs(2))
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        return Ok(());
+    }
     let parent = open_management_parent()?;
     let _lock = lock_publication(&parent, libc::LOCK_SH)?;
     let publication = open_private_login_directory(&parent, "host-login-ledger")?;
@@ -528,7 +703,38 @@ pub(super) fn verify_for_supervision(
     permit_id: u128,
     generation: u64,
     deadline: Instant,
-) -> io::Result<(VerifiedHostCommit, File)> {
+) -> io::Result<(VerifiedHostCommit, HostGuard)> {
+    if let Some(mut client) = remote_client(target_id, permit_id, generation)? {
+        let lease = client
+            .query("consume", deadline)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let commit = Commit {
+            ledger_id: client.registration.ledger_id.clone(),
+            scope: Scope {
+                target_id: target_id.to_owned(),
+                permit_id: format!("{permit_id:032x}"),
+                generation,
+            },
+            sequence: lease.sequence,
+            state: "consumed".to_owned(),
+        };
+        let verified = VerifiedHostCommit {
+            key: client.key,
+            commit,
+            remote: Some(Box::new(RemoteHostState {
+                owner: unsafe { libc::getpid() },
+                shared: SharedLease::new(&lease)?,
+                client: std::sync::Mutex::new((client, lease.expires_at)),
+            })),
+        };
+        return Ok((
+            verified,
+            HostGuard {
+                _local: None,
+                _lease: Some(lease),
+            },
+        ));
+    }
     let parent = open_management_parent()?;
     let inputs = read_inputs(&parent)?;
     let receipt = verify_receipt_from_stdio(&inputs, deadline, true)?;
@@ -543,7 +749,59 @@ pub(super) fn verify_for_supervision(
     let verified = VerifiedHostCommit {
         key: inputs.key,
         commit: receipt,
+        remote: None,
     };
     let lock = verified.lock_current()?;
     Ok((verified, lock))
+}
+
+#[cfg(test)]
+mod shared_lease_tests {
+    use super::*;
+    #[test]
+    fn expiry_latches_and_cannot_be_renewed_after_stop() {
+        let lease = crate::host_channel::ReceiptLease {
+            expires_at: Instant::now() + Duration::from_millis(30),
+            sequence: 2,
+        };
+        let shared = SharedLease::new(&lease).unwrap();
+        assert!(shared.current().unwrap().expires_at <= lease.expires_at);
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(shared.current().is_err());
+        assert!(
+            shared
+                .publish(&crate::host_channel::ReceiptLease {
+                    expires_at: Instant::now() + Duration::from_secs(1),
+                    sequence: 3
+                })
+                .is_err()
+        );
+    }
+    #[test]
+    fn forked_observer_sees_parent_renewal_without_a_client() {
+        let shared = SharedLease::new(&crate::host_channel::ReceiptLease {
+            expires_at: Instant::now() + Duration::from_millis(200),
+            sequence: 2,
+        })
+        .unwrap();
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            std::thread::sleep(Duration::from_millis(250));
+            let valid = shared.current().is_ok_and(|lease| lease.sequence == 3);
+            unsafe {
+                libc::_exit(i32::from(!valid));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        shared
+            .publish(&crate::host_channel::ReceiptLease {
+                expires_at: Instant::now() + Duration::from_secs(1),
+                sequence: 3,
+            })
+            .unwrap();
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert_eq!(status, 0);
+    }
 }

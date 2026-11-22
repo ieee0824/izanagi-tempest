@@ -129,3 +129,6 @@ pub fn host_login_publisher() -> std::process::ExitCode {
 pub fn combined_login_diagnostic() -> std::process::ExitCode {
     claude_offline::run_combined_login_diagnostic()
 }
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod host_channel;
