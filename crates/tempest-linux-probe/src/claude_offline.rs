@@ -5633,6 +5633,34 @@ mod tests {
 
     #[test]
     #[ignore = "run inside the dedicated vsock management VM fixture"]
+    fn remote_channel_obeys_short_caller_deadline() {
+        use std::time::{Duration, Instant};
+        let registration =
+            serde_json::from_slice(&fs::read("/etc/tempest/host-channel.json").unwrap()).unwrap();
+        let key = fs::read("/etc/tempest/host-channel-key")
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let mut client = crate::host_channel::Client { registration, key };
+        client
+            .query("preflight", Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        let started = Instant::now();
+        let result = client.query("preflight", started + Duration::from_millis(100));
+        assert!(
+            result.is_err(),
+            "late response accepted beyond caller deadline"
+        );
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert_eq!(client.registration.minimum_sequence, 1);
+        println!(
+            "HOST_CHANNEL_CALLER_DEADLINE_OK elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+    }
+
+    #[test]
+    #[ignore = "run inside the dedicated vsock management VM fixture"]
     fn remote_channel_stops_and_reaps_dummy_namespace() {
         let worker = unsafe { libc::fork() };
         assert!(worker >= 0);

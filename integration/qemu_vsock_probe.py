@@ -21,10 +21,13 @@ def main():
     parser.add_argument("--native-verifier", type=Path)
     parser.add_argument("--stop-mode", choices=("revoke", "disconnect", "silence", "renew", "late-receipt", "wrong-cid", "old-boot", "old-process", "wrong-device-cid"), default="revoke")
     parser.add_argument("--supervisor-test", action="store_true")
+    parser.add_argument("--caller-deadline-test", action="store_true")
     parser.add_argument("--managed-ledger", action="store_true")
     args = parser.parse_args()
     if args.managed_ledger and args.native_verifier is None:
         parser.error("--managed-ledger requires --native-verifier")
+    if args.caller_deadline_test and not (args.managed_ledger and args.supervisor_test):
+        parser.error("--caller-deadline-test requires --managed-ledger --supervisor-test")
     native = args.native_verifier is not None
     with tempfile.TemporaryDirectory(prefix='tempest-vsock-', dir='/var/lib' if args.managed_ledger else None) as temporary:
         root = Path(temporary)
@@ -84,7 +87,9 @@ def main():
                 for entry in config.iterdir():
                     entry.chmod(0o600)
                 (guest / 'expected-queries').write_text('6' if args.stop_mode == 'renew' else '3')
-                init += '/bin/verify --ignored --exact claude_offline::tests::remote_channel_stops_and_reaps_dummy_namespace --nocapture\n/bin/busybox poweroff -f\n'
+                test_name = ('remote_channel_obeys_short_caller_deadline' if args.caller_deadline_test
+                             else 'remote_channel_stops_and_reaps_dummy_namespace')
+                init += f'/bin/verify --ignored --exact claude_offline::tests::{test_name} --nocapture\n/bin/busybox poweroff -f\n'
             else:
                 init += '/bin/verify /key /request 0 fixture --vsock\necho NATIVE_RECEIPT_OK\n/bin/busybox poweroff -f\n'
 
@@ -148,8 +153,31 @@ def main():
                             path = management / 'host-login-authority/channel-approval.json'
                             path.write_bytes(canonical_json(approval))
                             path.chmod(0o600)
-                            serve_query(connection, peer[0], registration, management, signer, time.monotonic()+2)
-                            if args.supervisor_test:
+                            if args.caller_deadline_test:
+                                serve_query(connection, peer[0], registration, management, signer, time.monotonic()+2)
+                                caller_connection, caller_peer = listener.accept()
+                                with caller_connection:
+                                    from channel import read_frame, REQUEST_LIMIT, RESPONSE_LIMIT
+                                    raw = read_frame(caller_connection, REQUEST_LIMIT, time.monotonic()+2)
+                                    upstream, downstream = socket.socketpair()
+                                    with upstream, downstream:
+                                        upstream.sendall(raw + b'\n')
+                                        serve_query(downstream, caller_peer[0], registration, management,
+                                                    signer, time.monotonic()+2)
+                                        receipt = read_frame(upstream, RESPONSE_LIMIT, time.monotonic()+2)
+                                    envelope = json.loads(receipt)
+                                    signer.public_key().verify(bytes.fromhex(envelope['signature']),
+                                        RECEIPT_DOMAIN + canonical_json(envelope['payload']))
+                                    fault_at = time.monotonic()
+                                    time.sleep(0.3)
+                                    try:
+                                        caller_connection.sendall(receipt + b'\n')
+                                    except (BrokenPipeError, ConnectionResetError):
+                                        pass
+                                    print('valid preflight response delayed 300ms against caller 100ms', flush=True)
+                            else:
+                                serve_query(connection, peer[0], registration, management, signer, time.monotonic()+2)
+                            if args.supervisor_test and not args.caller_deadline_test:
                                 print('accepted preflight from actual guest CID', peer[0], flush=True)
                                 phases = ['consume'] + ['query'] * (6 if args.stop_mode == 'renew' else 3) + ['stop']
                                 for phase_index, phase in enumerate(phases):
@@ -268,10 +296,10 @@ def main():
                         vm.kill()
                         vm.wait()
             output = (root / 'serial.log').read_text(errors='replace')
-            if ('HOST_CHANNEL_SUPERVISION_OK' if args.supervisor_test else 'NATIVE_RECEIPT_OK' if native else 'VSOCK_PROBE_OK') not in output:
+            if ('HOST_CHANNEL_CALLER_DEADLINE_OK' if args.caller_deadline_test else 'HOST_CHANNEL_SUPERVISION_OK' if args.supervisor_test else 'NATIVE_RECEIPT_OK' if native else 'VSOCK_PROBE_OK') not in output:
                 raise RuntimeError(output[:1500])
         for line in output.splitlines():
-            if 'HOST_CHANNEL_SUPERVISION_OK' in line:
+            if 'HOST_CHANNEL_SUPERVISION_OK' in line or 'HOST_CHANNEL_CALLER_DEADLINE_OK' in line:
                 print(line)
         print('Actual guest CID 232 verified; guest exchange and shutdown succeeded')
 
