@@ -49,7 +49,13 @@ impl Freshness {
             let mut cached = self.cached.lock().map_err(|_| io::ErrorKind::Other)?;
             // Never give late new signatures a chance to revive the old lease.
             self.shared.current()?;
-            let mut candidate = read()?;
+            let mut candidate = match read() {
+                Ok(snapshot) => snapshot,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    return self.shared.current().map(|lease| lease.expires_at);
+                }
+                Err(error) => return Err(error),
+            };
             self.shared.current()?;
             if candidate.lease.sequence < cached.revision
                 || candidate.lease.sequence == cached.revision
@@ -142,6 +148,33 @@ mod tests {
         assert!(
             state
                 .current_or_update(|| Ok(snapshot(3, 3, Instant::now() + Duration::from_secs(10))))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn busy_refresh_only_uses_the_old_lease_and_never_revives_it() {
+        let now = Instant::now();
+        let state = Freshness::new(
+            snapshot(1, 1, now + Duration::from_millis(20)),
+            now + Duration::from_secs(30),
+        )
+        .unwrap();
+        let retained = state
+            .current_or_update(|| Err(io::ErrorKind::WouldBlock.into()))
+            .unwrap();
+        assert!(retained <= now + Duration::from_millis(20));
+        assert!(
+            state
+                .current_or_update(|| {
+                    std::thread::sleep(Duration::from_millis(30));
+                    Err(io::ErrorKind::WouldBlock.into())
+                })
+                .is_err()
+        );
+        assert!(
+            state
+                .current_or_update(|| Ok(snapshot(2, 2, Instant::now() + Duration::from_secs(20))))
                 .is_err()
         );
     }

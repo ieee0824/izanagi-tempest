@@ -150,7 +150,7 @@ def verify_inputs(manifest, approved, inputs, trust_key, registration,
                               state['expires_unix_seconds'] * 1000, sha256(revocation_payload).hexdigest())
 
 
-def read_generation(root, registration, now_unix_ms):
+def read_generation(root, registration, now_unix_ms, *, defer_busy=False):
     """All source files are host root originals; hold no lock during relay I/O."""
     for ancestor in reversed(root.parents):
         check_directory(ancestor)
@@ -161,8 +161,17 @@ def read_generation(root, registration, now_unix_ms):
     check_directory(publication, 0o700)
     lock = publication / 'lock'
     check_file(lock)
+    no_pending(publication / 'pending')
+    no_pending(authority / 'revocation-pending')
     with lock.open('rb') as held:
-        fcntl.flock(held, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(held, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            no_pending(publication / 'pending')
+            no_pending(authority / 'revocation-pending')
+            if defer_busy:
+                return None
+            raise
         no_pending(publication / 'pending')
         no_pending(authority / 'revocation-pending')
         current = revision(publication / 'current')

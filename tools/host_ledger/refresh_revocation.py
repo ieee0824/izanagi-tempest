@@ -1,0 +1,194 @@
+"""Refresh only signed revocation freshness, without extending operation authority.
+
+Both host and guest invoke publish() on their independent root-only sources.
+Private signing material stays on the host; the guest receives only signed bytes.
+"""
+from dataclasses import dataclass
+import fcntl
+from hashlib import sha256
+import os
+from pathlib import Path
+import shutil
+import tempfile
+import time
+
+from channel import canonical_json
+from egress_authority import positive
+from egress_generation import (REVOCATION_DOMAIN, no_pending, read_generation, read_private,
+                               revision, signed_payload)
+from read_snapshot import check_file
+from freshness import FreshnessLatch
+
+class RefreshBusy(BlockingIOError):
+    """No source mutation occurred; the existing lease may cover a bounded retry."""
+
+
+FIELDS = {'revision', 'revocation_revision', 'manifest_sha256', 'permit_id', 'target_id',
+          'issued_unix_seconds', 'expires_unix_seconds', 'revoked'}
+
+
+@dataclass(frozen=True)
+class Refresh:
+    payload: bytes
+    signature: bytes
+
+
+def sign_refresh(root, registration, signer, *, now_unix_ms=None):
+    now = time.time_ns() // 1_000_000 if now_unix_ms is None else now_unix_ms
+    old = read_generation(root, registration, now)
+    issued = now // 1000
+    expires = min(issued + 30, old.operation_expires_unix_ms // 1000)
+    if expires <= issued:
+        raise ValueError('operation deadline reached')
+    payload = REVOCATION_DOMAIN + canonical_json(dict(
+        revision=registration['generation'], revocation_revision=old.revocation_revision+1,
+        manifest_sha256=old.manifest_sha256, permit_id=registration['permit_id'],
+        target_id=registration['target_id'], issued_unix_seconds=issued,
+        expires_unix_seconds=expires, revoked=False))
+    return Refresh(payload, signer.sign(payload))
+
+
+def validate_refresh(refresh, key, registration, old, now_unix_ms):
+    if len(refresh.payload) > 4096:
+        raise ValueError('oversized revocation refresh')
+    state = signed_payload(refresh.payload, refresh.signature, key, REVOCATION_DOMAIN, FIELDS)
+    if (type(state['revision']) is not int or state['revision'] != registration['generation']
+            or state['manifest_sha256'] != old.manifest_sha256
+            or state['permit_id'] != registration['permit_id'] or state['target_id'] != registration['target_id']
+            or state['revoked'] is not False or not positive(state['revocation_revision'])
+            or state['revocation_revision'] != old.revocation_revision + 1
+            or not positive(state['issued_unix_seconds']) or not positive(state['expires_unix_seconds'])
+            or state['issued_unix_seconds'] * 1000 > now_unix_ms
+            or not 0 < state['expires_unix_seconds'] - state['issued_unix_seconds'] <= 30
+            or not now_unix_ms < state['expires_unix_seconds'] * 1000 <= old.operation_expires_unix_ms):
+        raise ValueError('refresh exceeds the existing scope or deadlines')
+    return state
+
+
+def sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def mark_uncertain(authority):
+    path = authority / 'revocation-pending'
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    sync_directory(authority)
+
+
+def publish(root, registration, refresh, *, now_unix_ms=None):
+    """Stage first, then switch all freshness files under one publication lock.
+
+    No normal-refresh pending marker is exposed. Readers unable to take SH use
+    only their already valid lease, without renewal. A failed partial switch
+    creates the irreversible uncertainty marker before releasing EX.
+    """
+    now = time.time_ns() // 1_000_000 if now_unix_ms is None else now_unix_ms
+    old = read_generation(root, registration, now)
+    authority, publication = root / 'claude-login-authority', root / 'claude-login-publication'
+    state = validate_refresh(refresh, read_private(authority / 'revocation-key', 32), registration, old, now)
+    files = {'revocation-state': refresh.payload, 'revocation-signature': refresh.signature,
+             'revocation-committed': canonical_json(dict(revision=state['revocation_revision'],
+                                                        state_sha256=sha256(refresh.payload).hexdigest())),
+             'revocation-minimum': str(state['revocation_revision']).encode('ascii')}
+    staged = Path(tempfile.mkdtemp(prefix='.refresh-', dir=authority))
+    try:
+        for name, data in files.items():
+            descriptor = os.open(staged / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, 'wb') as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+        sync_directory(staged)
+        lock = publication / 'lock'
+        check_file(lock)
+        with lock.open('rb') as held:
+            try:
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise RefreshBusy('publication readers still active') from error
+            no_pending(publication / 'pending')
+            no_pending(authority / 'revocation-pending')
+            if (sha256(read_private(authority / 'revocation-state', 4096)).hexdigest() != old.revocation_state_sha256
+                    or revision(authority / 'revocation-minimum') > old.revocation_revision):
+                raise ValueError('revocation changed during refresh preparation')
+            current_now = time.time_ns() // 1_000_000 if now_unix_ms is None else now_unix_ms
+            if current_now >= min(old.revocation_expires_unix_ms, old.operation_expires_unix_ms,
+                                  state['expires_unix_seconds'] * 1000):
+                raise ValueError('refresh was not committed before the old deadline')
+            changed = False
+            try:
+                for name in files:
+                    os.replace(staged / name, authority / name)
+                    changed = True
+                sync_directory(authority)
+            except BaseException:
+                if changed:
+                    mark_uncertain(authority)
+                raise
+        return state['revocation_revision']
+    finally:
+        shutil.rmtree(staged)
+
+
+def run_updater(root, registration, signer, deliver, stop_event, operation_deadline,
+                *, interval=10.0, clock=time.monotonic):
+    """Host-only driver. deliver(refresh, deadline) must use bounded root transport.
+
+    The operation cap is sampled once before all source I/O. Neither successful
+    publications nor a changed wall clock can extend it. Any failed delivery
+    quarantines the host source so the broker/relay stop rather than running on.
+    """
+    started = clock()
+    wall = time.time_ns() // 1_000_000
+    original = read_generation(root, registration, wall)
+    hard = min(operation_deadline, started + (original.operation_expires_unix_ms-wall)/1000)
+    if not 0 < interval <= 10:
+        raise ValueError('invalid revocation refresh interval')
+    freshness = FreshnessLatch(original.revocation_revision, original.revocation_state_sha256,
+        started + (original.revocation_expires_unix_ms-wall)/1000, hard, clock)
+    try:
+        while not stop_event.is_set() and clock() < hard:
+            old_deadline = freshness.deadline()
+            if old_deadline is None:
+                raise TimeoutError('publisher missed the previous signed freshness')
+            delivery_deadline = min(hard, old_deadline, clock()+10)
+            source = read_generation(root, registration, time.time_ns() // 1_000_000)
+            if (source.manifest_sha256 != original.manifest_sha256
+                    or source.operation_expires_unix_ms != original.operation_expires_unix_ms
+                    or source.approved_ips_revision != original.approved_ips_revision
+                    or source.addresses != original.addresses):
+                raise ValueError('operation source changed during refresh')
+            signed = sign_refresh(root, registration, signer)
+            while True:
+                if clock() >= delivery_deadline:
+                    raise TimeoutError('refresh transaction exceeded its deadline')
+                try:
+                    publish(root, registration, signed)
+                    break
+                except RefreshBusy:
+                    if stop_event.wait(min(0.01, max(0, delivery_deadline-clock()))):
+                        return
+            # Even a delayed successful file switch must not revive this updater.
+            source_started = clock()
+            source_wall = time.time_ns() // 1_000_000
+            current = read_generation(root, registration, source_wall)
+            if not freshness.observe(current.revocation_revision, current.revocation_state_sha256,
+                    current.revocation_expires_unix_ms, source_wall, source_started):
+                raise TimeoutError('publisher freshness cannot resume after expiry')
+            if clock() >= delivery_deadline:
+                raise TimeoutError('refresh transaction completed too late')
+            deliver(signed, delivery_deadline)
+            if clock() >= delivery_deadline:
+                raise TimeoutError('revocation delivery exceeded its deadline')
+            stop_event.wait(min(interval, max(0, hard-clock())))
+    except BaseException:
+        mark_uncertain(root / 'claude-login-authority')
+        raise

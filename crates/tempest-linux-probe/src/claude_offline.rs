@@ -2704,6 +2704,7 @@ struct VerifiedSupervisorInputs {
 }
 
 struct ScopedLoginRevocation {
+    publication_lock: File,
     freshness: std::sync::Arc<revocation_freshness::Freshness>,
     authority: File,
     generation: u64,
@@ -2712,9 +2713,39 @@ struct ScopedLoginRevocation {
     target_id: String,
 }
 
+fn lock_revocation_refresh(authority: &File, original: &File) -> io::Result<File> {
+    // Actual revocation/uncertain publication is never deferred as an ordinary refresh.
+    let no_pending = || -> io::Result<()> {
+        match open_login_child(authority, std::ffi::OsStr::new("revocation-pending"), 0) {
+            Ok(_) => Err(io::ErrorKind::PermissionDenied.into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    };
+    no_pending()?;
+    // Reopen a distinct open-file description: dropping this lock must not
+    // unlock the launch verifier's independently held publication barrier.
+    let held = open_pinned_login_policy(File::open(format!(
+        "/proc/self/fd/{}",
+        original.as_raw_fd()
+    ))?)?;
+    if fd_identity(&held)? != fd_identity(original)? {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    if unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } != 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::WouldBlock {
+            no_pending()?;
+        }
+        return Err(error);
+    }
+    Ok(held)
+}
+
 impl ScopedLoginRevocation {
     fn deadline(&self, sync: bool) -> io::Result<std::time::Instant> {
         self.freshness.current_or_update(|| {
+            let _held = lock_revocation_refresh(&self.authority, &self.publication_lock)?;
             verify_login_revocation_snapshot_with(
                 &self.authority,
                 self.generation,
@@ -2730,6 +2761,8 @@ impl ScopedLoginRevocation {
 impl VerifiedSupervisorInputs {
     fn revocation_deadline(&self) -> io::Result<std::time::Instant> {
         self.revocation_freshness.current_or_update(|| {
+            let _held =
+                lock_revocation_refresh(&self.revocation_authority, &self.publication_lock)?;
             verify_login_revocation_snapshot_with(
                 &self.revocation_authority,
                 self._revision,
@@ -2743,6 +2776,7 @@ impl VerifiedSupervisorInputs {
 
     fn runtime_revocation(&self) -> io::Result<ScopedLoginRevocation> {
         Ok(ScopedLoginRevocation {
+            publication_lock: self.publication_lock.try_clone()?,
             freshness: self.revocation_freshness.clone(),
             authority: self.revocation_authority.try_clone()?,
             generation: self._revision,

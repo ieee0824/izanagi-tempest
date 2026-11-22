@@ -46,15 +46,15 @@ class HostOriginals:
                 raise ValueError('egress trust key changed')
             source_started_at = time.monotonic()
             source_wall = time.time_ns() // 1_000_000
-            generation = read_generation(self.management, self.registration, source_wall)
-            if (generation.manifest_sha256 != self.generation.manifest_sha256
+            generation = read_generation(self.management, self.registration, source_wall, defer_busy=True)
+            if generation is not None and (generation.manifest_sha256 != self.generation.manifest_sha256
                     or generation.approved_ips_revision != self.generation.approved_ips_revision
                     or generation.addresses != self.generation.addresses
                     or generation.revocation_revision < self.revocation_revision):
                 raise ValueError('approved generation changed or rolled back')
             policy = parse_signed_policy(read_private(authority / 'egress-policy.json', 4096),
                 self.public_key, self.registration, read_json(authority / 'channel-approval.json'),
-                generation.route(), time.time_ns() // 1_000_000)
+                (generation or self.generation).route(), time.time_ns() // 1_000_000)
             if policy != self.policy:
                 raise ValueError('signed egress policy changed')
             commit = read_management_snapshot(self.management, allowed_states=('issued', 'consumed'))
@@ -66,11 +66,12 @@ class HostOriginals:
             os.close(process)
             if time.monotonic() >= deadline:
                 raise TimeoutError('host original check completed too late')
-            if not self.freshness.observe(generation.revocation_revision, generation.revocation_state_sha256,
+            if generation is not None and not self.freshness.observe(generation.revocation_revision, generation.revocation_state_sha256,
                     generation.revocation_expires_unix_ms, source_wall, source_started_at):
                 raise TimeoutError('signed revocation freshness could not advance')
             self.sequence = commit['sequence']
-            self.revocation_revision = generation.revocation_revision
+            if generation is not None:
+                self.revocation_revision = generation.revocation_revision
         except REJECTIONS:
             self.freshness.stop()
             self.authorization.stop()
