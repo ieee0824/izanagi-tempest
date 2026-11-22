@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import ipaddress
 import json
+import math
 import re
 import threading
 import time
@@ -117,6 +118,8 @@ class FreshAuthorization:
 class RunAuthorization:
     """One run's irreversible stop latch; only successful control replies renew it."""
     def __init__(self, scope, boot_id, ledger_id, absolute_deadline, clock=time.monotonic):
+        if not math.isfinite(absolute_deadline):
+            raise ValueError('invalid absolute egress deadline')
         self.scope = scope
         self.boot_id = boot_id
         self.ledger_id = ledger_id
@@ -155,7 +158,7 @@ class RunAuthorization:
                         or type(body['issued_unix_ms']) is not int or type(body['expires_unix_ms']) is not int):
                     raise ValueError('control response does not authorize this egress run')
                 lifetime_ms = body['expires_unix_ms'] - body['issued_unix_ms']
-                if not 0 < lifetime_ms <= 2000 or accepted_at > now:
+                if not math.isfinite(accepted_at) or not 0 < lifetime_ms <= 2000 or accepted_at > now:
                     raise ValueError('invalid control lifetime')
                 deadline = min(accepted_at + lifetime_ms / 1000, self.absolute_deadline)
                 if deadline <= now:
