@@ -5,6 +5,7 @@ mod local_auth;
 mod login_connect;
 mod login_egress;
 mod manual_socket_policy;
+mod revocation_freshness;
 pub(super) use host_login_diagnostic::{
     run_host_login_diagnostic, run_host_login_publisher, run_host_login_responder,
 };
@@ -2559,6 +2560,25 @@ fn verify_login_revocation_with(
     target_id: &str,
     sync: bool,
 ) -> io::Result<std::time::Instant> {
+    verify_login_revocation_snapshot_with(
+        authority,
+        revision,
+        manifest_sha256,
+        permit_id,
+        target_id,
+        sync,
+    )
+    .map(|snapshot| snapshot.lease.expires_at)
+}
+
+fn verify_login_revocation_snapshot_with(
+    authority: &File,
+    revision: u64,
+    manifest_sha256: &str,
+    permit_id: u128,
+    target_id: &str,
+    sync: bool,
+) -> io::Result<revocation_freshness::Snapshot> {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     match open_login_child(authority, std::ffi::OsStr::new("revocation-pending"), 0) {
@@ -2594,9 +2614,16 @@ fn verify_login_revocation_with(
         }
         sync_fd.sync_all()
     })?;
-    monotonic
+    let expires_at = monotonic
         .checked_add(Duration::from_secs(expires) - wall)
-        .ok_or(io::ErrorKind::InvalidData.into())
+        .ok_or(io::ErrorKind::InvalidData)?;
+    Ok(revocation_freshness::Snapshot {
+        lease: crate::host_channel::ReceiptLease {
+            expires_at,
+            sequence: revocation_revision,
+        },
+        state_sha256: Sha256::digest(&payload).into(),
+    })
 }
 
 fn verify_revocation_state(
@@ -2668,6 +2695,7 @@ fn verify_revocation_state_with_disposition(
 struct VerifiedSupervisorInputs {
     publication_lock: File,
     revocation_authority: File,
+    revocation_freshness: std::sync::Arc<revocation_freshness::Freshness>,
     approved_route: ApprovedLoginIps,
     _generation: File,
     _revision: u64,
@@ -2676,6 +2704,7 @@ struct VerifiedSupervisorInputs {
 }
 
 struct ScopedLoginRevocation {
+    freshness: std::sync::Arc<revocation_freshness::Freshness>,
     authority: File,
     generation: u64,
     manifest_sha256: String,
@@ -2685,30 +2714,36 @@ struct ScopedLoginRevocation {
 
 impl ScopedLoginRevocation {
     fn deadline(&self, sync: bool) -> io::Result<std::time::Instant> {
-        verify_login_revocation_with(
-            &self.authority,
-            self.generation,
-            &self.manifest_sha256,
-            self.permit_id,
-            &self.target_id,
-            sync,
-        )
+        self.freshness.current_or_update(|| {
+            verify_login_revocation_snapshot_with(
+                &self.authority,
+                self.generation,
+                &self.manifest_sha256,
+                self.permit_id,
+                &self.target_id,
+                sync,
+            )
+        })
     }
 }
 
 impl VerifiedSupervisorInputs {
     fn revocation_deadline(&self) -> io::Result<std::time::Instant> {
-        verify_login_revocation(
-            &self.revocation_authority,
-            self._revision,
-            &self._manifest_sha256,
-            self._login.id,
-            &self._login.target_id,
-        )
+        self.revocation_freshness.current_or_update(|| {
+            verify_login_revocation_snapshot_with(
+                &self.revocation_authority,
+                self._revision,
+                &self._manifest_sha256,
+                self._login.id,
+                &self._login.target_id,
+                true,
+            )
+        })
     }
 
     fn runtime_revocation(&self) -> io::Result<ScopedLoginRevocation> {
         Ok(ScopedLoginRevocation {
+            freshness: self.revocation_freshness.clone(),
             authority: self.revocation_authority.try_clone()?,
             generation: self._revision,
             manifest_sha256: self._manifest_sha256.clone(),
@@ -2800,20 +2835,26 @@ fn verify_login_generation(
         &manifest_bytes,
     )?;
     // The publication lock remains held through this final read-only check.
-    let revocation = verify_login_revocation(
+    let revocation = verify_login_revocation_snapshot_with(
         &authority,
         current,
         &manifest_sha256,
         inputs.id,
         &inputs.target_id,
+        true,
     )?;
-    inputs.recheck(parent, &ARTIFACTS[0], revocation)?;
+    inputs.recheck(parent, &ARTIFACTS[0], revocation.lease.expires_at)?;
+    let freshness = std::sync::Arc::new(revocation_freshness::Freshness::new(
+        revocation,
+        inputs.expires,
+    )?);
     if report {
         host_login_diagnostic::report_without_waiting("manual login final diagnostic verified");
     }
     Ok(VerifiedSupervisorInputs {
         publication_lock: lock,
         revocation_authority: authority,
+        revocation_freshness: freshness,
         approved_route: scope.approved_route,
         _generation: generation,
         _revision: current,
@@ -3032,7 +3073,7 @@ fn diagnose_manual_login_handoff_with(
         )?;
         Ok::<_, io::Error>((id, expires, target_id))
     })();
-    let (id, mut expires, target_id) = result.map_err(|error| {
+    let (id, expires, target_id) = result.map_err(|error| {
         if report {
             host_login_diagnostic::report_without_waiting(&format!(
                 "manual login handoff diagnostic refused: {error}"
@@ -3044,7 +3085,9 @@ fn diagnose_manual_login_handoff_with(
         host_login_diagnostic::report_without_waiting("manual login handoff diagnostic verified");
     }
     if let Some(deadline) = revocation_deadline(id, &target_id)? {
-        expires = expires.min(deadline);
+        if std::time::Instant::now() >= deadline {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
         if report {
             host_login_diagnostic::report_without_waiting(
                 "manual login revocation diagnostic verified",
@@ -3195,8 +3238,8 @@ fn validate_manual_login_policy_at(
     use std::time::{Duration, UNIX_EPOCH};
 
     const MAX_POLICY_BYTES: u64 = 4096;
-    // Diagnostic limit only. Production start timing is defined separately.
-    const MAX_DIAGNOSTIC_REMAINING: Duration = Duration::from_secs(60);
+    // Absolute owner operation cap; signed freshness remains independently short.
+    const MAX_OPERATION_REMAINING: Duration = Duration::from_secs(300);
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid manual login policy");
     let mut bytes = Vec::new();
     input.take(MAX_POLICY_BYTES + 1).read_to_end(&mut bytes)?;
@@ -3223,7 +3266,7 @@ fn validate_manual_login_policy_at(
         .checked_add(Duration::from_secs(policy.permit.expires_unix_seconds))
         .ok_or_else(invalid)?;
     let remaining = expires.duration_since(now).map_err(|_| invalid())?;
-    if remaining.is_zero() || remaining > MAX_DIAGNOSTIC_REMAINING {
+    if remaining.is_zero() || remaining > MAX_OPERATION_REMAINING {
         return Err(invalid());
     }
     Ok(Some(LoginPolicyScope {
@@ -3258,7 +3301,7 @@ fn verify_combined_login_inputs_with(
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let publication = open_private_login_directory(&parent, "claude-login-publication")?;
-    let mut verified = verify_login_generation(&parent, &publication, false)?;
+    let verified = verify_login_generation(&parent, &publication, false)?;
     preflight(&verified)?;
     if std::time::Instant::now() >= verified._login.expires {
         return Err(io::Error::other("manual login inputs expired"));
@@ -3269,8 +3312,7 @@ fn verify_combined_login_inputs_with(
         verified._revision,
         verified._login.expires,
     )?;
-    let revocation_deadline = verified.revocation_deadline()?;
-    verified._login.expires = verified._login.expires.min(revocation_deadline);
+    verified.revocation_deadline()?;
     if std::time::Instant::now() >= verified._login.expires {
         return Err(io::Error::other("manual login inputs expired"));
     }
@@ -3798,7 +3840,8 @@ fn run_writable_pty_for(
                 approved_ips_revision: verified.approved_route.revision,
             };
             let gate = commit.lock_current()?;
-            let expiry = verified._login.expires.min(verified.revocation_deadline()?);
+            verified.revocation_deadline()?;
+            let expiry = verified._login.expires;
             let id = verified._login.id;
             let ledger = verified._login.ledger.try_clone()?;
             let record = login_permit::consume(
@@ -3946,7 +3989,10 @@ fn run_writable_pty_for(
                 .map(host_login_diagnostic::VerifiedHostCommit::lock_current)
                 .transpose()?;
             let expiry = match verified_diagnostic {
-                Some(verified) => expiry.min(verified.revocation_deadline()?),
+                Some(verified) => {
+                    verified.revocation_deadline()?;
+                    expiry
+                }
                 None => expiry,
             };
             let record = login_permit::consume(
@@ -4882,7 +4928,7 @@ mod tests {
                 "target_hostname": "tempest-test",
                 "authority": "platform.claude.com:443",
                 "approved_ips_revision": 3,
-                "expires_unix_seconds": 160,
+                "expires_unix_seconds": 400,
             },
         });
         let input = settings.to_string();
@@ -4906,7 +4952,7 @@ mod tests {
             ("/approved_ips/addresses", serde_json::json!([])),
             ("/approved_ips/addresses", serde_json::json!(["not-an-ip"])),
             ("/permit/expires_unix_seconds", serde_json::json!(100)),
-            ("/permit/expires_unix_seconds", serde_json::json!(161)),
+            ("/permit/expires_unix_seconds", serde_json::json!(401)),
         ] {
             let mut invalid = settings.clone();
             *invalid.pointer_mut(path).unwrap() = value;
