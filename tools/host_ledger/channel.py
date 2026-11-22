@@ -193,3 +193,61 @@ def serve_query(connection, peer_cid, registration, management, signer, deadline
         write_frame(connection, canonical_json(signed), RESPONSE_LIMIT, deadline)
     finally:
         os.close(process)
+
+
+def verify_response(payload, request, public_key, now_unix_ms):
+    """Verify a response bound to this request before the guest accepts it."""
+    if len(payload) > RESPONSE_LIMIT:
+        raise ValueError("management response too large")
+    response = json.loads(payload, object_pairs_hook=unique_fields)
+    if not isinstance(response, dict) or set(response) != {"payload", "signature"}:
+        raise ValueError("invalid management response")
+    body = response["payload"]
+    if not isinstance(body, dict) or set(body) != {
+            "request", "commit", "issued_unix_ms", "expires_unix_ms"}:
+        raise ValueError("invalid signed response fields")
+    signature = response["signature"]
+    if not isinstance(signature, str) or not re.fullmatch(r"[0-9a-f]{128}", signature):
+        raise ValueError("invalid management signature encoding")
+    public_key.verify(bytes.fromhex(signature), RECEIPT_DOMAIN + canonical_json(body))
+    if body["request"] != request:
+        raise ValueError("management response request mismatch")
+    issued, expires = body["issued_unix_ms"], body["expires_unix_ms"]
+    if (type(issued) is not int or type(expires) is not int
+            or not issued <= now_unix_ms < expires or not 0 < expires - issued <= 2000):
+        raise ValueError("management response expired or invalid")
+    commit = body["commit"]
+    if not isinstance(commit, dict) or set(commit) != {"ledger_id", "scope", "sequence", "state"}:
+        raise ValueError("invalid management commit")
+    expected = {key: request[key] for key in ("target_id", "permit_id", "generation")}
+    if (commit["scope"] != expected or commit["state"] != "consumed"
+            or type(commit["sequence"]) is not int or commit["sequence"] <= 0
+            or not isinstance(commit["ledger_id"], str)
+            or not IDENTIFIER.fullmatch(commit["ledger_id"])):
+        raise ValueError("management commit mismatch")
+    return body
+
+
+def exchange(connection, request, public_key, deadline):
+    """Exchange a single request without resetting the caller's deadline."""
+    write_frame(connection, canonical_json(request), REQUEST_LIMIT, deadline)
+    payload = read_frame(connection, RESPONSE_LIMIT, deadline)
+    body = verify_response(payload, request, public_key, time.time_ns() // 1_000_000)
+    if time.monotonic() >= deadline:
+        raise TimeoutError("verified response arrived after deadline")
+    return body
+
+
+def query_host(scope, boot_id, public_key, operation, deadline):
+    """Connect to the fixed host CID and port with a fresh request challenge."""
+    import secrets
+
+    request = dict(scope, version=1, boot_id=boot_id, operation=operation,
+                   challenge=secrets.token_hex(32))
+    with socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM) as connection:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("host connection deadline expired")
+        connection.settimeout(remaining)
+        connection.connect((socket.VMADDR_CID_HOST, 23100))
+        return exchange(connection, request, public_key, deadline)

@@ -57,6 +57,23 @@ class ChannelTests(unittest.TestCase):
         payload = reply['payload']
         signer.public_key().verify(bytes.fromhex(reply['signature']),
                                    channel.RECEIPT_DOMAIN + channel.canonical_json(payload))
+        encoded = channel.canonical_json(reply)
+        channel.verify_response(encoded, self.request, signer.public_key(), payload['issued_unix_ms'])
+        with self.assertRaises(ValueError):
+            channel.verify_response(encoded, self.request, signer.public_key(), payload['expires_unix_ms'])
+        other = dict(self.request, challenge='c' * 64)
+        with self.assertRaises(ValueError):
+            channel.verify_response(encoded, other, signer.public_key(), payload['issued_unix_ms'])
+        client, server = socket.socketpair()
+        with client, server:
+            server.sendall(encoded + b'\n')
+            received = channel.exchange(client, self.request, signer.public_key(), time.monotonic() + 1)
+            self.assertEqual(received, payload)
+        client, server = socket.socketpair()
+        with client, server:
+            server.sendall(encoded + b'\n')
+            with self.assertRaises(TimeoutError):
+                channel.exchange(client, self.request, signer.public_key(), time.monotonic() - 1)
         self.assertEqual(payload['request'], self.request)
         self.assertEqual(payload['commit'], commit)
         self.assertLessEqual(payload['expires_unix_ms'] - payload['issued_unix_ms'], 2000)
