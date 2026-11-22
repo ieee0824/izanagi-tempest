@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--kernel', required=True, type=Path)
     parser.add_argument('--kernel-release', required=True)
     parser.add_argument("--native-verifier", type=Path)
-    parser.add_argument("--stop-mode", choices=("revoke", "disconnect", "silence", "renew", "late-receipt"), default="revoke")
+    parser.add_argument("--stop-mode", choices=("revoke", "disconnect", "silence", "renew", "late-receipt", "wrong-cid", "old-boot", "old-process", "wrong-device-cid"), default="revoke")
     parser.add_argument("--supervisor-test", action="store_true")
     parser.add_argument("--managed-ledger", action="store_true")
     args = parser.parse_args()
@@ -191,15 +191,51 @@ def main():
                                             if args.stop_mode == 'silence':
                                                 time.sleep(2.5)
                                                 break
-                                            time.sleep(0.2)
-                                            advance(management, 'revoke')
+                                            if args.stop_mode == 'wrong-cid':
+                                                registration['cid'] = 233
+                                            elif args.stop_mode == 'old-boot':
+                                                registration['boot_id'] = 'boot2'
+                                                approval['boot_id'] = 'boot2'
+                                                path.write_bytes(canonical_json(approval))
+                                            elif args.stop_mode == 'old-process':
+                                                registration['qemu_start_ticks'] += 1
+                                            elif args.stop_mode == 'wrong-device-cid':
+                                                from channel import require_live_instance
+                                                # Preserve the true transport peer while testing QMP's
+                                                # independent device-CID check against a wrong registry CID.
+                                                wrong = dict(registration, cid=233)
+                                                try:
+                                                    descriptor = require_live_instance(wrong, time.monotonic()+2)
+                                                except ValueError as error:
+                                                    if str(error) != 'QEMU channel CID assignment mismatch':
+                                                        raise
+                                                    print('independent QMP CID rejection:', error, flush=True)
+                                                else:
+                                                    import os
+                                                    os.close(descriptor)
+                                                    raise RuntimeError('wrong QMP CID accepted')
+                                                break
+                                            else:
+                                                time.sleep(0.2)
+                                                advance(management, 'revoke')
                                         try:
                                             serve_query(next_connection, next_peer[0], registration,
                                                         management, signer, time.monotonic()+2)
                                             print('accepted', phase, 'at', round(time.monotonic(), 3), flush=True)
-                                        except ValueError:
+                                        except ValueError as error:
                                             if phase != 'stop':
                                                 raise
+                                            expected = {
+                                                'wrong-cid': 'management peer mismatch',
+                                                'old-boot': 'management identity mismatch',
+                                                'old-process': 'QEMU process lifetime mismatch',
+                                            }.get(args.stop_mode)
+                                            if expected is not None and str(error) != expected:
+                                                raise RuntimeError(f'wrong rejection: {error}') from error
+                                            print('rejected stop query:', error, flush=True)
+                                        else:
+                                            if phase == 'stop':
+                                                raise RuntimeError('stop query unexpectedly accepted')
 
                         else:
                             with connection.makefile('rb') as stream:
