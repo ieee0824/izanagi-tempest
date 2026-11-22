@@ -152,11 +152,25 @@ fn open_input(artifact: &Artifact<'_>) -> Result<File, Fault> {
     Ok(file)
 }
 
-struct ArtifactReader<'a>(&'a File, u64);
+struct ArtifactReader<'a>(&'a File, u64, Option<&'a FixtureStop>, std::time::Instant);
+
+impl<'a> ArtifactReader<'a> {
+    fn new(file: &'a File, stop: Option<&'a FixtureStop>) -> Self {
+        Self(file, 0, stop, std::time::Instant::now())
+    }
+}
 
 impl Read for ArtifactReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         use std::os::unix::fs::FileExt;
+        if let Some(stop) = self.2 {
+            if self.1 == 0 || self.3.elapsed() >= std::time::Duration::from_millis(250) {
+                if stop.requested() {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                self.3 = std::time::Instant::now();
+            }
+        }
         let count = self.0.read_at(buf, self.1)?;
         self.1 += count as u64;
         Ok(count)
@@ -164,8 +178,16 @@ impl Read for ArtifactReader<'_> {
 }
 
 fn verify_artifact(file: &File, artifact: &Artifact<'_>) -> Result<(), Fault> {
+    verify_artifact_monitored(file, artifact, None)
+}
+
+fn verify_artifact_monitored(
+    file: &File,
+    artifact: &Artifact<'_>,
+    stop: Option<&FixtureStop>,
+) -> Result<(), Fault> {
     copy_checked(
-        ArtifactReader(file, 0),
+        ArtifactReader::new(file, stop),
         io::sink(),
         artifact.bytes,
         artifact.sha256,
@@ -198,6 +220,15 @@ fn stage_pinned_artifact(
     artifact: &Artifact<'_>,
     destination: &Path,
 ) -> Result<File, Fault> {
+    stage_pinned_artifact_monitored(input, artifact, destination, None)
+}
+
+fn stage_pinned_artifact_monitored(
+    input: &File,
+    artifact: &Artifact<'_>,
+    destination: &Path,
+    stop: Option<&FixtureStop>,
+) -> Result<File, Fault> {
     use std::os::unix::fs::PermissionsExt;
     let mut output = OpenOptions::new()
         .write(true)
@@ -205,7 +236,7 @@ fn stage_pinned_artifact(
         .mode(0o600)
         .open(destination)?;
     copy_checked(
-        ArtifactReader(input, 0),
+        ArtifactReader::new(input, stop),
         &mut output,
         artifact.bytes,
         artifact.sha256,
@@ -221,7 +252,7 @@ fn stage_pinned_artifact(
     if (written.dev(), written.ino()) != (reopened.dev(), reopened.ino()) {
         return Err(Fault::Identity);
     }
-    verify_artifact(&snapshot, artifact)?;
+    verify_artifact_monitored(&snapshot, artifact, stop)?;
     Ok(snapshot)
 }
 
@@ -774,6 +805,7 @@ impl FixtureStop {
         let notice = match self {
             Self::Host(commit, expires, revocation) => {
                 if std::time::Instant::now() >= *expires || revocation.deadline(false).is_err() {
+                    commit.stop_remote();
                     return true;
                 }
                 return match commit.lock_current() {
@@ -854,7 +886,12 @@ impl FixtureGrant {
         Ok(claim)
     }
 
-    fn verify(&self, control: &mut UnixStream, work: &WorkArea) -> io::Result<()> {
+    fn verify(
+        &self,
+        control: &mut UnixStream,
+        work: &WorkArea,
+        stop: Option<&FixtureStop>,
+    ) -> io::Result<()> {
         let mut claim = [0; 48];
         control.read_exact(&mut claim)?;
         self.verify_consumed_record()?;
@@ -868,7 +905,8 @@ impl FixtureGrant {
             ));
         }
         let stage = File::open(format!("/proc/self/fd/{}", stage.as_raw_fd()))?;
-        verify_artifact(&stage, self.artifact).map_err(|fault| io::Error::other(fault.reason()))
+        verify_artifact_monitored(&stage, self.artifact, stop)
+            .map_err(|fault| io::Error::other(fault.reason()))
     }
 }
 
@@ -1359,11 +1397,22 @@ fn pin_artifacts(artifacts: &[Artifact<'_>]) -> Result<Vec<File>, Fault> {
     artifacts.iter().map(verify_fixed_artifact).collect()
 }
 
+#[cfg(test)]
 fn stage_fixed_artifacts(
     scratch: &Path,
     root: &Path,
     artifacts: &[Artifact<'_>],
     verified: Option<&[File]>,
+) -> Result<(), Fault> {
+    stage_fixed_artifacts_monitored(scratch, root, artifacts, verified, None)
+}
+
+fn stage_fixed_artifacts_monitored(
+    scratch: &Path,
+    root: &Path,
+    artifacts: &[Artifact<'_>],
+    verified: Option<&[File]>,
+    stop: Option<&FixtureStop>,
 ) -> Result<(), Fault> {
     if verified.is_some_and(|files| files.len() != artifacts.len()) {
         return Err(Fault::Identity);
@@ -1371,8 +1420,15 @@ fn stage_fixed_artifacts(
     for (index, artifact) in artifacts.iter().enumerate() {
         let destination = scratch.join(format!("artifact-{index}"));
         let staged = match verified {
-            Some(files) => stage_pinned_artifact(&files[index], artifact, &destination),
-            None => stage_artifact(artifact, &destination),
+            Some(files) => {
+                stage_pinned_artifact_monitored(&files[index], artifact, &destination, stop)
+            }
+            None => stage_pinned_artifact_monitored(
+                &open_input(artifact)?,
+                artifact,
+                &destination,
+                stop,
+            ),
         }
         .inspect_err(|fault| stage_failure(artifact.source, fault))?;
         mount_artifact(root, artifact, &staged)
@@ -1403,11 +1459,12 @@ fn run_fixture_with_config(
     ] {
         fs::create_dir(root.join(dir))?;
     }
-    stage_fixed_artifacts(
+    stage_fixed_artifacts_monitored(
         scratch,
         root,
         artifacts_for(diagnostic),
         staging.verified_artifacts,
+        local_auth.and_then(|(_, _, permit)| permit.administrator_stop.as_ref()),
     )?;
     let tls_fixture = local_auth.and_then(|(_, _, permit)| permit.tls.as_ref());
     if let Some(tls) = tls_fixture {
@@ -1970,6 +2027,50 @@ fn supervised_observed(
     supervised_with_network(parent, work, execute, observation, None)
 }
 
+fn read_supervised_control(
+    control: &mut UnixStream,
+    bytes: &mut [u8],
+    permit: Option<&FixturePermit>,
+) -> io::Result<()> {
+    use std::time::{Duration, Instant};
+    let Some(stop @ FixtureStop::Host(..)) =
+        permit.and_then(|permit| permit.administrator_stop.as_ref())
+    else {
+        return control.read_exact(bytes);
+    };
+    let mut offset = 0;
+    let mut next_check = Instant::now();
+    let mut stopped_at = None;
+    while offset < bytes.len() {
+        if Instant::now() >= next_check {
+            if stop.requested() {
+                stopped_at.get_or_insert(Instant::now());
+            }
+            next_check = Instant::now() + Duration::from_millis(250);
+        }
+        if stopped_at.is_some_and(|time| time.elapsed() >= Duration::from_secs(2)) {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        let mut event = libc::pollfd {
+            fd: control.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut event, 1, 20) };
+        if ready < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if ready == 0 {
+            continue;
+        }
+        match control.read(&mut bytes[offset..])? {
+            0 => return Err(io::ErrorKind::UnexpectedEof.into()),
+            count => offset += count,
+        }
+    }
+    Ok(())
+}
+
 fn supervised_with_network(
     parent: &File,
     work: &WorkArea,
@@ -2028,7 +2129,7 @@ fn supervised_with_network(
     let mut termination_reported = false;
     let received = (|| -> io::Result<()> {
         // Treat the grant as issued before attempting delivery.
-        outside.read_exact(&mut message)?;
+        read_supervised_control(&mut outside, &mut message, permit)?;
         if message != *b"C" {
             return Err(io::Error::other("invalid offline start request"));
         }
@@ -2040,7 +2141,7 @@ fn supervised_with_network(
         verified_network = Some(identity);
         if let Some(permit) = permit {
             if let Some(grant) = &permit.grant {
-                grant.verify(&mut outside, work)?;
+                grant.verify(&mut outside, work, permit.administrator_stop.as_ref())?;
             }
             permit.validate()?;
             if permit
@@ -2058,7 +2159,7 @@ fn supervised_with_network(
         if local_auth {
             local_auth::grant(&mut outside, identity)?;
         }
-        outside.read_exact(&mut report)?;
+        read_supervised_control(&mut outside, &mut report, permit)?;
         termination_reported = true;
         if let Some(closure) = closure {
             closure.verify(
