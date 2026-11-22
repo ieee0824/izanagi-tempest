@@ -77,3 +77,17 @@ sudo python3 integration/qemu_vsock_probe.py \
 実 CID と要求を照合する。ゲストの応答確認と電源断まで確認する。
 この試験は専用通信路の疎通を検証する。署名台帳、supervisor、失効時の回収を
 通す VM 間試験は別途追加する。
+
+Rust 診断入口を使用する署名応答の VM 間試験は次で実行する。
+
+```sh
+cargo build --locked -p tempest-linux-probe --bin tempest-host-channel-verify
+sudo python3 integration/qemu_vsock_probe.py \
+  --kernel /boot/vmlinuz-6.8.0-149-generic \
+  --kernel-release 6.8.0-149-generic \
+  --native-verifier target/debug/tempest-host-channel-verify
+```
+
+現在このモードはホストが固定ダミーの commit を署名し、ゲストの Rust 診断入口が
+公開鍵・要求・期限・独立に指定した台帳 ID を検証する。実 SQLite、管理登録、
+supervisor の接続を含む試験へ拡張する必要がある。

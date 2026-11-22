@@ -31,12 +31,15 @@ def main():
         expected = root / 'request.json'
         expected.write_bytes(canonical_json(request))
         def run(value, now, success):
-            result = subprocess.run([str(verifier), str(public), str(expected), str(now)],
+            result = subprocess.run([str(verifier), str(public), str(expected), str(now), "ledger"],
                                     input=canonical_json(value), capture_output=True)
             if (result.returncode == 0) != success:
                 raise RuntimeError(result.stderr.decode())
         run(response, 1500, True)
         run(response, 2000, False)
+        other_body = dict(body, commit=dict(body['commit'], ledger_id='other-ledger'))
+        other = dict(payload=other_body, signature=key.sign(RECEIPT_DOMAIN + canonical_json(other_body)).hex())
+        run(other, 1500, False)
         run(dict(response, signature='0' * 128), 1500, False)
         expected.write_bytes(canonical_json(dict(request, challenge='c' * 64)))
         run(response, 1500, False)

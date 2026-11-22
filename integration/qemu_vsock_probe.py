@@ -2,6 +2,9 @@
 
 import argparse
 import gzip
+import json
+import sys
+import time
 from pathlib import Path
 import shutil
 import socket
@@ -13,7 +16,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kernel', required=True, type=Path)
     parser.add_argument('--kernel-release', required=True)
+    parser.add_argument("--native-verifier", type=Path)
     args = parser.parse_args()
+    native = args.native_verifier is not None
     with tempfile.TemporaryDirectory(prefix='tempest-vsock-') as temporary:
         root = Path(temporary)
         guest = root / 'guest'
@@ -42,7 +47,30 @@ def main():
                 '/bin/busybox mount -t sysfs sysfs /sys\n'
                 '/bin/busybox mount -t devtmpfs devtmpfs /dev\n')
         init += ''.join('/bin/busybox insmod /modules/' + name + '\n' for name in modules)
-        init += '/bin/probe\n/bin/busybox poweroff -f\n'
+        if native:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+            from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools/host_ledger'))
+            from channel import canonical_json, RECEIPT_DOMAIN
+            signer = Ed25519PrivateKey.generate()
+            request = dict(version=1, operation='query', target_id='vm', boot_id='boot1',
+                           permit_id='a' * 32, generation=1, challenge='b' * 64)
+            (guest / 'key').write_bytes(signer.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw))
+            (guest / 'request').write_bytes(canonical_json(request))
+            shutil.copyfile(args.native_verifier.resolve(), guest / 'bin/verify')
+            (guest / 'bin/verify').chmod(0o755)
+            libraries = subprocess.check_output(['ldd', str(args.native_verifier.resolve())], text=True)
+            for line in libraries.splitlines():
+                for token in line.split():
+                    if token.startswith('/'):
+                        target = guest / token.lstrip('/')
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(token, target)
+                        target.chmod(0o755)
+            init += '/bin/verify /key /request 0 fixture --vsock\necho NATIVE_RECEIPT_OK\n/bin/busybox poweroff -f\n'
+        else:
+            init += '/bin/probe\n/bin/busybox poweroff -f\n'
+
         (guest / 'init').write_text(init)
         (guest / 'init').chmod(0o755)
         names = ['.'] + [str(path.relative_to(guest)) for path in guest.rglob('*')]
@@ -52,11 +80,11 @@ def main():
         image.write_bytes(gzip.compress(archive))
         with socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM) as listener:
             listener.settimeout(40)
-            listener.bind((socket.VMADDR_CID_HOST, 23101))
+            listener.bind((socket.VMADDR_CID_HOST, 23100 if native else 23101))
             listener.listen(1)
             with (root / 'serial.log').open('wb') as log:
                 vm = subprocess.Popen([
-                    'qemu-system-x86_64', '-machine', 'q35,accel=kvm:tcg', '-m', '256',
+                    'qemu-system-x86_64', '-machine', 'q35,accel=kvm:tcg', '-m', '512',
                     '-nodefaults', '-display', 'none', '-serial', 'stdio', '-no-reboot',
                     '-net', 'none', '-kernel', str(args.kernel), '-initrd', str(image),
                     '-append', 'console=ttyS0 panic=-1 quiet',
@@ -67,18 +95,34 @@ def main():
                     with connection:
                         connection.settimeout(2)
                         with connection.makefile('rb') as stream:
-                            data = stream.readline(64)
-                        if peer[0] != 232 or data != b'tempest-channel-probe\n':
-                            raise RuntimeError('vsock peer or probe mismatch')
-                        connection.sendall(b'ok\n')
+                            data = stream.readline(1025)
+                        if peer[0] != 232:
+                            raise RuntimeError('vsock peer mismatch')
+                        if native:
+                            if json.loads(data) != request:
+                                raise RuntimeError('native request mismatch')
+                            now = time.time_ns() // 1_000_000
+                            scope = {key: request[key] for key in ('target_id', 'permit_id', 'generation')}
+                            body = dict(request=request, commit=dict(scope=scope, ledger_id='fixture',
+                                        sequence=2, state='consumed'), issued_unix_ms=now, expires_unix_ms=now+2000)
+                            reply = dict(payload=body, signature=signer.sign(RECEIPT_DOMAIN + canonical_json(body)).hex())
+                            connection.sendall(canonical_json(reply) + b'\n')
+                        else:
+                            if data != b'tempest-channel-probe\n':
+                                raise RuntimeError('probe mismatch')
+                            connection.sendall(b'ok\n')
                     if vm.wait(timeout=20) != 0:
                         raise RuntimeError('probe VM failed')
+                except Exception:
+                    log.flush()
+                    print((root / 'serial.log').read_text(errors='replace')[-6000:])
+                    raise
                 finally:
                     if vm.poll() is None:
                         vm.kill()
                         vm.wait()
             output = (root / 'serial.log').read_text(errors='replace')
-            if 'VSOCK_PROBE_OK' not in output:
+            if ('NATIVE_RECEIPT_OK' if native else 'VSOCK_PROBE_OK') not in output:
                 raise RuntimeError(output)
         print('Actual guest CID 232 verified; guest exchange and shutdown succeeded')
 
