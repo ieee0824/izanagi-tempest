@@ -255,3 +255,20 @@ sudo unshare -m --propagation private python3 integration/prepare_login_vm_runti
 SSL/SQLite/PTY、cryptography の Ed25519 生成、OpenSSL 起動を確認済み。
 最初の試験で不足していた OpenSSL provider ディレクトリも追加した。
 実 VM の9pマウントと TLS ハーネス実行、ホスト側台帳への callback 分離は未完了。
+
+実 VM で userspace を確認する場合、上記 --command 以降を次に置き換える。
+
+```sh
+--command python3 integration/qemu_login_runtime.py \
+  --runtime /var/lib/tempest-login-runtime-test \
+  --kernel /boot/vmlinuz-6.8.0-149-generic --kernel-release 6.8.0-149-generic
+```
+
+起動側は NIC を付けず、vsock と readonly=on の9pエクスポートだけを追加する。
+ゲストも9pを ro でマウントする。既存ファイルの変更と新規作成が EROFS で
+拒否されることを確認した。ゲスト内で SSL/SQLite/PTY/Ed25519、OpenSSL、
+loopback と nft table の作成・削除も成功した。さらに既存の pin_artifacts を使い、
+固定 CLI/bundle、TLS fixture の OpenSSL/libssl/libcrypto、BusyBox の uid/mode/
+nlink/size/digest 検証が成功した（ignored試験1件、約22秒）。
+これは userspace と固定実体の準備確認であり、TLS/FixtureStop remote 回収自体の
+完了を示さない。VM終了後は起動プロセスを回収してから全bind mountを解除する。

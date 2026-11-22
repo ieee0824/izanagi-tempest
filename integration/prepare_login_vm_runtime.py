@@ -21,6 +21,7 @@ def main():
         parser.error('requires root inside a private mount namespace')
     root = args.output.resolve()
     root.mkdir(mode=0o700)
+    (root / "readonly-probe").write_text("original\n")
     mounts = []
     copied = set()
 
@@ -58,6 +59,8 @@ def main():
             # Preserve both merged-/usr spellings used by the fixed fixture.
             if tool in ('busybox', 'mount', 'umount'):
                 bind(source, 'bin/' + tool)
+        for name in ('libssl.so.3', 'libcrypto.so.3'):
+            bind('/usr/lib/x86_64-linux-gnu/' + name, 'usr/lib/x86_64-linux-gnu/' + name)
         bind('/usr/bin/python3.12', 'usr/bin/python3')
         bind('/usr/lib/python3.12', 'usr/lib/python3.12')
         bind('/usr/lib/x86_64-linux-gnu/ossl-modules', 'usr/lib/x86_64-linux-gnu/ossl-modules')

@@ -5632,6 +5632,19 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "run inside the curated read-only login runtime VM"]
+    fn pin_login_vm_runtime_artifacts() {
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_eq!(pin_artifacts(ARTIFACTS).unwrap().len(), ARTIFACTS.len());
+        assert_eq!(
+            pin_artifacts(TLS_FIXTURE_ARTIFACTS).unwrap().len(),
+            TLS_FIXTURE_ARTIFACTS.len()
+        );
+        verify_fixed_artifact(&BUSYBOX).unwrap();
+        println!("LOGIN_VM_PINNED_ARTIFACTS_OK");
+    }
+
+    #[test]
     #[ignore = "run inside the dedicated vsock management VM fixture"]
     fn remote_channel_obeys_short_caller_deadline() {
         use std::time::{Duration, Instant};
