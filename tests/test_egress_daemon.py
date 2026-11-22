@@ -18,7 +18,7 @@ class OriginalsTests(unittest.TestCase):
         self.registration = dict(self.scope, boot_id='boot', cid=231)
         self.policy = EgressPolicy(Scope.parse(self.scope), 'boot', 'b'*64, 1,
                                   'platform.claude.com:443', '127.0.0.1', 443, 9000)
-        self.generation = ApprovedGeneration('b'*64, 1, ('127.0.0.1',), 9000, 2)
+        self.generation = ApprovedGeneration('b'*64, 1, ('127.0.0.1',), 9000, 2, 8000, 'c'*64)
         self.state = Mock()
         self.state.current.return_value = object()
         self.commit = dict(scope=self.scope, ledger_id='ledger', sequence=2, state='consumed')
@@ -45,6 +45,7 @@ class OriginalsTests(unittest.TestCase):
         self.assertEqual(self.originals.revocation_revision, 3)
         self.state.observe.assert_not_called()
         self.state.stop.assert_not_called()
+        self.state.freshness.observe.assert_called_once()
         with self.assertRaises(ValueError):
             self.check()
         self.state.stop.assert_called()
@@ -63,6 +64,26 @@ class OriginalsTests(unittest.TestCase):
                 self.check(**case)
             self.state.stop.assert_called()
             self.state.observe.assert_not_called()
+
+    def test_expired_signed_freshness_cannot_be_replaced_by_a_new_source(self):
+        from freshness import FreshnessLatch
+        self.state.freshness = FreshnessLatch(2, 'c'*64, time.monotonic()-1, time.monotonic()+300)
+        self.originals.freshness = self.state.freshness
+        with self.assertRaises(TimeoutError):
+            self.check(generation=replace(self.generation, revocation_revision=3,
+                        revocation_expires_unix_ms=time.time_ns()//1_000_000+30000))
+        self.assertIsNone(self.state.freshness.deadline())
+        self.state.stop.assert_called()
+
+    def test_same_revision_source_changes_are_rejected_by_real_latch(self):
+        from freshness import FreshnessLatch
+        self.state.freshness = FreshnessLatch(2, 'c'*64, time.monotonic()+25, time.monotonic()+300)
+        self.originals.freshness = self.state.freshness
+        self.generation = replace(self.generation, revocation_expires_unix_ms=time.time_ns()//1_000_000+25000)
+        self.check()
+        with self.assertRaises(TimeoutError):
+            self.check(generation=replace(self.generation, revocation_state_sha256='d'*64))
+        self.assertIsNone(self.state.freshness.deadline())
 
     def test_expired_check_deadline_stops_without_reading(self):
         with patch('egress_daemon.read_json') as read, self.assertRaises(TimeoutError):

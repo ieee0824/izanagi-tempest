@@ -12,6 +12,7 @@ from channel import require_live_instance
 from egress_authority import PORT, CONNECTION_LIMIT, RunAuthorization, Scope, parse_signed_policy
 from egress_generation import read_generation, read_private
 from egress_service import REJECTIONS, serve_both
+from freshness import FreshnessLatch
 from read_snapshot import MANAGEMENT, check_directory, read_json, read_management_snapshot
 
 
@@ -28,6 +29,7 @@ class HostOriginals:
         self.revocation_revision = generation.revocation_revision
         self.public_key = public_key
         self.authorization = authorization
+        self.freshness = authorization.freshness
         self.lock = threading.Lock()
 
     def check(self, deadline):
@@ -35,12 +37,16 @@ class HostOriginals:
         try:
             if not acquired or time.monotonic() >= deadline:
                 raise TimeoutError('host original check deadline expired')
+            if self.freshness.deadline() is None:
+                raise TimeoutError('signed revocation freshness ended')
             authority = self.management / 'host-login-authority'
             if read_json(authority / 'channel-registration.json') != self.registration:
                 raise ValueError('host registration changed')
             if read_private(authority / 'egress-trust-key', 32) != self.public_key:
                 raise ValueError('egress trust key changed')
-            generation = read_generation(self.management, self.registration, time.time_ns() // 1_000_000)
+            source_started_at = time.monotonic()
+            source_wall = time.time_ns() // 1_000_000
+            generation = read_generation(self.management, self.registration, source_wall)
             if (generation.manifest_sha256 != self.generation.manifest_sha256
                     or generation.approved_ips_revision != self.generation.approved_ips_revision
                     or generation.addresses != self.generation.addresses
@@ -60,9 +66,13 @@ class HostOriginals:
             os.close(process)
             if time.monotonic() >= deadline:
                 raise TimeoutError('host original check completed too late')
+            if not self.freshness.observe(generation.revocation_revision, generation.revocation_state_sha256,
+                    generation.revocation_expires_unix_ms, source_wall, source_started_at):
+                raise TimeoutError('signed revocation freshness could not advance')
             self.sequence = commit['sequence']
             self.revocation_revision = generation.revocation_revision
         except REJECTIONS:
+            self.freshness.stop()
             self.authorization.stop()
             raise
         finally:
@@ -90,7 +100,10 @@ def load_run(management):
     if Scope.parse(commit['scope']) != policy.scope:
         raise ValueError('initial host ledger scope mismatch')
     # No freshness exists until this process successfully sends a control response.
-    state = RunAuthorization(policy.scope, policy.boot_id, commit['ledger_id'], absolute_deadline)
+    freshness = FreshnessLatch(generation.revocation_revision, generation.revocation_state_sha256,
+        started_at + (generation.revocation_expires_unix_ms - now) / 1000, absolute_deadline)
+    state = RunAuthorization(policy.scope, policy.boot_id, commit['ledger_id'], absolute_deadline,
+                             freshness=freshness)
     signer = Ed25519PrivateKey.from_private_bytes(read_private(signers / 'signing-seed', 32))
     originals = HostOriginals(management, registration, policy, generation, commit['ledger_id'],
                              commit['sequence'], key, state)
