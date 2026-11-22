@@ -1036,3 +1036,5 @@ response-lostはconsume1/query30後に子/gateway/作業・設定世代を回収
 validatorは緩めず、祖先root:root0755・台帳root0700・QMP専用user0700へ分離して再実行した。
 この対照はCLIのvsock拒否と既存TCP proxyの互換性を示すもので、外向きhost relayは未実装、
 実配備・外部認証の成功は示さない。
+
+方式選択待ちのB案については[vsock上流中継の設計メモ](ISSUE-36-EGRESS-B-DRAFT.md)を参照する。実装・配備の承認には代用しない。
