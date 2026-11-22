@@ -5,12 +5,13 @@
 #include <poll.h>
 #include <sched.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 static void probe(int private_network) {
-    if ((private_network && unshare(CLONE_NEWNET)) || setgroups(0, NULL) || setgid(988) || setuid(999)) {
+    if (private_network >= 0 && ((private_network && unshare(CLONE_NEWNET)) || setgroups(0, NULL) || setgid(988) || setuid(999))) {
         perror("probe setup"); _exit(2);
     }
     int fd = socket(AF_VSOCK, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
@@ -31,12 +32,13 @@ static void probe(int private_network) {
         close(fd);
     }
     printf("VSOCK_UID_RESULT {\"private_network\":%s,\"uid\":%u,\"socket_errno\":%d,\"connect_errno\":%d,\"connected\":%s}\n",
-        private_network ? "true" : "false", (unsigned)getuid(), socket_error, connection_error,
+        private_network > 0 ? "true" : "false", (unsigned)getuid(), socket_error, connection_error,
         connected ? "true" : "false");
     fflush(stdout);
     _exit(0);
 }
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--socket-only")) probe(-1);
     for (int private_network = 0; private_network < 2; ++private_network) {
         pid_t child = fork();
         if (child < 0) return 1;

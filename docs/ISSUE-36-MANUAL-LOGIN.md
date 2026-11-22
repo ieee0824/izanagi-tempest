@@ -1021,3 +1021,9 @@ fork子でのフィルタ単体対照は、AF_VSOCK/io_uring拒否とloopback TC
 成功した。これは実manual-login childでの拒否、既存proxy経由の正常TLS、その後の
 host relay成立をまだ証明しない。次に同入口の対照を取り、候補Bの実配備と外部通信は
 ownerの方式選択と通信条件確定後に行う。
+
+`qemu_vsock_uid_probe.py` に `--manual-libtest /absolute/path/to/libtest` を加えると、
+同じVM内で実isolated_commandを通してstatic probeをUID999でexecする。
+63206では未制限のinit/new netns双方がhost CID235へ到達し、manual-loginと同じ
+chroot/drop UID/no_new_privs/close_range/filterを通した子だけがAF_VSOCK作成を
+EPERMで拒否された。子namespace回収も確認した。proxy TLS正常対照は別途実施する。

@@ -21,6 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kernel', required=True, type=Path)
     parser.add_argument('--kernel-release', required=True)
+    parser.add_argument('--manual-libtest', type=Path)
     args = parser.parse_args()
     user = pwd.getpwnam('tempest-kvm')
     group = grp.getgrnam('kvm').gr_gid
@@ -52,7 +53,19 @@ def main():
         init += ''.join(f'/bin/busybox mount -t {kind} {kind} /{path}\n' for kind, path in
                         (('proc', 'proc'), ('sysfs', 'sys'), ('devtmpfs', 'dev')))
         init += ''.join('/bin/busybox insmod /modules/' + name + '\n' for name in modules)
-        init += '/bin/probe\n/bin/busybox poweroff -f\n'
+        init += '/bin/probe\n'
+        if args.manual_libtest:
+            shutil.copyfile(args.manual_libtest, guest / 'bin/verify')
+            (guest / 'bin/verify').chmod(0o755)
+            dependencies = subprocess.check_output(['ldd', str(args.manual_libtest)], text=True)
+            for token in dependencies.split():
+                if token.startswith('/'):
+                    target = guest / token.lstrip('/')
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(token, target)
+                    target.chmod(0o755)
+            init += '/bin/busybox mkdir -p /var/lib\n/bin/verify --ignored --exact claude_offline::tests::manual_child_vsock_is_denied --quiet --nocapture\n'
+        init += '/bin/busybox poweroff -f\n' 
         (guest / 'init').write_text(init)
         (guest / 'init').chmod(0o755)
         names = ['.'] + [str(path.relative_to(guest)) for path in guest.rglob('*')]
@@ -98,6 +111,8 @@ def main():
         output = log_path.read_text(errors='replace')
         results = [json.loads(line.split('VSOCK_UID_RESULT ', 1)[1]) for line in output.splitlines()
                    if line.startswith('VSOCK_UID_RESULT ')]
+        if args.manual_libtest and 'MANUAL_CHILD_VSOCK_DENIED' not in output:
+            raise RuntimeError('actual manual child did not confirm denial')
         if 'VSOCK_UID_PROBE_COMPLETE' not in output or len(results) != 2:
             raise RuntimeError('missing boundary observations')
         if any(cid != 235 for cid in accepted) or len(accepted) != sum(result['connected'] for result in results):
