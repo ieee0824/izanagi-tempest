@@ -29,35 +29,48 @@ VMが停止したことを確認してから、root管理ディレクトリを�
 疎ファイルとしてコピーする。元ディスクは復帰確認まで保持する。
 
 ```sh
-sudo install -d -m 0700 /var/lib/izanagi-tempest/vm/tempest-login-test
-sudo cp --sparse=always /dev/shm/tempest-133-vm.6XgXuE0Z/ubuntu-24.04-minimal-cloudimg-amd64.img /var/lib/izanagi-tempest/vm/tempest-login-test/root.qcow2
-sudo cp /dev/shm/tempest-133-vm.6XgXuE0Z/seed.img /var/lib/izanagi-tempest/vm/tempest-login-test/seed.img
-sudo chmod 0600 /var/lib/izanagi-tempest/vm/tempest-login-test/root.qcow2 /var/lib/izanagi-tempest/vm/tempest-login-test/seed.img
-sudo cmp /dev/shm/tempest-133-vm.6XgXuE0Z/ubuntu-24.04-minimal-cloudimg-amd64.img /var/lib/izanagi-tempest/vm/tempest-login-test/root.qcow2
-sudo qemu-img check /var/lib/izanagi-tempest/vm/tempest-login-test/root.qcow2
+sudo install -d -o root -g tempest-kvm -m 0750 /var/lib/tempest-manual-login-vm
+sudo install -d -o tempest-kvm -g tempest-kvm -m 0700 /var/lib/tempest-manual-login-vm/tempest-login-test
+sudo cp --sparse=always /dev/shm/tempest-133-vm.6XgXuE0Z/ubuntu-24.04-minimal-cloudimg-amd64.img /var/lib/tempest-manual-login-vm/tempest-login-test/root.qcow2
+sudo cp /dev/shm/tempest-133-vm.6XgXuE0Z/seed.img /var/lib/tempest-manual-login-vm/tempest-login-test/seed.img
+sudo chown tempest-kvm:tempest-kvm /var/lib/tempest-manual-login-vm/tempest-login-test/root.qcow2
+sudo chmod 0600 /var/lib/tempest-manual-login-vm/tempest-login-test/root.qcow2
+sudo chown root:tempest-kvm /var/lib/tempest-manual-login-vm/tempest-login-test/seed.img
+sudo chmod 0440 /var/lib/tempest-manual-login-vm/tempest-login-test/seed.img
+sudo cmp /dev/shm/tempest-133-vm.6XgXuE0Z/ubuntu-24.04-minimal-cloudimg-amd64.img /var/lib/tempest-manual-login-vm/tempest-login-test/root.qcow2
+sudo qemu-img check /var/lib/tempest-manual-login-vm/tempest-login-test/root.qcow2
 ```
 
 ## 新しい起動構成
 
 旧構成のマシン、CPU、seed、NICとSSH転送を維持し、メモリを試験済みの1536 MiBへ増やす。
-/dev/vhost-vsock を開くため、この案では QEMU をrootで起動する。管理ファイルはroot0700配下。
+専用非ログインユーザーtempest-kvm（UID999/GID988、supplementary kvm=993）で実行する。
+既存の/dev/kvmと/dev/vhost-vsockはroot:kvm 0660で、このユーザーだけに必要な既存group権限を使う。
+新たなユーザー作成やdevice権限の拡大は行わない。KVM失敗時は停止し、root/TCGへfallbackしない。
 旧 QEMU と同時起動しない。CID231とTCP22333の未使用も起動前に確認する。
 
 ```sh
-sudo qemu-system-x86_64 -machine q35,accel=kvm:tcg -cpu max -smp 2 -m 1536 \
+sudo systemd-run --unit=tempest-manual-login-vm-36 \
+  --property=Type=exec --property=User=tempest-kvm --property=Group=tempest-kvm \
+  --property=SupplementaryGroups=kvm --property=NoNewPrivileges=yes --property=Restart=no \
+  -- /usr/bin/qemu-system-x86_64 -machine q35,accel=kvm -cpu max -smp 2 -m 1536 \
   -nodefaults -display none -monitor none \
-  -serial file:/var/lib/izanagi-tempest/vm/tempest-login-test/serial.log \
-  -drive file=/var/lib/izanagi-tempest/vm/tempest-login-test/root.qcow2,if=virtio,format=qcow2 \
-  -drive file=/var/lib/izanagi-tempest/vm/tempest-login-test/seed.img,if=virtio,format=raw,readonly=on \
+  -serial file:/var/lib/tempest-manual-login-vm/tempest-login-test/serial.log \
+  -drive file=/var/lib/tempest-manual-login-vm/tempest-login-test/root.qcow2,if=virtio,format=qcow2 \
+  -drive file=/var/lib/tempest-manual-login-vm/tempest-login-test/seed.img,if=virtio,format=raw,readonly=on \
   -netdev user,id=private,restrict=on,hostfwd=tcp:127.0.0.1:22333-:22 \
   -device virtio-net-pci,netdev=private \
   -device vhost-vsock-pci,id=ledger,guest-cid=231 \
-  -qmp unix:/var/lib/izanagi-tempest/vm/tempest-login-test/qmp.sock,server=on,wait=off \
-  -pidfile /var/lib/izanagi-tempest/vm/tempest-login-test/qemu.pid -daemonize
+  -qmp unix:/var/lib/tempest-manual-login-vm/tempest-login-test/qmp.sock,server=on,wait=off
 ```
 
 これは閉じた準備構成で、外向き通信を有効にするコマンドではない。旧登録は使わず、
 新しいQEMU PID/start ticks/QMP socket/実CIDと新boot識別子をroot管理登録へ反映する。
+PIDはsystemdのMainPIDと照合する。/proc/PID/statusで実/実効/保存UID/GIDが専用userと
+一致すること、QMPのSO_PEERCRED PID/UIDがMainPID/999であること、query-statusがrunning、
+qom-getのledger guest-cidが231であることを確認する。brokerは登録PID/start ticks、
+QMP peer PID、生存pidfd、実デバイスCIDを各要求で照合する。root0600の登録をguestへ渡さない。
+QMP socket・disk・runtime directoryはtempest-kvm所有の0700/0600内とし、root brokerが照合する。
 
 ## 復帰と配置の確認
 
