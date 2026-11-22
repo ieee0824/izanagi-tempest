@@ -9,7 +9,7 @@ import sqlite3
 import sys
 import tempfile
 import time
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -45,7 +45,7 @@ def main(delay_commit=False):
         registration = dict(scope, boot_id='boot1', cid=231,
                             expires_unix_ms=time.time_ns() // 1_000_000 + 10000)
         request = dict(scope, version=1, operation='consume', boot_id='boot1', challenge='b' * 64)
-        signer = Ed25519PrivateKey.generate()
+        signer = Mock(wraps=Ed25519PrivateKey.generate())
         with patch('channel.require_live_instance', side_effect=lambda *args: os.pidfd_open(os.getpid())):
             reader, writer = socket.socketpair()
             import write_transition
@@ -72,6 +72,8 @@ def main(delay_commit=False):
                     except TimeoutError:
                         data = b''
                     assert not data
+            if delay_commit:
+                signer.sign.assert_not_called()
             assert read_management_snapshot(root)['state'] == 'consumed'
             reader, writer = socket.socketpair()
             with reader, writer:
