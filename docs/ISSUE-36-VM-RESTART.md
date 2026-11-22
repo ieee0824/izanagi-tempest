@@ -30,13 +30,14 @@ VMが停止したことを確認してから、root管理ディレクトリを�
 
 ```sh
 sudo install -d -o root -g tempest-kvm -m 0750 /var/lib/tempest-manual-login-vm
+sudo install -d -o root -g tempest-kvm -m 0750 /var/lib/tempest-manual-login-vm/inputs
 sudo install -d -o tempest-kvm -g tempest-kvm -m 0700 /var/lib/tempest-manual-login-vm/tempest-login-test
 sudo cp --sparse=always /dev/shm/tempest-133-vm.6XgXuE0Z/ubuntu-24.04-minimal-cloudimg-amd64.img /var/lib/tempest-manual-login-vm/tempest-login-test/root.qcow2
-sudo cp /dev/shm/tempest-133-vm.6XgXuE0Z/seed.img /var/lib/tempest-manual-login-vm/tempest-login-test/seed.img
+sudo cp /dev/shm/tempest-133-vm.6XgXuE0Z/seed.img /var/lib/tempest-manual-login-vm/inputs/seed.img
 sudo chown tempest-kvm:tempest-kvm /var/lib/tempest-manual-login-vm/tempest-login-test/root.qcow2
 sudo chmod 0600 /var/lib/tempest-manual-login-vm/tempest-login-test/root.qcow2
-sudo chown root:tempest-kvm /var/lib/tempest-manual-login-vm/tempest-login-test/seed.img
-sudo chmod 0440 /var/lib/tempest-manual-login-vm/tempest-login-test/seed.img
+sudo chown root:tempest-kvm /var/lib/tempest-manual-login-vm/inputs/seed.img
+sudo chmod 0440 /var/lib/tempest-manual-login-vm/inputs/seed.img
 sudo cmp /dev/shm/tempest-133-vm.6XgXuE0Z/ubuntu-24.04-minimal-cloudimg-amd64.img /var/lib/tempest-manual-login-vm/tempest-login-test/root.qcow2
 sudo qemu-img check /var/lib/tempest-manual-login-vm/tempest-login-test/root.qcow2
 ```
@@ -57,7 +58,7 @@ sudo systemd-run --unit=tempest-manual-login-vm-36 \
   -nodefaults -display none -monitor none \
   -serial file:/var/lib/tempest-manual-login-vm/tempest-login-test/serial.log \
   -drive file=/var/lib/tempest-manual-login-vm/tempest-login-test/root.qcow2,if=virtio,format=qcow2 \
-  -drive file=/var/lib/tempest-manual-login-vm/tempest-login-test/seed.img,if=virtio,format=raw,readonly=on \
+  -drive file=/var/lib/tempest-manual-login-vm/inputs/seed.img,if=virtio,format=raw,readonly=on \
   -netdev user,id=private,restrict=on,hostfwd=tcp:127.0.0.1:22333-:22 \
   -device virtio-net-pci,netdev=private \
   -device vhost-vsock-pci,id=ledger,guest-cid=231 \
@@ -71,6 +72,7 @@ PIDはsystemdのMainPIDと照合する。/proc/PID/statusで実/実効/保存UID
 qom-getのledger guest-cidが231であることを確認する。brokerは登録PID/start ticks、
 QMP peer PID、生存pidfd、実デバイスCIDを各要求で照合する。root0600の登録をguestへ渡さない。
 QMP socket・disk・runtime directoryはtempest-kvm所有の0700/0600内とし、root brokerが照合する。
+seedはroot所有inputs 0750配下のroot:tempest-kvm 0440とし、専用userによる変更・置換を防ぐ。
 
 ## 復帰と配置の確認
 
