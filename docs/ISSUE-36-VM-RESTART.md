@@ -13,6 +13,18 @@
   期限更新前の管理接続は publickey 拒否を確認。owner 自身の既存鍵は変更しない。
 - ホストディスク拡張後の空きは約49 GB。/dev/shm は別枠で空き約346 MB。
 
+## 配備準備済みの成果物
+
+マージSHA b52d36360661d77e914e0c0c97a93e6e6852f7c5 から release/locked/offline で入口をbuildした。
+入口は3631992 bytes、SHA256は
+43b1dd9f72b5493183fab3b7ab61e52c706f7807f8d66f90f5305b76a16f59ce。
+root0555でホストに準備済みだが、guestへの配置・サービス起動はまだ行っていない。
+同じSHAのbroker一式とroot0600のartifact記録も準備した。
+
+専用userの実KVM証拠は[最小VM実測](LINUX_KVM_ARTIFACT.md)と
+[管理者gate](LINUX_KVM_ADMIN_GATE.md)に記録されている。今回も実UID/GID/groupと
+両deviceのread/write権限を照合済み。これは今回のVM起動や認証成功の代わりにはしない。
+
 ## 切断前に揃えるもの
 
 1. coder が #232 のマージ SHA と #36 最終配置チェックを確認する。
@@ -88,6 +100,8 @@ seedはroot所有inputs 0750配下のroot:tempest-kvm 0440とし、専用userに
 
 ## 復帰できない場合
 
-新しい起動を停止し、保存した旧ディスク・seedと旧ハードウェア構成で復帰を試みる。
+新しい起動を停止し、保存した旧ディスク・seedと互換のハードウェア構成で復帰を試みる。
+復旧時も専用tempest-kvm user/KVM固定を維持し、root QEMUやTCGへfallbackしない。
+その条件で復帰できない場合は停止したままownerへ状況を報告する。
 同じディスクを複数のQEMUから同時に開かない。ホスト鍵不一致時は記録を確認し、
 known_hostsを無条件に消さない。ownerには再接続状況と復帰先を案内する。
