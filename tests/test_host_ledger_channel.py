@@ -8,6 +8,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import json
 import sys
 import time
+import tempfile
+import threading
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools/host_ledger'))
@@ -77,6 +79,38 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(payload['request'], self.request)
         self.assertEqual(payload['commit'], commit)
         self.assertLessEqual(payload['expires_unix_ms'] - payload['issued_unix_ms'], 2000)
+
+    def test_qmp_peer_and_actual_device_cid_are_checked(self):
+        stat = Path(f'/proc/{os.getpid()}/stat').read_text()
+        ticks = int(stat[stat.rindex(')') + 2:].split()[19])
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / 'qmp.sock')
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            with listener:
+                listener.bind(path)
+                listener.listen(1)
+                registration = dict(self.registration, qemu_pid=os.getpid(),
+                                    qemu_start_ticks=ticks, qmp_socket=path,
+                                    qemu_device_id='ledger')
+                def qmp():
+                    peer, _ = listener.accept()
+                    with peer:
+                        peer.sendall(b'{"QMP":{}}\n')
+                        for response in ({}, {"status": "running"}, 232):
+                            channel.read_frame(peer, 1024, time.monotonic() + 1)
+                            channel.write_frame(peer, channel.canonical_json({"return": response}),
+                                                4096, time.monotonic() + 1)
+                server = threading.Thread(target=qmp)
+                server.start()
+                try:
+                    with self.assertRaisesRegex(ValueError, 'CID assignment mismatch'):
+                        channel.require_live_instance(registration, time.monotonic() + 1)
+                finally:
+                    server.join(timeout=2)
+                self.assertFalse(server.is_alive())
+                registration['qemu_start_ticks'] += 1
+                with self.assertRaisesRegex(ValueError, 'lifetime mismatch'):
+                    channel.require_live_instance(registration, time.monotonic() + 1)
 
     def test_frame_limit_and_disconnect(self):
         reader, writer = socket.socketpair()
