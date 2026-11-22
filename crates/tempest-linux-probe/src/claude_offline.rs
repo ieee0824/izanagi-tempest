@@ -5655,9 +5655,24 @@ mod tests {
         .unwrap();
         drop(guard);
         let mut command = std::process::Command::new("/bin/busybox");
-        command.args(["sh", "-c", "/bin/busybox sleep 60 & wait"]);
+        command.args([
+            "sh",
+            "-c",
+            r#"echo HOST_CHANNEL_CHILD_START
+/bin/busybox ip link set lo up
+/bin/busybox sleep 60 &
+/bin/busybox nc -l -p 43123 </dev/zero >/dev/null &
+while ! /bin/busybox grep -q ':A873 ' /proc/net/tcp /proc/net/tcp6; do /bin/busybox sleep 0.01; done
+IFS= read -r children < /proc/thread-self/children
+printf '%s\n' "$children" > /tempest-dummy-children
+echo ready > /tempest-dummy-ready
+echo HOST_CHANNEL_CHILD_READY
+wait"#,
+        ]);
         let mut reaped = false;
         let started = Instant::now();
+        let accepted = std::cell::Cell::new(0u32);
+        let network = std::cell::RefCell::new(None::<File>);
         let result = supervise_pid_namespace(
             command,
             Duration::from_secs(10),
@@ -5665,12 +5680,61 @@ mod tests {
             0,
             None,
             ChildNetwork::NewOffline,
-            || commit.lock_current().is_err(),
+            || {
+                if !Path::new("/tempest-dummy-ready").exists() {
+                    return false;
+                }
+                if network.borrow().is_none() {
+                    let children = fs::read_to_string("/tempest-dummy-children").unwrap();
+                    let pid = children.split_whitespace().next().unwrap();
+                    assert!(["tcp", "tcp6"].iter().any(|table| {
+                        fs::read_to_string(format!("/proc/{pid}/net/{table}"))
+                            .unwrap()
+                            .contains(":A873 ")
+                    }));
+                    *network.borrow_mut() =
+                        Some(File::open(format!("/proc/{pid}/ns/net")).unwrap());
+                }
+                match commit.lock_current() {
+                    Ok(_) => {
+                        accepted.set(accepted.get() + 1);
+                        false
+                    }
+                    Err(_) => true,
+                }
+            },
         );
-        assert!(matches!(result, Err(Fault::AdministratorStop)));
+        assert!(
+            matches!(result, Err(Fault::AdministratorStop)),
+            "result={result:?}, accepted={}",
+            accepted.get()
+        );
         assert!(reaped);
+        assert!(accepted.get() >= 3);
+        assert!(Path::new("/tempest-dummy-ready").exists());
+        let children = fs::read_to_string("/tempest-dummy-children").unwrap();
+        assert!(children.split_whitespace().count() >= 2);
+        for pid in children.split_whitespace() {
+            assert!(!Path::new("/proc").join(pid).exists());
+        }
+        let namespace = network.into_inner().unwrap();
+        assert_eq!(
+            unsafe { libc::setns(namespace.as_raw_fd(), libc::CLONE_NEWNET) },
+            0
+        );
+        assert!(["tcp", "tcp6"].iter().all(|table| {
+            !fs::read_to_string(format!("/proc/net/{table}"))
+                .unwrap()
+                .contains(":A873 ")
+        }));
+        fs::remove_file("/tempest-dummy-children").unwrap();
+        fs::remove_file("/tempest-dummy-ready").unwrap();
         assert!(started.elapsed() < Duration::from_secs(4));
-        let message = b"HOST_CHANNEL_SUPERVISION_OK\n";
+        let message = format!(
+            "HOST_CHANNEL_SUPERVISION_OK elapsed_ms={} accepted_queries={}\n",
+            started.elapsed().as_millis(),
+            accepted.get()
+        );
         assert_eq!(
             unsafe { libc::write(1, message.as_ptr().cast(), message.len()) },
             message.len() as isize

@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--kernel', required=True, type=Path)
     parser.add_argument('--kernel-release', required=True)
     parser.add_argument("--native-verifier", type=Path)
+    parser.add_argument("--stop-mode", choices=("revoke", "disconnect", "silence", "renew"), default="revoke")
     parser.add_argument("--supervisor-test", action="store_true")
     parser.add_argument("--managed-ledger", action="store_true")
     args = parser.parse_args()
@@ -148,17 +149,29 @@ def main():
                             path.chmod(0o600)
                             serve_query(connection, peer[0], registration, management, signer, time.monotonic()+2)
                             if args.supervisor_test:
-                                for phase in ('consume', 'query', 'revoke'):
+                                print('accepted preflight from actual guest CID', peer[0], flush=True)
+                                phases = ['consume'] + ['query'] * (6 if args.stop_mode == 'renew' else 3) + ['stop']
+                                for phase in phases:
                                     next_connection, next_peer = listener.accept()
                                     with next_connection:
-                                        if phase == 'revoke':
+                                        if phase == 'query' and args.stop_mode == 'renew':
+                                            time.sleep(0.4)
+                                        if phase == 'stop':
+                                            fault_at = time.monotonic()
+                                            print('injected', args.stop_mode, 'after normal queries', flush=True)
+                                            if args.stop_mode == 'disconnect':
+                                                break
+                                            if args.stop_mode == 'silence':
+                                                time.sleep(2.5)
+                                                break
                                             time.sleep(0.2)
                                             advance(management, 'revoke')
                                         try:
                                             serve_query(next_connection, next_peer[0], registration,
                                                         management, signer, time.monotonic()+2)
+                                            print('accepted', phase, 'at', round(time.monotonic(), 3), flush=True)
                                         except ValueError:
-                                            if phase != 'revoke':
+                                            if phase != 'stop':
                                                 raise
 
                         else:
@@ -181,6 +194,8 @@ def main():
                                 connection.sendall(b'ok\n')
                     if vm.wait(timeout=20) != 0:
                         raise RuntimeError('probe VM failed')
+                    if args.supervisor_test:
+                        print("fault_to_vm_exit_seconds", round(time.monotonic() - fault_at, 3), flush=True)
                 except Exception:
                     log.flush()
                     print((root / 'serial.log').read_text(errors='replace')[-6000:])
@@ -192,6 +207,9 @@ def main():
             output = (root / 'serial.log').read_text(errors='replace')
             if ('HOST_CHANNEL_SUPERVISION_OK' if args.supervisor_test else 'NATIVE_RECEIPT_OK' if native else 'VSOCK_PROBE_OK') not in output:
                 raise RuntimeError(output[:1500])
+        for line in output.splitlines():
+            if 'HOST_CHANNEL_SUPERVISION_OK' in line:
+                print(line)
         print('Actual guest CID 232 verified; guest exchange and shutdown succeeded')
 
 

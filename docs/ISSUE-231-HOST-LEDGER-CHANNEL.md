@@ -89,8 +89,8 @@ sudo python3 integration/qemu_vsock_probe.py \
 ```
 
 現在このモードはホストが固定ダミーの commit を署名し、ゲストの Rust 診断入口が
-公開鍵・要求・期限・独立に指定した台帳 ID を検証する。実 SQLite、管理登録、
-supervisor の接続を含む試験へ拡張する必要がある。
+公開鍵・要求・期限・独立に指定した台帳 ID を検証する。`--managed-ledger` では実 SQLite と QMP 管理登録へ接続し、
+`--supervisor-test` では実 supervisor も使用する。
 
 ## ゲスト supervisor の設定
 
@@ -104,7 +104,7 @@ supervisor の接続を含む試験へ拡張する必要がある。
 開始時の verify_for_supervision はホストで consume し、その署名応答から期限を取得する。
 開始ゲートと FixtureStop の lock_current は新challengeで照会する。
 再照会の期限は保持中の単調時計期限と2秒後の早い方で、受理した sequence を下限に更新する。
-現在、この経路の実 supervisor を使った VM 間の回収試験は未完了。
+実 supervisor の試験範囲と残課題は末尾に記録する。
 
 ## 時計差に対する fresh 応答の期限
 
@@ -145,7 +145,17 @@ sudo python3 integration/qemu_vsock_probe.py \
 ```
 
 ゲストの ignored 試験を単一スレッドの子で実行し、preflight、consume、query を
-実SQLiteとQMP登録を経由して処理する。次の照会前にホスト台帳を revoke し、
-実 supervise_pid_namespace が AdministratorStop と namespace_reaped を返すこと、
-試験全体が4秒未満であることを確認した。TLSゲートウェイ・通信経路の回収と
-応答停止の対照は未完了。
+実 SQLite と QMP 登録を経由して処理する。ダミー子は独立した PID/network namespace
+で sleep と TCP 待受けを起動する。IPv4/IPv6 両方の表で待受けと子の生存を確認し、
+正常な query を3回以上受理してから停止を注入する。
+
+`--stop-mode revoke|disconnect|silence|renew` を指定できる。renew は6回の更新に
+各400 msの遅延を入れ、初回2秒 lease を超えて正常更新できることを確認してから revoke する。
+各ケースは AdministratorStop、namespace_reaped、記録した全子 PID の消滅、
+保持した network namespace 内の待受け消滅を確認する。fork 子の panic は専用 hook で
+exit 101 とし、親が非0終了を検出する。意図的 panic の対照試験も用意する。
+
+無応答ケースのホスト側 fault_to_vm_exit_seconds は、ホストが意図的に2.5秒待つ時間を
+含む上限値であり、正確なゲストの停止遅延ではない。ゲストは elapsed_ms と
+accepted_queries を別に記録する。TLS ゲートウェイそのものの回収、旧 lease 期限を
+またぐ応答、別 VM/旧 boot の実 VM 拒否は引き続き未完了。
