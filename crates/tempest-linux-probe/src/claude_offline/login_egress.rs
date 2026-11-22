@@ -96,20 +96,19 @@ impl Route {
     ) -> io::Result<()> {
         while Instant::now() < expires && !stop() {
             match listener.accept() {
-                Ok((mut client, _)) => {
-                    // Keep the existing authority/header validator before any host dial.
-                    super::login_connect::read_request(super::login_connect::ManagedHeader {
-                        client: &mut client,
-                        deadline: expires,
-                        stop,
-                    })?;
-                    let upstream = self.open(expires, stop)?;
-                    client.set_write_timeout(Some(
-                        active(stop, expires)?.min(Duration::from_millis(20)),
-                    ))?;
-                    client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
-                    relay(client, upstream, expires, stop)?;
-                }
+                Ok((client, _)) => match self.serve_client(client, expires, stop) {
+                    Ok(()) => {}
+                    Err(_) if Instant::now() >= expires || stop() => return Ok(()),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::PermissionDenied
+                                | io::ErrorKind::ConnectionReset
+                                | io::ErrorKind::BrokenPipe
+                                | io::ErrorKind::UnexpectedEof
+                        ) => {}
+                    Err(error) => return Err(error),
+                },
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(10))
                 }
@@ -117,6 +116,22 @@ impl Route {
             }
         }
         Ok(())
+    }
+    fn serve_client(
+        &self,
+        mut client: TcpStream,
+        expires: Instant,
+        stop: &(dyn Fn() -> bool + Sync),
+    ) -> io::Result<()> {
+        super::login_connect::read_request(super::login_connect::ManagedHeader {
+            client: &mut client,
+            deadline: expires,
+            stop,
+        })?;
+        let upstream = self.open(expires, stop)?;
+        client.set_write_timeout(Some(active(stop, expires)?.min(Duration::from_millis(20))))?;
+        client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
+        relay(client, upstream, expires, stop)
     }
 }
 
@@ -585,6 +600,41 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn stop_during_slow_connect_header_is_clean_gateway_shutdown() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let child_stop = stop.clone();
+        let worker = std::thread::spawn(move || {
+            let route = Route {
+                request: json!({}),
+                peer: "127.0.0.1:443".parse().unwrap(),
+                key: [0; 32],
+                minimum_sequence: 1,
+            };
+            route.serve(&listener, Instant::now() + Duration::from_secs(2), &|| {
+                child_stop.load(Ordering::Acquire)
+            })
+        });
+        client.write_all(b"CONNECT ").unwrap();
+        stop.store(true, Ordering::Release);
+        assert!(worker.join().unwrap().is_ok());
+        match std::io::Read::read(&mut client, &mut [0]) {
+            Ok(0) => {}
+            Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {}
+            other => panic!("gateway socket stayed open: {other:?}"),
+        }
     }
 
     #[test]
