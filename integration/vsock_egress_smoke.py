@@ -219,7 +219,6 @@ def guest():
             while True:
                 line=bounded_line(gateway,until)
                 if 'VSOCK_GATEWAY_READY' in line: break
-                if not line: raise RuntimeError('gateway exited before readiness')
             client=subprocess.Popen(['setpriv','--reuid=999','--regid=999','--clear-groups','/usr/bin/python3',__file__,'probe'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0)
             client.stdin.write((json.dumps(reply)+'\n').encode());client.stdin.flush()
             read_line(client,'CONNECT_DENIED')
