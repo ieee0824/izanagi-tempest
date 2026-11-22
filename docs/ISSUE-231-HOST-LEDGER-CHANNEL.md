@@ -347,3 +347,24 @@ clippyも成功。修正後のremote TLS実行結果は別に記録する。
 主トンネルは ACK 用 CONNECT である。したがって、この結果だけでは「停止直前まで
 保持した TLS 両 peer が停止で閉じる」ことの直接の証拠にはしない。次の対照で
 実 TLS を停止注入まで保持し、両端の閉鎖と既存回収を同時に確認する。
+
+### 持続 TLS の管理失効による回収
+
+8c88f32で実行した実VM remote fixture はexit0、全体31.89秒。
+revoked ケースだけ、UID999の別probeを固定子と同じnetwork namespaceで実行し、
+同じgatewayを通したTLS証明書検証とPING/Kを完了させる。サーバー側readyと
+クライアント側readyの両方を確認し、接続が生きている間にホスト台帳をrevokeした。
+consume 1回/正常query42回後の失効で、HELD_TLS_SERVER_CLOSEDと
+HELD_TLS_CLIENT_CLOSEDを確認した。失効RPC開始からクライアント閉鎖確認まで185 ms。
+その後、子/gateway/同じpermit/作業・設定世代の回収も成功した。
+response-lost は既存範囲を維持し、consume1/query30回後の回収が成功した。
+持続TLSの追加はrevoked1件だけであり、応答喪失での持続TLSは別途追加していない。
+
+## #232 の完了監査と残る配置作業
+
+- local TLS baseline全5件、remote消費/継続更新/失効/応答喪失、失効時の持続TLS両端閉鎖を確認済み。
+- 認可期限/回収待ち期限分離、非Host8秒対照、親集約監督、同CID制限を維持したbroker停止を確認済み。
+- 全8slot枯渇、PID再利用強制、ゲストOS内rebootは既知の未検証範囲として今回のマージ条件から除外（cc-sakura #18202/#18232）。
+- #36の実ログインVMへの最終配置は未完。マージ済みSHAでCLI/bundle/入口digest/公開設定/CA/信頼鍵/host台帳/独立承認/サービスを照合する。
+- 既存owner SSHを維持中。vsock付き起動への切替は、起動コマンド・ディスク同期・既知ホスト鍵・SSH復帰経路・台帳世代とowner再接続を具体化し、切断時刻を調整してから行う。
+- Claudeの実ログインは未実施。管理者が監視終了を許可するまでcc-sakura監視を継続する。
