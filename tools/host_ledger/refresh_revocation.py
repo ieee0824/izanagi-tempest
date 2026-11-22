@@ -93,6 +93,9 @@ def publish(root, registration, refresh, *, now_unix_ms=None):
     now = time.time_ns() // 1_000_000 if now_unix_ms is None else now_unix_ms
     old = read_generation(root, registration, now)
     authority, publication = root / 'claude-login-authority', root / 'claude-login-publication'
+    if (sha256(refresh.payload).hexdigest() == old.revocation_state_sha256
+            and read_private(authority / 'revocation-signature', 64) == refresh.signature):
+        return old.revocation_revision
     state = validate_refresh(refresh, read_private(authority / 'revocation-key', 32), registration, old, now)
     files = {'revocation-state': refresh.payload, 'revocation-signature': refresh.signature,
              'revocation-committed': canonical_json(dict(revision=state['revocation_revision'],
@@ -192,3 +195,112 @@ def run_updater(root, registration, signer, deliver, stop_event, operation_deadl
     except BaseException:
         mark_uncertain(root / 'claude-login-authority')
         raise
+
+
+def encode_refresh(refresh):
+    import base64
+    return canonical_json(dict(payload=base64.b64encode(refresh.payload).decode('ascii'),
+                               signature=refresh.signature.hex()))
+
+
+def publish_stdin(encoded):
+    """Fixed guest root entry; no filesystem path or scope comes from stdin."""
+    import base64
+    import json
+    from channel import unique_fields
+    from read_snapshot import read_json
+    root = Path('/etc/tempest')
+    if len(encoded) > 8192:
+        raise ValueError('oversized signed refresh input')
+    envelope = json.loads(encoded, object_pairs_hook=unique_fields)
+    if not isinstance(envelope, dict) or set(envelope) != {'payload', 'signature'}:
+        raise ValueError('invalid refresh envelope')
+    if (not isinstance(envelope['payload'], str) or not isinstance(envelope['signature'], str)
+            or len(envelope['signature']) != 128
+            or any(c not in '0123456789abcdef' for c in envelope['signature'])):
+        raise ValueError('invalid refresh encoding')
+    signed = Refresh(base64.b64decode(envelope['payload'], validate=True), bytes.fromhex(envelope['signature']))
+    registration = read_json(root / 'host-channel.json')
+    if registration['boot_id'] != Path('/proc/sys/kernel/random/boot_id').read_text().strip():
+        raise ValueError('refresh belongs to another guest boot')
+    number = publish(root, registration, signed)
+    return dict(revision=number, state_sha256=sha256(signed.payload).hexdigest())
+
+
+def deliver_to_login_vm(refresh, deadline):
+    """Pinned SSH transport to the owner VM; only already signed public bytes travel."""
+    import json
+    import subprocess
+    from read_snapshot import check_directory
+    transfer = Path('/var/lib/izanagi-tempest/transfer')
+    for directory in reversed(transfer.parents):
+        check_directory(directory)
+    check_directory(transfer, 0o700)
+    key, known = transfer / 'prelogin-key', transfer / 'login-vm-known-hosts'
+    check_file(key)
+    check_file(known)
+    command = ['ssh', '-F', '/dev/null', '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
+               '-o', 'IdentityAgent=none', '-o', 'ForwardAgent=no', '-o', 'ClearAllForwardings=yes',
+               '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile='+str(known),
+               '-i', str(key), '-p', '22333', 'tempest@127.0.0.1',
+               'sudo -n /usr/bin/python3 -B /usr/local/lib/tempest-login-host-ledger/refresh_revocation.py --publish-stdin']
+    encoded = encode_refresh(refresh)
+    expected = dict(revision=json.loads(refresh.payload.split(b'\0',1)[1])['revocation_revision'],
+                    state_sha256=sha256(refresh.payload).hexdigest())
+    while True:
+        remaining = deadline-time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('guest refresh transport deadline expired')
+        try:
+            result = subprocess.run(command, input=encoded, capture_output=True, timeout=remaining)
+        except subprocess.TimeoutExpired as error:
+            raise TimeoutError('guest refresh transport timed out') from error
+        if result.returncode == 75:
+            time.sleep(min(0.01, max(0, deadline-time.monotonic())))
+            continue
+        if result.returncode != 0:
+            raise OSError('guest signed refresh delivery failed')
+        if len(result.stdout) > 1024 or json.loads(result.stdout) != expected:
+            raise ValueError('guest refresh acknowledgement mismatch')
+        return
+
+
+def main():
+    import signal
+    import sys
+    import threading
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    from channel import validate_registration_deadline
+    from read_snapshot import MANAGEMENT, read_json
+    if os.geteuid() != 0:
+        return 1
+    try:
+        if sys.argv[1:] == ['--publish-stdin']:
+            result = publish_stdin(sys.stdin.buffer.read(8193))
+            print(canonical_json(result).decode('ascii'))
+            return 0
+        if sys.argv[1:] != ['--run-login-vm-updater']:
+            return 1
+        registration = read_json(MANAGEMENT / 'host-login-authority/channel-registration.json')
+        validate_registration_deadline(registration, read_json(MANAGEMENT / 'host-login-authority/channel-approval.json'))
+        signer = Ed25519PrivateKey.from_private_bytes(read_private(MANAGEMENT / 'host-login-signer/revocation-seed', 32))
+        if signer.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw) != read_private(MANAGEMENT / 'claude-login-authority/revocation-key', 32):
+            raise ValueError('independent revocation key mismatch')
+        stopped = threading.Event()
+        signal.signal(signal.SIGTERM, lambda *_: stopped.set())
+        signal.signal(signal.SIGINT, lambda *_: stopped.set())
+        started = time.monotonic()
+        wall = time.time_ns() // 1_000_000
+        deadline = started + (registration['expires_unix_ms']-wall)/1000
+        run_updater(MANAGEMENT, registration, signer, deliver_to_login_vm, stopped, deadline)
+        return 0
+    except BlockingIOError:
+        return 75
+    except (OSError, ValueError, KeyError, TypeError):
+        print('signed revocation refresh refused', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

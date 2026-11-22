@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
@@ -84,6 +85,34 @@ class RefreshTests(unittest.TestCase):
             self.assertEqual(delivered.call_count,1)
             uncertain.assert_called_once()
 
+    def test_ssh_delivery_uses_fixed_target_and_verifies_the_exact_ack(self):
+        signed=self.signed(self.state)
+        ack=canonical_json(dict(revision=3,state_sha256=refresh.sha256(signed.payload).hexdigest()))
+        results=[subprocess.CompletedProcess([],75,b'',b''),subprocess.CompletedProcess([],0,ack,b'')]
+        with patch('read_snapshot.check_directory'),patch.object(refresh,'check_file'), \
+                patch('subprocess.run',side_effect=results) as run:
+            refresh.deliver_to_login_vm(signed,refresh.time.monotonic()+1)
+        self.assertEqual(run.call_count,2)
+        argv=run.call_args.args[0]
+        self.assertIn('tempest@127.0.0.1',argv)
+        self.assertIn('22333',argv)
+        self.assertIn('StrictHostKeyChecking=yes',argv)
+        self.assertIn('IdentityAgent=none',argv)
+        self.assertEqual(run.call_args.kwargs['input'],refresh.encode_refresh(signed))
+
+    def test_bad_ack_and_ssh_timeout_are_failures(self):
+        for outcome in (subprocess.CompletedProcess([],0,b'{}',b''),subprocess.TimeoutExpired(['ssh'],1)):
+            with patch('read_snapshot.check_directory'),patch.object(refresh,'check_file'), \
+                    patch('subprocess.run',**({'side_effect':outcome} if isinstance(outcome,Exception) else {'return_value':outcome})), \
+                    self.assertRaises((ValueError,TimeoutError)):
+                refresh.deliver_to_login_vm(self.signed(self.state),refresh.time.monotonic()+1)
+
+    def test_invalid_guest_envelope_is_rejected_before_reading_sources(self):
+        for encoded in (b'{}',b'{"payload":"!","signature":"'+b'a'*128+b'"}',b'x'*8193):
+            with patch('read_snapshot.read_json') as read,self.assertRaises(ValueError):
+                refresh.publish_stdin(encoded)
+            read.assert_not_called()
+
     def write_source(self, root):
         authority = root / 'claude-login-authority'
         publication = root / 'claude-login-publication'
@@ -119,6 +148,9 @@ class RefreshTests(unittest.TestCase):
             self.assertEqual(refresh.publish(root, self.source.registration, signed, now_unix_ms=110000), 3)
             result = read_generation(root, self.source.registration, 110000)
             self.assertEqual(result.revocation_revision, 3)
+            inode = (root / 'claude-login-authority/revocation-state').stat().st_ino
+            self.assertEqual(refresh.publish(root, self.source.registration, signed, now_unix_ms=110000), 3)
+            self.assertEqual((root / 'claude-login-authority/revocation-state').stat().st_ino, inode)
             self.assertEqual(result.revocation_expires_unix_ms, 140000)
             self.assertEqual(result.operation_expires_unix_ms, self.old.operation_expires_unix_ms)
 
