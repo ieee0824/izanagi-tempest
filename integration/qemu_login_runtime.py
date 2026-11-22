@@ -1,6 +1,9 @@
 """Boot the curated login-test userspace with read-only 9p and vsock, without a NIC."""
 import argparse
 import gzip
+import os
+import pwd
+import grp
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,8 +20,16 @@ def main():
     args = parser.parse_args()
     if args.remote_tls and not args.tls_fixture:
         parser.error("--remote-tls requires --tls-fixture")
+    user = pwd.getpwnam("tempest-kvm")
+    if user.pw_uid == 0 or user.pw_shell != "/usr/sbin/nologin":
+        raise RuntimeError("dedicated non-login KVM user required")
     with tempfile.TemporaryDirectory(prefix='tempest-login-boot-', dir='/var/lib') as temporary:
         root = Path(temporary)
+        root.chmod(0o755)
+        os.chown(root, 0, 0)
+        run = root / "qemu-run"
+        run.mkdir(mode=0o700)
+        os.chown(run, user.pw_uid, user.pw_gid)
         guest = root / 'guest'
         for name in ('bin', 'dev', 'proc', 'sys', 'modules', 'runtime', 'usr', 'lib', 'lib64',
                      'opt', 'etc', 'tmp', 'run', 'var/lib/tempest-claude-offline'):
@@ -104,22 +115,28 @@ echo LOGIN_VM_RUNTIME_OK
                                          input=('\n'.join(names) + '\n').encode())
         image = root / 'initrd.gz'
         image.write_bytes(gzip.compress(archive))
+        kernel = root / "kernel"
+        shutil.copyfile(args.kernel, kernel)
+        for path in (image, kernel):
+            os.chown(path, 0, user.pw_gid)
+            path.chmod(0o440)
         log_path = root / 'serial.log'
         with log_path.open('wb') as log:
             vm = subprocess.Popen([
-                'qemu-system-x86_64', '-machine', 'q35,accel=kvm:tcg', '-m', '1536' if args.tls_fixture else '768',
+                'qemu-system-x86_64', '-machine', 'q35,accel=kvm', '-m', '1536' if args.tls_fixture else '768',
                 '-nodefaults', '-display', 'none', '-serial', 'stdio', '-no-reboot', '-net', 'none',
-                '-kernel', str(args.kernel), '-initrd', str(image),
+                '-kernel', str(kernel), '-initrd', str(image),
                 '-append', 'console=ttyS0 panic=-1 quiet',
                 '-device', 'vhost-vsock-pci,id=ledger,guest-cid=234',
-                '-qmp', 'unix:' + str(root / 'qmp.sock') + ',server=on,wait=off',
+                '-qmp', 'unix:' + str(run / 'qmp.sock') + ',server=on,wait=off',
                 '-virtfs', f'local,path={args.runtime.resolve()},mount_tag=runtime,security_model=none,readonly=on'],
-                stdout=log, stderr=subprocess.STDOUT)
+                user=user.pw_uid, group=user.pw_gid, extra_groups=[grp.getgrnam("kvm").gr_gid],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
             controller = None
             try:
                 if args.remote_tls:
                     from remote_tls_host import HostController
-                    controller = HostController(root / 'host-management', root / 'qmp.sock')
+                    controller = HostController(root / 'host-management', run / 'qmp.sock')
                     controller.start(vm)
                 code = vm.wait(timeout=300 if args.tls_fixture else 60)
             finally:

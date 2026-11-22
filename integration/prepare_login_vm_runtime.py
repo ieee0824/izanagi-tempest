@@ -5,6 +5,7 @@ Bind mounts preserve the single-link fixed-artifact invariant without copying th
 """
 import argparse
 import os
+import pwd
 from pathlib import Path
 import shutil
 import subprocess
@@ -20,7 +21,9 @@ def main():
     if os.geteuid() != 0:
         parser.error('requires root inside a private mount namespace')
     root = args.output.resolve()
-    root.mkdir(mode=0o700)
+    user = pwd.getpwnam("tempest-kvm")
+    root.mkdir(mode=0o750)
+    os.chown(root, 0, user.pw_gid)
     (root / "readonly-probe").write_text("original\n")
     mounts = []
     copied = set()

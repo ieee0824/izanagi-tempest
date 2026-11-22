@@ -998,3 +998,41 @@ FD セットで配置が始まらないこと、全点を配置した場合も�
 #232 のマージ後の専用user/KVM構成、ディスク移動、SSH復帰、登録照合は
 [ログインVM再起動手順案](ISSUE-36-VM-RESTART.md)にまとめる。
 実際の停止・移動・再起動はownerとの時間枠合意後に行う。
+
+## vsock egress 候補のローカル準備（実配備は判断待ち）
+
+現VMのrestrictを解除せず、外部通信・実credentialなしでB案の境界を確認している。
+`integration/qemu_vsock_uid_probe.py` は専用tempest-kvm/KVM固定、NICなしのダミーVMを
+起動する。Linux 6.8.0-149-generic、CID235、guest UID999で、init netnsと
+CLONE_NEWNETの両方からAF_VSOCK接続が成功し、hostでもCID235を2件acceptした。
+したがってnetwork namespaceだけをCLIのvsock迂回防止根拠にはしない。
+
+```sh
+sudo python3 integration/qemu_vsock_uid_probe.py \
+  --kernel /boot/vmlinuz-6.8.0-149-generic --kernel-release 6.8.0-149-generic
+```
+
+manual_socket_policyは実isolated_commandのpre_execに接続し、AF_VSOCKのsocket/
+socketpairとio_uring系をEPERMにする。native x86_64以外のABIを拒否し、x32 syscall
+bitも拒否する。TCP/Unixは維持する。フィルタは固定stack表で生成し、trusted gateway
+や親には適用せず、CLIへexecする子だけに適用する。
+
+fork子でのフィルタ単体対照は、AF_VSOCK/io_uring拒否とloopback TCPの接続/acceptが
+成功した。これは実manual-login childでの拒否、既存proxy経由の正常TLS、その後の
+host relay成立をまだ証明しない。次に同入口の対照を取り、候補Bの実配備と外部通信は
+ownerの方式選択と通信条件確定後に行う。
+
+`qemu_vsock_uid_probe.py` に `--manual-libtest /absolute/path/to/libtest` を加えると、
+同じVM内で実isolated_commandを通してstatic probeをUID999でexecする。
+63206では未制限のinit/new netns双方がhost CID235へ到達し、manual-loginと同じ
+chroot/drop UID/no_new_privs/close_range/filterを通した子だけがAF_VSOCK作成を
+EPERMで拒否された。子namespace回収も確認した。proxy TLS正常対照は別途実施する。
+
+14518a1のフィルタ付きproxy TLS正常対照（56726）も専用tempest-kvm/KVM固定で成功した。
+readonly runtime/固定実体検証、同じ子の証明書・誤名拒否・直接port拒否を通し、
+revokeはconsume1/query42後に持続TLSの両端を閉じた（client閉鎖187 ms）。
+response-lostはconsume1/query30後に子/gateway/作業・設定世代を回収した。
+ゲスト全体33.41秒、exit0。初回の専用user化では台帳祖先のgid検査が拒否したため、
+validatorは緩めず、祖先root:root0755・台帳root0700・QMP専用user0700へ分離して再実行した。
+この対照はCLIのvsock拒否と既存TCP proxyの互換性を示すもので、外向きhost relayは未実装、
+実配備・外部認証の成功は示さない。

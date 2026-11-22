@@ -3,6 +3,7 @@ use super::os::Fault;
 mod host_login_diagnostic;
 mod local_auth;
 mod login_connect;
+mod manual_socket_policy;
 pub(super) use host_login_diagnostic::{
     run_host_login_diagnostic, run_host_login_publisher, run_host_login_responder,
 };
@@ -564,6 +565,7 @@ fn isolated_command(
             {
                 return Err(io::Error::last_os_error());
             }
+            manual_socket_policy::install()?;
             Ok(())
         });
     }
@@ -5730,6 +5732,54 @@ mod tests {
         assert_eq!(unsafe { libc::waitpid(worker, &mut status, 0) }, worker);
         assert!(libc::WIFEXITED(status));
         assert_eq!(libc::WEXITSTATUS(status), 101);
+    }
+
+    #[test]
+    #[ignore = "run inside the dedicated vsock UID probe VM"]
+    fn manual_child_vsock_is_denied() {
+        let worker = unsafe { libc::fork() };
+        assert!(worker >= 0);
+        if worker > 0 {
+            let mut status = 0;
+            assert_eq!(unsafe { libc::waitpid(worker, &mut status, 0) }, worker);
+            assert_eq!(status, 0);
+            return;
+        }
+        exit_fork_worker_on_panic();
+        use std::os::unix::fs::PermissionsExt;
+        let root = Path::new("/var/lib").join(format!("tempest-manual-vsock-{}", unsafe {
+            libc::getpid()
+        }));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(root.join("home/fixture")).unwrap();
+        fs::copy("/bin/probe", root.join("probe")).unwrap();
+        let mut command = isolated_command(
+            &root,
+            "/probe",
+            File::create(root.join("stdout")).unwrap(),
+            File::create(root.join("stderr")).unwrap(),
+            Diagnostic::PtyWithLoginArtifacts,
+        )
+        .unwrap();
+        command.arg("--socket-only");
+        let mut reaped = false;
+        run_in_pid_namespace(command, std::time::Duration::from_secs(2), &mut reaped).unwrap();
+        assert!(reaped);
+        let output = fs::read_to_string(root.join("stdout")).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(output.trim().strip_prefix("VSOCK_UID_RESULT ").unwrap()).unwrap();
+        assert_eq!(value["uid"], UID);
+        assert_eq!(value["socket_errno"], libc::EPERM);
+        assert_eq!(value["connected"], false);
+        assert!(fs::read(root.join("stderr")).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+        let marker = b"MANUAL_CHILD_VSOCK_DENIED uid=999 errno=EPERM namespace_reaped=true\n";
+        assert_eq!(
+            unsafe { libc::write(1, marker.as_ptr().cast(), marker.len()) },
+            marker.len() as isize
+        );
+        unsafe { libc::_exit(0) };
     }
 
     #[test]
