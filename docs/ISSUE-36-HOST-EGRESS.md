@@ -38,6 +38,26 @@ QMP peer、QEMU lifetime/CID、台帳/checkpoint、世代変更、失効、期�
 検査する。更新失敗は同一実行を不可逆stopにする。監視処理はcontrol leaseを更新しない。
 control署名応答を正常送信した後だけ、host受理時の単調時計を起点に最長2秒更新する。
 
+## 操作期限と更新される鮮度（改修中）
+
+本人の操作hard capは300秒。通信承認、permit、handoff、公開世代の最早期限でさらにcapし、
+初回revocationの30秒期限を操作全体の期限へ混ぜない。control leaseは最長2秒のまま。
+revocation署名の各状態は最長30秒で、親だけがより大きなrevisionを検証して共有leaseを更新する。
+同revisionの再読で単調時計期限を延長せず、旧期限を越えた後の新署名でも復活しない。
+
+`refresh_revocation.py`はhostで署名し、host/guestそれぞれのroot原本へ公開する共通処理を提供する。
+秘密鍵はhostだけに保持し、guestへ配送するのは署名済みbytesのみ。操作期限は最初に単調時計へ
+固定し、updaterも期限で停止する。配送の上限は旧鮮度/操作期限/10秒の最早値である。
+これは管理側の原本配送であり、control/data handshakeの2秒期限を変更しない。
+
+正常refreshは新しいstate/signature/commit/floorをstageしてからpublication EX lockで切り替える。
+runtime readerがSHを取れない間は既存の未失効leaseだけを参照し、延長はしない。
+pending marker、署名不正、rollback、期限切れは引き続き不可逆stop。
+初回preflightはbusyでも拒否する。部分更新や配送失敗では不確定markerを残して隔離する。
+
+この分離とpublisherのローカル試験は実装済み。実host→guest配送、30秒超の実VM生存、
+更新停止時と操作deadline到達時の回収はまだ受入前であり、下の053cab8系の証拠とは区別する。
+
 ## guestの鍵とtransport
 
 guestのready検証は、既存root原本`/etc/tempest/host-channel-key`を使う。
@@ -58,10 +78,11 @@ Python 3.11以降と`image/requirements.txt`の依存を使う。
 python3 -m unittest discover -s tests -p 'test_egress*.py' -v
 python3 -m unittest discover -s tests -p test_host_ledger_channel.py -v
 sudo python3 -m unittest discover -s tests -p test_egress_generation.py -v
+sudo python3 -m unittest discover -s tests -p test_egress_refresh.py -v
 ```
 
 最後のコマンドは`/run`内の一時dummy原本だけでroot metadataを検証し、終了時に削除する。
-通常実行ではその1件をskipする。試験はloopback/socketpairのみで、実credentialは使わない。
+通常実行ではgenerationの1件とpublisherの3件のroot試験をskipする。試験はloopback/socketpairのみで、実credentialは使わない。
 署名/独立承認/世代/失効の拒否、readyのchallenge/実peer/期限、binary双方向転送、
 失効/片方向EOF/backpressure時の両端閉鎖、data4枠飽和時のcontrol独立性を確認する。
 root metadata試験はpending marker、非private mode、symlinkの拒否も確認する。
