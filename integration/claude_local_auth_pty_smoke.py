@@ -411,6 +411,10 @@ def check_signed_tls(binary, temporary, record, check_evidence, expire=False, si
                     raise RuntimeError("fixed child survived the management stop")
                 if deadline is not None and time.time() < deadline:
                     raise RuntimeError("fixed child exited before the signed deadline")
+                if deadline is not None:
+                    if time.time() >= deadline + 1:
+                        raise RuntimeError("fixed child was not confirmed dead within cleanup grace")
+                    print("expiry grace: child pidfd signaled; further child operations impossible")
             finally:
                 os.close(child_fd)
         fixture(

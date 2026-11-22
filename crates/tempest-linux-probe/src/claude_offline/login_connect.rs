@@ -407,14 +407,15 @@ pub(super) fn serve_fixture(
     expires: Instant,
     stop: Option<&super::FixtureStop>,
 ) -> io::Result<()> {
-    // Host freshness may expire after the ordinary eight-second dummy exchange.
-    // Keep the fixture watcher alive until that signed expiry, with a small
-    // cleanup margin; FixtureStop still closes authorization at expires.
-    let deadline = if matches!(stop, Some(super::FixtureStop::Host(..))) {
+    let host = matches!(stop, Some(super::FixtureStop::Host(..)));
+    let deadline = fixture_authorization_deadline(Instant::now(), expires, host);
+    let cleanup_deadline = if host {
         expires + Duration::from_secs(1)
     } else {
-        Instant::now() + Duration::from_secs(8)
+        deadline
     };
+    let stopped = || stop.is_some_and(super::FixtureStop::requested);
+    require_active(&stopped, deadline)?;
     let mut rejected = accept_before(listener, deadline)?;
     match read_request(DeadlineReader {
         client: &mut rejected,
@@ -433,16 +434,14 @@ pub(super) fn serve_fixture(
     drop(rejected);
 
     let mut client = accept_before(listener, deadline)?;
-    let tunnel = open_tunnel(&mut client, deadline, upstream.peer, |address, timeout| {
-        TcpStream::connect_timeout(&address, timeout)
-    })?;
+    let tunnel = open_managed_tunnel(&mut client, upstream.peer, deadline, &stopped)?;
     let (mut server, peer) = upstream.listener.accept()?;
     if peer != tunnel.local_addr()? {
         return Err(io::Error::other("login fixture upstream peer mismatch"));
     }
     std::thread::scope(|scope| {
         let exchange = std::thread::Builder::new().spawn_scoped(scope, move || {
-            server.set_read_timeout(Some(time_remaining(deadline)?))?;
+            server.set_read_timeout(Some(time_remaining(cleanup_deadline)?))?;
             let mut request = [0; 4];
             server.read_exact(&mut request)?;
             if &request != b"PING" {
@@ -462,7 +461,12 @@ pub(super) fn serve_fixture(
                 let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 39275));
                 for expects_rejection in [false, true] {
                     let client = accept_before(listener, deadline)?;
-                    match relay_fixed_request(client, peer, deadline, None) {
+                    match relay_fixed_request(
+                        client,
+                        peer,
+                        deadline,
+                        host.then_some(&stopped as &(dyn Fn() -> bool + Sync)),
+                    ) {
                         // The client aborts the second handshake with a TLS alert.
                         Err(error)
                             if expects_rejection
@@ -499,7 +503,19 @@ pub(super) fn serve_fixture(
             None
         };
         let relayed = if let Some(stop @ super::FixtureStop::Host(..)) = stop {
-            relay_until_revoked(client, tunnel, deadline, &|| stop.requested(), true)
+            let result = relay_until_revoked_with_cleanup(
+                client,
+                tunnel,
+                deadline,
+                cleanup_deadline,
+                &|| stop.requested(),
+                true,
+            );
+            if Instant::now() >= deadline {
+                finish_expiring_relay(result, deadline)
+            } else {
+                result
+            }
         } else if matches!(case, Case::SignedTlsExpiry) {
             finish_expiring_relay(relay(client, tunnel, expires), expires)
         } else {
@@ -516,9 +532,28 @@ pub(super) fn serve_fixture(
     })
 }
 
+fn fixture_authorization_deadline(now: Instant, expires: Instant, host: bool) -> Instant {
+    if host {
+        expires
+    } else {
+        now + Duration::from_secs(8)
+    }
+}
+
 fn relay_until_revoked(
     client: TcpStream,
     tunnel: TcpStream,
+    deadline: Instant,
+    stop: &(dyn Fn() -> bool + Sync),
+    allow_peer_close: bool,
+) -> io::Result<()> {
+    relay_until_revoked_with_cleanup(client, tunnel, deadline, deadline, stop, allow_peer_close)
+}
+
+fn relay_until_revoked_with_cleanup(
+    client: TcpStream,
+    tunnel: TcpStream,
+    authorization_deadline: Instant,
     deadline: Instant,
     stop: &(dyn Fn() -> bool + Sync),
     allow_peer_close: bool,
@@ -553,7 +588,7 @@ fn relay_until_revoked(
                 }
             }
         })?;
-        let relayed = relay(client, tunnel, deadline);
+        let relayed = relay(client, tunnel, authorization_deadline);
         let _ = finished.send(());
         watcher
             .join()
@@ -583,6 +618,89 @@ fn finish_expiring_relay(result: io::Result<()>, expires: Instant) -> io::Result
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn non_host_fixture_still_times_out_after_eight_seconds() {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let upstream = super::FixtureUpstream::prepare(super::Case::Match).unwrap();
+        let started = std::time::Instant::now();
+        assert!(
+            super::serve_fixture(
+                &listener,
+                upstream,
+                super::Case::Match,
+                started + std::time::Duration::from_secs(30),
+                None
+            )
+            .is_err()
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(7900));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn cleanup_grace_does_not_relay_or_open_a_new_tunnel() {
+        use std::io::{Read, Write};
+        use std::net::{Ipv4Addr, TcpListener, TcpStream};
+        use std::time::{Duration, Instant};
+        let pair = || {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            (client, listener.accept().unwrap().0)
+        };
+        let (mut client, gateway) = pair();
+        let (upstream, mut server) = pair();
+        let expires = Instant::now() + Duration::from_millis(150);
+        let cleanup = expires + Duration::from_secs(1);
+        let worker = std::thread::spawn(move || {
+            super::relay_until_revoked_with_cleanup(
+                gateway,
+                upstream,
+                expires,
+                cleanup,
+                &|| Instant::now() >= expires,
+                true,
+            )
+        });
+        client.write_all(b"before").unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut before = [0; 6];
+        server.read_exact(&mut before).unwrap();
+        assert_eq!(&before, b"before");
+        std::thread::sleep(
+            expires.saturating_duration_since(Instant::now()) + Duration::from_millis(40),
+        );
+        assert!(Instant::now() < cleanup);
+        let _ = client.write_all(b"forbidden");
+        match server.read(&mut before) {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            result => panic!("relay survived authorization expiry: {result:?}"),
+        }
+        assert!(Instant::now() < cleanup);
+        let _ = worker.join().unwrap();
+        let (mut new_client, mut new_gateway) = pair();
+        let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        target.set_nonblocking(true).unwrap();
+        new_client
+            .write_all(b"CONNECT platform.claude.com:443 HTTP/1.1\r\n\r\n")
+            .unwrap();
+        assert!(
+            super::open_managed_tunnel(
+                &mut new_gateway,
+                target.local_addr().unwrap(),
+                expires,
+                &|| false
+            )
+            .is_err()
+        );
+        assert_eq!(
+            target.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
     use super::*;
 
     #[test]

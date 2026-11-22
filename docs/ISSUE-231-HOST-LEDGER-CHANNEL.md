@@ -290,3 +290,19 @@ FixtureStop が署名期限で行い、認可期間を延長しない。
 
 これは local baseline の完了であり、外部ホスト台帳から vsock を通した
 remote callback と TLS 回収の組合せは次の段階である。
+
+### 認可期限と回収猶予の分離
+
+上記 fixture の期限変更を再点検し、accept/要求読取り/open_tunnel/relay に
+expires+1秒が渡らないよう修正した。Host は expires を認可期限とし、watcher の
+終了確認だけ expires+1秒まで待つ。初期トンネルは stop と期限を照合する
+open_managed_tunnel を使い、TLS 接続も同じ stop を渡す。中継本体は認可期限で
+両方向を停止する。Host 以外は従来どおり8秒。
+
+実ソケットの対照で、認可期限後かつ回収猶予内に、中継が EOF/reset となり、
+新規 CONNECT が上流 socket を作らないことを確認した。非Hostの serve_fixture
+自体も実行して、8秒で受信待ちが終了することを確認した。通常lib109件成功。
+修正後の実VM local TLSも全5ケース成功し、expiredでは署名期限前の子生存、
+期限〜期限+1秒の間のpidfd signaled（子の実行不能）、gatewayと世代回収を確認した。
+これらは平文relay/CONNECTの境界対照と実子の終了確認であり、remote TLS実経路の
+証拠は引き続き次段階で取得する。
