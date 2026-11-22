@@ -1027,3 +1027,12 @@ ownerの方式選択と通信条件確定後に行う。
 63206では未制限のinit/new netns双方がhost CID235へ到達し、manual-loginと同じ
 chroot/drop UID/no_new_privs/close_range/filterを通した子だけがAF_VSOCK作成を
 EPERMで拒否された。子namespace回収も確認した。proxy TLS正常対照は別途実施する。
+
+14518a1のフィルタ付きproxy TLS正常対照（56726）も専用tempest-kvm/KVM固定で成功した。
+readonly runtime/固定実体検証、同じ子の証明書・誤名拒否・直接port拒否を通し、
+revokeはconsume1/query42後に持続TLSの両端を閉じた（client閉鎖187 ms）。
+response-lostはconsume1/query30後に子/gateway/作業・設定世代を回収した。
+ゲスト全体33.41秒、exit0。初回の専用user化では台帳祖先のgid検査が拒否したため、
+validatorは緩めず、祖先root:root0755・台帳root0700・QMP専用user0700へ分離して再実行した。
+この対照はCLIのvsock拒否と既存TCP proxyの互換性を示すもので、外向きhost relayは未実装、
+実配備・外部認証の成功は示さない。
